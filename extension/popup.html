@@ -50,6 +50,7 @@
       .canceled, .interrupted { color: var(--warn); }
       .confirming { color: var(--accent); }
       .skiprow { padding-top: 0; }
+      .grow { flex: 1; }
       .done { color: var(--ok); }
       .empty { color: var(--muted); padding: 16px 12px; text-align: center; }
       label.toggle { display: flex; align-items: center; gap: 6px; }
@@ -64,6 +65,10 @@
       </label>
     </header>
     <div id="status" class="status"></div>
+    <div id="refresh" class="row skiprow" hidden>
+      <span id="refresh-text" class="grow"></span>
+      <button id="refresh-cancel">Stop waiting</button>
+    </div>
     <div class="row skiprow">
       <button id="skip">Skip next download</button>
     </div>

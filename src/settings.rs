@@ -54,6 +54,32 @@ pub enum Scanner {
     Custom,
 }
 
+/// Which proxy downloads go through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyMode {
+    /// Connect directly.
+    #[default]
+    None,
+    /// The proxy set in Windows' Internet settings.
+    System,
+    /// The proxies set in UIDM's options.
+    Manual,
+}
+
+/// A login for the sites matching `site`. The password lives in Windows
+/// Credential Manager; it travels only from a window setting it to the
+/// daemon, and is never written to the settings file or sent back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteLogin {
+    /// `example.com` (with its subdomains) or a pattern such as `dl*.example.com`.
+    pub site: String,
+    pub username: String,
+    /// A new password to store; `None` keeps the stored one.
+    #[serde(default, skip_serializing)]
+    pub password: Option<String>,
+}
+
 /// A kind of file with its own folder, chosen by file extension.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Category {
@@ -204,6 +230,22 @@ pub struct Settings {
     /// The custom scanner's command line, such as
     /// `"C:\ClamAV\clamscan.exe" --no-summary {path}`.
     pub scanner_command: String,
+    pub proxy_mode: ProxyMode,
+    /// `host:port` of the manual proxy for http URLs.
+    pub proxy_http: String,
+    /// `host:port` of the manual proxy for https URLs; empty uses the http one.
+    pub proxy_https: String,
+    /// `host:port` of a manual SOCKS5 proxy for everything; wins when set.
+    pub proxy_socks5: String,
+    /// User name for the manual proxy, if it needs one.
+    pub proxy_username: String,
+    /// A new proxy password to store (empty clears it); `None` keeps the
+    /// stored one. Kept with DPAPI, never in this file.
+    #[serde(default, skip_serializing)]
+    pub proxy_password: Option<String>,
+    /// For a download taken from the browser, use the proxy the browser uses.
+    pub use_browser_proxy: bool,
+    pub site_logins: Vec<SiteLogin>,
 }
 
 impl Default for Settings {
@@ -229,6 +271,14 @@ impl Default for Settings {
             scan_after_download: false,
             scanner: Scanner::Defender,
             scanner_command: String::new(),
+            proxy_mode: ProxyMode::None,
+            proxy_http: String::new(),
+            proxy_https: String::new(),
+            proxy_socks5: String::new(),
+            proxy_username: String::new(),
+            proxy_password: None,
+            use_browser_proxy: false,
+            site_logins: Vec::new(),
         }
     }
 }
@@ -288,6 +338,43 @@ impl Settings {
                     "\"{site}\" is not a site. Use a host name such as example.com or *.example.com."
                 ));
             }
+        }
+        for (what, addr) in [
+            ("The HTTP proxy", &self.proxy_http),
+            ("The HTTPS proxy", &self.proxy_https),
+            ("The SOCKS5 proxy", &self.proxy_socks5),
+        ] {
+            if !addr.trim().is_empty() && !is_host_port(addr.trim()) {
+                return Err(format!("{what} must be host:port, such as proxy.example.com:8080."));
+            }
+        }
+        if self.proxy_mode == ProxyMode::Manual
+            && self.proxy_http.trim().is_empty()
+            && self.proxy_https.trim().is_empty()
+            && self.proxy_socks5.trim().is_empty()
+        {
+            return Err("Set at least one proxy, or choose another proxy option.".to_string());
+        }
+        let mut sites: Vec<String> = Vec::new();
+        for l in &self.site_logins {
+            let site = l.site.trim().to_ascii_lowercase();
+            let valid = !site.is_empty()
+                && site
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*' | ':'));
+            if !valid {
+                return Err(format!(
+                    "\"{}\" is not a site. Use a host name such as example.com.",
+                    l.site
+                ));
+            }
+            if l.username.trim().is_empty() {
+                return Err(format!("The login for {site} needs a user name."));
+            }
+            if sites.contains(&site) {
+                return Err(format!("There are two logins for {site}."));
+            }
+            sites.push(site);
         }
         if self.scan_after_download && self.scanner == Scanner::Custom {
             crate::scan::parse_command(&self.scanner_command)?;
@@ -391,6 +478,17 @@ fn check_extensions(what: &str, exts: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `host:port` with a numeric port, or `[v6]:port`.
+fn is_host_port(s: &str) -> bool {
+    let Some((host, port)) = s.rsplit_once(':') else {
+        return false;
+    };
+    !host.is_empty()
+        && !host.contains(char::is_whitespace)
+        && !host.contains('/')
+        && port.parse::<u16>().is_ok_and(|p| p > 0)
+}
+
 /// `%APPDATA%\UIDM\settings.json`.
 pub fn settings_path() -> io::Result<PathBuf> {
     let base = std::env::var_os("APPDATA")
@@ -478,6 +576,18 @@ mod tests {
             scan_after_download: true,
             scanner: Scanner::Custom,
             scanner_command: "C:\\scan.exe {path}".into(),
+            proxy_mode: ProxyMode::Manual,
+            proxy_http: "proxy:3128".into(),
+            proxy_https: String::new(),
+            proxy_socks5: String::new(),
+            proxy_username: "me".into(),
+            proxy_password: None,
+            use_browser_proxy: true,
+            site_logins: vec![SiteLogin {
+                site: "files.example.com".into(),
+                username: "ann".into(),
+                password: None,
+            }],
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
@@ -598,6 +708,46 @@ mod tests {
         assert!(with(&|s| s.capture_excluded_sites = vec!["*.example.com".into()]).is_ok());
         assert!(with(&|s| s.capture_excluded_sites = vec!["http://x/".into()]).is_err());
         assert!(with(&|s| s.categories.clear()).is_ok());
+    }
+
+    #[test]
+    fn passwords_never_reach_the_file() {
+        let s = Settings {
+            proxy_password: Some("proxy-secret".into()),
+            site_logins: vec![SiteLogin {
+                site: "example.com".into(),
+                username: "ann".into(),
+                password: Some("login-secret".into()),
+            }],
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("secret"), "{json}");
+        assert!(json.contains("\"username\":\"ann\""));
+    }
+
+    #[test]
+    fn proxy_and_login_validation() {
+        let with = |f: &dyn Fn(&mut Settings)| {
+            let mut s = Settings::default();
+            f(&mut s);
+            s.validate()
+        };
+        assert!(with(&|s| s.proxy_http = "proxy:3128".into()).is_ok());
+        assert!(with(&|s| s.proxy_http = "[::1]:3128".into()).is_ok());
+        assert!(with(&|s| s.proxy_http = "proxy".into()).is_err());
+        assert!(with(&|s| s.proxy_http = "proxy:99999".into()).is_err());
+        assert!(with(&|s| s.proxy_socks5 = "http://p:1".into()).is_err());
+        assert!(with(&|s| s.proxy_mode = ProxyMode::Manual).is_err(), "manual with no proxy");
+        let login = |site: &str, user: &str| SiteLogin {
+            site: site.into(),
+            username: user.into(),
+            password: None,
+        };
+        assert!(with(&|s| s.site_logins = vec![login("a.com", "u")]).is_ok());
+        assert!(with(&|s| s.site_logins = vec![login("a.com", " ")]).is_err());
+        assert!(with(&|s| s.site_logins = vec![login("https://a.com/", "u")]).is_err());
+        assert!(with(&|s| s.site_logins = vec![login("a.com", "u"), login("A.com", "v")]).is_err());
     }
 
     #[test]

@@ -16,6 +16,7 @@ const HKEY_CURRENT_USER: Hkey = 0x8000_0001u32 as i32 as isize;
 const KEY_QUERY_VALUE: u32 = 0x0001;
 const KEY_SET_VALUE: u32 = 0x0002;
 const REG_SZ: u32 = 1;
+const REG_DWORD: u32 = 4;
 const ERROR_SUCCESS: i32 = 0;
 const ERROR_FILE_NOT_FOUND: i32 = 2;
 
@@ -166,6 +167,45 @@ pub fn get_string(subkey: &str, name: &str) -> io::Result<Option<String>> {
     Ok(Some(s.trim_end_matches('\0').to_string()))
 }
 
+/// Read a DWORD value; `None` when the key or value does not exist or is
+/// another type.
+pub fn get_dword(subkey: &str, name: &str) -> io::Result<Option<u32>> {
+    let Some(key) = open(subkey, KEY_QUERY_VALUE)? else {
+        return Ok(None);
+    };
+    let name = wide(name);
+    let mut kind = 0u32;
+    let mut value = 0u32;
+    let mut len = 4u32;
+    // SAFETY: a 4-byte buffer for a DWORD.
+    let code = unsafe {
+        RegQueryValueExW(
+            key.0,
+            name.as_ptr(),
+            ptr::null_mut(),
+            &mut kind,
+            &mut value as *mut u32 as *mut u8,
+            &mut len,
+        )
+    };
+    if code == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    check(code, "read registry value")?;
+    Ok((kind == REG_DWORD).then_some(value))
+}
+
+/// Set a DWORD value, creating the key if needed.
+pub fn set_dword(subkey: &str, name: &str, value: u32) -> io::Result<()> {
+    let key = create(subkey)?;
+    let name = wide(name);
+    // SAFETY: points at 4 bytes for a DWORD.
+    let code = unsafe {
+        RegSetValueExW(key.0, name.as_ptr(), 0, REG_DWORD, &value as *const u32 as *const u8, 4)
+    };
+    check(code, "set registry value")
+}
+
 /// Delete a value; a missing key or value is not an error.
 pub fn delete_value(subkey: &str, name: &str) -> io::Result<()> {
     let Some(key) = open(subkey, KEY_SET_VALUE)? else {
@@ -217,6 +257,14 @@ mod tests {
         delete_value(TEST_KEY, "value").unwrap();
         delete_value(r"Software\UIDM-test-missing", "value").unwrap();
         assert_eq!(get_string(r"Software\UIDM-test-missing", "value").unwrap(), None);
+
+        set_dword(TEST_KEY, "flag", 1).unwrap();
+        assert_eq!(get_dword(TEST_KEY, "flag").unwrap(), Some(1));
+        set_string(TEST_KEY, "text", "x").unwrap();
+        assert_eq!(get_dword(TEST_KEY, "text").unwrap(), None, "a string is not a DWORD");
+        delete_value(TEST_KEY, "flag").unwrap();
+        delete_value(TEST_KEY, "text").unwrap();
+        assert_eq!(get_dword(TEST_KEY, "flag").unwrap(), None);
     }
 
     #[test]

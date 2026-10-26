@@ -109,6 +109,12 @@ function render(state) {
     status.textContent = `Not connected to UIDM${state.lastError ? `: ${state.lastError}` : ""}. Downloads stay in the browser.`;
   }
   $("capture").checked = state.capture;
+  const refresh = $("refresh");
+  const waitingFor = state.items.find((e) => e.id === state.refreshWaiting);
+  refresh.hidden = !waitingFor;
+  if (waitingFor) {
+    $("refresh-text").textContent = `Your next download gives ${nameOf(waitingFor)} a new link.`;
+  }
   const skip = $("skip");
   skip.disabled = !state.connected || !state.capture;
   skip.textContent = state.skipNext ? "Don't skip" : "Skip next download";
@@ -129,6 +135,7 @@ function render(state) {
 
 $("capture").addEventListener("change", (ev) => ask({ type: "setCapture", value: ev.target.checked }));
 $("skip").addEventListener("click", () => ask({ type: "setSkipNext", value: !skipNext }));
+$("refresh-cancel").addEventListener("click", () => ask({ type: "cancelRefresh" }));
 
 function addFromInput() {
   const url = $("url").value.trim();

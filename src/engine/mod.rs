@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::net::NetConfig;
 use crate::settings::{FileExists, Folders};
 use limit::RateLimiter;
 use resume::Manifest;
@@ -70,6 +71,8 @@ pub struct DownloadRequest {
     pub reuse_path: Option<PathBuf>,
     /// What to do when the chosen name is taken by an unrelated file.
     pub file_exists: FileExists,
+    /// The proxy and site logins to use.
+    pub net: Arc<NetConfig>,
     /// A form body to send with POST instead of a GET. The response is saved
     /// as one stream, and the POST is sent once: it is not repeated on
     /// failure, since a POST may not be safe to repeat.
@@ -113,6 +116,10 @@ pub enum Progress {
 pub enum EngineError {
     /// The server answered with an error status.
     Status(u16),
+    /// The server asked for a login and none is set for this host.
+    NeedsLogin(String),
+    /// The server refused the login set for this host.
+    LoginRejected(String),
     Http(String),
     Tls(String),
     Io(String),
@@ -123,6 +130,8 @@ impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EngineError::Status(code) => write!(f, "server returned HTTP {code}"),
+            EngineError::NeedsLogin(host) => write!(f, "This site needs a login: {host}"),
+            EngineError::LoginRejected(host) => write!(f, "The login for {host} was refused"),
             EngineError::Http(s) => write!(f, "http error: {s}"),
             EngineError::Tls(s) => write!(f, "tls error: {s}"),
             EngineError::Io(s) => write!(f, "io error: {s}"),
@@ -132,6 +141,13 @@ impl fmt::Display for EngineError {
 }
 
 impl std::error::Error for EngineError {}
+
+impl EngineError {
+    /// Errors that trying again cannot fix.
+    fn is_permanent(&self) -> bool {
+        matches!(self, EngineError::NeedsLogin(_) | EngineError::LoginRejected(_))
+    }
+}
 
 impl From<std::io::Error> for EngineError {
     fn from(e: std::io::Error) -> Self {
@@ -369,7 +385,7 @@ fn run_inner(
     reporter: &Reporter,
     shared: &Shared,
 ) -> Result<PathBuf, EngineError> {
-    let agent = http::build_agent()?;
+    let agent = http::Client::new(&req.net, &req.url)?;
     if let Some(body) = &req.post_body {
         return run_post(id, token, &agent, req, body, reporter, shared);
     }
@@ -415,7 +431,7 @@ fn run_inner(
 fn run_post(
     id: u64,
     token: &CancelToken,
-    agent: &ureq::Agent,
+    agent: &http::Client,
     req: &DownloadRequest,
     body: &[u8],
     reporter: &Reporter,
@@ -489,11 +505,14 @@ fn pick_filename(requested: Option<&str>, probe: &http::Probe) -> String {
 }
 
 /// What a download will be before it starts, for a save-as dialog.
+#[derive(Debug, Clone)]
 pub struct Inspection {
     /// The name the file would be saved under.
     pub filename: String,
     pub total: Option<u64>,
     pub resumable: bool,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
 }
 
 impl Inspection {
@@ -507,6 +526,8 @@ impl Inspection {
                 .unwrap_or_else(|| derive_filename(url)),
             total: None,
             resumable: false,
+            etag: None,
+            last_modified: None,
         }
     }
 }
@@ -517,14 +538,46 @@ pub fn inspect(
     url: &str,
     filename: Option<&str>,
     headers: &[(String, String)],
+    net: &NetConfig,
 ) -> Result<Inspection, EngineError> {
-    let agent = http::build_agent()?;
+    let agent = http::Client::new(net, url)?;
     let probe = http::probe(&agent, url, headers)?;
     Ok(Inspection {
         filename: pick_filename(filename, &probe),
         total: probe.total,
         resumable: probe.resumable,
+        etag: probe.etag,
+        last_modified: probe.last_modified,
     })
+}
+
+/// Whether the partial file at `output` can be continued from the file
+/// `found` describes: the same size, and the same ETag or Last-Modified when
+/// both sides have one. A missing partial file or sidecar has nothing to keep,
+/// so anything fits. The error says why not, for the user.
+pub fn partial_matches(output: &Path, found: &Inspection) -> Result<(), String> {
+    let Ok(m) = Manifest::load(&Manifest::sidecar_path(output)) else {
+        return Ok(());
+    };
+    if !output.is_file() {
+        return Ok(());
+    }
+    let mb = |n: u64| format!("{:.1} MB", n as f64 / (1024.0 * 1024.0));
+    match found.total {
+        None => Err("The new link does not say how big its file is, so it cannot be matched to the partial download.".into()),
+        Some(total) if total != m.total => Err(format!(
+            "The new link is for a {} file; the partial download is of a {} file.",
+            mb(total),
+            mb(m.total)
+        )),
+        Some(total) if !m.matches(total, found.etag.as_deref(), found.last_modified.as_deref()) => Err(
+            "The file at the new link has changed since the download started (its ETag or date differs).".into(),
+        ),
+        Some(_) if !found.resumable => {
+            Err("The new link's server cannot resume downloads, so it must start over.".into())
+        }
+        Some(_) => Ok(()),
+    }
 }
 
 /// Make `name` safe to use as a Windows file name, as the engine will.
@@ -691,7 +744,7 @@ impl Work {
 fn run_segmented(
     id: u64,
     token: &CancelToken,
-    agent: &ureq::Agent,
+    agent: &http::Client,
     req: &DownloadRequest,
     output: PathBuf,
     probe: &http::Probe,
@@ -812,7 +865,7 @@ fn run_segmented(
 struct SegmentCtx<'a> {
     id: u64,
     token: &'a CancelToken,
-    agent: &'a ureq::Agent,
+    agent: &'a http::Client,
     url: &'a str,
     headers: &'a [(String, String)],
     output: &'a std::path::Path,
@@ -836,6 +889,7 @@ fn download_segment(ctx: &SegmentCtx, idx: usize) -> Result<(), EngineError> {
         }
         match download_segment_once(ctx, idx) {
             Ok(()) => return Ok(()),
+            Err(e) if e.is_permanent() => return Err(e),
             Err(e) => {
                 if ctx.token.load(Ordering::Relaxed) {
                     return Ok(());
@@ -933,7 +987,7 @@ fn maybe_report(ctx: &SegmentCtx, global: u64) {
 fn run_single(
     id: u64,
     token: &CancelToken,
-    agent: &ureq::Agent,
+    agent: &http::Client,
     req: &DownloadRequest,
     output: PathBuf,
     probe: &http::Probe,
@@ -947,6 +1001,7 @@ fn run_single(
         }
         match single_once(id, token, agent, req, &output, probe, reporter, limiter) {
             Ok(()) => return Ok(output),
+            Err(e) if e.is_permanent() => return Err(e),
             Err(e) => {
                 if token.load(Ordering::Relaxed) {
                     return Ok(output);
@@ -965,7 +1020,7 @@ fn run_single(
 fn single_once(
     id: u64,
     token: &CancelToken,
-    agent: &ureq::Agent,
+    agent: &http::Client,
     req: &DownloadRequest,
     output: &std::path::Path,
     probe: &http::Probe,
@@ -1146,6 +1201,7 @@ mod tests {
                 reuse_path: None,
                 file_exists,
                 post_body: None,
+                net: Arc::new(NetConfig::default()),
             }
         }
 
@@ -1262,7 +1318,7 @@ mod tests {
             let behavior = Behavior {
                 slow_range_start: Some(3 * 1024 * 1024),
                 slow_bytes_per_sec: 128 * 1024,
-                post_only_body: None,
+                ..Behavior::default()
             };
             let run = |resplit: bool| {
                 let server = TestServer::start_with(data.clone(), behavior.clone());
@@ -1289,7 +1345,7 @@ mod tests {
             let behavior = Behavior {
                 slow_range_start: Some(3 * 1024 * 1024),
                 slow_bytes_per_sec: 128 * 1024,
-                post_only_body: None,
+                ..Behavior::default()
             };
             let server = TestServer::start_with(data.clone(), behavior);
             let dir = temp_dir("split-resume");
@@ -1370,6 +1426,161 @@ mod tests {
             fs::remove_dir_all(&dir).ok();
         }
 
+        fn login(site: &str, username: &str, password: &str) -> crate::net::Login {
+            crate::net::Login {
+                site: site.into(),
+                username: username.into(),
+                password: password.into(),
+            }
+        }
+
+        /// Run one download and return its error.
+        fn download_err(req: DownloadRequest) -> String {
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(
+                Arc::new(move |p: Progress| {
+                    let _ = tx.lock().unwrap().send(p);
+                }),
+                1,
+            );
+            engine.enqueue(req);
+            loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("download timed out") {
+                    Progress::Failed { error, .. } => return error,
+                    Progress::Finished { .. } => panic!("download should have failed"),
+                    _ => {}
+                }
+            }
+        }
+
+        #[test]
+        fn a_site_login_answers_a_401() {
+            let data = body(LEN);
+            let behavior = Behavior {
+                basic_auth: Some("ann:pa ss".into()),
+                ..Behavior::default()
+            };
+            let server = TestServer::start_with(data.clone(), behavior);
+            let dir = temp_dir("login");
+
+            // No login for this host: a clear error, at once (no retries).
+            let start = Instant::now();
+            let err = download_err(request(&server.url, &dir, FileExists::Rename));
+            assert_eq!(err, "This site needs a login: 127.0.0.1");
+            assert!(start.elapsed() < Duration::from_secs(3), "not retried");
+
+            // The wrong password is refused.
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig {
+                proxy: None,
+                logins: vec![login("127.0.0.1", "ann", "wrong")],
+            });
+            assert_eq!(download_err(req), "The login for 127.0.0.1 was refused");
+
+            // The right one downloads every range, each answering its own 401.
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig {
+                proxy: None,
+                logins: vec![login("example.com", "x", "y"), login("127.0.0.1", "ann", "pa ss")],
+            });
+            let path = download(|_| {}, req);
+            assert_eq!(fs::read(&path).unwrap(), data);
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_login_never_follows_a_redirect_to_another_host() {
+            let data = body(LEN);
+            // B is "localhost", a different host name from A's 127.0.0.1.
+            let b = TestServer::start(data.clone());
+            let b_url = b.url.replace("127.0.0.1", "localhost");
+            let a = TestServer::start_with(
+                data.clone(),
+                Behavior {
+                    basic_auth: Some("ann:pw".into()),
+                    redirect_to: Some(b_url),
+                    ..Behavior::default()
+                },
+            );
+            let dir = temp_dir("redirect");
+            let mut req = request(&a.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig {
+                proxy: None,
+                logins: vec![login("127.0.0.1", "ann", "pw")],
+            });
+            let path = download(|_| {}, req);
+            assert_eq!(fs::read(&path).unwrap(), data);
+            assert!(!a.auth_seen.lock().unwrap().is_empty(), "A got the login");
+            assert!(b.auth_seen.lock().unwrap().is_empty(), "B never did");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn downloads_go_through_the_proxy() {
+            // A minimal HTTP proxy: it records the requests and forwards them.
+            let data = body(LEN);
+            let origin = TestServer::start(data.clone());
+            let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let proxy_addr = proxy.local_addr().unwrap().to_string();
+            let through = Arc::new(Mutex::new(Vec::<String>::new()));
+            let log = Arc::clone(&through);
+            thread::spawn(move || {
+                for client in proxy.incoming().flatten() {
+                    let log = Arc::clone(&log);
+                    thread::spawn(move || {
+                        use std::io::{BufRead, BufReader};
+                        let mut reader = BufReader::new(client.try_clone().unwrap());
+                        let mut head = String::new();
+                        let mut first = String::new();
+                        reader.read_line(&mut first).unwrap();
+                        log.lock().unwrap().push(first.trim().to_string());
+                        loop {
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                                break;
+                            }
+                            if line.to_ascii_lowercase().starts_with("proxy-authorization:") {
+                                log.lock().unwrap().push(format!("auth {}", line.trim()));
+                            } else if !line.to_ascii_lowercase().starts_with("proxy-") {
+                                head.push_str(&line);
+                            }
+                        }
+                        // "GET http://host:port/path HTTP/1.1" -> origin.
+                        let target = first.split_whitespace().nth(1).unwrap().to_string();
+                        let rest = target.trim_start_matches("http://");
+                        let (authority, path) = rest.split_at(rest.find('/').unwrap());
+                        let mut up = std::net::TcpStream::connect(authority).unwrap();
+                        write!(up, "GET {path} HTTP/1.1\r\n{head}\r\n").unwrap();
+                        let mut client = client;
+                        std::io::copy(&mut up, &mut client).ok();
+                    });
+                }
+            });
+            let dir = temp_dir("proxy");
+            let mut req = request(&origin.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig {
+                proxy: Some(crate::net::ProxyRules {
+                    http: Some(proxy_addr),
+                    username: "pu".into(),
+                    password: "pp".into(),
+                    ..Default::default()
+                }),
+                logins: Vec::new(),
+            });
+            let path = download(|_| {}, req);
+            assert_eq!(fs::read(&path).unwrap(), data);
+            let seen = through.lock().unwrap();
+            let requests: Vec<_> = seen.iter().filter(|l| l.starts_with("GET ")).collect();
+            let auths: Vec<_> = seen.iter().filter(|l| l.starts_with("auth ")).collect();
+            assert!(requests.len() >= 2, "the probe and the ranges went through it: {seen:?}");
+            assert!(requests.iter().all(|l| l.starts_with(&format!("GET {}", origin.url))));
+            // "pu:pp" in base64, on every request.
+            assert_eq!(auths.len(), requests.len(), "{seen:?}");
+            assert!(auths.iter().all(|l| l.ends_with("Basic cHU6cHA=")), "{seen:?}");
+            fs::remove_dir_all(&dir).ok();
+        }
+
         #[test]
         fn downloads_go_to_their_category_folder() {
             let server = TestServer::start(body(LEN));
@@ -1391,13 +1602,40 @@ mod tests {
         }
 
         #[test]
+        fn a_refreshed_link_keeps_the_partial_file_only_for_the_same_file() {
+            let data = body(LEN);
+            let server = TestServer::start(data.clone());
+            let dir = temp_dir("refresh");
+            let partial = dir.join("file.bin");
+            fs::write(&partial, vec![0u8; LEN]).unwrap();
+            let mut m = Manifest::new("https://old/link".into(), LEN as u64, Some("\"v1\"".into()), None, &split(LEN as u64, 2));
+            m.segments[0].done = 1000;
+            m.save(&Manifest::sidecar_path(&partial)).unwrap();
+
+            let found = inspect(&server.url, None, &[], &NetConfig::default()).unwrap();
+            assert_eq!(found.etag.as_deref(), Some("\"v1\""));
+            assert_eq!(partial_matches(&partial, &found), Ok(()));
+
+            let other_size = Inspection { total: Some(LEN as u64 + 1), ..found.clone() };
+            assert!(partial_matches(&partial, &other_size).unwrap_err().contains("2.0 MB file"));
+            let changed = Inspection { etag: Some("\"v2\"".into()), ..found.clone() };
+            assert!(partial_matches(&partial, &changed).unwrap_err().contains("changed"));
+            let unknown = Inspection { total: None, ..found.clone() };
+            assert!(partial_matches(&partial, &unknown).is_err());
+
+            // Nothing on disk: nothing to keep, any link fits.
+            assert_eq!(partial_matches(&dir.join("none.bin"), &other_size), Ok(()));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
         fn inspect_reports_name_and_size_without_writing() {
             let server = TestServer::start(body(LEN));
-            let found = inspect(&server.url, None, &[]).unwrap();
+            let found = inspect(&server.url, None, &[], &NetConfig::default()).unwrap();
             assert_eq!(found.filename, "file.bin");
             assert_eq!(found.total, Some(LEN as u64));
             assert!(found.resumable);
-            let named = inspect(&server.url, Some("a/b:c.txt"), &[]).unwrap();
+            let named = inspect(&server.url, Some("a/b:c.txt"), &[], &NetConfig::default()).unwrap();
             assert_eq!(named.filename, "a_b_c.txt");
         }
 

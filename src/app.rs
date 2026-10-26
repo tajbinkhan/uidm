@@ -33,6 +33,7 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         reuse_path: None,
         file_exists: settings.file_exists,
         post_body,
+        net: Default::default(),
     }
 }
 

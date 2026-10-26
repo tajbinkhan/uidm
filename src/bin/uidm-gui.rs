@@ -38,7 +38,7 @@ use uidm::ipc;
 use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Scan, Status};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
-    parse_extensions, Category, FileExists, Notify, Scanner, Settings, CAPTURE_MIN_SIZE_MAX_KB,
+    parse_extensions, Category, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS,
 };
 use uidm::state::DownloadTable;
@@ -129,6 +129,11 @@ struct Shared {
     /// A countdown before a finished queue sleeps or shuts down: the action,
     /// when it happens, and the queue's name.
     countdown: Option<(WhenDone, Instant, String)>,
+    /// The download waiting for a new link from the browser, if any.
+    refresh_waiting: Option<u64>,
+    /// The daemon's answer that a new link is for another file: the
+    /// download, the link and why.
+    refresh_mismatch: Option<(u64, String, String)>,
 }
 
 impl Shared {
@@ -165,6 +170,10 @@ impl Shared {
                 self.countdown = Some((*action, deadline, queue.clone()));
             }
             Outgoing::CountdownCanceled => self.countdown = None,
+            Outgoing::RefreshWaiting { id } => self.refresh_waiting = *id,
+            Outgoing::RefreshMismatch { id, url, reason } => {
+                self.refresh_mismatch = Some((*id, url.clone(), reason.clone()));
+            }
             Outgoing::Settings { settings } => {
                 self.settings = Some(settings.clone());
                 if self.saving {
@@ -226,6 +235,8 @@ enum Action {
     ShowInFolder(String),
     Reconnect,
     OpenOptions,
+    /// Open Options at the Connection tab with a new login for this host.
+    AddLogin(String),
     SaveSettings(Settings),
     /// Send new settings without the Options dialog (the speed limit toggle).
     QuickSettings(Settings),
@@ -252,6 +263,18 @@ enum Action {
     /// What a queue does when this run ends, this time only.
     SetQueueOnce(u64, Option<WhenDone>),
     CancelCountdown,
+    /// Open the New link dialog for a download.
+    OpenRefresh(u64),
+    /// Give a download this new link; `restart` starts over even if it is for
+    /// another file.
+    RefreshWith {
+        id: u64,
+        url: String,
+        restart: bool,
+    },
+    /// Wait for the next download from the browser to give this one its link.
+    RefreshFromBrowser(u64),
+    CancelRefresh,
     /// Open the Queues dialog, on a queue if given.
     OpenQueues(Option<u64>),
 }
@@ -284,6 +307,8 @@ struct App {
     filter: Filter,
     /// The Queues dialog, while it is open.
     queues_dialog: Option<queues::QueuesDialog>,
+    /// The New link dialog: the download and the address typed so far.
+    refresh: Option<(u64, String)>,
 }
 
 /// A folder chosen in the picker, delivered by its thread.
@@ -355,6 +380,16 @@ enum OptionsTab {
     Categories,
     Capture,
     Notifications,
+    Connection,
+}
+
+/// One site login being edited. An empty password keeps the stored one.
+struct LoginDraft {
+    site: String,
+    username: String,
+    password: String,
+    /// Added in this dialog, so it has no stored password yet.
+    new: bool,
 }
 
 /// One category being edited.
@@ -377,6 +412,16 @@ struct OptionsDraft {
     scan_after_download: bool,
     scanner: Scanner,
     scanner_command: String,
+    proxy_mode: ProxyMode,
+    proxy_http: String,
+    proxy_https: String,
+    proxy_socks5: String,
+    proxy_username: String,
+    /// A new proxy password, when `proxy_password_changed`.
+    proxy_password: String,
+    proxy_password_changed: bool,
+    use_browser_proxy: bool,
+    logins: Vec<LoginDraft>,
     /// Empty means the Downloads folder.
     folder: String,
     connections: usize,
@@ -414,6 +459,24 @@ impl OptionsDraft {
             scan_after_download: s.scan_after_download,
             scanner: s.scanner,
             scanner_command: s.scanner_command.clone(),
+            proxy_mode: s.proxy_mode,
+            proxy_http: s.proxy_http.clone(),
+            proxy_https: s.proxy_https.clone(),
+            proxy_socks5: s.proxy_socks5.clone(),
+            proxy_username: s.proxy_username.clone(),
+            proxy_password: String::new(),
+            proxy_password_changed: false,
+            use_browser_proxy: s.use_browser_proxy,
+            logins: s
+                .site_logins
+                .iter()
+                .map(|l| LoginDraft {
+                    site: l.site.clone(),
+                    username: l.username.clone(),
+                    password: String::new(),
+                    new: false,
+                })
+                .collect(),
             folder: s.download_dir.clone().unwrap_or_default(),
             connections: s.connections,
             max_concurrent: s.max_concurrent,
@@ -463,6 +526,22 @@ impl OptionsDraft {
             scan_after_download: self.scan_after_download,
             scanner: self.scanner,
             scanner_command: self.scanner_command.trim().to_string(),
+            proxy_mode: self.proxy_mode,
+            proxy_http: self.proxy_http.trim().to_string(),
+            proxy_https: self.proxy_https.trim().to_string(),
+            proxy_socks5: self.proxy_socks5.trim().to_string(),
+            proxy_username: self.proxy_username.trim().to_string(),
+            proxy_password: self.proxy_password_changed.then(|| self.proxy_password.clone()),
+            use_browser_proxy: self.use_browser_proxy,
+            site_logins: self
+                .logins
+                .iter()
+                .map(|l| SiteLogin {
+                    site: l.site.trim().to_ascii_lowercase(),
+                    username: l.username.trim().to_string(),
+                    password: (!l.password.is_empty()).then(|| l.password.clone()),
+                })
+                .collect(),
             file_exists: self.file_exists,
             ask_where_to_save: self.ask_where_to_save,
             categories: self
@@ -484,6 +563,9 @@ impl OptionsDraft {
                 .collect(),
         };
         settings.validate()?;
+        if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
+            return Err(format!("The new login for {} needs a password.", l.site.trim()));
+        }
         Ok(settings)
     }
 }
@@ -502,6 +584,8 @@ impl App {
                 completed: VecDeque::new(),
                 queues: Vec::new(),
                 countdown: None,
+                refresh_waiting: None,
+                refresh_mismatch: None,
             })),
             writer: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
@@ -512,6 +596,7 @@ impl App {
             tooltip: String::new(),
             filter: Filter::All,
             queues_dialog: None,
+            refresh: None,
         };
         app.connect();
         app.install_tray();
@@ -692,6 +777,21 @@ impl App {
                     self.options = Some(OptionsDraft::new(settings));
                 }
             }
+            Action::AddLogin(host) => {
+                if let Some(settings) = &self.shared.lock().unwrap().settings {
+                    let mut draft = OptionsDraft::new(settings);
+                    draft.tab = OptionsTab::Connection;
+                    if !draft.logins.iter().any(|l| l.site.eq_ignore_ascii_case(&host)) {
+                        draft.logins.push(LoginDraft {
+                            site: host,
+                            username: String::new(),
+                            password: String::new(),
+                            new: true,
+                        });
+                    }
+                    self.options = Some(draft);
+                }
+            }
             Action::SaveSettings(settings) => {
                 {
                     let mut s = self.shared.lock().unwrap();
@@ -755,6 +855,30 @@ impl App {
             }
             Action::SetQueueOnce(id, when_done) => {
                 send(&self.writer, &Incoming::SetQueueOnce { id, when_done });
+            }
+            Action::OpenRefresh(id) => {
+                self.shared.lock().unwrap().refresh_mismatch = None;
+                self.refresh = Some((id, String::new()));
+            }
+            Action::RefreshWith { id, url, restart } => {
+                self.shared.lock().unwrap().refresh_mismatch = None;
+                send(
+                    &self.writer,
+                    &Incoming::RefreshLink {
+                        id,
+                        download: Some(Download {
+                            url,
+                            ..Download::default()
+                        }),
+                        restart,
+                    },
+                );
+            }
+            Action::RefreshFromBrowser(id) => {
+                send(&self.writer, &Incoming::RefreshLink { id, download: None, restart: false });
+            }
+            Action::CancelRefresh => {
+                send(&self.writer, &Incoming::CancelRefresh);
             }
             Action::CancelCountdown => {
                 send(&self.writer, &Incoming::CancelCountdown);
@@ -910,6 +1034,7 @@ impl App {
                     ui.selectable_value(&mut draft.tab, OptionsTab::Categories, "Categories");
                     ui.selectable_value(&mut draft.tab, OptionsTab::Capture, "Browser capture");
                     ui.selectable_value(&mut draft.tab, OptionsTab::Notifications, "When done");
+                    ui.selectable_value(&mut draft.tab, OptionsTab::Connection, "Connection");
                 });
                 ui.separator();
                 match draft.tab {
@@ -917,6 +1042,7 @@ impl App {
                     OptionsTab::Categories => categories_tab(ui, draft),
                     OptionsTab::Capture => capture_tab(ui, draft),
                     OptionsTab::Notifications => notifications_tab(ui, draft),
+                    OptionsTab::Connection => connection_tab(ui, draft),
                 }
 
                 if let Some(err) = &draft.error {
@@ -1029,6 +1155,76 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.checkbox(&mut draft.close_to_tray, "Closing the window keeps UIDM in the tray");
         ui.end_row();
     });
+}
+
+fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+    egui::Grid::new("connection").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        ui.label("Proxy");
+        ui.vertical(|ui| {
+            ui.radio_value(&mut draft.proxy_mode, ProxyMode::None, "No proxy");
+            ui.radio_value(&mut draft.proxy_mode, ProxyMode::System, "Use the Windows proxy setting");
+            ui.radio_value(&mut draft.proxy_mode, ProxyMode::Manual, "Use these proxies:");
+        });
+        ui.end_row();
+        let manual = draft.proxy_mode == ProxyMode::Manual;
+        for (label, field, hint) in [
+            ("HTTP proxy", &mut draft.proxy_http, "proxy.example.com:8080"),
+            ("HTTPS proxy", &mut draft.proxy_https, "Same as HTTP when empty"),
+            ("SOCKS5 proxy", &mut draft.proxy_socks5, "Used for everything when set"),
+        ] {
+            ui.label(label);
+            ui.add_enabled(manual, egui::TextEdit::singleline(field).hint_text(hint).desired_width(260.0));
+            ui.end_row();
+        }
+        ui.label("Proxy login");
+        ui.add_enabled_ui(manual, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut draft.proxy_username).hint_text("User name").desired_width(120.0));
+                let hint = if draft.proxy_password_changed { "Password" } else { "Password (unchanged)" };
+                let pw = ui.add(
+                    egui::TextEdit::singleline(&mut draft.proxy_password)
+                        .password(true)
+                        .hint_text(hint)
+                        .desired_width(130.0),
+                );
+                if pw.changed() {
+                    draft.proxy_password_changed = true;
+                }
+            });
+        });
+        ui.end_row();
+        ui.label("");
+        ui.checkbox(&mut draft.use_browser_proxy, "For downloads from the browser, use the browser's proxy");
+        ui.end_row();
+    });
+
+    ui.add_space(8.0);
+    ui.strong("Site logins");
+    ui.weak("Sent only to a site that asks for a login, and only to that site.");
+    let mut remove = None;
+    egui::Grid::new("logins").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+        for (i, l) in draft.logins.iter_mut().enumerate() {
+            ui.add_sized([180.0, 20.0], egui::TextEdit::singleline(&mut l.site).hint_text("example.com"));
+            ui.add_sized([120.0, 20.0], egui::TextEdit::singleline(&mut l.username).hint_text("User name"));
+            let hint = if l.new { "Password" } else { "Password (unchanged)" };
+            ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(&mut l.password).password(true).hint_text(hint));
+            if ui.small_button("Remove").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(i) = remove {
+        draft.logins.remove(i);
+    }
+    if ui.button("Add login").clicked() {
+        draft.logins.push(LoginDraft {
+            site: String::new(),
+            username: String::new(),
+            password: String::new(),
+            new: true,
+        });
+    }
 }
 
 fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
@@ -1433,6 +1629,14 @@ impl eframe::App for App {
                         }
                     }
                 }
+                let refreshing = self.shared.lock().unwrap().refresh_waiting;
+                if let Some(e) = refreshing.and_then(|id| rows.iter().find(|e| e.id == id)) {
+                    ui.separator();
+                    ui.label(format!("Your next browser download gives {} a new link", display_name(e)));
+                    if ui.small_button("Stop waiting").clicked() {
+                        actions.push(Action::CancelRefresh);
+                    }
+                }
                 let active = rows.iter().filter(|e| !e.status.is_terminal()).count();
                 ui.separator();
                 ui.label(format!("{active} active, {} total", rows.len()));
@@ -1591,6 +1795,7 @@ impl eframe::App for App {
         self.confirm_window(ctx, &rows, connected, &mut actions);
         self.completed_window(ctx, connected, &mut actions);
         self.threat_window(ctx, &mut actions);
+        self.refresh_window(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.queues_dialog.as_mut() {
             if !queues::dialog(ctx, d, &queue_list, connected, &mut actions) {
                 self.queues_dialog = None;
@@ -1608,6 +1813,92 @@ impl eframe::App for App {
 
         for action in actions {
             self.perform(action);
+        }
+    }
+}
+
+impl App {
+    /// The New link dialog: paste a new address, or take the next download
+    /// from the browser; and, when the new link is for another file, whether
+    /// to start over. It closes once the download has its new link.
+    fn refresh_window(&mut self, ctx: &egui::Context, rows: &[DownloadEntry], connected: bool, actions: &mut Vec<Action>) {
+        let Some((id, url)) = self.refresh.as_mut() else {
+            return;
+        };
+        let id = *id;
+        let (waiting, mismatch) = {
+            let s = self.shared.lock().unwrap();
+            (s.refresh_waiting == Some(id), s.refresh_mismatch.clone().filter(|m| m.0 == id))
+        };
+        // Retrying replaces the entry; a waiting download keeps it with a new
+        // URL. Either way the dialog is done.
+        let entry = rows.iter().find(|e| e.id == id);
+        let Some(entry) = entry.filter(|e| e.status.is_retryable()) else {
+            self.refresh = None;
+            return;
+        };
+        let mut close = false;
+        egui::Window::new("New link")
+            .id(egui::Id::new("refresh"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("A fresh link for {}", display_name(entry)));
+                ui.weak("The part already downloaded is kept if the new link is for the same file.");
+                ui.add_space(6.0);
+                if let Some((_, new_url, reason)) = &mismatch {
+                    ui.colored_label(ui.visuals().warn_fg_color, reason);
+                    ui.label("Start over from the beginning with the new link?");
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(connected, egui::Button::new("Start over")).clicked() {
+                            actions.push(Action::RefreshWith {
+                                id,
+                                url: new_url.clone(),
+                                restart: true,
+                            });
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                    return;
+                }
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(url).hint_text("Paste the new address").desired_width(360.0));
+                    let ok = connected && is_web_url(url.trim());
+                    if ui.add_enabled(ok, egui::Button::new("Use this link")).clicked() {
+                        actions.push(Action::RefreshWith {
+                            id,
+                            url: url.trim().to_string(),
+                            restart: false,
+                        });
+                    }
+                });
+                ui.add_space(4.0);
+                if waiting {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Waiting for your next download in the browser...");
+                        if ui.button("Stop waiting").clicked() {
+                            actions.push(Action::CancelRefresh);
+                        }
+                    });
+                } else if ui
+                    .add_enabled(connected, egui::Button::new("Use my next download in the browser"))
+                    .on_hover_text("Start the download again on its web page; UIDM takes the new link from it")
+                    .clicked()
+                {
+                    actions.push(Action::RefreshFromBrowser(id));
+                }
+                ui.add_space(6.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            self.refresh = None;
+            self.shared.lock().unwrap().refresh_mismatch = None;
         }
     }
 }
@@ -1734,6 +2025,9 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 }
             }
             Status::Waiting => {
+                if ui.small_button("New link").on_hover_text("Give it a fresh download link").clicked() {
+                    actions.push(Action::OpenRefresh(e.id));
+                }
                 if ui.small_button("Start").clicked() {
                     actions.push(Action::Confirm {
                         id: e.id,
@@ -1749,6 +2043,14 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 }
             }
             Status::Failed | Status::Canceled | Status::Interrupted => {
+                if let Some(host) = e.error.as_deref().and_then(|m| m.strip_prefix("This site needs a login: ")) {
+                    if ui.small_button("Add login").clicked() {
+                        actions.push(Action::AddLogin(host.to_string()));
+                    }
+                }
+                if ui.small_button("New link").on_hover_text("Give it a fresh download link").clicked() {
+                    actions.push(Action::OpenRefresh(e.id));
+                }
                 if ui.small_button("Retry").clicked() {
                     actions.push(Action::Retry(e.id));
                 }

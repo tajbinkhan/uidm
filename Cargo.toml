@@ -30,10 +30,15 @@ serde_json = "1.0.145"
 # Blocking HTTP so the engine can use plain threads, one per segment, instead
 # of an async runtime. native-tls routes through Windows SChannel, which builds
 # without a C/assembly toolchain (unlike rustls + ring on windows-gnu).
-ureq = { version = "2.12.1", default-features = false, features = ["native-tls", "gzip"] }
+ureq = { version = "2.12.1", default-features = false, features = ["native-tls", "gzip", "socks-proxy"] }
 native-tls = "0.2.14"
 # OS randomness for the daemon's per-start auth token and handshake nonces.
 getrandom = "0.4"
+# Resolving redirect locations when UIDM follows redirects itself (an
+# authenticated HTTP proxy); the same crate ureq uses.
+url = "2"
+# Digest authentication for site logins (MD5 and MD5-sess; SHA-256 uses sha2).
+md-5 = "0.10"
 # Form bodies of POST downloads travel base64-encoded in JSON.
 base64 = "0.22"
 # HMAC-SHA256 proofs in the host <-> daemon handshake, so neither side ever

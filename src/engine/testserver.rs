@@ -5,7 +5,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -19,12 +19,18 @@ pub struct Behavior {
     /// Serve the file only to a POST with exactly this body; a GET gets an
     /// HTML error page with status 200, as many real sites send.
     pub post_only_body: Option<Vec<u8>>,
+    /// Require HTTP Basic with this `user:password`: 401 without it.
+    pub basic_auth: Option<String>,
+    /// Answer every request with a 302 to this URL.
+    pub redirect_to: Option<String>,
 }
 
 pub struct TestServer {
     pub url: String,
     /// Body bytes sent so far, across every response.
     pub served: Arc<AtomicU64>,
+    /// Every `Authorization` header received.
+    pub auth_seen: Arc<Mutex<Vec<String>>>,
 }
 
 /// A body of `len` bytes that differs at every offset modulo 251, so a
@@ -44,26 +50,36 @@ impl TestServer {
         let body = Arc::new(body);
         let served = Arc::new(AtomicU64::new(0));
         let counter = Arc::clone(&served);
+        let auth_seen = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&auth_seen);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let body = Arc::clone(&body);
                 let counter = Arc::clone(&counter);
+                let seen = Arc::clone(&seen);
                 let behavior = behavior.clone();
                 thread::spawn(move || {
-                    let _ = serve(stream, &body, &counter, &behavior);
+                    let _ = serve(stream, &body, &counter, &behavior, &seen);
                 });
             }
         });
-        TestServer { url, served }
+        TestServer { url, served, auth_seen }
     }
 }
 
-fn serve(mut stream: TcpStream, body: &[u8], served: &AtomicU64, behavior: &Behavior) -> std::io::Result<()> {
+fn serve(
+    mut stream: TcpStream,
+    body: &[u8],
+    served: &AtomicU64,
+    behavior: &Behavior,
+    auth_seen: &Mutex<Vec<String>>,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut range: Option<(u64, u64)> = None;
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
     let mut content_length = 0usize;
+    let mut auth: Option<String> = None;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
@@ -72,6 +88,11 @@ fn serve(mut stream: TcpStream, body: &[u8], served: &AtomicU64, behavior: &Beha
         let lower = line.to_ascii_lowercase();
         if let Some(len) = lower.strip_prefix("content-length:") {
             content_length = len.trim().parse().unwrap_or(0);
+        }
+        if lower.starts_with("authorization:") {
+            let value = line["authorization:".len()..].trim().to_string();
+            auth_seen.lock().unwrap().push(value.clone());
+            auth = Some(value);
         }
         if let Some(spec) = lower.strip_prefix("range: bytes=") {
             let mut parts = spec.trim().splitn(2, '-');
@@ -86,6 +107,22 @@ fn serve(mut stream: TcpStream, body: &[u8], served: &AtomicU64, behavior: &Beha
 
     let mut sent_body = vec![0u8; content_length];
     reader.read_exact(&mut sent_body)?;
+    if let Some(pair) = &behavior.basic_auth {
+        use base64::Engine as _;
+        let expected = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(pair));
+        if auth.as_deref() != Some(expected.as_str()) {
+            return write!(
+                stream,
+                "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"files\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+        }
+    }
+    if let Some(to) = &behavior.redirect_to {
+        return write!(
+            stream,
+            "HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+    }
     if let Some(expected) = &behavior.post_only_body {
         let ok = request_line.starts_with("POST ") && sent_body == *expected;
         if !ok {

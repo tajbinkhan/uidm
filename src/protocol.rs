@@ -87,6 +87,20 @@ pub enum Incoming {
     },
     /// Stop the countdown before sleeping or shutting down.
     CancelCountdown,
+    /// Give a failed, canceled, interrupted or waiting download a new link.
+    /// With `download`, use it now: the partial file is kept if the new link
+    /// is for the same file, otherwise the reply is `refresh_mismatch`, unless
+    /// `restart` says to start over anyway. Without `download`, wait for the
+    /// next download the browser hands over (`refresh_waiting`).
+    RefreshLink {
+        id: u64,
+        #[serde(default)]
+        download: Option<Download>,
+        #[serde(default)]
+        restart: bool,
+    },
+    /// Stop waiting for a new link from the browser.
+    CancelRefresh,
     /// Ask for the current settings; answered with `settings`.
     GetSettings,
     /// Replace the settings. Invalid values are refused with `error`; valid
@@ -126,6 +140,10 @@ pub struct Download {
     /// later"). Missing means start it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<bool>,
+    /// The proxy the browser uses, such as `http://proxy:3128`, for the
+    /// "use the browser's proxy" option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
     /// The queue a download added with `start: false` waits in; the main
     /// queue when missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +284,17 @@ pub enum Outgoing {
     CountdownCanceled,
     /// A finished queue asked UIDM to exit: windows close.
     Quit,
+    /// Which download waits for a new link from the browser, if any. Sent to
+    /// every client when it changes, and after `downloads` in a `list` reply.
+    RefreshWaiting { id: Option<u64> },
+    /// Reply to `refresh_link`: the new link is for another file, so the
+    /// partial file cannot be kept. Send `refresh_link` again with
+    /// `restart: true` to start over.
+    RefreshMismatch {
+        id: u64,
+        url: String,
+        reason: String,
+    },
     /// Any failure the client should hear about.
     Error { message: String },
 }

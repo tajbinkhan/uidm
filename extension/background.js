@@ -63,6 +63,9 @@ let captureEnabled = true;
 let rules = null;
 // "Skip next download" in the popup: the next download stays in the browser.
 let skipNext = false;
+// A download in UIDM waiting for a new link: the next download from the
+// browser gives it one instead of starting a new download.
+let refreshWaiting = null;
 const settingsReady = chrome.storage.local.get({ capture: true }).then((s) => {
   captureEnabled = s.capture;
 });
@@ -184,6 +187,9 @@ function onHostMessage(msg) {
     case "settings":
       rules = msg.settings;
       break;
+    case "refresh_waiting":
+      refreshWaiting = msg.id ?? null;
+      break;
     case "error":
       lastError = msg.message;
       break;
@@ -239,9 +245,28 @@ function baseName(path) {
   return name || undefined;
 }
 
-async function handOff(url, referrer, filename, later = false, post = null) {
+// The browser's fixed proxy as `scheme://host:port`, for UIDM's "use the
+// browser's proxy" option. Only plain HTTP and SOCKS proxies are reported;
+// automatic and system settings report nothing.
+async function browserProxy() {
+  try {
+    const { value } = await chrome.proxy.settings.get({});
+    if (!value || value.mode !== "fixed_servers" || !value.rules) return undefined;
+    const p = value.rules.singleProxy || value.rules.proxyForHttps || value.rules.proxyForHttp;
+    if (!p || !p.host || !["http", "socks4", "socks5"].includes(p.scheme || "http")) return undefined;
+    const scheme = p.scheme || "http";
+    const port = p.port || (scheme === "http" ? 80 : 1080);
+    return `${scheme}://${p.host}:${port}`;
+  } catch (_) {
+    return undefined;
+  }
+}
+
+async function handOff(url, referrer, filename, later = false, post = null, refreshId = null) {
   const cookies = await cookieHeader(url);
   const msg = { op: "add", url, user_agent: navigator.userAgent };
+  const proxy = await browserProxy();
+  if (proxy) msg.proxy = proxy;
   if (post) {
     msg.method = "POST";
     msg.body = post.body;
@@ -252,6 +277,11 @@ async function handOff(url, referrer, filename, later = false, post = null) {
   if (referrer) msg.referrer = referrer;
   if (filename) msg.filename = filename;
   if (cookies) msg.cookies = cookies;
+  if (refreshId !== null) {
+    // The same request, as the new link of a download already in UIDM.
+    const { op, ...download } = msg;
+    return send({ op: "refresh_link", id: refreshId, download });
+  }
   return send(msg);
 }
 
@@ -266,15 +296,20 @@ chrome.downloads.onCreated.addListener(async (item) => {
     skipNext = false;
     return;
   }
-  const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
-  const decision = captureDecision(rules, {
-    url,
-    referrer: item.referrer,
-    filename: baseName(item.filename),
-    mime: item.mime,
-    size,
-  });
-  if (!decision.capture) return;
+  // A download waiting for a new link takes this one, whatever the capture
+  // rules say: the user asked for it.
+  const refreshId = refreshWaiting;
+  if (refreshId === null) {
+    const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
+    const decision = captureDecision(rules, {
+      url,
+      referrer: item.referrer,
+      filename: baseName(item.filename),
+      mime: item.mime,
+      size,
+    });
+    if (!decision.capture) return;
+  }
 
   // A form's download is sent as the same POST; one whose request cannot be
   // rebuilt stays in the browser.
@@ -293,6 +328,12 @@ chrome.downloads.onCreated.addListener(async (item) => {
     await chrome.downloads.erase({ id: item.id });
   } catch (_) {
     // Already finished or gone; nothing to take.
+    return;
+  }
+  if (refreshId !== null) {
+    refreshWaiting = null;
+    if (await handOff(requestUrl, item.referrer, baseName(item.filename), false, post, refreshId)) return;
+    giveBack(requestUrl, post);
     return;
   }
   awaitingAck.set(requestUrl, post);
@@ -341,6 +382,7 @@ function snapshot() {
     lastError,
     capture: captureEnabled,
     skipNext,
+    refreshWaiting,
     items: [...downloads.values()].sort((a, b) => b.id - a.id),
   };
 }
@@ -354,6 +396,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "setCapture":
       captureEnabled = !!msg.value;
       chrome.storage.local.set({ capture: captureEnabled });
+      break;
+    case "cancelRefresh":
+      refreshWaiting = null;
+      send({ op: "cancel_refresh" });
       break;
     case "setSkipNext":
       skipNext = !!msg.value;

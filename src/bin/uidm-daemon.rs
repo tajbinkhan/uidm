@@ -52,6 +52,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use uidm::app::{progress_to_outgoing, to_request, MAX_MESSAGE_BYTES};
+use uidm::engine::DownloadRequest;
+use uidm::net::{self, Login, NetConfig};
+use uidm::settings::ProxyMode;
 use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
@@ -299,6 +302,8 @@ struct Daemon {
     countdown: Mutex<Option<Countdown>>,
     /// Keeps two scheduler passes from running at once.
     tick_lock: Mutex<()>,
+    /// The download waiting for a new link from the browser, if any.
+    refresh_waiting: Mutex<Option<u64>>,
 }
 
 /// A countdown before sleeping, hibernating or shutting down.
@@ -390,6 +395,7 @@ impl Daemon {
             attempts: Mutex::new(HashMap::new()),
             countdown: Mutex::new(None),
             tick_lock: Mutex::new(()),
+            refresh_waiting: Mutex::new(None),
         };
         (daemon, dirty_rx, notes_rx, wake_rx)
     }
@@ -412,7 +418,7 @@ impl Daemon {
             url: item.url.clone(),
             ..Download::default()
         });
-        let mut req = to_request(download, &self.settings.lock().unwrap());
+        let mut req = self.request_for(download);
         match plan {
             (Some(path), true) => req.reuse_path = Some(PathBuf::from(path)),
             (Some(path), false) => {
@@ -982,16 +988,14 @@ impl Daemon {
 
         let daemon = Arc::clone(self);
         thread::spawn(move || {
-            let (headers, folders) = {
-                let settings = daemon.settings.lock().unwrap();
-                (to_request(download.clone(), &settings).headers, settings.folders())
-            };
+            let folders = daemon.settings.lock().unwrap().folders();
+            let req = daemon.request_for(download.clone());
             // Probing a POST download would send a GET (or repeat the POST),
             // so its dialog proposes a name from the request alone.
             let probed = if uidm::app::post_body(&download).is_some() {
                 Ok(engine::Inspection::unprobed(&download.url, download.filename.as_deref()))
             } else {
-                engine::inspect(&download.url, download.filename.as_deref(), &headers)
+                engine::inspect(&download.url, download.filename.as_deref(), &req.headers, &req.net)
             };
             let found = match probed {
                 Ok(found) => found,
@@ -1107,7 +1111,7 @@ impl Daemon {
     /// `reuse_path` is a partial file an earlier attempt left behind.
     fn start(&self, download: Download, reuse_path: Option<PathBuf>) -> (u64, String) {
         let url = download.url.clone();
-        let mut req = to_request(download.clone(), &self.settings.lock().unwrap());
+        let mut req = self.request_for(download.clone());
         req.reuse_path = reuse_path;
         let id = self.engine.enqueue(req);
         self.hub.requests.lock().unwrap().insert(id, download);
@@ -1169,10 +1173,140 @@ impl Daemon {
         Ok((new_id, url))
     }
 
+    /// Give download `id` a new link. Without `download`, wait for the next one
+    /// the browser hands over. With it, check the new link against the
+    /// partial file: on a mismatch (and no `restart`) return why, changing
+    /// nothing. Otherwise store the new request: a waiting download keeps
+    /// waiting with it, any other starts again, resuming its partial file
+    /// when the link is for the same file.
+    fn refresh_link(&self, id: u64, download: Option<Download>, restart: bool) -> Result<Option<String>, String> {
+        let entry = self.entry(id).ok_or_else(|| format!("no download with id {id}"))?;
+        if !entry.status.is_retryable() {
+            return Err("Only a stopped download can get a new link.".to_string());
+        }
+        let Some(download) = download else {
+            self.set_refresh_waiting(Some(id));
+            return Ok(None);
+        };
+        if !download.url.starts_with("http://") && !download.url.starts_with("https://") {
+            return Err(format!("{} is not an http or https link", download.url));
+        }
+        if self.refresh_waiting.lock().unwrap().is_some_and(|w| w == id) {
+            self.set_refresh_waiting(None);
+        }
+        let started = entry.connections > 0;
+        if started && !restart {
+            if let Some(path) = entry.path.as_deref() {
+                let req = self.request_for(download.clone());
+                let found = engine::inspect(&download.url, None, &req.headers, &req.net)
+                    .map_err(|e| format!("could not reach the new link: {e}"))?;
+                if let Err(reason) = engine::partial_matches(Path::new(path), &found) {
+                    return Ok(Some(reason));
+                }
+            }
+        }
+        eprintln!("[uidm-daemon] new link for #{id}: {}", download.url);
+        self.hub.requests.lock().unwrap().insert(id, download.clone());
+        if entry.status == Status::Waiting {
+            self.hub.update(id, |e| {
+                e.url = download.url.clone();
+                Ok(())
+            })?;
+            return Ok(None);
+        }
+        self.retry(id)?;
+        Ok(None)
+    }
+
+    /// Change which download waits for a link from the browser, and tell
+    /// every client.
+    fn set_refresh_waiting(&self, id: Option<u64>) {
+        *self.refresh_waiting.lock().unwrap() = id;
+        self.hub.broadcast(&Outgoing::RefreshWaiting { id });
+    }
+
     /// Validate, save and apply new settings, then tell every client. Running
     /// downloads keep going; new ones use the new values.
+    /// The engine request for `download`, with the settings' folder,
+    /// connections and file-name policy, and its proxy and logins.
+    fn request_for(&self, download: Download) -> DownloadRequest {
+        let settings = self.settings.lock().unwrap().clone();
+        let net = self.net_for(&download, &settings);
+        let mut req = to_request(download, &settings);
+        req.net = Arc::new(net);
+        req
+    }
+
+    /// The proxy and logins for `download`. A download from the browser uses
+    /// the browser's proxy when the settings say so.
+    fn net_for(&self, download: &Download, s: &Settings) -> NetConfig {
+        let browser = download
+            .proxy
+            .as_deref()
+            .filter(|_| s.use_browser_proxy)
+            .map(|p| net::ProxyRules {
+                http: p.strip_prefix("http://").map(str::to_string),
+                https: p.strip_prefix("http://").map(str::to_string),
+                socks: p.starts_with("socks").then(|| p.to_string()),
+                ..net::ProxyRules::default()
+            });
+        let proxy = browser.or_else(|| match s.proxy_mode {
+            ProxyMode::None => None,
+            ProxyMode::System => net::system_proxy(),
+            ProxyMode::Manual => {
+                let addr = |a: &str| (!a.trim().is_empty()).then(|| a.trim().to_string());
+                Some(net::ProxyRules {
+                    http: addr(&s.proxy_http),
+                    https: addr(&s.proxy_https),
+                    socks: addr(&s.proxy_socks5).map(|a| format!("socks5://{a}")),
+                    bypass: vec!["<local>".to_string()],
+                    username: s.proxy_username.trim().to_string(),
+                    password: net::proxy_password_path()
+                        .map(|p| net::load_proxy_password(&p))
+                        .unwrap_or_default(),
+                })
+            }
+        });
+        let logins = s
+            .site_logins
+            .iter()
+            .filter_map(|l| {
+                Some(Login {
+                    site: l.site.trim().to_string(),
+                    username: l.username.clone(),
+                    password: net::load_login_password(&l.site)?,
+                })
+            })
+            .collect();
+        NetConfig { proxy, logins }
+    }
+
+    /// Store the passwords a settings change carries (proxy: DPAPI; site
+    /// logins: Credential Manager), forget those of removed logins, and return
+    /// the settings without them.
+    fn store_secrets(&self, mut new: Settings) -> Result<Settings, String> {
+        if let Some(pw) = new.proxy_password.take() {
+            let path = net::proxy_password_path().map_err(|e| e.to_string())?;
+            net::save_proxy_password(&path, &pw).map_err(|e| format!("could not save the proxy password: {e}"))?;
+        }
+        for l in &mut new.site_logins {
+            if let Some(pw) = l.password.take() {
+                net::save_login_password(&l.site, &l.username, &pw)
+                    .map_err(|e| format!("could not save the password for {}: {e}", l.site))?;
+            }
+        }
+        let old = self.settings.lock().unwrap().site_logins.clone();
+        for gone in old.iter().filter(|o| !new.site_logins.iter().any(|n| n.site.eq_ignore_ascii_case(&o.site))) {
+            if let Err(e) = net::delete_login_password(&gone.site) {
+                eprintln!("[uidm-daemon] could not forget the password for {}: {e}", gone.site);
+            }
+        }
+        Ok(new)
+    }
+
     fn set_settings(&self, new: Settings) -> Result<(), String> {
         new.validate()?;
+        let new = self.store_secrets(new)?;
         let old_autostart = self.settings.lock().unwrap().start_with_windows;
         if new.start_with_windows != old_autostart {
             let gui = std::env::current_exe()
@@ -1243,6 +1377,9 @@ impl Daemon {
             Some(_) => {}
         }
         self.hub.requests.lock().unwrap().remove(&id);
+        if self.refresh_waiting.lock().unwrap().is_some_and(|w| w == id) {
+            self.set_refresh_waiting(None);
+        }
         let in_queue = self.hub.leave_queues(id);
         self.hub.publish(&Outgoing::Removed { id });
         if in_queue {
@@ -1261,7 +1398,10 @@ impl Daemon {
         let queues = Outgoing::Queues {
             items: self.hub.queues.lock().unwrap().clone(),
         };
-        for msg in [msg, queues] {
+        let refresh = Outgoing::RefreshWaiting {
+            id: *self.refresh_waiting.lock().unwrap(),
+        };
+        for msg in [msg, queues, refresh] {
             if let Ok(frame) = serde_json::to_vec(&msg) {
                 let _ = reply.send(frame);
             }
@@ -1520,6 +1660,21 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::CancelCountdown => daemon.cancel_countdown(),
+        Incoming::RefreshLink { id, download, restart } => {
+            let url = download.as_ref().map(|d| d.url.clone()).unwrap_or_default();
+            if let Some(d) = &download {
+                if let Err(message) = check_body(d) {
+                    send(&Outgoing::Error { message });
+                    return;
+                }
+            }
+            match daemon.refresh_link(id, download, restart) {
+                Ok(Some(reason)) => send(&Outgoing::RefreshMismatch { id, url, reason }),
+                Ok(None) => {}
+                Err(message) => send(&Outgoing::Error { message }),
+            }
+        }
+        Incoming::CancelRefresh => daemon.set_refresh_waiting(None),
         Incoming::PauseAll => {
             eprintln!("[uidm-daemon] pause all");
             daemon.pause_all();

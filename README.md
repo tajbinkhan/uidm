@@ -23,6 +23,11 @@ and adds **UIDM** to the Start menu. Then load the extension once:
 3. Check that its ID reads `epmjakacaejhdhldkpbjnakhfmjjbhfm`. The manifest
    carries a fixed public key, so the ID is the same on every machine.
 
+After updating, reload the extension on the extensions page. It asks for
+`webRequest` (to send downloads started by a form as the same POST) and
+`proxy` (to read the browser's proxy setting, which it never changes), in
+addition to native messaging, downloads, cookies, context menus and storage.
+
 To remove everything the script added: `.\install-host.ps1 -Uninstall`.
 Downloaded files are left alone.
 
@@ -95,14 +100,30 @@ Downloaded files are left alone.
   The list shows **No threat found**, **Threat found** or **Scan failed**,
   and opening a file with a threat asks first. With scanning on, the
   notification waits for the scan and says what it found.
-- **Options** (top right of the window) has four tabs. **General**: the
+- **New link** on a failed, canceled, interrupted or waiting download gives
+  it a fresh link when the old one expired: paste the new address, or choose
+  **Use my next download in the browser** and start the download again on its
+  web page; the extension hands that download to UIDM as the new link instead
+  of starting another. The part already downloaded is kept only if the new
+  link is for the same file (same size, and the same ETag or Last-Modified
+  when the server sends one); otherwise the window says why and asks before
+  starting over.
+- **Proxies and site logins** (Options, **Connection**): no proxy, the
+  Windows proxy setting, or an HTTP, HTTPS and SOCKS5 proxy with an optional
+  user name and password; optionally the proxy the browser uses, for
+  downloads from the browser. Site logins pair a site with a user name and
+  password. When a server asks for a login (HTTP Basic or Digest), UIDM sends
+  the matching one to that site and no other. Without one the download fails
+  with "This site needs a login", and its **Add login** button opens Options
+  with the site filled in.
+- **Options** (top right of the window) has five tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
   10), a total speed limit, what to do when a file name is taken, the save-as
   dialog, whether to resume unfinished downloads when UIDM starts, Start with
   Windows, and whether closing the window keeps UIDM in the tray.
   **Categories**: as above. **Browser capture**: the rules below. **When
-  done**: notifications, sounds and the virus scan. The status bar shows the
-  speed limit and toggles it.
+  done**: notifications, sounds and the virus scan. **Connection**: proxies
+  and site logins. The status bar shows the speed limit and toggles it.
 
 Files are saved to your Downloads folder, sorted by category, unless Options
 says otherwise.
@@ -307,6 +328,9 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "set_queue_once", "id": 2, "when_done": "sleep" }
 { "op": "move_to_queue", "id": 7, "queue": 2, "position": 0 }
 { "op": "cancel_countdown" }
+{ "op": "refresh_link", "id": 7, "download": { "url": "https://...", "cookies": "..." }, "restart": false }
+{ "op": "refresh_link", "id": 7 }
+{ "op": "cancel_refresh" }
 { "op": "get_settings" }
 { "op": "set_settings", "settings": { "download_dir": null, "connections": 8, "max_concurrent": 3,
   "speed_limit_enabled": false, "speed_limit_kbps": 1024, "resume_at_startup": false,
@@ -344,6 +368,8 @@ Daemon to clients:
 { "op": "countdown", "action": "shut_down", "seconds": 60, "queue": "Night" }
 { "op": "countdown_canceled" }
 { "op": "quit" }
+{ "op": "refresh_waiting", "id": 7 }
+{ "op": "refresh_mismatch", "id": 7, "url": "https://...", "reason": "The new link is for a 3.0 MB file; ..." }
 { "op": "error", "message": "..." }
 ```
 
@@ -432,6 +458,57 @@ Sleep and hibernate use `SetSuspendState`; shutting down runs
 With the environment variable `UIDM_POWER_DRY_RUN` set, the daemon only logs
 what it would do, which is how these were tested.
 
+`refresh_link` with a `download` gives download `id` (failed, canceled,
+interrupted or waiting) that request as its new link. If the download had
+started, the daemon probes the new link first and compares it with the
+partial file's sidecar; for another file it replies `refresh_mismatch` and
+changes nothing, unless `restart` is true. A waiting download keeps waiting
+with its new link; any other starts again (as `retry` does, with a new id).
+Without `download`, the daemon waits for the browser: it broadcasts
+`refresh_waiting`, and the extension sends its next captured download as that
+`refresh_link`, whatever the capture rules say. `cancel_refresh` stops
+waiting; `refresh_waiting` with `id: null` says nothing waits.
+`add` may carry `proxy`, the browser's proxy, used when the
+`use_browser_proxy` setting is on.
+
+## Proxies and logins
+
+The settings hold `proxy_mode` (`none`, `system` or `manual`), the manual
+`proxy_http`, `proxy_https` and `proxy_socks5` (each `host:port`),
+`proxy_username`, `use_browser_proxy` and `site_logins` (`site` and
+`username`). Passwords are write-only: `proxy_password` and each login's
+`password` travel in `set_settings` only when changed, and the daemon keeps
+them outside the settings file and never sends them back. The proxy password
+is encrypted with DPAPI in `%LOCALAPPDATA%\UIDM\proxy.bin`; login passwords
+are generic credentials named `UIDM/login/<site>` in Windows Credential
+Manager, removed with their login.
+
+**Proxies.** The system proxy is read from the Internet settings in the
+registry each time a download starts: `ProxyServer` (one proxy, or
+`http=…;https=…;socks=…`) and the `ProxyOverride` bypass list, including
+`<local>`. Automatic configuration scripts are not read. The manual HTTPS
+proxy is the proxy for `https://` URLs (an HTTP proxy reached with `CONNECT`;
+empty means the HTTP one); a SOCKS5 proxy, when set, carries everything.
+ureq sends proxy credentials only when it tunnels `https://` requests, so
+for plain `http://` requests through a proxy with a login UIDM adds
+`Proxy-Authorization` itself and follows redirects itself, adding it only on
+`http://` hops and dropping `Cookie` and `Authorization` on every hop, so
+neither the proxy login nor a site's cookies reach another server. With
+`use_browser_proxy`, the extension reports the browser's fixed proxy
+(`chrome.proxy`, plain HTTP or SOCKS only) with each download, and that proxy
+wins for downloads that carry one.
+
+**Logins.** A site matches the way capture rules do: `example.com` covers its
+subdomains, and `*` works within a name; the most specific match wins. A
+request goes out without credentials. On a 401, UIDM picks the login for the
+host that answered and sends the request again, once, straight to that URL,
+with `Authorization` for the `WWW-Authenticate` challenge: Digest (MD5,
+MD5-sess, SHA-256, with `qop=auth`) when offered, else Basic. ureq never
+carries `Authorization` across a redirect, so a login never reaches another
+host. No login for the host fails with "This site needs a login: <host>",
+and a refused login with "The login for <host> was refused"; neither is
+retried.
+
 ## Notifications and virus scans
 
 Windows only shows notifications from an app it knows, so at start the daemon
@@ -469,6 +546,7 @@ is a failed scan, as is one that runs over 10 minutes.
 | `src/scan.rs` | Virus scans of finished downloads |
 | `src/queue.rs` | Queues, schedules and their calendar arithmetic |
 | `src/power.rs` | Sleep, hibernate and shut down |
+| `src/net.rs` | Proxies, site logins, HTTP authentication, Credential Manager |
 | `src/bin/gui/` | The window's tray icon, queue controls and Win32 helpers |
 | `src/ipc.rs` | Daemon address, start-up, token file, HMAC handshake |
 | `src/app.rs` | Request building and event mapping |
@@ -517,7 +595,7 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 ## Verified
 
-- 88 unit tests: segment splitting, the resume sidecar, framing,
+- 102 unit tests: segment splitting, the resume sidecar, framing,
   `Content-Disposition`, backoff, HMAC proofs, the download table's
   lifecycle and ordering cases, settings loading, defaults and validation,
   history loading (running downloads become interrupted, ids never go
@@ -535,7 +613,7 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   sends a file only to a POST with the right form, and an HTML page to a GET,
   gives the file to the POST in one request, named by its
   `Content-Disposition`.
-- 17 extension tests: each capture rule, and the real `background.js` run
+- 19 extension tests: each capture rule, and the real `background.js` run
   with a stand-in `chrome` API: it asks for the rules on connect, takes or
   leaves downloads by type, size and site, applies changed rules at once,
   skips exactly one download after **Skip next download**, and starts a
@@ -546,7 +624,31 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   download matches the latest POST to its URL within a minute; a form's
   download reaches UIDM as the same POST with its content type while a link
   next to it stays a GET; and a POST UIDM cannot start goes back to the
-  browser as a POST with its form.
+  browser as a POST with its form. The browser's fixed HTTP or SOCKS proxy
+  goes along with a download, and other proxy settings report none. While a
+  download waits for a new link, the next browser download (even one the
+  capture rules would leave) goes to it as `refresh_link`, once.
+- Proxies, logins and new links. Unit tests cover site matching, proxies by
+  scheme with credentials and bypass rules, Windows' proxy setting (read from
+  the registry, off and on), Digest against the worked examples of RFC 2617
+  (MD5) and RFC 7616 (SHA-256), Basic, the most specific login, Credential
+  Manager and DPAPI round trips, passwords never reaching the settings file,
+  proxy and login validation, and whether a new link fits a partial file
+  (size, ETag, unknown size, no partial file). Engine tests against local
+  servers: a site that needs a login fails at once with "This site needs a
+  login", a wrong password is refused, the right one downloads every range;
+  a login for one host is never sent to the host a redirect leads to; and a
+  download through an HTTP proxy with a login sends every request through
+  it with `Proxy-Authorization`. Under Wine against the real daemon: a
+  download from a site that needs a login fails with that message, succeeds
+  after a login is saved and retried, and the password appears in neither
+  the reply nor `settings.json`; a manual proxy with a login carries a
+  download and gets the credentials, with the proxy password kept out of
+  `settings.json`; a canceled download given a new link to the same file
+  resumes into its file byte-identical, one given a link to a smaller file
+  gets "The new link is for a 3.0 MB file; the partial download is of a 4.0
+  MB file." and, told to start over, downloads the new file; waiting for a
+  link from the browser is announced and can be canceled.
 - Save-as dialog, under Wine against the real host and daemon: the proposal
   lands in `Downloads\Documents\report.pdf` with the real size; with no window
   possible the download starts as proposed after 19.6 s; a new name and folder

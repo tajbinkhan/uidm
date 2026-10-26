@@ -15,6 +15,12 @@ function event() {
   };
 }
 
+// What chrome.proxy.settings.get reports; tests may set it before loading.
+let proxyValue = { mode: "system" };
+function setBrowserProxy(value) {
+  proxyValue = value;
+}
+
 function loadWorker() {
   const sent = [];
   const browserCalls = [];
@@ -36,6 +42,7 @@ function loadWorker() {
       local: { get: async (d) => d, set: async () => {} },
       onChanged: event(),
     },
+    proxy: { settings: { get: async () => ({ value: proxyValue }) } },
     webRequest: {
       onBeforeRequest: event(),
       onBeforeSendHeaders: event(),
@@ -75,4 +82,4 @@ function download(fields) {
   return { id: nextDownloadId++, url: "", referrer: "", filename: "", mime: "", totalBytes: 0, fileSize: 0, incognito: false, ...fields };
 }
 
-module.exports = { loadWorker, download, event };
+module.exports = { loadWorker, download, event, setBrowserProxy };

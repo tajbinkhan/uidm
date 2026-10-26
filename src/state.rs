@@ -97,7 +97,9 @@ impl DownloadTable {
             | Outgoing::Queues { .. }
             | Outgoing::Countdown { .. }
             | Outgoing::CountdownCanceled
-            | Outgoing::Quit => {}
+            | Outgoing::Quit
+            | Outgoing::RefreshWaiting { .. }
+            | Outgoing::RefreshMismatch { .. } => {}
         }
     }
 
