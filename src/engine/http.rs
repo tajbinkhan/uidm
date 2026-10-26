@@ -246,6 +246,17 @@ pub fn post(
     Ok((probe, Box::new(resp.into_reader())))
 }
 
+/// A GET's URL after redirects, content type, and a reader over the body.
+pub type Got = (String, Option<String>, Box<dyn Read + Send>);
+
+/// Send a GET.
+pub fn get(client: &Client, url: &str, headers: &[(String, String)]) -> Result<Got, EngineError> {
+    let resp = client.send("GET", url, headers, None, None)?;
+    let final_url = resp.get_url().to_string();
+    let content_type = resp.header("content-type").map(str::to_string);
+    Ok((final_url, content_type, Box::new(resp.into_reader())))
+}
+
 /// Fetch the whole body in one stream, for servers without range support.
 pub fn fetch_whole(client: &Client, url: &str, headers: &[(String, String)]) -> Result<Box<dyn Read + Send>, EngineError> {
     let resp = client.send("GET", url, headers, None, None)?;

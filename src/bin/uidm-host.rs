@@ -119,6 +119,8 @@ fn run_cli(args: &[String]) -> i32 {
             file_exists: FileExists::Rename,
             post_body: None,
             net: Default::default(),
+            media: None,
+            ffmpeg: None,
         },
         Arc::new(move |p: Progress| print_progress(p, &ok_cb)),
     );

@@ -165,6 +165,8 @@ mod tests {
             resumable: true,
             connections: 4,
             scan: None,
+            parts: None,
+            note: None,
         }
     }
 

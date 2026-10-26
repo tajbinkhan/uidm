@@ -93,6 +93,16 @@ function row(e, connected) {
 
 // Whether the next download is set to stay in the browser, as last reported.
 let skipNext = false;
+// The site of the tab the popup opened over, for the per-site video button.
+let tabHost = "";
+if (chrome.tabs) {
+  chrome.tabs
+    .query({ active: true, currentWindow: true })
+    .then(([tab]) => {
+      tabHost = /^https?:/i.test(tab?.url || "") ? new URL(tab.url).hostname.toLowerCase() : "";
+    })
+    .catch(() => {});
+}
 
 function render(state) {
   if (!state) return;
@@ -123,6 +133,17 @@ function render(state) {
     : "Let the next download stay in the browser";
   $("add").disabled = !state.connected;
 
+  const video = $("video");
+  video.checked = state.videoButton;
+  video.disabled = !state.connected;
+  const siteLabel = $("video-site-label");
+  siteLabel.hidden = !tabHost || !state.videoButton;
+  if (tabHost) {
+    $("video-site-text").textContent = `on ${tabHost}`;
+    $("video-site").checked = !state.videoExcluded.some((site) => siteMatches(site, tabHost));
+    $("video-site").disabled = !state.connected;
+  }
+
   const list = $("list");
   list.replaceChildren();
   const items = state.items.slice(0, MAX_ROWS);
@@ -136,6 +157,10 @@ function render(state) {
 $("capture").addEventListener("change", (ev) => ask({ type: "setCapture", value: ev.target.checked }));
 $("skip").addEventListener("click", () => ask({ type: "setSkipNext", value: !skipNext }));
 $("refresh-cancel").addEventListener("click", () => ask({ type: "cancelRefresh" }));
+$("video").addEventListener("change", (ev) => ask({ type: "setVideoButton", on: ev.target.checked }));
+$("video-site").addEventListener("change", (ev) =>
+  ask({ type: "setVideoButton", site: tabHost, siteOn: ev.target.checked }),
+);
 
 function addFromInput() {
   const url = $("url").value.trim();

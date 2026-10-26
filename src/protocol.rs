@@ -10,6 +10,8 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+use crate::grab::{GrabFile, GrabRequest};
+use crate::media::{MediaChoice, MediaInfo};
 use crate::queue::{Queue, WhenDone};
 use crate::settings::Settings;
 
@@ -33,6 +35,22 @@ pub enum Incoming {
     Ping,
     /// A download to hand off to the engine.
     Add(Download),
+    /// Many downloads at once (a batch, an import, the site grabber's
+    /// finds), each added to wait in `queue` (the main queue when missing)
+    /// without starting. Answered with `added_many`.
+    AddMany {
+        items: Vec<Download>,
+        #[serde(default)]
+        queue: Option<u64>,
+    },
+    /// Read a stream's playlist or manifest and answer with `media_info`: its
+    /// qualities, or why it cannot be downloaded. `request` is echoed back.
+    ProbeMedia { request: u64, download: Download },
+    /// Crawl a site for files; progress comes as `grab_progress` and the
+    /// result as `grab_done`, to this client only. One crawl per client.
+    Grab(GrabRequest),
+    /// Stop this client's crawl; `grab_done` follows with what it found.
+    CancelGrab,
     /// Cancel a queued or running download.
     Cancel { id: u64 },
     /// Start a failed or canceled download again; it resumes from its partial
@@ -148,6 +166,14 @@ pub struct Download {
     /// queue when missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<u64>,
+    /// The folder to save in, a full path, instead of the one its category
+    /// picks. Only for a download added with `start: false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// A stream (HLS or DASH) to download as one video, and which quality.
+    /// `url` is its playlist or manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaChoice>,
 }
 
 /// Where a download is in its life.
@@ -219,6 +245,13 @@ pub struct DownloadEntry {
     /// The virus scan of the finished file, when scanning is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan: Option<Scan>,
+    /// For a stream: segments fetched and segments in all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<[u64; 2]>,
+    /// Something to know about a finished download, such as a stream saved
+    /// as two files because ffmpeg was not found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A message from the daemon to a client.
@@ -250,9 +283,18 @@ pub enum Outgoing {
         url: String,
         done: u64,
         total: Option<u64>,
+        /// For a stream: segments fetched and segments in all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parts: Option<[u64; 2]>,
     },
     /// A download finished; `path` is the saved file.
-    Done { id: u64, url: String, path: String },
+    Done {
+        id: u64,
+        url: String,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
     /// A download failed partway.
     Failed { id: u64, url: String, error: String },
     /// A download was canceled; its partial file and resume sidecar are kept.
@@ -294,6 +336,19 @@ pub enum Outgoing {
         id: u64,
         url: String,
         reason: String,
+    },
+    /// Reply to `add_many`: how many downloads were added.
+    AddedMany { count: usize },
+    /// Reply to `probe_media`.
+    MediaInfo { request: u64, info: MediaInfo },
+    /// A crawl's progress: pages read, bytes read and files found so far.
+    GrabProgress { pages: u64, bytes: u64, found: usize },
+    /// A crawl ended: what it found, and why it stopped early, if it did.
+    GrabDone {
+        files: Vec<GrabFile>,
+        pages: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stopped: Option<String>,
     },
     /// Any failure the client should hear about.
     Error { message: String },

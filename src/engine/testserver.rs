@@ -2,6 +2,7 @@
 //! every path, honors single `Range: bytes=a-b` requests with 206, sends an
 //! ETag, and closes each connection after one response.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,6 +24,9 @@ pub struct Behavior {
     pub basic_auth: Option<String>,
     /// Answer every request with a 302 to this URL.
     pub redirect_to: Option<String>,
+    /// Serve these files by path (such as `/v/1.ts`) instead of one body
+    /// everywhere; other paths get 404.
+    pub files: Option<Arc<HashMap<String, Vec<u8>>>>,
 }
 
 pub struct TestServer {
@@ -47,6 +51,22 @@ impl TestServer {
     pub fn start_with(body: Vec<u8>, behavior: Behavior) -> TestServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/file.bin", listener.local_addr().unwrap());
+        Self::serve_on(listener, url, body, behavior)
+    }
+
+    /// Serve `files` by path; `url` is the server's root, without the
+    /// trailing slash.
+    pub fn start_files(files: HashMap<String, Vec<u8>>) -> TestServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let behavior = Behavior {
+            files: Some(Arc::new(files)),
+            ..Behavior::default()
+        };
+        Self::serve_on(listener, url, Vec::new(), behavior)
+    }
+
+    fn serve_on(listener: TcpListener, url: String, body: Vec<u8>, behavior: Behavior) -> TestServer {
         let body = Arc::new(body);
         let served = Arc::new(AtomicU64::new(0));
         let counter = Arc::clone(&served);
@@ -97,16 +117,27 @@ fn serve(
         if let Some(spec) = lower.strip_prefix("range: bytes=") {
             let mut parts = spec.trim().splitn(2, '-');
             let start: u64 = parts.next().unwrap_or("0").parse().unwrap_or(0);
-            let end: u64 = parts
-                .next()
-                .and_then(|e| e.parse().ok())
-                .unwrap_or(body.len() as u64 - 1);
-            range = Some((start, end.min(body.len() as u64 - 1)));
+            let end: u64 = parts.next().and_then(|e| e.parse().ok()).unwrap_or(u64::MAX);
+            range = Some((start, end));
         }
     }
 
     let mut sent_body = vec![0u8; content_length];
     reader.read_exact(&mut sent_body)?;
+    let path = request_line.split(' ').nth(1).unwrap_or("/");
+    let body: &[u8] = match &behavior.files {
+        None => body,
+        Some(files) => match files.get(path) {
+            Some(b) => b,
+            None => {
+                return write!(
+                    stream,
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+            }
+        },
+    };
+    let range = range.map(|(a, b)| (a, b.min((body.len() as u64).saturating_sub(1))));
     if let Some(pair) = &behavior.basic_auth {
         use base64::Engine as _;
         let expected = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(pair));

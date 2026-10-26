@@ -246,6 +246,15 @@ pub struct Settings {
     /// For a download taken from the browser, use the proxy the browser uses.
     pub use_browser_proxy: bool,
     pub site_logins: Vec<SiteLogin>,
+    /// Offer to download links copied to the clipboard whose file type is
+    /// one of `capture_types`.
+    pub clipboard_monitor: bool,
+    /// Show a download button over videos playing in the browser.
+    pub video_button: bool,
+    /// Sites that get no video button, such as `*.example.com`.
+    pub video_button_excluded_sites: Vec<String>,
+    /// ffmpeg.exe, to join streams into .mp4 files. Empty looks on `PATH`.
+    pub ffmpeg_path: String,
 }
 
 impl Default for Settings {
@@ -279,6 +288,10 @@ impl Default for Settings {
             proxy_password: None,
             use_browser_proxy: false,
             site_logins: Vec::new(),
+            clipboard_monitor: false,
+            video_button: true,
+            video_button_excluded_sites: Vec::new(),
+            ffmpeg_path: String::new(),
         }
     }
 }
@@ -328,15 +341,18 @@ impl Settings {
         if self.capture_min_size_kb > CAPTURE_MIN_SIZE_MAX_KB {
             return Err("The minimum size to capture is too large.".to_string());
         }
-        for site in &self.capture_excluded_sites {
-            let valid = !site.is_empty()
-                && site
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*' | ':'));
-            if !valid {
+        for site in self.capture_excluded_sites.iter().chain(&self.video_button_excluded_sites) {
+            if !is_site(site) {
                 return Err(format!(
                     "\"{site}\" is not a site. Use a host name such as example.com or *.example.com."
                 ));
+            }
+        }
+        let ffmpeg = self.ffmpeg_path.trim();
+        if !ffmpeg.is_empty() {
+            let path = Path::new(ffmpeg);
+            if !path.is_absolute() || path.is_dir() {
+                return Err(format!("ffmpeg must be the full path of ffmpeg.exe: {ffmpeg}"));
             }
         }
         for (what, addr) in [
@@ -358,11 +374,7 @@ impl Settings {
         let mut sites: Vec<String> = Vec::new();
         for l in &self.site_logins {
             let site = l.site.trim().to_ascii_lowercase();
-            let valid = !site.is_empty()
-                && site
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*' | ':'));
-            if !valid {
+            if !is_site(&site) {
                 return Err(format!(
                     "\"{}\" is not a site. Use a host name such as example.com.",
                     l.site
@@ -421,6 +433,19 @@ impl Settings {
         }
     }
 
+    /// ffmpeg.exe: the one set in Options if it exists, otherwise the first
+    /// on `PATH`.
+    pub fn ffmpeg(&self) -> Option<PathBuf> {
+        let set = self.ffmpeg_path.trim();
+        if !set.is_empty() {
+            return Some(PathBuf::from(set)).filter(|p| p.is_file());
+        }
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("ffmpeg.exe"))
+            .find(|p| p.is_file())
+    }
+
     /// The speed limit in bytes per second, or `None` when it is off.
     pub fn speed_limit_bytes(&self) -> Option<u64> {
         self.speed_limit_enabled
@@ -451,6 +476,14 @@ impl Settings {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomic(path, &bytes)
     }
+}
+
+/// A host name, optionally with a `*.` wildcard or a port.
+fn is_site(site: &str) -> bool {
+    !site.is_empty()
+        && site
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*' | ':'))
 }
 
 fn check_folder(what: &str, dir: &str) -> Result<(), String> {
@@ -588,6 +621,10 @@ mod tests {
                 username: "ann".into(),
                 password: None,
             }],
+            clipboard_monitor: true,
+            video_button: false,
+            video_button_excluded_sites: vec!["video.example.com".into()],
+            ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".into(),
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

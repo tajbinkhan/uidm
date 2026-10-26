@@ -34,6 +34,8 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         file_exists: settings.file_exists,
         post_body,
         net: Default::default(),
+        media: d.media,
+        ffmpeg: settings.ffmpeg(),
     }
 }
 
@@ -66,11 +68,24 @@ pub fn progress_to_outgoing(p: Progress) -> Outgoing {
             resumable,
             connections,
         },
-        Progress::Advanced { id, url, done, total } => Outgoing::Progress { id, url, done, total },
-        Progress::Finished { id, url, path } => Outgoing::Done {
+        Progress::Advanced {
+            id,
+            url,
+            done,
+            total,
+            parts,
+        } => Outgoing::Progress {
+            id,
+            url,
+            done,
+            total,
+            parts,
+        },
+        Progress::Finished { id, url, path, note } => Outgoing::Done {
             id,
             url,
             path: path.display().to_string(),
+            note,
         },
         Progress::Failed { id, url, error } => Outgoing::Failed { id, url, error },
         Progress::Canceled { id, url } => Outgoing::Canceled { id, url },

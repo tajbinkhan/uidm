@@ -1,0 +1,194 @@
+// Tests for the video button's media list (media.js) and the worker's side
+// of it. Run with: node --test extension/test/*.test.js
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const { classifyMedia, recordMedia, mediaMenu, videoButtonAllowed, titleFileName, MEDIA_PER_TAB } = require("../media.js");
+const { loadWorker } = require("./harness.js");
+
+const same = (a, b) => assert.equal(JSON.stringify(a), JSON.stringify(b));
+const response = (url, type, extra = {}) => ({
+  url,
+  statusCode: extra.status || 200,
+  responseHeaders: [
+    { name: "Content-Type", value: type },
+    ...Object.entries(extra.headers || {}).map(([name, value]) => ({ name, value })),
+  ],
+});
+
+test("responses are sorted into streams, files and the rest", () => {
+  assert.equal(classifyMedia(response("https://v.net/master.m3u8?t=1", "application/vnd.apple.mpegurl")).kind, "hls");
+  assert.equal(classifyMedia(response("https://v.net/a/playlist", "application/x-mpegURL")).kind, "hls");
+  assert.equal(classifyMedia(response("https://v.net/manifest.mpd", "text/plain")).kind, "dash");
+  assert.equal(classifyMedia(response("https://v.net/x", "application/dash+xml; charset=utf-8")).kind, "dash");
+  const file = classifyMedia(response("https://v.net/movie.mp4", "video/mp4", { headers: { "Content-Length": "5000000" } }));
+  same([file.kind, file.size], ["file", 5000000]);
+  // A player reading a file in ranges reports the whole size.
+  const ranged = classifyMedia(
+    response("https://v.net/movie.webm", "video/webm", { status: 206, headers: { "Content-Range": "bytes 0-999/7340032" } }),
+  );
+  assert.equal(ranged.size, 7340032);
+  assert.equal(classifyMedia(response("https://v.net/song.mp3", "application/octet-stream")).kind, "file");
+
+  // Segments, small files, errors and everything else are not listed.
+  assert.equal(classifyMedia(response("https://v.net/seg1.ts", "video/mp2t")), null);
+  assert.equal(classifyMedia(response("https://v.net/chunk-5.m4s", "video/mp4")), null);
+  assert.equal(classifyMedia(response("https://v.net/beep.mp4", "video/mp4", { headers: { "Content-Length": "4000" } })), null);
+  assert.equal(classifyMedia(response("https://v.net/movie.mp4", "video/mp4", { status: 404 })), null);
+  assert.equal(classifyMedia(response("https://v.net/page", "text/html")), null);
+  assert.equal(classifyMedia(response("blob:https://v.net/1", "video/mp4")), null);
+});
+
+test("each tab keeps a bounded list, one entry per URL", () => {
+  const store = new Map();
+  const a = recordMedia(store, 1, "https://v.net/a.mp4", { kind: "file", mime: "video/mp4", size: 0 }, 1);
+  const again = recordMedia(store, 1, "https://v.net/a.mp4", { kind: "file", mime: "video/mp4", size: 900000 }, 2);
+  assert.equal(a.id, again.id);
+  assert.equal(again.size, 900000, "a later response teaches the size");
+  for (let i = 0; i < MEDIA_PER_TAB + 5; i++) {
+    recordMedia(store, 2, `https://v.net/${i}.mp4`, { kind: "file", mime: "video/mp4", size: 0 }, i);
+  }
+  assert.equal(store.get(2).size, MEDIA_PER_TAB);
+  assert.ok(!store.get(2).has("https://v.net/0.mp4"), "the oldest go first");
+  assert.equal(store.get(1).size, 1);
+});
+
+test("the menu lists qualities and hides a master's own playlists", () => {
+  const entries = [
+    { id: 1, url: "https://v.net/master.m3u8", kind: "hls", mime: "", size: 0, time: 1 },
+    { id: 2, url: "https://v.net/720/index.m3u8", kind: "hls", mime: "", size: 0, time: 2 },
+    { id: 3, url: "https://v.net/clip.mp4", kind: "file", mime: "video/mp4", size: 3000000, time: 3 },
+    { id: 4, url: "https://drm.net/m.mpd", kind: "dash", mime: "", size: 0, time: 0 },
+  ];
+  const infos = new Map([
+    [
+      "https://v.net/master.m3u8",
+      {
+        kind: "hls",
+        video: [
+          { id: "https://v.net/720/index.m3u8", label: "720p, 3.0 Mbps", size: 7500000 },
+          { id: "https://v.net/360/index.m3u8", label: "360p, 900 kbps", size: 2250000 },
+        ],
+        audio: [],
+        drm: false,
+      },
+    ],
+    ["https://v.net/720/index.m3u8", { kind: "hls", video: [{ id: "", label: "Default" }], audio: [] }],
+    ["https://drm.net/m.mpd", { kind: "dash", video: [], audio: [], drm: true, error: "protected" }],
+  ]);
+  const menu = mediaMenu(entries, infos);
+  same(
+    menu.map((i) => [i.entry, i.label]),
+    [
+      [3, "MP4 video"],
+      [1, "HLS stream"],
+      [4, "DASH stream"],
+    ],
+  );
+  same(menu[0].options, [{ label: "Download", size: 3000000 }]);
+  same(
+    menu[1].options.map((o) => [o.label, o.video]),
+    [
+      ["720p, 3.0 Mbps", "https://v.net/720/index.m3u8"],
+      ["360p, 900 kbps", "https://v.net/360/index.m3u8"],
+    ],
+  );
+  assert.equal(menu[2].drm, true);
+  assert.equal(menu[2].options.length, 0, "nothing to choose for a protected stream");
+});
+
+test("the button can be off everywhere or on some sites", () => {
+  assert.equal(videoButtonAllowed(null, "https://a.com/"), true);
+  assert.equal(videoButtonAllowed({ video_button: true, video_button_excluded_sites: ["*.tube.net"] }, "https://www.tube.net/v"), false);
+  assert.equal(videoButtonAllowed({ video_button: true, video_button_excluded_sites: ["tube.net"] }, "https://other.net/v"), true);
+  assert.equal(videoButtonAllowed({ video_button: false }, "https://other.net/v"), false);
+});
+
+test("page titles become safe file names", () => {
+  assert.equal(titleFileName('My "great" video: part 1/2', "mp4"), "My great video part 1 2.mp4");
+  assert.equal(titleFileName("  ...  ", "mp4"), undefined);
+  assert.equal(titleFileName("x".repeat(300), "mp4").length, 124);
+});
+
+function connected(settings = {}) {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.port.onMessage.fire({
+    op: "settings",
+    settings: { capture_types: [], capture_min_size_kb: 0, capture_excluded_sites: [], video_button: true, video_button_excluded_sites: [], ...settings },
+  });
+  return w;
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+const seen = (w, tabId, url, type, headers) =>
+  w.chrome.webRequest.onHeadersReceived.fire({ tabId, type: "xmlhttprequest", ...response(url, type, { headers }) });
+
+test("a tab's video goes to UIDM in the quality picked", async () => {
+  const w = connected();
+  await seen(w, 7, "https://v.net/master.m3u8", "application/vnd.apple.mpegurl");
+  await seen(w, 8, "https://other.net/elsewhere.mp4", "video/mp4", { "Content-Length": "9000000" });
+
+  const asked = w.content({ type: "video:menu" }, 7);
+  await tick();
+  // The worker asks UIDM what the stream offers.
+  const probe = w.sent.find((m) => m.op === "probe_media");
+  assert.equal(probe.download.url, "https://v.net/master.m3u8");
+  assert.equal(probe.download.referrer, "https://site.net/watch");
+  w.port.onMessage.fire({
+    op: "media_info",
+    request: probe.request,
+    info: { kind: "hls", video: [{ id: "https://v.net/1080.m3u8", label: "1080p", size: 9 }], audio: [] },
+  });
+  const menu = await asked;
+  assert.equal(menu.items.length, 1, "only this tab's media");
+  const item = menu.items[0];
+  assert.equal(item.options[0].video, "https://v.net/1080.m3u8");
+
+  // A second menu uses the answer it has.
+  await w.content({ type: "video:menu" }, 7);
+  assert.equal(w.sent.filter((m) => m.op === "probe_media").length, 1);
+
+  const ok = await w.content({ type: "video:download", entry: item.entry, video: item.options[0].video, title: "Cats: the movie" }, 7);
+  assert.equal(ok.ok, true);
+  const add = w.sent.find((m) => m.op === "add");
+  same(
+    [add.url, add.filename, add.media, add.referrer],
+    ["https://v.net/master.m3u8", "Cats the movie.mp4", { kind: "hls", video: "https://v.net/1080.m3u8" }, "https://site.net/watch"],
+  );
+
+  // Another tab cannot pick this tab's entry.
+  const denied = await w.content({ type: "video:download", entry: item.entry, title: "x" }, 8);
+  assert.equal(denied.ok, false);
+  // A new page in the tab starts its list over.
+  await w.chrome.webRequest.onBeforeRequest.fire({ tabId: 7, type: "main_frame", method: "GET", url: "https://site.net/next" });
+  assert.equal((await w.content({ type: "video:menu" }, 7)).items.length, 0);
+});
+
+test("content scripts cannot use the popup's commands", async () => {
+  const w = connected();
+  const answer = await Promise.race([
+    w.content({ type: "add", url: "https://evil.net/x.exe" }, 3),
+    new Promise((r) => setTimeout(() => r("no answer"), 50)),
+  ]);
+  assert.equal(answer, "no answer");
+  assert.equal(w.sent.filter((m) => m.op === "add").length, 0);
+});
+
+test("the button follows the settings, and the popup changes them", async () => {
+  const w = connected({ video_button_excluded_sites: ["*.quiet.net"] });
+  assert.equal((await w.content({ type: "video:enabled" }, 1, "https://www.quiet.net/v")).enabled, false);
+  assert.equal((await w.content({ type: "video:enabled" }, 1, "https://loud.net/v")).enabled, true);
+
+  await w.popup({ type: "setVideoButton", site: "loud.net", siteOn: false });
+  let set = w.sent.filter((m) => m.op === "set_settings").at(-1);
+  same(set.settings.video_button_excluded_sites, ["*.quiet.net", "loud.net"]);
+  await w.popup({ type: "setVideoButton", site: "www.quiet.net", siteOn: true });
+  set = w.sent.filter((m) => m.op === "set_settings").at(-1);
+  same(set.settings.video_button_excluded_sites, []);
+  await w.popup({ type: "setVideoButton", on: false });
+  set = w.sent.filter((m) => m.op === "set_settings").at(-1);
+  assert.equal(set.settings.video_button, false);
+});

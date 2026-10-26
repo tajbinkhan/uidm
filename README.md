@@ -3,7 +3,9 @@
 A download manager for Windows, rebuilt from scratch in Rust. It catches
 downloads in Chrome and Edge, fetches each file over parallel connections,
 resumes after interruptions, keeps downloading after the browser closes, and
-shows everything in a desktop window.
+shows everything in a desktop window. It also downloads streamed videos (HLS
+and DASH) from a button over the video, adds many files at once from a
+pattern, a list or a site crawl, and watches the clipboard for links.
 
 ## Install
 
@@ -24,9 +26,16 @@ and adds **UIDM** to the Start menu. Then load the extension once:
    carries a fixed public key, so the ID is the same on every machine.
 
 After updating, reload the extension on the extensions page. It asks for
-`webRequest` (to send downloads started by a form as the same POST) and
-`proxy` (to read the browser's proxy setting, which it never changes), in
-addition to native messaging, downloads, cookies, context menus and storage.
+`webRequest` (to send downloads started by a form as the same POST, and to
+notice the videos a page loads) and `proxy` (to read the browser's proxy
+setting, which it never changes), in addition to native messaging,
+downloads, cookies, context menus and storage. A small content script runs
+on every page for the video button; it does nothing until a video plays.
+
+For streamed videos to end up as one `.mp4`, install
+[ffmpeg](https://ffmpeg.org/) and put `ffmpeg.exe` on `PATH`, or choose it in
+**Options > General**. Without it UIDM still downloads streams, as `.ts`
+files or as separate video and audio files.
 
 To remove everything the script added: `.\install-host.ps1 -Uninstall`.
 Downloaded files are left alone.
@@ -116,12 +125,45 @@ Downloaded files are left alone.
   the matching one to that site and no other. Without one the download fails
   with "This site needs a login", and its **Add login** button opens Options
   with the site filled in.
+- **Download video**: a button appears over a video playing in the browser.
+  It lists what the page loaded: direct video and audio files with their
+  sizes, and streams (HLS `.m3u8`, DASH `.mpd`) with each quality UIDM read
+  from the playlist and its estimated size. Pick one and UIDM downloads it,
+  named after the page's title. A stream's segments are fetched in parallel
+  and joined into one video (see [Streams](#streams-batches-and-the-site-grabber)).
+  Videos protected by DRM say so and offer nothing: UIDM does not get around
+  DRM. The popup turns the button off everywhere or on the current site;
+  **Options > Browser capture** has the same switch and the site list.
+- **More > Add many...** adds downloads from a pattern such as
+  `https://example.com/photo[001-120].jpg` (with steps like `[0-100:5]` and
+  letter ranges like `[a-z]`), or from a pasted list or a text file with one
+  address per line. It previews the addresses, skips blank lines, repeats and
+  anything that is not a web address, refuses more than 10,000 at once, and
+  adds them waiting to the queue you pick, optionally into one folder and
+  optionally starting the queue.
+- **More > Import list... / Export list...** move the list to another
+  computer or a backup: tick downloads in the list's first column to export
+  only those, or export all, as a UIDM list (`.json`, with names, folders,
+  sizes and status) or plain text (one address per line). Imports read
+  either and add everything waiting, so nothing starts by itself. Exports
+  never hold cookies, headers or passwords.
+- **More > Site grabber...** crawls a site from a start page, as many links
+  deep as you say, on the same site or not, and lists the files of the types
+  you want (PDFs, say) with the page each was found on. It obeys
+  `robots.txt`, waits between pages (longer if `Crawl-delay` asks), and stops
+  at a page and size budget it shows before starting. Tick the files to keep
+  and add them to a queue.
+- **Clipboard** (off by default; **Options > Browser capture**): copying a
+  link whose file type is on the capture list brings up a small **Download
+  the copied link?** prompt with **Download** and **Ignore**. Nothing starts
+  without a click, and the same link is not offered twice in a row.
 - **Options** (top right of the window) has five tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
   10), a total speed limit, what to do when a file name is taken, the save-as
   dialog, whether to resume unfinished downloads when UIDM starts, Start with
-  Windows, and whether closing the window keeps UIDM in the tray.
-  **Categories**: as above. **Browser capture**: the rules below. **When
+  Windows, whether closing the window keeps UIDM in the tray, and where
+  ffmpeg is. **Categories**: as above. **Browser capture**: the rules below,
+  the video button and the clipboard prompt. **When
   done**: notifications, sounds and the virus scan. **Connection**: proxies
   and site logins. The status bar shows the speed limit and toggles it.
 
@@ -331,6 +373,13 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "refresh_link", "id": 7, "download": { "url": "https://...", "cookies": "..." }, "restart": false }
 { "op": "refresh_link", "id": 7 }
 { "op": "cancel_refresh" }
+{ "op": "add", "url": "https://.../master.m3u8", "filename": "Talk.mp4",
+  "media": { "kind": "hls", "video": "https://.../720/index.m3u8", "audio": null } }
+{ "op": "add_many", "items": [ { "url": "https://...", "start": false, "folder": "D:\\Photos" } ], "queue": 1 }
+{ "op": "probe_media", "request": 3, "download": { "url": "https://.../manifest.mpd", "cookies": "..." } }
+{ "op": "grab", "start": "https://example.com/docs/", "depth": 2, "same_site": true, "types": ["pdf"],
+  "max_pages": 200, "max_bytes": 52428800, "delay_ms": 1000 }
+{ "op": "cancel_grab" }
 { "op": "get_settings" }
 { "op": "set_settings", "settings": { "download_dir": null, "connections": 8, "max_concurrent": 3,
   "speed_limit_enabled": false, "speed_limit_kbps": 1024, "resume_at_startup": false,
@@ -370,6 +419,16 @@ Daemon to clients:
 { "op": "quit" }
 { "op": "refresh_waiting", "id": 7 }
 { "op": "refresh_mismatch", "id": 7, "url": "https://...", "reason": "The new link is for a 3.0 MB file; ..." }
+{ "op": "progress", "id": 9, "url": "...", "done": 5242880, "total": null, "parts": [40, 120] }
+{ "op": "done", "id": 9, "url": "...", "path": "C:\\Users\\...\\Video\\Talk.ts",
+  "note": "Saved as a .ts video. With ffmpeg (set in Options) it would be an .mp4." }
+{ "op": "added_many", "count": 120 }
+{ "op": "media_info", "request": 3, "info": { "kind": "hls", "duration": 1520.0, "drm": false,
+  "video": [ { "id": "https://.../1080/index.m3u8", "label": "1080p, 5.0 Mbps", "height": 1080,
+  "bandwidth": 5000000, "size": 950000000 } ], "audio": [] } }
+{ "op": "grab_progress", "pages": 12, "bytes": 380211, "found": 31 }
+{ "op": "grab_done", "files": [ { "url": "https://.../a.pdf", "name": "a.pdf", "page": "https://.../docs/" } ],
+  "pages": 40, "stopped": "Stopped at the budget of 40 pages." }
 { "op": "error", "message": "..." }
 ```
 
@@ -423,6 +482,24 @@ it. A schedule's times are `HH:MM` local time; `days` count 0 = Monday to
 6 = Sunday, and `date` (`YYYY-MM-DD`) replaces them for a single run.
 `countdown` goes to every client, and to a window that connects while one is
 running; `quit` tells windows to close.
+
+`media` on an `add` downloads `url` as a stream: `kind` is `hls` or `dash`
+(missing: found from the playlist itself), and `video` and `audio` are option
+`id`s from `media_info` (missing: the best, or the default audio). A stream's
+`progress` carries `parts`, segments done and in all, and its `total` is
+`null`; entries keep `parts` and a finished download's `note`. `add_many`
+answers with `added_many` and adds each item waiting, skipping items that are
+not web addresses; `folder`, a full path, fixes where an item is saved.
+`probe_media` echoes `request` in its `media_info`, whose `error` says why a
+stream cannot be downloaded and `drm` whether that is because of DRM. `grab`
+answers with `grab_progress` after each page and one `grab_done`, to the
+client that asked only; a client runs one crawl at a time, and its crawl
+stops if it disconnects. `grab` is refused with an `error` unless `start` is
+an `http(s)` address, `depth` is 0 to 10, `max_pages` 1 to 10,000,
+`max_bytes` 1 to 2,000 MB, `delay_ms` 200 to 60,000 and `types` is not empty.
+The settings gain `clipboard_monitor`, `video_button`,
+`video_button_excluded_sites` and `ffmpeg_path` (a full path to
+`ffmpeg.exe`, or empty to look on `PATH`).
 
 ## Queues and the scheduler
 
@@ -509,6 +586,74 @@ host. No login for the host fails with "This site needs a login: <host>",
 and a refused login with "The login for <host> was refused"; neither is
 retried.
 
+## Streams, batches and the site grabber
+
+**Seeing videos.** The extension's service worker reads the headers of every
+response a tab gets (`webRequest.onHeadersReceived`) and keeps, per tab, the
+direct video and audio files (a `video/` or `audio/` type, or a media file
+name with a generic type; anything under 128 KiB is left out) and the HLS
+and DASH playlists. Segments (`.ts`, `.m4s`, `video/mp2t`) are left out, and
+the list starts over when the tab loads a new page. A content script
+(`content.js`) shows **Download video** over a playing `<video>` in a closed
+shadow root, so the page's scripts and styles cannot reach it, and shows
+page and server text with `textContent` only. When clicked it asks the
+worker for its own tab's list, and the worker asks UIDM (`probe_media`) what
+each stream offers. A content script can only pick from what the worker saw
+in its tab, by number, never pass in an address. A video element that raised
+an `encrypted` event or holds `MediaKeys` is DRM protected: the menu says so
+and offers nothing. Playlists that are themselves one quality of a listed
+master playlist are folded into it.
+
+**HLS.** UIDM reads master playlists (qualities, separate audio tracks) and
+media playlists (segments, `#EXT-X-BYTERANGE`, `#EXT-X-MAP` headers,
+`#EXT-X-MEDIA-SEQUENCE`). Segments encrypted with AES-128 are decrypted with
+the key from the playlist's key URL, fetched once, and the IV from the
+playlist or the segment's sequence number. Any other key system
+(`SAMPLE-AES`, or a `KEYFORMAT` other than `identity`, as FairPlay and
+Widevine use) is DRM and refused, as is a live playlist without
+`#EXT-X-ENDLIST`.
+
+**DASH.** UIDM reads a static manifest's `SegmentTemplate` (with a fixed
+duration or a `SegmentTimeline`, `$Number$`, `$Time$`, `$Bandwidth$`,
+`$RepresentationID$` and `%0Nd` widths), `SegmentList` (with byte ranges)
+and `SegmentBase` or a plain `BaseURL` (the whole file), inheriting them
+from the period and adaptation set, and resolving `BaseURL`s at every level.
+It picks the best video and audio, or the ones chosen. `ContentProtection`
+marks DRM, refused; live (`dynamic`) manifests and manifests split into
+several periods are refused too.
+
+**Downloading.** Segments go one file each into `<file>.uidmparts` next to
+the output, written as `.tmp` and renamed once complete, up to **Connections
+per file** at once, through the shared speed limit, each retried with the
+usual backoff. Progress counts segments and bytes, and the window's bar
+follows the segments. Canceling keeps the finished segments; a retry fetches
+only the missing ones. Then each track is joined in order. With ffmpeg,
+`ffmpeg -i video [-i audio] -c copy` makes one `.mp4` (or `.webm`) without
+re-encoding; without it, an HLS video is saved as its `.ts` (or `.mp4` for
+fragmented MP4 segments) and a stream with separate audio as two files, and
+the entry carries a note saying so. ffmpeg runs without a console window and
+its error, if any, becomes the download's error. Streams land in the Video
+category's folder whatever their extension.
+
+**Batches and imports** go through `add_many`, which adds every item waiting
+in one queue and announces the queue once, so 10,000 downloads do not send
+10,000 queue updates. An item with a full-path `folder` is saved there under
+its own name.
+
+**The site grabber** runs in the daemon, so it uses the proxy settings, and
+reports to the window that started it. It reads `robots.txt` once per site
+(the group for `UIDM` if there is one, else `*`; longest match wins, with `*`
+and `$`), waits at least the set time between requests, and caps a site's
+`Crawl-delay` at 30 seconds. Pages are parsed with html5ever, the HTML parser
+from Servo, so markup inside scripts or comments is not mistaken for links.
+It follows `<a>`, `<area>` and frames, keeps files linked from those and from
+`<img>`, `<source>`, `<video>`, `<audio>`, `<embed>` and `<object>`, honors
+`<base href>`, and only ever follows or lists `http` and `https` addresses.
+It reads at most 5 MiB of any page, follows only page-like links (no
+extension, or `.html`, `.php` and the like), and lists files without
+fetching them. Closing the dialog or **Stop** ends a crawl within a tenth of
+a second.
+
 ## Notifications and virus scans
 
 Windows only shows notifications from an app it knows, so at start the daemon
@@ -547,14 +692,20 @@ is a failed scan, as is one that runs over 10 minutes.
 | `src/queue.rs` | Queues, schedules and their calendar arithmetic |
 | `src/power.rs` | Sleep, hibernate and shut down |
 | `src/net.rs` | Proxies, site logins, HTTP authentication, Credential Manager |
-| `src/bin/gui/` | The window's tray icon, queue controls and Win32 helpers |
+| `src/media/` | HLS playlists and DASH manifests: qualities, segments, keys, DRM |
+| `src/batch.rs` | URL patterns, pasted lists and the clipboard link rule |
+| `src/listfile.rs` | Exporting and importing the download list |
+| `src/grab.rs` | The site grabber's crawler and `robots.txt` |
+| `src/bin/gui/` | The window's tray icon, queue controls, tools (batch, import, export, grabber, clipboard) and Win32 helpers |
 | `src/ipc.rs` | Daemon address, start-up, token file, HMAC handshake |
 | `src/app.rs` | Request building and event mapping |
 | `src/protocol.rs` | Framing and message types |
-| `src/engine/` | Queue, segments, resume sidecar, speed limiter, HTTP |
+| `src/engine/` | Queue, segments, resume sidecar, speed limiter, HTTP, streams (`stream.rs`) |
 | `extension/` | MV3 extension: capture, context menu, popup |
 | `extension/rules.js` | Capture rules (file types, minimum size, excluded sites) |
 | `extension/post.js` | Matching downloads to the form POSTs that started them |
+| `extension/media.js` | Which responses are videos and streams, per tab, and the video menu |
+| `extension/content.js` | The video button over playing videos |
 | `extension/test/` | Node tests for the rules and the service worker |
 | `assets/icon-64.rgba` | Window icon, raw RGBA made from `extension/icons/128.png` |
 | `host/com.uidm.host.json` | Template of the native-messaging manifest |
@@ -595,6 +746,67 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 ## Verified
 
+- Streams, batches, lists and the grabber (milestone 6). Unit tests cover URL
+  patterns (padding, steps, counting down, letters, several ranges, other
+  brackets kept, the 10,000 cap and overflow), pasted lists, the clipboard
+  link rule, list export and import (round trips in both formats, exports
+  with exactly the five list fields, bad folders and repeats dropped, newer
+  formats refused), HLS (attribute lists, master playlists with audio groups,
+  keys and IVs, byte ranges, `#EXT-X-MAP`, FairPlay, Widevine and session-key
+  DRM, live playlists), DASH (ISO durations, template filling, fixed-duration
+  and timeline templates including `r="-1"`, segment lists with ranges,
+  single files, DRM, live and multi-period manifests), AES-128 decryption,
+  `robots.txt` (groups, wildcards, `$`, `Crawl-delay` and its cap), link
+  extraction (only web links, nothing from script text, `<base href>`), and
+  crawls (depth, same site, robots, one wait before every request, budgets,
+  stopping). Engine tests against a local server: an HLS master playlist
+  downloads its best quality, decrypting its last two segments, and joins
+  them byte-identical, with progress up to 5 of 5 segments and the segment
+  folder removed; another quality by its id; a download with two segments on
+  disk and a half-written third fetches only the three missing (progress
+  starts at 2 of 5, and the key is fetched once); a DASH stream without
+  ffmpeg is saved as video and audio files with a note; with a stand-in
+  `ffmpeg.bat` the two tracks go to it with `-map 0:v:0? -map 1:a:0? -c
+  copy` and come back as one file, and a failing ffmpeg fails the download
+  with its message and keeps the segments; a DRM stream is refused, and
+  probing reports DRM, qualities, sizes and the length.
+- Under Wine against the real host and daemon: `add_many` adds five pattern
+  files waiting in the main queue with paths in the chosen folder (and drops
+  a `javascript:` item), starting the queue saves them there; `probe_media`
+  answers with two qualities and their sizes, and DRM for a FairPlay
+  playlist; an HLS download with AES-128 segments lands in the Video folder
+  byte-identical with `parts` and its note; a DASH download is saved as two
+  files with a note; a DRM stream fails with the DRM message; a crawl lists
+  the two PDFs it may see, skips the folder `robots.txt` disallows, sends the
+  grabber's user agent and never fetches the files; stopping a crawl with a
+  five-second wait ends it within 0.1 s; a request with a 1 ms wait is
+  refused.
+- In the window under a virtual display: **More** with its four items; **Add
+  many** previewing 40 addresses for `photo[001-120:3].jpg`; the site grabber
+  crawling a local site, showing progress and then its four files to tick,
+  and adding them to the main queue with a notice; ticking two downloads and
+  exporting them through the Windows save dialog to the JSON shown above;
+  importing that file back into the **Import downloads** dialog; the new
+  Options fields; and the clipboard prompt for a copied `.exe` link, not
+  shown again for the same link after **Ignore**, nor for an `.html` link.
+- In Chromium (Playwright's build, which loads unpacked extensions) with the
+  extension and a native-messaging manifest pointing at the Windows host
+  under Wine: the button appeared over a playing video; its menu listed the
+  page's HLS stream with 720p and 360p and their sizes (the variant
+  playlist the player had loaded folded into it); choosing 720p downloaded
+  all four segments into `Video\Canvas Test Video.ts`, named after the page;
+  after the video raised an `encrypted` event the menu said it is DRM
+  protected; the popup's per-site switch added and removed the site in
+  UIDM's settings.
+- 20 more extension tests (27 in all): classifying responses (playlists by
+  type and name, files with their size from `Content-Range`, segments, small
+  files and errors left out), per-tab lists (one entry per URL, a size learned
+  later, the oldest dropped past 50), the menu (folding a master's variants,
+  DRM), the per-site switch, safe file names from titles, and the real worker
+  probing a stream once, sending the chosen quality as `media` with the
+  page's title and referrer, refusing another tab's entry, forgetting a tab's
+  list on a new page, ignoring the popup's commands from content scripts,
+  and changing the video button settings from the popup.
 - 102 unit tests: segment splitting, the resume sidecar, framing,
   `Content-Disposition`, backoff, HMAC proofs, the download table's
   lifecycle and ordering cases, settings loading, defaults and validation,
@@ -734,9 +946,12 @@ the tray icon's menu (the virtual display had no tray to click). In the first
 of four runs of the minimized-window test the window did not come forward;
 the three runs after it did, and the cause was not found.
 
-Also not verified: Chrome itself loading the extension and launching the host.
-Current Chrome builds ignore the `--load-extension` flag, so that last step was
-not automated. The pieces on either side of it are tested above.
+Chrome itself (Google's build) was not tried: it ignores the
+`--load-extension` flag. Playwright's Chromium loaded the extension and
+launched the host, as described above.
+
+Not verified: ffmpeg itself. The tests use a stand-in that records its
+arguments; no real ffmpeg was run on real video.
 
 ## Known gaps
 
@@ -756,6 +971,17 @@ not automated. The pieces on either side of it are tested above.
   finished unless the queue retries them.
 - Form downloads with a multipart body stay in the browser, and a POST
   download cannot resume: a failure means sending the form again with Retry.
+- Streams: live streams, DASH manifests split into several periods (often
+  ads), and HLS `SAMPLE-AES` without a key system are refused. Subtitles are
+  not downloaded. The size shown for a quality is an estimate from its bit
+  rate. Without ffmpeg, separate video and audio stay two files.
+- The video button sits outside a video in full screen, so it is hidden
+  then, and it only knows the media its tab loaded after the extension
+  started; reloading the page fills the list.
+- The site grabber reads pages as the server sends them; links that a page's
+  scripts add are not seen.
+- Clipboard watching runs in the window, so it stops when the window is
+  closed with **Exit**.
 - Every client sees every download, not only the ones it started.
 - A process that squats on the port cannot learn anything, but it does stop
   downloads from starting until it goes away. A per-user named pipe would close

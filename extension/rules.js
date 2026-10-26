@@ -136,5 +136,5 @@ function captureDecision(rules, item) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { extensionOf, siteMatches, downloadType, captureDecision };
+  module.exports = { extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision };
 }

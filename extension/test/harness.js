@@ -46,7 +46,9 @@ function loadWorker() {
     webRequest: {
       onBeforeRequest: event(),
       onBeforeSendHeaders: event(),
+      onHeadersReceived: event(),
     },
+    tabs: { onRemoved: event() },
     downloads: {
       onCreated: event(),
       cancel: async (id) => browserCalls.push(["cancel", id]),
@@ -74,7 +76,10 @@ function loadWorker() {
   vm.runInContext(fs.readFileSync(path.join(dir, "background.js"), "utf8"), context);
   const popup = (msg) =>
     new Promise((resolve) => chrome.runtime.onMessage.fire(msg, { id: "uidm" }, resolve));
-  return { port, sent, browserCalls, chrome, popup };
+  // A message from the content script in tab `tabId`, on page `url`.
+  const content = (msg, tabId, url = "https://site.net/watch") =>
+    new Promise((resolve) => chrome.runtime.onMessage.fire(msg, { id: "uidm", tab: { id: tabId, url }, url }, resolve));
+  return { port, sent, browserCalls, chrome, popup, content };
 }
 
 let nextDownloadId = 1;

@@ -54,6 +54,8 @@
       .done { color: var(--ok); }
       .empty { color: var(--muted); padding: 16px 12px; text-align: center; }
       label.toggle { display: flex; align-items: center; gap: 6px; }
+      /* The rules above set display, which would otherwise show hidden rows. */
+      [hidden] { display: none !important; }
     </style>
   </head>
   <body>
@@ -72,11 +74,20 @@
     <div class="row skiprow">
       <button id="skip">Skip next download</button>
     </div>
+    <div class="row skiprow">
+      <label class="toggle" title="A download button over videos playing in the browser">
+        <input id="video" type="checkbox" /> Video button
+      </label>
+      <label class="toggle" id="video-site-label" hidden>
+        <input id="video-site" type="checkbox" /> <span id="video-site-text"></span>
+      </label>
+    </div>
     <div class="row">
       <input id="url" type="url" placeholder="Paste a download URL" />
       <button id="add" class="primary">Download</button>
     </div>
     <ul id="list"></ul>
+    <script src="rules.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

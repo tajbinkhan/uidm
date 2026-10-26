@@ -1,6 +1,6 @@
 //! Win32 calls the window needs outside egui: showing and hiding it while egui
 //! is idle (a hidden window gets no frames, so viewport commands would wait),
-//! and reading the clipboard for the tray menu.
+//! and reading the clipboard for the tray menu and the clipboard offer.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -21,6 +21,7 @@ extern "system" {
     fn OpenClipboard(owner: isize) -> i32;
     fn CloseClipboard() -> i32;
     fn GetClipboardData(format: u32) -> *mut c_void;
+    fn GetClipboardSequenceNumber() -> u32;
 }
 
 #[link(name = "kernel32")]
@@ -59,6 +60,12 @@ pub fn hide() {
             ShowWindow(hwnd, SW_HIDE);
         }
     }
+}
+
+/// A number that changes whenever the clipboard does.
+pub fn clipboard_sequence() -> u32 {
+    // SAFETY: takes no arguments and only reads a counter.
+    unsafe { GetClipboardSequenceNumber() }
 }
 
 /// The clipboard's text, if it holds any.

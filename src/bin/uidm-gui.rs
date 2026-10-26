@@ -17,12 +17,14 @@
 
 #[path = "gui/queues.rs"]
 mod queues;
+#[path = "gui/tools.rs"]
+mod tools;
 #[path = "gui/tray.rs"]
 mod tray;
 #[path = "gui/win.rs"]
 mod win;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpStream;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -36,6 +38,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
 use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Scan, Status};
+use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
     parse_extensions, Category, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
@@ -50,6 +53,9 @@ const SPEED_MIN_INTERVAL: Duration = Duration::from_millis(400);
 /// image decoder is needed at run time.
 const ICON_RGBA: &[u8] = include_bytes!("../../assets/icon-64.rgba");
 const ICON_SIZE: u32 = 64;
+
+/// How often the clipboard's change counter is checked.
+const CLIPBOARD_POLL: Duration = Duration::from_millis(700);
 
 /// Width of the file-name column; long names are truncated with a tooltip.
 const NAME_WIDTH: f32 = 200.0;
@@ -134,6 +140,19 @@ struct Shared {
     /// The daemon's answer that a new link is for another file: the
     /// download, the link and why.
     refresh_mismatch: Option<(u64, String, String)>,
+    /// A passing message for the status bar, such as how many downloads a
+    /// batch added.
+    notice: Option<String>,
+    /// The site crawl's news, for the grabber dialog to pick up.
+    grab_events: VecDeque<GrabEvent>,
+    /// A copied link to offer to download.
+    clipboard: Option<String>,
+}
+
+/// News of a site crawl.
+enum GrabEvent {
+    Progress(u64, u64, usize),
+    Done(Vec<GrabFile>, u64, Option<String>),
 }
 
 impl Shared {
@@ -186,6 +205,18 @@ impl Shared {
                 self.save_result = Some(Err(message.clone()));
             }
             Outgoing::Progress { id, done, .. } => self.sample_speed(*id, *done),
+            Outgoing::AddedMany { count } => {
+                self.notice = Some(match count {
+                    1 => "Added 1 download, waiting in its queue.".to_string(),
+                    n => format!("Added {n} downloads, waiting in their queue."),
+                });
+            }
+            Outgoing::GrabProgress { pages, bytes, found } => {
+                self.grab_events.push_back(GrabEvent::Progress(*pages, *bytes, *found));
+            }
+            Outgoing::GrabDone { files, pages, stopped } => {
+                self.grab_events.push_back(GrabEvent::Done(files.clone(), *pages, stopped.clone()));
+            }
             Outgoing::Done { id, .. }
             | Outgoing::Failed { id, .. }
             | Outgoing::Canceled { id, .. }
@@ -277,6 +308,21 @@ enum Action {
     CancelRefresh,
     /// Open the Queues dialog, on a queue if given.
     OpenQueues(Option<u64>),
+    /// Add downloads to wait in a queue, and maybe start it.
+    AddMany {
+        items: Vec<Download>,
+        queue: u64,
+        start_queue: bool,
+    },
+    OpenBatch,
+    /// Pick a list file to import.
+    OpenImport,
+    OpenExport,
+    OpenGrabber,
+    Grab(GrabRequest),
+    CancelGrab,
+    /// Tick or untick a download, for exporting.
+    Select(u64, bool),
 }
 
 /// Which downloads the list shows.
@@ -309,6 +355,14 @@ struct App {
     queues_dialog: Option<queues::QueuesDialog>,
     /// The New link dialog: the download and the address typed so far.
     refresh: Option<(u64, String)>,
+    /// The Batch dialog (also used for imports), while it is open.
+    batch: Option<tools::BatchDialog>,
+    export: Option<tools::ExportDialog>,
+    grabber: Option<tools::GrabDialog>,
+    /// A list file being imported, read on the picker's thread.
+    import: tools::Loaded,
+    /// Downloads ticked in the list.
+    selected: HashSet<u64>,
 }
 
 /// A folder chosen in the picker, delivered by its thread.
@@ -437,8 +491,23 @@ struct OptionsDraft {
     capture_min_size_kb: u64,
     /// One site per line.
     capture_excluded_sites: String,
+    clipboard_monitor: bool,
+    video_button: bool,
+    /// One site per line.
+    video_button_excluded_sites: String,
+    ffmpeg_path: String,
+    /// ffmpeg.exe chosen with Browse.
+    ffmpeg_picked: Picked,
     error: Option<String>,
     picked: Picked,
+}
+
+/// The sites in a one-per-line text field.
+fn sites(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|l| l.trim().to_ascii_lowercase())
+        .filter(|l| !l.is_empty())
+        .collect()
 }
 
 impl OptionsDraft {
@@ -499,6 +568,11 @@ impl OptionsDraft {
             capture_types: s.capture_types.join(", "),
             capture_min_size_kb: s.capture_min_size_kb,
             capture_excluded_sites: s.capture_excluded_sites.join("\n"),
+            clipboard_monitor: s.clipboard_monitor,
+            video_button: s.video_button,
+            video_button_excluded_sites: s.video_button_excluded_sites.join("\n"),
+            ffmpeg_path: s.ffmpeg_path.clone(),
+            ffmpeg_picked: Picked::default(),
             error: None,
             picked: Picked::default(),
         }
@@ -555,12 +629,11 @@ impl OptionsDraft {
                 .collect(),
             capture_types: parse_extensions(&self.capture_types),
             capture_min_size_kb: self.capture_min_size_kb,
-            capture_excluded_sites: self
-                .capture_excluded_sites
-                .lines()
-                .map(|l| l.trim().to_ascii_lowercase())
-                .filter(|l| !l.is_empty())
-                .collect(),
+            capture_excluded_sites: sites(&self.capture_excluded_sites),
+            clipboard_monitor: self.clipboard_monitor,
+            video_button: self.video_button,
+            video_button_excluded_sites: sites(&self.video_button_excluded_sites),
+            ffmpeg_path: self.ffmpeg_path.trim().to_string(),
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -586,6 +659,9 @@ impl App {
                 countdown: None,
                 refresh_waiting: None,
                 refresh_mismatch: None,
+                notice: None,
+                grab_events: VecDeque::new(),
+                clipboard: None,
             })),
             writer: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
@@ -597,10 +673,49 @@ impl App {
             filter: Filter::All,
             queues_dialog: None,
             refresh: None,
+            batch: None,
+            export: None,
+            grabber: None,
+            import: tools::Loaded::default(),
+            selected: HashSet::new(),
         };
         app.connect();
         app.install_tray();
+        app.watch_clipboard();
         app
+    }
+
+    /// Watch the clipboard for download links while Options asks for it,
+    /// and offer each new one once. Polls the clipboard's change counter,
+    /// which costs nothing, and reads the text only when it changes.
+    fn watch_clipboard(&self) {
+        let shared = Arc::clone(&self.shared);
+        let ctx = self.ctx.clone();
+        thread::spawn(move || {
+            let mut seen = win::clipboard_sequence();
+            let mut last_offered: Option<String> = None;
+            loop {
+                thread::sleep(CLIPBOARD_POLL);
+                let now = win::clipboard_sequence();
+                if now == seen {
+                    continue;
+                }
+                seen = now;
+                let types = match &shared.lock().unwrap().settings {
+                    Some(s) if s.clipboard_monitor => s.capture_types.clone(),
+                    _ => continue,
+                };
+                let Some(text) = win::clipboard_text() else { continue };
+                let Some(url) = uidm::batch::clipboard_link(&text, &types) else { continue };
+                if last_offered.as_deref() == Some(url.as_str()) {
+                    continue;
+                }
+                last_offered = Some(url.clone());
+                shared.lock().unwrap().clipboard = Some(url);
+                win::show();
+                ctx.request_repaint();
+            }
+        });
     }
 
     /// Put UIDM in the tray. Its menu acts at once, without waiting for a
@@ -887,6 +1002,85 @@ impl App {
                 let list = self.shared.lock().unwrap().queues.clone();
                 self.queues_dialog = Some(queues::QueuesDialog::open(&list, select));
             }
+            Action::AddMany {
+                items,
+                queue,
+                start_queue,
+            } => {
+                send(&self.writer, &Incoming::AddMany { items, queue: Some(queue) });
+                // Sent after on the same connection, so it starts with them.
+                if start_queue {
+                    send(&self.writer, &Incoming::StartQueue { id: queue });
+                }
+            }
+            Action::OpenBatch => self.batch = Some(tools::BatchDialog::new()),
+            Action::OpenImport => tools::pick_text_file(&self.ctx, "Import a download list", &self.import),
+            Action::OpenExport => self.export = Some(tools::ExportDialog::new(!self.selected.is_empty())),
+            Action::OpenGrabber => {
+                if self.grabber.is_none() {
+                    self.grabber = Some(tools::GrabDialog::new());
+                }
+            }
+            Action::Grab(req) => {
+                self.shared.lock().unwrap().grab_events.clear();
+                send(&self.writer, &Incoming::Grab(req));
+            }
+            Action::CancelGrab => {
+                send(&self.writer, &Incoming::CancelGrab);
+            }
+            Action::Select(id, on) => {
+                if on {
+                    self.selected.insert(id);
+                } else {
+                    self.selected.remove(&id);
+                }
+            }
+        }
+    }
+
+    /// The Batch, Export and site grabber dialogs, and the clipboard offer.
+    fn tool_windows(&mut self, ctx: &egui::Context, rows: &[DownloadEntry], connected: bool, actions: &mut Vec<Action>) {
+        let queue_list = self.shared.lock().unwrap().queues.clone();
+        if let Some(read) = self.import.lock().unwrap().take() {
+            let opened = read.and_then(|(name, text)| {
+                uidm::listfile::import(&text).map(|(items, rejected)| tools::BatchDialog::imported(name, items, rejected))
+            });
+            match opened {
+                Ok(d) => self.batch = Some(d),
+                Err(e) => self.shared.lock().unwrap().last_error = Some(e),
+            }
+        }
+        if let Some(d) = self.batch.as_mut() {
+            if !tools::batch_dialog(ctx, d, &queue_list, connected, actions) {
+                self.batch = None;
+            }
+        }
+        self.selected.retain(|id| rows.iter().any(|e| e.id == *id));
+        if let Some(d) = self.export.as_mut() {
+            if !tools::export_dialog(ctx, d, rows, &self.selected) {
+                self.export = None;
+            }
+        }
+        let events: Vec<GrabEvent> = self.shared.lock().unwrap().grab_events.drain(..).collect();
+        if let Some(d) = self.grabber.as_mut() {
+            for event in events {
+                match event {
+                    GrabEvent::Progress(pages, bytes, found) => d.progress(pages, bytes, found),
+                    GrabEvent::Done(files, pages, stopped) => d.done(files, pages, stopped),
+                }
+            }
+            if !connected && d.running() {
+                d.failed("The connection to the UIDM daemon was lost.".into());
+            }
+            if !tools::grab_dialog(ctx, d, &queue_list, connected, actions) {
+                self.grabber = None;
+            }
+        }
+        let offer = self.shared.lock().unwrap().clipboard.clone();
+        if let Some(url) = offer {
+            if !tools::clipboard_offer(ctx, &url, connected, actions) {
+                self.shared.lock().unwrap().clipboard = None;
+            }
         }
     }
 
@@ -1016,6 +1210,7 @@ impl App {
             None => {}
         }
         take_picked(&draft.picked, &mut draft.folder);
+        take_picked(&draft.ffmpeg_picked, &mut draft.ffmpeg_path);
         for c in &mut draft.categories {
             take_picked(&c.picked, &mut c.folder);
         }
@@ -1153,6 +1348,41 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 
         ui.label("");
         ui.checkbox(&mut draft.close_to_tray, "Closing the window keeps UIDM in the tray");
+        ui.end_row();
+
+        ui.label("ffmpeg");
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.ffmpeg_path)
+                        .hint_text("Empty looks for it on PATH")
+                        .desired_width(280.0),
+                );
+                if ui.button("Browse...").clicked() {
+                    let (slot, ctx) = (Arc::clone(&draft.ffmpeg_picked), ui.ctx().clone());
+                    thread::spawn(move || {
+                        let file = rfd::FileDialog::new()
+                            .set_title("Where is ffmpeg.exe?")
+                            .add_filter("ffmpeg", &["exe"])
+                            .pick_file();
+                        if let Some(file) = file {
+                            *slot.lock().unwrap() = Some(file);
+                            ctx.request_repaint();
+                        }
+                    });
+                }
+            });
+            let found = Settings {
+                ffmpeg_path: draft.ffmpeg_path.trim().to_string(),
+                ..Settings::default()
+            }
+            .ffmpeg();
+            match found {
+                Some(path) => ui.weak(format!("Using {}", path.display())),
+                None => ui.colored_label(ui.visuals().warn_fg_color, "Not found."),
+            };
+            ui.weak("Joins streamed videos into one .mp4. Without it they are saved as .ts, or as separate video and audio.");
+        });
         ui.end_row();
     });
 }
@@ -1338,6 +1568,27 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
                 .hint_text("One site per line, such as *.example.com")
                 .desired_rows(4)
                 .desired_width(360.0),
+        );
+        ui.end_row();
+
+        ui.label("Videos");
+        ui.checkbox(&mut draft.video_button, "Show a download button over videos playing in the browser");
+        ui.end_row();
+
+        ui.label("No video button on");
+        ui.add_enabled(
+            draft.video_button,
+            egui::TextEdit::multiline(&mut draft.video_button_excluded_sites)
+                .hint_text("One site per line, such as *.example.com")
+                .desired_rows(2)
+                .desired_width(360.0),
+        );
+        ui.end_row();
+
+        ui.label("Clipboard");
+        ui.checkbox(
+            &mut draft.clipboard_monitor,
+            "Offer to download links I copy whose file type is listed above",
         );
         ui.end_row();
     });
@@ -1586,7 +1837,7 @@ impl eframe::App for App {
                 let input = ui.add(
                     egui::TextEdit::singleline(&mut self.url_input)
                         .hint_text("Paste a download URL")
-                        .desired_width((ui.available_width() - 240.0).max(120.0)),
+                        .desired_width((ui.available_width() - 300.0).max(120.0)),
                 );
                 let entered = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let url = self.url_input.trim().to_string();
@@ -1603,6 +1854,27 @@ impl eframe::App for App {
                     actions.push(Action::AddLater(url));
                     self.url_input.clear();
                 }
+                ui.add_enabled_ui(connected, |ui| {
+                    ui.menu_button("More", |ui| {
+                        if ui.button("Add many...").on_hover_text("From a URL pattern or a list").clicked() {
+                            actions.push(Action::OpenBatch);
+                            ui.close_menu();
+                        }
+                        if ui.button("Site grabber...").on_hover_text("Find the files a site links to").clicked() {
+                            actions.push(Action::OpenGrabber);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("Import list...").clicked() {
+                            actions.push(Action::OpenImport);
+                            ui.close_menu();
+                        }
+                        if ui.button("Export list...").clicked() {
+                            actions.push(Action::OpenExport);
+                            ui.close_menu();
+                        }
+                    });
+                });
                 let can_open = connected && settings.is_some();
                 if ui.add_enabled(can_open, egui::Button::new("Options")).clicked() {
                     actions.push(Action::OpenOptions);
@@ -1643,6 +1915,11 @@ impl eframe::App for App {
                 if let Some(err) = &last_error {
                     ui.separator();
                     ui.colored_label(ui.visuals().warn_fg_color, err);
+                }
+                let notice = self.shared.lock().unwrap().notice.clone();
+                if let Some(n) = notice {
+                    ui.separator();
+                    ui.label(n);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let any_done = rows.iter().any(|e| e.status == Status::Done);
@@ -1769,10 +2046,10 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("downloads")
                     .striped(true)
-                    .num_columns(6)
+                    .num_columns(7)
                     .spacing([14.0, 8.0])
                     .show(ui, |ui| {
-                        for title in ["File", "Size", "Progress", "Speed", "Status", ""] {
+                        for title in ["", "File", "Size", "Progress", "Speed", "Status", ""] {
                             ui.strong(title);
                         }
                         ui.end_row();
@@ -1784,6 +2061,7 @@ impl eframe::App for App {
                                 connected,
                                 queues: &queue_list,
                                 place,
+                                selected: self.selected.contains(&entry.id),
                             };
                             draw_row(ui, entry, &row, &mut actions);
                             ui.end_row();
@@ -1796,6 +2074,7 @@ impl eframe::App for App {
         self.completed_window(ctx, connected, &mut actions);
         self.threat_window(ctx, &mut actions);
         self.refresh_window(ctx, &rows, connected, &mut actions);
+        self.tool_windows(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.queues_dialog.as_mut() {
             if !queues::dialog(ctx, d, &queue_list, connected, &mut actions) {
                 self.queues_dialog = None;
@@ -1911,6 +2190,8 @@ struct Row<'a> {
     /// In a queue's view: the queue, this row's place and the row count, for
     /// the move up and down buttons.
     place: Option<(u64, usize, usize)>,
+    /// Ticked for exporting.
+    selected: bool,
 }
 
 /// A "Queue" menu that puts the download in a queue.
@@ -1931,6 +2212,10 @@ fn queue_menu(ui: &mut egui::Ui, e: &DownloadEntry, queues: &[Queue], actions: &
 
 fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<Action>) {
     let (speed, connected) = (row.speed, row.connected);
+    let mut ticked = row.selected;
+    if ui.checkbox(&mut ticked, "").on_hover_text("Tick to export it").changed() {
+        actions.push(Action::Select(e.id, ticked));
+    }
     // A fixed-width, left-aligned cell so long names truncate instead of
     // pushing the action buttons off the window.
     ui.allocate_ui_with_layout(
@@ -1943,27 +2228,40 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
         },
     );
 
-    ui.label(match e.total {
+    // A stream counts segments; its size is only known once fetched.
+    let parts = e.parts.filter(|[_, all]| *all > 0);
+    let size = ui.label(match e.total {
         Some(t) => format!("{} / {}", human_bytes(e.done), human_bytes(t)),
         None => human_bytes(e.done),
     });
+    if let Some([done, all]) = parts {
+        size.on_hover_text(format!("{done} of {all} segments"));
+    }
 
-    let fraction = match e.total {
-        Some(t) if t > 0 => (e.done as f32 / t as f32).clamp(0.0, 1.0),
+    let fraction = match (e.total, parts) {
+        (Some(t), _) if t > 0 => (e.done as f32 / t as f32).clamp(0.0, 1.0),
+        (_, Some([done, all])) => (done as f32 / all as f32).clamp(0.0, 1.0),
         _ if e.status == Status::Done => 1.0,
         _ => 0.0,
     };
     let bar = egui::ProgressBar::new(fraction).desired_width(130.0);
     ui.add(if e.total.is_some() || e.status == Status::Done {
         bar.show_percentage()
+    } else if let Some([done, all]) = parts {
+        bar.text(format!("{done}/{all} segments"))
     } else {
         bar.text(human_bytes(e.done))
     });
 
+    // What is left, in bytes: from the total, or for a stream from the
+    // average segment so far.
+    let estimate = e.total.or_else(|| match parts {
+        Some([done, all]) if done > 0 => Some(e.done / done * all),
+        _ => None,
+    });
     match (e.status, speed) {
         (Status::Downloading, Some(bps)) if bps > 0.0 => {
-            let eta = e
-                .total
+            let eta = estimate
                 .filter(|t| *t > e.done)
                 .map(|t| format!(", {} left", human_duration((t - e.done) as f64 / bps)))
                 .unwrap_or_default();
@@ -1992,6 +2290,9 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
         }
         if let Some(scan) = &e.scan {
             scan_label(ui, scan);
+        }
+        if let Some(note) = &e.note {
+            ui.weak("(note)").on_hover_text(note);
         }
     });
 

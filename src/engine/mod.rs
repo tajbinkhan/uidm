@@ -13,6 +13,7 @@ mod http;
 mod limit;
 mod resume;
 mod segments;
+mod stream;
 #[cfg(test)]
 mod testserver;
 
@@ -27,6 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::media::MediaChoice;
 use crate::net::NetConfig;
 use crate::settings::{FileExists, Folders};
 use limit::RateLimiter;
@@ -77,6 +79,12 @@ pub struct DownloadRequest {
     /// as one stream, and the POST is sent once: it is not repeated on
     /// failure, since a POST may not be safe to repeat.
     pub post_body: Option<Vec<u8>>,
+    /// Download `url` as a stream (an HLS playlist or DASH manifest) in this
+    /// quality, joined into one video.
+    pub media: Option<MediaChoice>,
+    /// ffmpeg, for turning a stream into an .mp4. `None` saves what can be
+    /// saved without it.
+    pub ffmpeg: Option<PathBuf>,
 }
 
 /// Progress events over the course of a download. `id` matches the `Ack`.
@@ -95,11 +103,15 @@ pub enum Progress {
         url: String,
         done: u64,
         total: Option<u64>,
+        /// For a stream: segments fetched and segments in all.
+        parts: Option<[u64; 2]>,
     },
     Finished {
         id: u64,
         url: String,
         path: PathBuf,
+        /// Something the user should know about the result.
+        note: Option<String>,
     },
     Failed {
         id: u64,
@@ -124,6 +136,9 @@ pub enum EngineError {
     Tls(String),
     Io(String),
     Protocol(String),
+    /// UIDM will not download this (DRM, a live stream); the message says
+    /// why, for the user.
+    Refused(String),
 }
 
 impl fmt::Display for EngineError {
@@ -136,6 +151,7 @@ impl fmt::Display for EngineError {
             EngineError::Tls(s) => write!(f, "tls error: {s}"),
             EngineError::Io(s) => write!(f, "io error: {s}"),
             EngineError::Protocol(s) => write!(f, "protocol error: {s}"),
+            EngineError::Refused(s) => f.write_str(s),
         }
     }
 }
@@ -145,7 +161,10 @@ impl std::error::Error for EngineError {}
 impl EngineError {
     /// Errors that trying again cannot fix.
     fn is_permanent(&self) -> bool {
-        matches!(self, EngineError::NeedsLogin(_) | EngineError::LoginRejected(_))
+        matches!(
+            self,
+            EngineError::NeedsLogin(_) | EngineError::LoginRejected(_) | EngineError::Refused(_)
+        )
     }
 }
 
@@ -363,7 +382,7 @@ fn run(id: u64, token: CancelToken, req: DownloadRequest, reporter: Reporter, sh
         return;
     }
     match result {
-        Ok(path) => reporter.send(Progress::Finished { id, url, path }),
+        Ok(Saved { path, note }) => reporter.send(Progress::Finished { id, url, path, note }),
         Err(e) => {
             let mut error = e.to_string();
             if let EngineError::Status(code) = e {
@@ -378,16 +397,31 @@ fn run(id: u64, token: CancelToken, req: DownloadRequest, reporter: Reporter, sh
     }
 }
 
+/// Where a finished download was saved, and anything to say about it.
+pub(crate) struct Saved {
+    pub path: PathBuf,
+    pub note: Option<String>,
+}
+
+impl From<PathBuf> for Saved {
+    fn from(path: PathBuf) -> Self {
+        Saved { path, note: None }
+    }
+}
+
 fn run_inner(
     id: u64,
     token: &CancelToken,
     req: &DownloadRequest,
     reporter: &Reporter,
     shared: &Shared,
-) -> Result<PathBuf, EngineError> {
+) -> Result<Saved, EngineError> {
     let agent = http::Client::new(&req.net, &req.url)?;
+    if let Some(choice) = &req.media {
+        return stream::run(id, token, &agent, req, choice, reporter, shared);
+    }
     if let Some(body) = &req.post_body {
-        return run_post(id, token, &agent, req, body, reporter, shared);
+        return run_post(id, token, &agent, req, body, reporter, shared).map(Saved::from);
     }
     let probe = http::probe(&agent, &req.url, &req.headers)?;
     let filename = pick_filename(req.filename.as_deref(), &probe);
@@ -424,7 +458,7 @@ fn run_inner(
         run_single(id, token, &agent, req, output, &probe, reporter, limiter)
     };
     drop(claim);
-    result
+    result.map(Saved::from)
 }
 
 /// A download sent as a POST: one request, its response saved as one stream.
@@ -474,6 +508,7 @@ fn run_post(
                 url: req.url.clone(),
                 done,
                 total: probe.total,
+                parts: None,
             });
         }
     }
@@ -502,6 +537,38 @@ fn pick_filename(requested: Option<&str>, probe: &http::Probe) -> String {
                 .filter(|s| !s.is_empty())
         })
         .unwrap_or_else(|| derive_filename(&probe.final_url))
+}
+
+/// A fetched page or small file.
+pub struct Fetched {
+    /// The address after redirects.
+    pub url: String,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+}
+
+/// GET `url` with the download's headers, proxy and logins, reading at most
+/// `limit` bytes of the body (the rest is dropped).
+pub fn fetch(url: &str, headers: &[(String, String)], net: &NetConfig, limit: u64) -> Result<Fetched, EngineError> {
+    let agent = http::Client::new(net, url)?;
+    fetch_with(&agent, url, headers, limit)
+}
+
+fn fetch_with(agent: &http::Client, url: &str, headers: &[(String, String)], limit: u64) -> Result<Fetched, EngineError> {
+    let (url, content_type, reader) = http::get(agent, url, headers)?;
+    let mut body = Vec::new();
+    reader.take(limit).read_to_end(&mut body)?;
+    Ok(Fetched {
+        url,
+        content_type,
+        body,
+    })
+}
+
+/// What a stream (an HLS playlist or DASH manifest at `url`) offers, or why
+/// it cannot be downloaded.
+pub fn probe_media(url: &str, headers: &[(String, String)], net: &NetConfig) -> crate::media::MediaInfo {
+    stream::probe(url, headers, net)
 }
 
 /// What a download will be before it starts, for a save-as dialog.
@@ -856,6 +923,7 @@ fn run_segmented(
         url: url.clone(),
         done,
         total: Some(total),
+        parts: None,
     });
     let _ = fs::remove_file(&sidecar);
     Ok(output)
@@ -975,6 +1043,7 @@ fn maybe_report(ctx: &SegmentCtx, global: u64) {
         url: ctx.url.to_string(),
         done: global,
         total: Some(ctx.total),
+        parts: None,
     });
     if let Ok(w) = ctx.shared.lock() {
         w.manifest.save(ctx.sidecar).ok();
@@ -1052,6 +1121,7 @@ fn single_once(
                 url: probe.final_url.clone(),
                 done,
                 total: probe.total,
+                parts: None,
             });
         }
     }
@@ -1202,6 +1272,8 @@ mod tests {
                 file_exists,
                 post_body: None,
                 net: Arc::new(NetConfig::default()),
+                media: None,
+                ffmpeg: None,
             }
         }
 

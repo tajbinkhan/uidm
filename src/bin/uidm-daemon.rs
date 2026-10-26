@@ -6,8 +6,9 @@
 //! wrote at start (see `uidm::ipc`); until the client passes it, it gets no
 //! events and its requests are not read.
 //!
-//! Replies to a request (`hello`, `pong`, `ack`, `downloads`, `error`) go to the
-//! client that asked. Download events (`added`, `started`, `progress`, `done`,
+//! Replies to a request (`hello`, `pong`, `ack`, `downloads`, `added_many`,
+//! `media_info`, the site grabber's `grab_progress` and `grab_done`, `error`)
+//! go to the client that asked. Download events (`added`, `started`, `progress`, `done`,
 //! `failed`, `canceled`, `removed`) go to every connected client. The daemon
 //! also applies each event to a `DownloadTable`, so a client that connects late
 //! can ask for the whole list.
@@ -64,6 +65,7 @@ use uidm::notify::{self, Sound, Toast};
 use uidm::power;
 use uidm::queue::{self, Queue, WhenDone, COUNTDOWN_SECS, MAIN_QUEUE};
 use uidm::protocol::Scan;
+use uidm::grab::{self, GrabRequest};
 use uidm::registry;
 use uidm::scan;
 use uidm::settings::Notify;
@@ -89,6 +91,8 @@ const ICON_PNG: &[u8] = include_bytes!("../../extension/icons/128.png");
 const WINDOW_CLIENT: &str = "window";
 /// How often the scheduler looks at the clock when nothing wakes it.
 const SCHEDULER_POLL: Duration = Duration::from_secs(5);
+/// How the site grabber names itself to servers.
+const GRABBER_AGENT: &str = "Mozilla/5.0 (compatible; UIDM site grabber; obeys robots.txt)";
 /// Set to make sleep, hibernate and shut down only log what they would do
 /// (for testing the countdown without losing the machine).
 const POWER_DRY_RUN_ENV: &str = "UIDM_POWER_DRY_RUN";
@@ -304,6 +308,8 @@ struct Daemon {
     tick_lock: Mutex<()>,
     /// The download waiting for a new link from the browser, if any.
     refresh_waiting: Mutex<Option<u64>>,
+    /// Each client's running site crawl, by its stop flag.
+    grabs: Mutex<HashMap<u64, Arc<AtomicBool>>>,
 }
 
 /// A countdown before sleeping, hibernating or shutting down.
@@ -396,6 +402,7 @@ impl Daemon {
             countdown: Mutex::new(None),
             tick_lock: Mutex::new(()),
             refresh_waiting: Mutex::new(None),
+            grabs: Mutex::new(HashMap::new()),
         };
         (daemon, dirty_rx, notes_rx, wake_rx)
     }
@@ -953,11 +960,32 @@ impl Daemon {
     /// Add `download` to a queue (the main one unless it names another)
     /// without starting it or opening a connection.
     fn add_later(&self, download: Download) -> (u64, String) {
-        let url = download.url.clone();
-        let queue = download
-            .queue
+        let queue = self.queue_or_main(download.queue);
+        let (id, url) = self.stage(download);
+        let _ = self.hub.update_queue(queue, |q| {
+            q.order.push(id);
+            Ok(())
+        });
+        (id, url)
+    }
+
+    /// `queue` if it exists, else the main queue.
+    fn queue_or_main(&self, queue: Option<u64>) -> u64 {
+        queue
             .filter(|q| self.hub.queues.lock().unwrap().iter().any(|x| x.id == *q))
-            .unwrap_or(MAIN_QUEUE);
+            .unwrap_or(MAIN_QUEUE)
+    }
+
+    /// Announce `download` as waiting, not yet in any queue. A full-path
+    /// `folder` fixes where it will be saved.
+    fn stage(&self, download: Download) -> (u64, String) {
+        let url = download.url.clone();
+        let path = download
+            .folder
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|f| f.is_absolute())
+            .map(|f| f.join(engine::Inspection::unprobed(&url, download.filename.as_deref()).filename));
         let id = self.engine.reserve_id();
         self.hub.requests.lock().unwrap().insert(id, download);
         self.hub.publish(&Outgoing::Added {
@@ -966,13 +994,105 @@ impl Daemon {
         });
         let _ = self.hub.update(id, |e| {
             e.status = Status::Waiting;
-            Ok(())
-        });
-        let _ = self.hub.update_queue(queue, |q| {
-            q.order.push(id);
+            if let Some(p) = &path {
+                e.path = Some(p.display().to_string());
+            }
             Ok(())
         });
         (id, url)
+    }
+
+    /// Add `items` to wait in `queue`, announcing the queue once rather than
+    /// once per download. Items that are not web addresses are skipped.
+    fn add_many(&self, items: Vec<Download>, queue: Option<u64>) -> usize {
+        let queue = self.queue_or_main(queue);
+        let ids: Vec<u64> = items
+            .into_iter()
+            .filter(|d| uidm::batch::is_web_url(&d.url) && check_body(d).is_ok())
+            .map(|d| self.stage(d).0)
+            .collect();
+        let count = ids.len();
+        let _ = self.hub.update_queue(queue, |q| {
+            q.order.extend(ids);
+            Ok(())
+        });
+        count
+    }
+
+    /// Read a stream's playlist on another thread and answer `reply` with
+    /// what it offers.
+    fn probe_media(&self, request: u64, download: Download, reply: Sender<Vec<u8>>) {
+        let req = self.request_for(download);
+        thread::spawn(move || {
+            let info = engine::probe_media(&req.url, &req.headers, &req.net);
+            if let Ok(frame) = serde_json::to_vec(&Outgoing::MediaInfo { request, info }) {
+                let _ = reply.send(frame);
+            }
+        });
+    }
+
+    /// Crawl a site for `client` on another thread, sending it progress and
+    /// then what was found.
+    fn grab(self: &Arc<Self>, client: u64, req: GrabRequest, reply: Sender<Vec<u8>>) -> Result<(), String> {
+        req.validate()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let mut grabs = self.grabs.lock().unwrap();
+            if grabs.contains_key(&client) {
+                return Err("A site crawl is already running.".into());
+            }
+            grabs.insert(client, Arc::clone(&stop));
+        }
+        let settings = self.settings.lock().unwrap().clone();
+        let start = Download {
+            url: req.start.clone(),
+            ..Download::default()
+        };
+        let net = self.net_for(&start, &settings);
+        let daemon = Arc::clone(self);
+        thread::spawn(move || {
+            let send = |msg: &Outgoing| {
+                if let Ok(frame) = serde_json::to_vec(msg) {
+                    let _ = reply.send(frame);
+                }
+            };
+            let headers = [("User-Agent".to_string(), GRABBER_AGENT.to_string())];
+            let fetch = |url: &str| {
+                engine::fetch(url, &headers, &net, grab::MAX_PAGE_BYTES)
+                    .map(|f| grab::Page {
+                        url: f.url,
+                        content_type: f.content_type,
+                        body: f.body,
+                    })
+                    .map_err(|e| e.to_string())
+            };
+            // Wait in short steps, so stopping is quick.
+            let wait = |d: Duration| {
+                let until = Instant::now() + d;
+                while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(100).min(until - Instant::now()));
+                }
+            };
+            eprintln!("[uidm-daemon] client #{client} crawls {}", req.start);
+            let out = grab::crawl(&req, fetch, wait, &stop, |pages, bytes, found| {
+                send(&Outgoing::GrabProgress { pages, bytes, found })
+            });
+            daemon.grabs.lock().unwrap().remove(&client);
+            eprintln!("[uidm-daemon] crawl for #{client} read {} pages, found {} files", out.pages, out.files.len());
+            send(&Outgoing::GrabDone {
+                files: out.files,
+                pages: out.pages,
+                stopped: out.stopped,
+            });
+        });
+        Ok(())
+    }
+
+    /// Stop `client`'s crawl, if it has one.
+    fn stop_grab(&self, client: u64) {
+        if let Some(stop) = self.grabs.lock().unwrap().get(&client) {
+            stop.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Announce `download` as queued, probe it on another thread, then hold it
@@ -1512,6 +1632,7 @@ fn handle_client(mut stream: TcpStream, daemon: &Arc<Daemon>, token: &str) {
     // client started keep running.
     daemon.hub.clients.lock().unwrap().remove(&id);
     daemon.hub.windows.lock().unwrap().remove(&id);
+    daemon.stop_grab(id);
     drop(tx);
     let _ = writer.join();
     eprintln!("[uidm-daemon] client #{id} disconnected");
@@ -1595,6 +1716,24 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
                 status: "accepted".to_string(),
             });
         }
+        Incoming::AddMany { items, queue } => {
+            let count = daemon.add_many(items, queue);
+            eprintln!("[uidm-daemon] added {count} downloads to wait");
+            send(&Outgoing::AddedMany { count });
+        }
+        Incoming::ProbeMedia { request, download } => {
+            if let Err(message) = check_body(&download) {
+                send(&Outgoing::Error { message });
+                return;
+            }
+            daemon.probe_media(request, download, reply.clone());
+        }
+        Incoming::Grab(req) => {
+            if let Err(message) = daemon.grab(client, req, reply.clone()) {
+                send(&Outgoing::Error { message });
+            }
+        }
+        Incoming::CancelGrab => daemon.stop_grab(client),
         Incoming::Cancel { id } => {
             eprintln!("[uidm-daemon] cancel #{id}");
             daemon.cancel(id);

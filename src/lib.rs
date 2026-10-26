@@ -15,12 +15,20 @@
 //! - `queue`: download queues, their schedules and calendar arithmetic.
 //! - `power`: sleep, hibernate and shut down when a queue is done.
 //! - `net`: proxies and site logins.
+//! - `media`: HLS playlists and DASH manifests.
+//! - `batch`: many URLs from a pattern or a list.
+//! - `listfile`: exporting and importing the download list.
+//! - `grab`: the site grabber's crawler.
 
 pub mod app;
+pub mod batch;
 pub mod dpapi;
 pub mod engine;
+pub mod grab;
 pub mod history;
 pub mod ipc;
+pub mod listfile;
+pub mod media;
 pub mod net;
 pub mod notify;
 pub mod power;

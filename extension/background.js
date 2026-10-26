@@ -8,8 +8,11 @@
 // is on, and it passes the capture rules from UIDM's settings (see rules.js);
 // otherwise the browser downloads it as usual. If UIDM cannot even start a
 // download it took, it is handed back to the browser.
+//
+// It also notes the videos each tab loads (see media.js) for the video
+// button that content.js shows over playing videos.
 
-importScripts("rules.js", "post.js");
+importScripts("rules.js", "post.js", "media.js");
 
 const HOST = "com.uidm.host";
 const RECONNECT_MIN_MS = 1000;
@@ -56,6 +59,124 @@ if (chrome.webRequest) {
     frames,
     ["requestHeaders"],
   );
+}
+
+// Video and audio each tab loaded: tab id -> Map(url -> entry). A tab's list
+// starts over when it goes to another page.
+const media = new Map();
+if (chrome.webRequest) {
+  chrome.webRequest.onHeadersReceived.addListener(
+    (d) => {
+      if (d.tabId < 0 || d.incognito) return;
+      const found = classifyMedia(d);
+      if (found) recordMedia(media, d.tabId, d.url, found, Date.now());
+    },
+    { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
+    ["responseHeaders"],
+  );
+  chrome.webRequest.onBeforeRequest.addListener(
+    (d) => {
+      if (d.tabId >= 0) media.delete(d.tabId);
+    },
+    { urls: ["<all_urls>"], types: ["main_frame"] },
+  );
+}
+if (chrome.tabs) chrome.tabs.onRemoved.addListener((tabId) => media.delete(tabId));
+
+// What UIDM said each stream offers, by URL, and the probes waiting for an
+// answer, by request id.
+const mediaInfos = new Map();
+const probes = new Map();
+let nextProbe = 1;
+const PROBE_TIMEOUT_MS = 20000;
+
+// Ask UIDM what the stream at `url` offers, sending the page's cookies
+// along. Resolves to a MediaInfo, or null without an answer.
+async function probeStream(url, referrer) {
+  if (mediaInfos.has(url)) return mediaInfos.get(url);
+  const request = nextProbe++;
+  const download = { url, user_agent: navigator.userAgent };
+  const cookies = await cookieHeader(url);
+  if (cookies) download.cookies = cookies;
+  if (referrer) download.referrer = referrer;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      probes.delete(request);
+      resolve(null);
+    }, PROBE_TIMEOUT_MS);
+    probes.set(request, (info) => {
+      clearTimeout(timer);
+      // Failures are not kept: the next click asks again.
+      if (!info.error || info.drm) mediaInfos.set(url, info);
+      resolve(info);
+    });
+    if (!send({ op: "probe_media", request, download })) {
+      clearTimeout(timer);
+      probes.delete(request);
+      resolve(null);
+    }
+  });
+}
+
+// The video button's menu for tab `tabId`.
+async function videoMenu(tabId, referrer) {
+  const entries = [...(media.get(tabId) || new Map()).values()];
+  const streams = entries.filter((e) => e.kind !== "file");
+  const infos = new Map();
+  await Promise.all(
+    streams.map(async (e) => {
+      const info = await probeStream(e.url, referrer);
+      if (info) infos.set(e.url, info);
+    }),
+  );
+  return mediaMenu(entries, infos);
+}
+
+// Send media entry `entryId` of tab `tabId` to UIDM, in the chosen quality.
+async function downloadMedia(tabId, msg, referrer) {
+  const entry = [...(media.get(tabId) || new Map()).values()].find((e) => e.id === msg.entry);
+  if (!entry || !connected) return false;
+  const download = { op: "add", url: entry.url, user_agent: navigator.userAgent };
+  const cookies = await cookieHeader(entry.url);
+  if (cookies) download.cookies = cookies;
+  if (referrer) download.referrer = referrer;
+  const proxy = await browserProxy();
+  if (proxy) download.proxy = proxy;
+  if (entry.kind === "file") {
+    const ext = extensionOf(urlPath(entry.url)) || (entry.mime.startsWith("audio/") ? "mp3" : "mp4");
+    download.filename = titleFileName(msg.title, ext);
+  } else {
+    download.filename = titleFileName(msg.title, "mp4");
+    download.media = { kind: entry.kind };
+    if (typeof msg.video === "string") download.media.video = msg.video;
+    if (typeof msg.audio === "string") download.media.audio = msg.audio;
+  }
+  if (!download.filename) delete download.filename;
+  return send(download);
+}
+
+// A content script's request. Pages are untrusted, so a content script can
+// only ask about its own tab and choose among the media the worker saw.
+function onContentMessage(msg, sender, sendResponse) {
+  const tabId = sender.tab.id;
+  const pageUrl = sender.url || sender.tab.url || "";
+  switch (msg && msg.type) {
+    case "video:enabled":
+      sendResponse({ enabled: videoButtonAllowed(rules, pageUrl) });
+      return false;
+    case "video:menu":
+      if (!connected) {
+        sendResponse({ connected: false, items: [] });
+        return false;
+      }
+      videoMenu(tabId, pageUrl).then((items) => sendResponse({ connected: true, items }));
+      return true;
+    case "video:download":
+      downloadMedia(tabId, msg, pageUrl).then((ok) => sendResponse({ ok }));
+      return true;
+    default:
+      return false;
+  }
 }
 
 let captureEnabled = true;
@@ -190,6 +311,12 @@ function onHostMessage(msg) {
     case "refresh_waiting":
       refreshWaiting = msg.id ?? null;
       break;
+    case "media_info": {
+      const done = probes.get(msg.request);
+      probes.delete(msg.request);
+      if (done) done(msg.info || {});
+      break;
+    }
     case "error":
       lastError = msg.message;
       break;
@@ -383,13 +510,34 @@ function snapshot() {
     capture: captureEnabled,
     skipNext,
     refreshWaiting,
+    videoButton: !rules || rules.video_button !== false,
+    videoExcluded: rules ? rules.video_button_excluded_sites || [] : [],
     items: [...downloads.values()].sort((a, b) => b.id - a.id),
   };
 }
 
+// Change the video button setting in UIDM: on or off everywhere, or for one
+// site. UIDM keeps it, and the window's Options shows it.
+function setVideoButton(change) {
+  if (!rules) return;
+  const next = { ...rules };
+  if (typeof change.on === "boolean") next.video_button = change.on;
+  if (typeof change.site === "string" && /^[a-z0-9.-]+$/i.test(change.site)) {
+    const site = change.site.toLowerCase();
+    const list = (rules.video_button_excluded_sites || []).filter((s) => !siteMatches(s, site));
+    if (!change.siteOn) list.push(site);
+    next.video_button_excluded_sites = list;
+  }
+  send({ op: "set_settings", settings: next });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // Only this extension's own pages talk to the worker.
+  // Only this extension's own pages and content scripts talk to the worker.
   if (sender.id !== chrome.runtime.id) return;
+  // Content scripts run in web pages; the popup (even opened in a tab) is
+  // one of the extension's own pages.
+  const ownPage = String(sender.url || "").startsWith(`chrome-extension://${chrome.runtime.id}/`);
+  if (sender.tab && !ownPage) return onContentMessage(msg, sender, sendResponse);
   switch (msg.type) {
     case "state":
       break;
@@ -403,6 +551,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     case "setSkipNext":
       skipNext = !!msg.value;
+      break;
+    case "setVideoButton":
+      setVideoButton(msg);
       break;
     case "add":
       if (isWeb(msg.url)) send({ op: "add", url: msg.url });

@@ -45,12 +45,14 @@ impl DownloadTable {
                 e.connections = *connections;
                 e.error = None;
                 e.scan = None;
+                e.note = None;
             }
             Outgoing::Progress {
                 id,
                 url,
                 done,
                 total,
+                parts,
             } => {
                 let e = self.entry(*id, url);
                 // A late progress event must not revive a finished download.
@@ -61,15 +63,22 @@ impl DownloadTable {
                 if total.is_some() {
                     e.total = *total;
                 }
+                if parts.is_some() {
+                    e.parts = *parts;
+                }
             }
-            Outgoing::Done { id, url, path } => {
+            Outgoing::Done { id, url, path, note } => {
                 let e = self.entry(*id, url);
                 e.status = Status::Done;
                 e.path = Some(path.clone());
                 if let Some(t) = e.total {
                     e.done = t;
                 }
+                if let Some([_, all]) = e.parts {
+                    e.parts = Some([all, all]);
+                }
                 e.error = None;
+                e.note = note.clone();
             }
             Outgoing::Failed { id, url, error } => {
                 let e = self.entry(*id, url);
@@ -99,7 +108,11 @@ impl DownloadTable {
             | Outgoing::CountdownCanceled
             | Outgoing::Quit
             | Outgoing::RefreshWaiting { .. }
-            | Outgoing::RefreshMismatch { .. } => {}
+            | Outgoing::RefreshMismatch { .. }
+            | Outgoing::AddedMany { .. }
+            | Outgoing::MediaInfo { .. }
+            | Outgoing::GrabProgress { .. }
+            | Outgoing::GrabDone { .. } => {}
         }
     }
 
@@ -149,6 +162,8 @@ fn blank(id: u64, url: &str, status: Status) -> DownloadEntry {
         resumable: false,
         connections: 0,
         scan: None,
+        parts: None,
+        note: None,
     }
 }
 
@@ -173,6 +188,7 @@ mod tests {
             url: "https://x/f.zip".into(),
             done,
             total: Some(1000),
+            parts: None,
         }
     }
 
@@ -195,6 +211,7 @@ mod tests {
             id: 1,
             url: "https://x/f.zip".into(),
             path: "C:\\dl\\f.zip".into(),
+            note: None,
         });
         let e = t.get(1).unwrap();
         assert_eq!(e.status, Status::Done);
