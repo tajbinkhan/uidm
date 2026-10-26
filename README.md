@@ -493,6 +493,12 @@ cargo build --release
 node --test extension/test/*.test.js
 ```
 
+GitHub Actions builds the Windows programs on every push and pull request
+(`.github/workflows/build.yml`): it runs `cargo build --release` and
+`cargo test` with the stable MSVC toolchain on `windows-latest`, then uploads
+`uidm-windows`, an artifact with the three programs under `target\release`,
+the extension and `install-host.ps1`, ready for `.\install-host.ps1`.
+
 The Rust tests also run on Linux under Wine, cross-compiled with
 `cargo test --target x86_64-pc-windows-gnu` and
 `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine` (needs the `mingw-w64` and
