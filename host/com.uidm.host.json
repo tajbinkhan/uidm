@@ -4,6 +4,6 @@
     "type": "stdio",
     "path": "REPLACED_BY_INSTALL_SCRIPT",
     "allowed_origins": [
-        "chrome-extension://REPLACE_WITH_YOUR_EXTENSION_ID/"
+        "chrome-extension://epmjakacaejhdhldkpbjnakhfmjjbhfm/"
     ]
 }

@@ -3,16 +3,70 @@
   <head>
     <meta charset="utf-8" />
     <style>
-      body { font: 13px system-ui, sans-serif; width: 260px; padding: 10px; }
-      button { width: 100%; padding: 6px; margin-top: 6px; }
-      input { width: 100%; box-sizing: border-box; }
+      :root {
+        --bg: #ffffff;
+        --fg: #1f2328;
+        --muted: #656d76;
+        --line: #d0d7de;
+        --track: #eaeef2;
+        --accent: #2563eb;
+        --ok: #1a7f37;
+        --bad: #cf222e;
+        --warn: #9a6700;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1f2328;
+          --fg: #e6edf3;
+          --muted: #9198a1;
+          --line: #3d444d;
+          --track: #30363d;
+          --accent: #4f8cff;
+          --ok: #3fb950;
+          --bad: #f85149;
+          --warn: #d29922;
+        }
+      }
+      body { margin: 0; width: 380px; background: var(--bg); color: var(--fg); font: 13px system-ui, sans-serif; }
+      header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+      header h1 { font-size: 15px; margin: 0; flex: 1; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+      .dot.on { background: var(--ok); }
+      .row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+      .status { color: var(--muted); padding: 0 12px 8px; }
+      .status.error { color: var(--bad); }
+      input[type="url"] { flex: 1; min-width: 0; padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--fg); }
+      button { padding: 4px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--fg); cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      ul { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; border-top: 1px solid var(--line); }
+      li { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+      .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+      .bar { height: 5px; margin: 6px 0; border-radius: 3px; background: var(--track); overflow: hidden; }
+      .bar > div { height: 100%; background: var(--accent); }
+      .meta { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+      .meta .grow { flex: 1; }
+      .failed { color: var(--bad); }
+      .canceled { color: var(--warn); }
+      .done { color: var(--ok); }
+      .empty { color: var(--muted); padding: 16px 12px; text-align: center; }
+      label.toggle { display: flex; align-items: center; gap: 6px; }
     </style>
   </head>
   <body>
-    <label>Test URL</label>
-    <input id="url" value="https://example.com/file.zip" />
-    <button id="add">Send "add" to host</button>
-    <button id="ping">Send "ping"</button>
+    <header>
+      <span id="dot" class="dot"></span>
+      <h1>UIDM</h1>
+      <label class="toggle" title="Send downloads the browser starts to UIDM">
+        <input id="capture" type="checkbox" /> Capture downloads
+      </label>
+    </header>
+    <div id="status" class="status"></div>
+    <div class="row">
+      <input id="url" type="url" placeholder="Paste a download URL" />
+      <button id="add" class="primary">Download</button>
+    </div>
+    <ul id="list"></ul>
     <script src="popup.js"></script>
   </body>
 </html>

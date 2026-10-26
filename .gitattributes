@@ -2,4 +2,5 @@
 * text=auto eol=lf
 *.ps1 text eol=crlf
 *.png binary
+*.rgba binary
 *.gif binary

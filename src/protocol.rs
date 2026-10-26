@@ -10,66 +10,106 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-/// A message sent by the browser extension to the host.
+/// A request from a client (the browser via the host, or the desktop window)
+/// to the daemon.
 ///
 /// `op` selects the variant, e.g. `{"op":"add","url":"https://..."}`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Incoming {
-    /// Handshake the extension sends on connect.
+    /// Handshake a client may send on connect.
     Hello {
         #[serde(default)]
         version: Option<String>,
     },
     /// Liveness check.
     Ping,
-    /// A captured download to hand off to the engine.
+    /// A download to hand off to the engine.
     Add(Download),
-    /// Cancel a running or queued download by the id from its `ack`.
+    /// Cancel a queued or running download.
     Cancel { id: u64 },
+    /// Start a failed or canceled download again; it resumes from its partial
+    /// file. The old entry is removed and the retry gets a new id.
+    Retry { id: u64 },
+    /// Forget a finished, failed or canceled download. Files are left alone.
+    Remove { id: u64 },
+    /// Ask for every download the daemon knows about.
+    List,
 }
 
 /// The payload a browser hand-off needs to reissue a request outside the page.
-///
-/// Some fields are not read yet: they are part of the wire contract and will be
-/// consumed by the download engine, so we keep them parsed and silence the
-/// dead-code warning until then.
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Download {
     pub url: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     /// Request headers as name -> value. A map keeps lookup simple; switch to a
     /// `Vec<(String, String)>` if you need to preserve duplicate header names.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cookies: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub referrer: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_agent: Option<String>,
-    /// Suggested filename, when the extension could derive one.
-    #[serde(default)]
+    /// Suggested filename, when the client could derive one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
 }
 
-/// A message the host sends back to the extension.
-#[derive(Debug, Serialize)]
+/// Where a download is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Queued,
+    Downloading,
+    Done,
+    Failed,
+    Canceled,
+}
+
+impl Status {
+    /// Finished one way or another; nothing is running for it.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Status::Done | Status::Failed | Status::Canceled)
+    }
+}
+
+/// One download as the daemon tracks it, sent in a `downloads` snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DownloadEntry {
+    pub id: u64,
+    pub url: String,
+    /// Output file, once the engine has chosen it.
+    pub path: Option<String>,
+    pub total: Option<u64>,
+    pub done: u64,
+    pub status: Status,
+    pub error: Option<String>,
+    pub resumable: bool,
+    pub connections: usize,
+}
+
+/// A message from the daemon to a client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Outgoing {
-    /// Reply to `hello`, announcing the host's identity.
+    /// Reply to `hello`, announcing the daemon's identity.
     Hello { name: String, version: String },
     /// Reply to `ping`.
     Pong,
-    /// Reply to `add`, confirming the download was accepted. `id` identifies the
-    /// download in later events and in a `cancel`.
+    /// Reply to `add` or `retry`, confirming the download was accepted. `id`
+    /// identifies it in later events and requests.
     Ack { id: u64, url: String, status: String },
+    /// A download was queued. Sent to every client.
+    Added { id: u64, url: String },
     /// A download has begun; totals may be unknown for a non-ranged server.
     Started {
         id: u64,
         url: String,
+        /// The file being written.
+        path: String,
         total: Option<u64>,
         resumable: bool,
         connections: usize,
@@ -87,7 +127,11 @@ pub enum Outgoing {
     Failed { id: u64, url: String, error: String },
     /// A download was canceled; its partial file and resume sidecar are kept.
     Canceled { id: u64, url: String },
-    /// Any failure the extension should hear about.
+    /// A download was removed from the list (removed or retried).
+    Removed { id: u64 },
+    /// Reply to `list`: every download the daemon knows about, oldest first.
+    Downloads { items: Vec<DownloadEntry> },
+    /// Any failure the client should hear about.
     Error { message: String },
 }
 

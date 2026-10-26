@@ -1,13 +1,16 @@
 //! UIDM daemon: the long-lived process that owns the download engine.
 //!
-//! Hosts (one per browser connection) connect over loopback TCP and speak the
-//! same length-prefixed JSON frames as the browser. Each connection starts
-//! with a mutual handshake over the token this daemon wrote at start (see
-//! `uidm::ipc`); until the client passes it, it gets no events and its
-//! requests are not read. Replies to a request
-//! (`hello`, `pong`, `ack`, `error`) go to the client that asked. Download
-//! events (`started`, `progress`, `done`, `failed`, `canceled`) are broadcast
-//! to every connected client.
+//! Clients (a host per browser connection, and the desktop window) connect over
+//! loopback TCP and speak the same length-prefixed JSON frames as the browser.
+//! Each connection starts with a mutual handshake over the token this daemon
+//! wrote at start (see `uidm::ipc`); until the client passes it, it gets no
+//! events and its requests are not read.
+//!
+//! Replies to a request (`hello`, `pong`, `ack`, `downloads`, `error`) go to the
+//! client that asked. Download events (`added`, `started`, `progress`, `done`,
+//! `failed`, `canceled`, `removed`) go to every connected client. The daemon
+//! also applies each event to a `DownloadTable`, so a client that connects late
+//! can ask for the whole list.
 //!
 //! Because downloads live here rather than in the host, they keep running when
 //! the browser closes. The daemon exits on its own once it has had no clients
@@ -25,16 +28,135 @@ use std::time::{Duration, Instant};
 use uidm::app::{progress_to_outgoing, to_request, MAX_CONCURRENT_DOWNLOADS, MAX_MESSAGE_BYTES};
 use uidm::engine::{Engine, Progress};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
-use uidm::protocol::{read_message, write_frame, Incoming, Outgoing};
+use uidm::protocol::{read_message, write_frame, Download, Incoming, Outgoing, Status};
+use uidm::state::DownloadTable;
 
 /// Exit after this long with no clients and no queued or running downloads.
 const IDLE_EXIT: Duration = Duration::from_secs(60);
 const IDLE_POLL: Duration = Duration::from_secs(5);
 
-/// Connected clients by id, each with a channel drained by its writer thread.
-type Clients = Arc<Mutex<HashMap<u64, Sender<Vec<u8>>>>>;
-
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
+
+/// Everything the engine's progress callback needs, so it can exist before the
+/// engine does.
+struct Hub {
+    /// Connected clients by id, each with a channel drained by its writer.
+    clients: Mutex<HashMap<u64, Sender<Vec<u8>>>>,
+    /// Every download this daemon has seen, kept current from its events.
+    table: Mutex<DownloadTable>,
+    /// The original request for each download that may still be retried. It
+    /// holds the browser's cookies, so it is dropped once a download is done or
+    /// removed.
+    requests: Mutex<HashMap<u64, Download>>,
+}
+
+impl Hub {
+    /// Apply `msg` to the table and send it to every client. The table lock is
+    /// held across the send, so the order clients see matches the table's, and
+    /// a `downloads` snapshot (taken under the same lock) is never stale.
+    fn publish(&self, msg: &Outgoing) {
+        let mut table = self.table.lock().unwrap();
+        table.apply(msg);
+        if let Outgoing::Done { id, .. } = msg {
+            self.requests.lock().unwrap().remove(id);
+        }
+        let Ok(frame) = serde_json::to_vec(msg) else {
+            return;
+        };
+        // Dropping a client whose writer is gone keeps the map tidy.
+        self.clients
+            .lock()
+            .unwrap()
+            .retain(|_, tx| tx.send(frame.clone()).is_ok());
+    }
+}
+
+struct Daemon {
+    engine: Engine,
+    hub: Arc<Hub>,
+}
+
+impl Daemon {
+    fn new() -> Self {
+        let hub = Arc::new(Hub {
+            clients: Mutex::new(HashMap::new()),
+            table: Mutex::new(DownloadTable::new()),
+            requests: Mutex::new(HashMap::new()),
+        });
+        let events = Arc::clone(&hub);
+        let engine = Engine::new(
+            Arc::new(move |p: Progress| events.publish(&progress_to_outgoing(p))),
+            MAX_CONCURRENT_DOWNLOADS,
+        );
+        Daemon { engine, hub }
+    }
+
+    /// Queue `download`, remember it for retries, and announce it.
+    fn start(&self, download: Download) -> (u64, String) {
+        let url = download.url.clone();
+        let id = self.engine.enqueue(to_request(download.clone()));
+        self.hub.requests.lock().unwrap().insert(id, download);
+        // A very fast download can finish before its request is stored; drop
+        // the request (and its cookies) in that case too.
+        if self.status(id) == Some(Status::Done) {
+            self.hub.requests.lock().unwrap().remove(&id);
+        }
+        self.hub.publish(&Outgoing::Added {
+            id,
+            url: url.clone(),
+        });
+        (id, url)
+    }
+
+    fn status(&self, id: u64) -> Option<Status> {
+        self.hub.table.lock().unwrap().get(id).map(|e| e.status)
+    }
+
+    /// Re-queue a failed or canceled download from its stored request. The
+    /// engine resumes from the partial file when the name and size still match.
+    fn retry(&self, id: u64) -> Result<(u64, String), String> {
+        match self.status(id) {
+            Some(Status::Failed | Status::Canceled) => {}
+            Some(_) => return Err(format!("download {id} is not failed or canceled")),
+            None => return Err(format!("no download with id {id}")),
+        }
+        let download = self
+            .hub
+            .requests
+            .lock()
+            .unwrap()
+            .remove(&id)
+            .ok_or_else(|| format!("download {id} can no longer be retried"))?;
+        self.hub.publish(&Outgoing::Removed { id });
+        Ok(self.start(download))
+    }
+
+    /// Forget a download that is no longer running. Its files stay on disk.
+    fn remove(&self, id: u64) -> Result<(), String> {
+        match self.status(id) {
+            None => return Err(format!("no download with id {id}")),
+            Some(s) if !s.is_terminal() => {
+                return Err(format!("download {id} is still running; cancel it first"))
+            }
+            Some(_) => {}
+        }
+        self.hub.requests.lock().unwrap().remove(&id);
+        self.hub.publish(&Outgoing::Removed { id });
+        Ok(())
+    }
+
+    /// Send the whole list to one client, under the table lock so no event can
+    /// slip between the snapshot and the client's next frame.
+    fn send_list(&self, reply: &Sender<Vec<u8>>) {
+        let table = self.hub.table.lock().unwrap();
+        let msg = Outgoing::Downloads {
+            items: table.snapshot(),
+        };
+        if let Ok(frame) = serde_json::to_vec(&msg) {
+            let _ = reply.send(frame);
+        }
+    }
+}
 
 fn main() {
     if let Err(e) = run() {
@@ -48,7 +170,9 @@ fn run() -> io::Result<()> {
     let listener = match TcpListener::bind(DAEMON_ADDR) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[uidm-daemon] {DAEMON_ADDR} unavailable ({e}); another daemon is likely running");
+            eprintln!(
+                "[uidm-daemon] {DAEMON_ADDR} unavailable ({e}); another daemon is likely running"
+            );
             return Ok(());
         }
     };
@@ -60,27 +184,15 @@ fn run() -> io::Result<()> {
     ipc::write_token(&token)?;
     let token: Arc<str> = token.into();
 
-    let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
-
-    let engine_clients = Arc::clone(&clients);
-    let engine = Arc::new(Engine::new(
-        Arc::new(move |p: Progress| {
-            if let Ok(frame) = serde_json::to_vec(&progress_to_outgoing(p)) {
-                broadcast(&engine_clients, frame);
-            }
-        }),
-        MAX_CONCURRENT_DOWNLOADS,
-    ));
-
-    spawn_idle_monitor(Arc::clone(&clients), Arc::clone(&engine));
+    let daemon = Arc::new(Daemon::new());
+    spawn_idle_monitor(Arc::clone(&daemon));
 
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {
-                let engine = Arc::clone(&engine);
-                let clients = Arc::clone(&clients);
+                let daemon = Arc::clone(&daemon);
                 let token = Arc::clone(&token);
-                thread::spawn(move || handle_client(stream, engine, clients, &token));
+                thread::spawn(move || handle_client(stream, &daemon, &token));
             }
             Err(e) => eprintln!("[uidm-daemon] accept failed: {e}"),
         }
@@ -88,15 +200,9 @@ fn run() -> io::Result<()> {
     Ok(())
 }
 
-/// Send one encoded frame to every client, dropping any whose writer has gone.
-fn broadcast(clients: &Clients, frame: Vec<u8>) {
-    let mut map = clients.lock().unwrap();
-    map.retain(|_, tx| tx.send(frame.clone()).is_ok());
-}
-
 /// Serve one client until it disconnects. The client is registered for
 /// broadcasts only after it authenticates.
-fn handle_client(mut stream: TcpStream, engine: Arc<Engine>, clients: Clients, token: &str) {
+fn handle_client(mut stream: TcpStream, daemon: &Daemon, token: &str) {
     let id = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
     let peer = stream
         .peer_addr()
@@ -116,7 +222,7 @@ fn handle_client(mut stream: TcpStream, engine: Arc<Engine>, clients: Clients, t
         }
     };
     let (tx, rx) = channel::<Vec<u8>>();
-    clients.lock().unwrap().insert(id, tx.clone());
+    daemon.hub.clients.lock().unwrap().insert(id, tx.clone());
 
     // One writer per client keeps its frames whole even when replies and
     // broadcasts race.
@@ -131,15 +237,7 @@ fn handle_client(mut stream: TcpStream, engine: Arc<Engine>, clients: Clients, t
     let mut reader = stream;
     loop {
         match read_message(&mut reader, MAX_MESSAGE_BYTES) {
-            Ok(Some(raw)) => {
-                if let Some(reply) = dispatch(&raw, &engine) {
-                    if let Ok(frame) = serde_json::to_vec(&reply) {
-                        if tx.send(frame).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
+            Ok(Some(raw)) => dispatch(&raw, daemon, &tx),
             Ok(None) => break, // clean disconnect
             Err(e) => {
                 eprintln!("[uidm-daemon] client #{id} read error: {e}");
@@ -149,17 +247,15 @@ fn handle_client(mut stream: TcpStream, engine: Arc<Engine>, clients: Clients, t
     }
 
     // Removing the map's sender and dropping ours leaves the writer's channel
-    // with no senders, so it ends. Downloads this client started keep running.
-    clients.lock().unwrap().remove(&id);
+    // with no senders, so it drains what is queued and ends. Downloads this
+    // client started keep running.
+    daemon.hub.clients.lock().unwrap().remove(&id);
     drop(tx);
     let _ = writer.join();
     eprintln!("[uidm-daemon] client #{id} disconnected");
 }
 
-/// Run the daemon side of the handshake: answer the client's nonce with ours
-/// and a proof that we hold the token, then check the client's proof and reply
-/// `auth_ok`. Each read waits at most `AUTH_TIMEOUT`. Dropping the stream on
-/// error closes the connection.
+/// Run the daemon side of the handshake described in `uidm::ipc`.
 fn authenticate(stream: &mut TcpStream, token: &str) -> io::Result<()> {
     stream.set_read_timeout(Some(AUTH_TIMEOUT))?;
 
@@ -191,49 +287,71 @@ fn denied(why: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, why.to_string())
 }
 
-/// Handle one request frame. Returns the direct reply, if any.
-fn dispatch(raw: &[u8], engine: &Engine) -> Option<Outgoing> {
+/// Handle one request frame, sending any direct reply to `reply`.
+fn dispatch(raw: &[u8], daemon: &Daemon, reply: &Sender<Vec<u8>>) {
+    let send = |msg: &Outgoing| {
+        if let Ok(frame) = serde_json::to_vec(msg) {
+            let _ = reply.send(frame);
+        }
+    };
     let incoming: Incoming = match serde_json::from_slice(raw) {
         Ok(msg) => msg,
         Err(e) => {
-            return Some(Outgoing::Error {
+            send(&Outgoing::Error {
                 message: format!("invalid message: {e}"),
-            })
+            });
+            return;
         }
     };
 
     match incoming {
-        Incoming::Hello { .. } => Some(Outgoing::Hello {
+        Incoming::Hello { .. } => send(&Outgoing::Hello {
             name: "uidm-daemon".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }),
-        Incoming::Ping => Some(Outgoing::Pong),
+        Incoming::Ping => send(&Outgoing::Pong),
         Incoming::Add(download) => {
-            let url = download.url.clone();
-            let id = engine.enqueue(to_request(download));
+            let (id, url) = daemon.start(download);
             eprintln!("[uidm-daemon] add #{id}: {url}");
-            Some(Outgoing::Ack {
+            send(&Outgoing::Ack {
                 id,
                 url,
                 status: "accepted".to_string(),
-            })
+            });
         }
         Incoming::Cancel { id } => {
             eprintln!("[uidm-daemon] cancel #{id}");
-            engine.cancel(id);
-            None
+            daemon.engine.cancel(id);
         }
+        Incoming::Retry { id } => match daemon.retry(id) {
+            Ok((new_id, url)) => {
+                eprintln!("[uidm-daemon] retry #{id} as #{new_id}");
+                send(&Outgoing::Ack {
+                    id: new_id,
+                    url,
+                    status: "accepted".to_string(),
+                });
+            }
+            Err(message) => send(&Outgoing::Error { message }),
+        },
+        Incoming::Remove { id } => {
+            if let Err(message) = daemon.remove(id) {
+                send(&Outgoing::Error { message });
+            }
+        }
+        Incoming::List => daemon.send_list(reply),
     }
 }
 
 /// Exit the process once it has been idle (no clients, no downloads) for
 /// `IDLE_EXIT`, so a daemon started by the browser does not linger forever.
-fn spawn_idle_monitor(clients: Clients, engine: Arc<Engine>) {
+fn spawn_idle_monitor(daemon: Arc<Daemon>) {
     thread::spawn(move || {
         let mut idle_since: Option<Instant> = None;
         loop {
             thread::sleep(IDLE_POLL);
-            let idle = clients.lock().unwrap().is_empty() && engine.active_count() == 0;
+            let idle = daemon.hub.clients.lock().unwrap().is_empty()
+                && daemon.engine.active_count() == 0;
             match (idle, idle_since) {
                 (true, None) => idle_since = Some(Instant::now()),
                 (true, Some(t)) if t.elapsed() >= IDLE_EXIT => {

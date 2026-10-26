@@ -65,6 +65,8 @@ pub enum Progress {
     Started {
         id: u64,
         url: String,
+        /// The file being written.
+        path: PathBuf,
         total: Option<u64>,
         resumable: bool,
         connections: usize,
@@ -263,6 +265,7 @@ fn run_inner(
     reporter.send(Progress::Started {
         id,
         url: req.url.clone(),
+        path: output.clone(),
         total: probe.total,
         resumable: probe.resumable,
         connections,
@@ -363,10 +366,13 @@ fn run_segmented(
     }
 
     if token.load(Ordering::Relaxed) {
-        // Keep the sidecar and partial file so a later request resumes.
+        // Keep the sidecar and partial file so a later request resumes, saved
+        // with the latest progress rather than the last periodic flush.
+        shared.lock().unwrap().save(&sidecar).ok();
         return Ok(output);
     }
     if let Some(err) = first_error.lock().unwrap().take() {
+        shared.lock().unwrap().save(&sidecar).ok();
         return Err(err);
     }
 

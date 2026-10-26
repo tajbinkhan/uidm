@@ -42,12 +42,14 @@ pub fn progress_to_outgoing(p: Progress) -> Outgoing {
         Progress::Started {
             id,
             url,
+            path,
             total,
             resumable,
             connections,
         } => Outgoing::Started {
             id,
             url,
+            path: path.display().to_string(),
             total,
             resumable,
             connections,
