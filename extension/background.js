@@ -82,7 +82,7 @@ function upsert(id, url) {
   return e;
 }
 
-const TERMINAL = new Set(["done", "failed", "canceled"]);
+const TERMINAL = new Set(["done", "failed", "canceled", "interrupted"]);
 
 function onHostMessage(msg) {
   switch (msg.op) {

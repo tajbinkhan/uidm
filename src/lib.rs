@@ -6,9 +6,15 @@
 //! - `ipc`: locating, starting and connecting to the daemon.
 //! - `app`: glue shared by the binaries (request building, event mapping).
 //! - `state`: the download list that the daemon and the window both keep.
+//! - `settings`: user settings and their file.
+//! - `history`: the daemon's download list and saved requests on disk.
+//! - `dpapi`: Windows DPAPI encryption for saved requests.
 
 pub mod app;
+pub mod dpapi;
 pub mod engine;
+pub mod history;
 pub mod ipc;
 pub mod protocol;
+pub mod settings;
 pub mod state;

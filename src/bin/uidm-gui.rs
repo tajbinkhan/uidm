@@ -2,16 +2,17 @@
 //!
 //! It is one more daemon client. A background thread connects (starting the
 //! daemon if needed, with the same mutual handshake as the host), asks for the
-//! full list, then applies every event to a `DownloadTable`. The window draws
-//! from a copy of that table each frame and sends `add`, `cancel`, `retry` and
-//! `remove` requests over the same connection.
+//! full list and the settings, then applies every event to a `DownloadTable`.
+//! The window draws from a copy of that table each frame and sends `add`,
+//! `cancel`, `retry`, `remove` and `set_settings` requests over the same
+//! connection.
 
 #![windows_subsystem = "windows"]
 
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::os::windows::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,6 +22,9 @@ use eframe::egui;
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
 use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Status};
+use uidm::settings::{
+    FileExists, Settings, CONNECTIONS_RANGE, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS,
+};
 use uidm::state::DownloadTable;
 
 /// Ignore speed samples closer together than this; they are too noisy.
@@ -71,12 +75,30 @@ struct Shared {
     speeds: HashMap<u64, Speed>,
     /// The daemon's most recent `error` reply, shown in the status bar.
     last_error: Option<String>,
+    /// The daemon's settings, once it has sent them.
+    settings: Option<Settings>,
+    /// True from sending `set_settings` until the daemon answers with
+    /// `settings` or `error`.
+    saving: bool,
+    /// That answer, for the Options dialog to pick up.
+    save_result: Option<Result<(), String>>,
 }
 
 impl Shared {
     fn apply(&mut self, msg: &Outgoing) {
         self.table.apply(msg);
         match msg {
+            Outgoing::Settings { settings } => {
+                self.settings = Some(settings.clone());
+                if self.saving {
+                    self.saving = false;
+                    self.save_result = Some(Ok(()));
+                }
+            }
+            Outgoing::Error { message } if self.saving => {
+                self.saving = false;
+                self.save_result = Some(Err(message.clone()));
+            }
             Outgoing::Progress { id, done, .. } => self.sample_speed(*id, *done),
             Outgoing::Done { id, .. }
             | Outgoing::Failed { id, .. }
@@ -121,6 +143,10 @@ enum Action {
     Open(String),
     ShowInFolder(String),
     Reconnect,
+    OpenOptions,
+    SaveSettings(Settings),
+    /// Send new settings without the Options dialog (the speed limit toggle).
+    QuickSettings(Settings),
 }
 
 struct App {
@@ -129,6 +155,87 @@ struct App {
     writer: Arc<Mutex<Option<TcpStream>>>,
     ctx: egui::Context,
     url_input: String,
+    /// The Options dialog, while it is open.
+    options: Option<OptionsDraft>,
+}
+
+/// Units the speed limit can be entered in.
+#[derive(Clone, Copy, PartialEq)]
+enum SpeedUnit {
+    Kb,
+    Mb,
+}
+
+impl SpeedUnit {
+    fn kb(self) -> f64 {
+        match self {
+            SpeedUnit::Kb => 1.0,
+            SpeedUnit::Mb => 1024.0,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            SpeedUnit::Kb => "KB/s",
+            SpeedUnit::Mb => "MB/s",
+        }
+    }
+}
+
+/// The Options dialog's fields, edited freely and checked on Save.
+struct OptionsDraft {
+    /// Empty means the Downloads folder.
+    folder: String,
+    connections: usize,
+    max_concurrent: usize,
+    limit_enabled: bool,
+    limit_value: f64,
+    limit_unit: SpeedUnit,
+    resume_at_startup: bool,
+    file_exists: FileExists,
+    error: Option<String>,
+    /// A folder chosen in the picker, delivered by its thread.
+    picked: Arc<Mutex<Option<PathBuf>>>,
+}
+
+impl OptionsDraft {
+    fn new(s: &Settings) -> Self {
+        let kbps = s.speed_limit_kbps;
+        let limit_unit = if kbps >= 1024 && kbps.is_multiple_of(1024) {
+            SpeedUnit::Mb
+        } else {
+            SpeedUnit::Kb
+        };
+        OptionsDraft {
+            folder: s.download_dir.clone().unwrap_or_default(),
+            connections: s.connections,
+            max_concurrent: s.max_concurrent,
+            limit_enabled: s.speed_limit_enabled,
+            limit_value: kbps as f64 / limit_unit.kb(),
+            limit_unit,
+            resume_at_startup: s.resume_at_startup,
+            file_exists: s.file_exists,
+            error: None,
+            picked: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// The settings these fields describe, checked the same way the daemon
+    /// checks them.
+    fn to_settings(&self) -> Result<Settings, String> {
+        let folder = self.folder.trim();
+        let settings = Settings {
+            download_dir: (!folder.is_empty()).then(|| folder.to_string()),
+            connections: self.connections,
+            max_concurrent: self.max_concurrent,
+            speed_limit_enabled: self.limit_enabled,
+            speed_limit_kbps: (self.limit_value * self.limit_unit.kb()).round() as u64,
+            resume_at_startup: self.resume_at_startup,
+            file_exists: self.file_exists,
+        };
+        settings.validate()?;
+        Ok(settings)
+    }
 }
 
 impl App {
@@ -139,10 +246,14 @@ impl App {
                 table: DownloadTable::new(),
                 speeds: HashMap::new(),
                 last_error: None,
+                settings: None,
+                saving: false,
+                save_result: None,
             })),
             writer: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
             url_input: String::new(),
+            options: None,
         };
         app.connect();
         app
@@ -171,6 +282,7 @@ impl App {
             *writer.lock().unwrap() = Some(stream);
             set_link(Link::Connected);
             send(&writer, &Incoming::List);
+            send(&writer, &Incoming::GetSettings);
 
             loop {
                 match read_message(&mut reader, MAX_MESSAGE_BYTES) {
@@ -234,7 +346,174 @@ impl App {
                     .spawn();
             }
             Action::Reconnect => self.connect(),
+            Action::OpenOptions => {
+                if let Some(settings) = &self.shared.lock().unwrap().settings {
+                    self.options = Some(OptionsDraft::new(settings));
+                }
+            }
+            Action::SaveSettings(settings) => {
+                {
+                    let mut s = self.shared.lock().unwrap();
+                    s.saving = true;
+                    s.save_result = None;
+                }
+                if !send(&self.writer, &Incoming::SetSettings { settings }) {
+                    let mut s = self.shared.lock().unwrap();
+                    s.saving = false;
+                    s.save_result = Some(Err("not connected to the UIDM daemon".into()));
+                }
+            }
+            Action::QuickSettings(settings) => {
+                send(&self.writer, &Incoming::SetSettings { settings });
+            }
         }
+    }
+
+    /// Draw the Options dialog while it is open.
+    fn options_window(&mut self, ctx: &egui::Context, connected: bool, actions: &mut Vec<Action>) {
+        // Pick up the daemon's answer to a save.
+        let result = self.shared.lock().unwrap().save_result.take();
+        let saving = self.shared.lock().unwrap().saving;
+        let Some(draft) = self.options.as_mut() else {
+            return;
+        };
+        match result {
+            Some(Ok(())) => {
+                self.options = None;
+                return;
+            }
+            Some(Err(e)) => draft.error = Some(e),
+            None => {}
+        }
+        if let Some(folder) = draft.picked.lock().unwrap().take() {
+            draft.folder = folder.display().to_string();
+        }
+
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new("Options")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                egui::Grid::new("options").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                    ui.label("Download folder");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.folder)
+                                .hint_text("Your Downloads folder")
+                                .desired_width(280.0),
+                        );
+                        if ui.button("Browse...").clicked() {
+                            let picked = Arc::clone(&draft.picked);
+                            let ctx = ctx.clone();
+                            let start = draft.folder.clone();
+                            // The picker blocks, so it gets its own thread.
+                            thread::spawn(move || {
+                                let mut dialog = rfd::FileDialog::new().set_title("Download folder");
+                                if !start.trim().is_empty() {
+                                    dialog = dialog.set_directory(start.trim());
+                                }
+                                if let Some(folder) = dialog.pick_folder() {
+                                    *picked.lock().unwrap() = Some(folder);
+                                    ctx.request_repaint();
+                                }
+                            });
+                        }
+                        if ui.button("Default").on_hover_text("Use your Downloads folder").clicked() {
+                            draft.folder.clear();
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label("Connections per file");
+                    let (lo, hi) = CONNECTIONS_RANGE;
+                    ui.add(egui::DragValue::new(&mut draft.connections).range(lo..=hi));
+                    ui.end_row();
+
+                    ui.label("Downloads at once");
+                    let (lo, hi) = MAX_CONCURRENT_RANGE;
+                    ui.add(egui::DragValue::new(&mut draft.max_concurrent).range(lo..=hi));
+                    ui.end_row();
+
+                    ui.label("Speed limit");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut draft.limit_enabled, "Limit to");
+                        ui.add_enabled_ui(draft.limit_enabled, |ui| {
+                            let (lo, hi) = SPEED_LIMIT_RANGE_KBPS;
+                            let unit = draft.limit_unit.kb();
+                            ui.add(
+                                egui::DragValue::new(&mut draft.limit_value)
+                                    .range(lo as f64 / unit..=hi as f64 / unit)
+                                    .max_decimals(1),
+                            );
+                            let before = draft.limit_unit;
+                            egui::ComboBox::from_id_salt("unit")
+                                .selected_text(draft.limit_unit.label())
+                                .width(70.0)
+                                .show_ui(ui, |ui| {
+                                    for u in [SpeedUnit::Kb, SpeedUnit::Mb] {
+                                        ui.selectable_value(&mut draft.limit_unit, u, u.label());
+                                    }
+                                });
+                            // Keep the same speed when only the unit changes.
+                            if before != draft.limit_unit {
+                                draft.limit_value = draft.limit_value * before.kb() / draft.limit_unit.kb();
+                            }
+                        });
+                    });
+                    ui.end_row();
+
+                    ui.label("If the file exists");
+                    egui::ComboBox::from_id_salt("file_exists")
+                        .selected_text(file_exists_label(draft.file_exists))
+                        .show_ui(ui, |ui| {
+                            for f in [FileExists::Rename, FileExists::Overwrite] {
+                                ui.selectable_value(&mut draft.file_exists, f, file_exists_label(f));
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("");
+                    ui.checkbox(&mut draft.resume_at_startup, "Resume unfinished downloads at startup");
+                    ui.end_row();
+                });
+
+                if let Some(err) = &draft.error {
+                    ui.add_space(4.0);
+                    ui.colored_label(ui.visuals().error_fg_color, err);
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let save = ui.add_enabled(connected && !saving, egui::Button::new("Save"));
+                    if save.clicked() {
+                        match draft.to_settings() {
+                            Ok(settings) => {
+                                draft.error = None;
+                                actions.push(Action::SaveSettings(settings));
+                            }
+                            Err(e) => draft.error = Some(e),
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                    if saving {
+                        ui.spinner();
+                    }
+                });
+            });
+        if !open || close {
+            self.options = None;
+        }
+    }
+}
+
+fn file_exists_label(f: FileExists) -> &'static str {
+    match f {
+        FileExists::Rename => "Save with a new name",
+        FileExists::Overwrite => "Overwrite it",
     }
 }
 
@@ -253,7 +532,7 @@ fn send(writer: &Arc<Mutex<Option<TcpStream>>>, msg: &Incoming) -> bool {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Copy what this frame needs, then draw without holding the lock.
-        let (link, rows, speeds, last_error) = {
+        let (link, rows, speeds, last_error, settings) = {
             let s = self.shared.lock().unwrap();
             let speeds: HashMap<u64, f64> =
                 s.speeds.iter().map(|(id, sp)| (*id, sp.bytes_per_sec)).collect();
@@ -262,6 +541,7 @@ impl eframe::App for App {
                 s.table.entries().cloned().collect::<Vec<DownloadEntry>>(),
                 speeds,
                 s.last_error.clone(),
+                s.settings.clone(),
             )
         };
         let connected = matches!(link, Link::Connected);
@@ -275,7 +555,7 @@ impl eframe::App for App {
                 let input = ui.add(
                     egui::TextEdit::singleline(&mut self.url_input)
                         .hint_text("Paste a download URL")
-                        .desired_width((ui.available_width() - 100.0).max(120.0)),
+                        .desired_width((ui.available_width() - 180.0).max(120.0)),
                 );
                 let entered = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let url = self.url_input.trim().to_string();
@@ -284,6 +564,10 @@ impl eframe::App for App {
                 if can_add && (clicked || entered) {
                     actions.push(Action::Add(url));
                     self.url_input.clear();
+                }
+                let can_open = connected && settings.is_some();
+                if ui.add_enabled(can_open, egui::Button::new("Options")).clicked() {
+                    actions.push(Action::OpenOptions);
                 }
             });
             ui.add_space(6.0);
@@ -322,6 +606,29 @@ impl eframe::App for App {
                     {
                         actions.push(Action::ClearFinished);
                     }
+                    if let Some(s) = &settings {
+                        ui.separator();
+                        let toggle = if s.speed_limit_enabled { "Turn off" } else { "Limit speed" };
+                        let hover = format!("Limit: {}/s", human_bytes(s.speed_limit_kbps * 1024));
+                        if ui
+                            .add_enabled(connected, egui::Button::new(toggle).small())
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            actions.push(Action::QuickSettings(Settings {
+                                speed_limit_enabled: !s.speed_limit_enabled,
+                                ..s.clone()
+                            }));
+                        }
+                        if s.speed_limit_enabled {
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                format!("Speed limit {}/s", human_bytes(s.speed_limit_kbps * 1024)),
+                            );
+                        } else {
+                            ui.weak("No speed limit");
+                        }
+                    }
                 });
             });
             ui.add_space(4.0);
@@ -351,6 +658,8 @@ impl eframe::App for App {
                     });
             });
         });
+
+        self.options_window(ctx, connected, &mut actions);
 
         for action in actions {
             self.perform(action);
@@ -415,6 +724,7 @@ fn draw_row(
         Status::Done => ("Done", visuals.text_color()),
         Status::Failed => ("Failed", visuals.error_fg_color),
         Status::Canceled => ("Canceled", visuals.warn_fg_color),
+        Status::Interrupted => ("Interrupted", visuals.warn_fg_color),
     };
     let status = ui.colored_label(color, text);
     if let Some(err) = &e.error {
@@ -428,7 +738,7 @@ fn draw_row(
                     actions.push(Action::Cancel(e.id));
                 }
             }
-            Status::Failed | Status::Canceled => {
+            Status::Failed | Status::Canceled | Status::Interrupted => {
                 if ui.small_button("Retry").clicked() {
                     actions.push(Action::Retry(e.id));
                 }

@@ -15,25 +15,35 @@
 //! Because downloads live here rather than in the host, they keep running when
 //! the browser closes. The daemon exits on its own once it has had no clients
 //! and no downloads for `IDLE_EXIT`.
+//!
+//! The list survives restarts: every change is written to the history file
+//! (debounced, and again on exit), and the requests that may still be retried
+//! go to a DPAPI-encrypted file next to it (see `uidm::history`). Settings are
+//! loaded at start and changed with `set_settings` (see `uidm::settings`).
 
 use std::collections::HashMap;
 use std::io;
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use uidm::app::{progress_to_outgoing, to_request, MAX_CONCURRENT_DOWNLOADS, MAX_MESSAGE_BYTES};
+use uidm::app::{progress_to_outgoing, to_request, MAX_MESSAGE_BYTES};
 use uidm::engine::{Engine, Progress};
+use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
 use uidm::protocol::{read_message, write_frame, Download, Incoming, Outgoing, Status};
+use uidm::settings::{self, Settings};
 use uidm::state::DownloadTable;
 
 /// Exit after this long with no clients and no queued or running downloads.
 const IDLE_EXIT: Duration = Duration::from_secs(60);
 const IDLE_POLL: Duration = Duration::from_secs(5);
+/// Collect changes for this long before writing the history.
+const HISTORY_DEBOUNCE: Duration = Duration::from_secs(1);
 
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
 
@@ -46,8 +56,10 @@ struct Hub {
     table: Mutex<DownloadTable>,
     /// The original request for each download that may still be retried. It
     /// holds the browser's cookies, so it is dropped once a download is done or
-    /// removed.
+    /// removed, and saved only encrypted.
     requests: Mutex<HashMap<u64, Download>>,
+    /// Wakes the history writer after every change.
+    dirty: Sender<()>,
 }
 
 impl Hub {
@@ -60,6 +72,12 @@ impl Hub {
         if let Outgoing::Done { id, .. } = msg {
             self.requests.lock().unwrap().remove(id);
         }
+        let _ = self.dirty.send(());
+        self.broadcast(msg);
+    }
+
+    /// Send `msg` to every client.
+    fn broadcast(&self, msg: &Outgoing) {
         let Ok(frame) = serde_json::to_vec(msg) else {
             return;
         };
@@ -71,30 +89,109 @@ impl Hub {
     }
 }
 
+/// Where the daemon keeps its files. A path is `None` when its environment
+/// variable is missing; that data then lives in memory only.
+struct Paths {
+    settings: Option<PathBuf>,
+    history: Option<PathBuf>,
+    requests: Option<PathBuf>,
+}
+
+impl Paths {
+    fn from_env() -> Self {
+        let warn = |what: &str, r: io::Result<PathBuf>| {
+            r.map_err(|e| eprintln!("[uidm-daemon] no {what} file: {e}")).ok()
+        };
+        Paths {
+            settings: warn("settings", settings::settings_path()),
+            history: warn("history", history::history_path()),
+            requests: warn("saved requests", history::requests_path()),
+        }
+    }
+}
+
 struct Daemon {
     engine: Engine,
     hub: Arc<Hub>,
+    settings: Mutex<Settings>,
+    paths: Paths,
+    /// Keeps the history writer and the exit flush from writing at once.
+    save_lock: Mutex<()>,
 }
 
 impl Daemon {
-    fn new() -> Self {
+    /// Load settings, history and saved requests, and start the engine with
+    /// them. Returns the receiver the history writer waits on.
+    fn new(paths: Paths) -> (Self, Receiver<()>) {
+        let settings = match &paths.settings {
+            Some(path) => Settings::load(path).unwrap_or_else(|e| {
+                eprintln!("[uidm-daemon] ignoring {}: {e}", path.display());
+                Settings::default()
+            }),
+            None => Settings::default(),
+        };
+        let history = match &paths.history {
+            Some(path) => History::load(path).unwrap_or_else(|e| {
+                // Keep the unreadable file for inspection instead of
+                // overwriting it with an empty list.
+                let bad = path.with_extension("json.bad");
+                eprintln!(
+                    "[uidm-daemon] could not read {}: {e}; moved to {}",
+                    path.display(),
+                    bad.display()
+                );
+                let _ = std::fs::rename(path, &bad);
+                History::default()
+            }),
+            None => History::default(),
+        };
+        let mut requests = match &paths.requests {
+            Some(path) => history::load_requests(path).unwrap_or_else(|e| {
+                eprintln!("[uidm-daemon] could not read saved requests: {e}");
+                HashMap::new()
+            }),
+            None => HashMap::new(),
+        };
+
+        let mut table = DownloadTable::new();
+        table.apply(&Outgoing::Downloads {
+            items: history.items,
+        });
+        requests.retain(|id, _| table.get(*id).is_some_and(|e| e.status.is_retryable()));
+
+        let (dirty, dirty_rx) = channel();
         let hub = Arc::new(Hub {
             clients: Mutex::new(HashMap::new()),
-            table: Mutex::new(DownloadTable::new()),
-            requests: Mutex::new(HashMap::new()),
+            table: Mutex::new(table),
+            requests: Mutex::new(requests),
+            dirty,
         });
         let events = Arc::clone(&hub);
         let engine = Engine::new(
             Arc::new(move |p: Progress| events.publish(&progress_to_outgoing(p))),
-            MAX_CONCURRENT_DOWNLOADS,
+            settings.max_concurrent,
         );
-        Daemon { engine, hub }
+        engine.set_speed_limit(settings.speed_limit_bytes());
+        let max_id = hub.table.lock().unwrap().max_id();
+        engine.set_next_id(history.next_id.max(max_id + 1));
+
+        let daemon = Daemon {
+            engine,
+            hub,
+            settings: Mutex::new(settings),
+            paths,
+            save_lock: Mutex::new(()),
+        };
+        (daemon, dirty_rx)
     }
 
     /// Queue `download`, remember it for retries, and announce it.
-    fn start(&self, download: Download) -> (u64, String) {
+    /// `reuse_path` is a partial file an earlier attempt left behind.
+    fn start(&self, download: Download, reuse_path: Option<PathBuf>) -> (u64, String) {
         let url = download.url.clone();
-        let id = self.engine.enqueue(to_request(download.clone()));
+        let mut req = to_request(download.clone(), &self.settings.lock().unwrap());
+        req.reuse_path = reuse_path;
+        let id = self.engine.enqueue(req);
         self.hub.requests.lock().unwrap().insert(id, download);
         // A very fast download can finish before its request is stored; drop
         // the request (and its cookies) in that case too.
@@ -112,13 +209,21 @@ impl Daemon {
         self.hub.table.lock().unwrap().get(id).map(|e| e.status)
     }
 
-    /// Re-queue a failed or canceled download from its stored request. The
-    /// engine resumes from the partial file when the name and size still match.
+    /// Re-queue a failed, canceled or interrupted download from its stored
+    /// request, or from its URL alone when the request was not kept. The
+    /// engine resumes the partial file when the server still reports the same
+    /// file.
     fn retry(&self, id: u64) -> Result<(u64, String), String> {
-        match self.status(id) {
-            Some(Status::Failed | Status::Canceled) => {}
-            Some(_) => return Err(format!("download {id} is not failed or canceled")),
-            None => return Err(format!("no download with id {id}")),
+        let entry = self
+            .hub
+            .table
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| format!("no download with id {id}"))?;
+        if !entry.status.is_retryable() {
+            return Err(format!("download {id} is not failed, canceled or interrupted"));
         }
         let download = self
             .hub
@@ -126,9 +231,67 @@ impl Daemon {
             .lock()
             .unwrap()
             .remove(&id)
-            .ok_or_else(|| format!("download {id} can no longer be retried"))?;
+            .unwrap_or_else(|| Download {
+                url: entry.url.clone(),
+                ..Download::default()
+            });
         self.hub.publish(&Outgoing::Removed { id });
-        Ok(self.start(download))
+        Ok(self.start(download, entry.path.map(PathBuf::from)))
+    }
+
+    /// Validate, save and apply new settings, then tell every client. Running
+    /// downloads keep going; new ones use the new values.
+    fn set_settings(&self, new: Settings) -> Result<(), String> {
+        new.validate()?;
+        if let Some(path) = &self.paths.settings {
+            new.save(path)
+                .map_err(|e| format!("could not save settings to {}: {e}", path.display()))?;
+        }
+        self.engine.set_concurrency(new.max_concurrent);
+        self.engine.set_speed_limit(new.speed_limit_bytes());
+        *self.settings.lock().unwrap() = new.clone();
+        self.hub.broadcast(&Outgoing::Settings { settings: new });
+        Ok(())
+    }
+
+    /// Queue every interrupted download again (the "resume at startup"
+    /// option).
+    fn resume_interrupted(&self) {
+        let ids: Vec<u64> = self
+            .hub
+            .table
+            .lock()
+            .unwrap()
+            .entries()
+            .filter(|e| e.status == Status::Interrupted)
+            .map(|e| e.id)
+            .collect();
+        for id in ids {
+            match self.retry(id) {
+                Ok((new_id, url)) => eprintln!("[uidm-daemon] resuming #{id} as #{new_id}: {url}"),
+                Err(e) => eprintln!("[uidm-daemon] could not resume #{id}: {e}"),
+            }
+        }
+    }
+
+    /// Write the history and the saved requests now.
+    fn save_history(&self) {
+        let _guard = self.save_lock.lock().unwrap();
+        let history = History {
+            next_id: self.engine.next_id(),
+            items: self.hub.table.lock().unwrap().snapshot(),
+        };
+        let requests = self.hub.requests.lock().unwrap().clone();
+        if let Some(path) = &self.paths.history {
+            if let Err(e) = history.save(path) {
+                eprintln!("[uidm-daemon] could not save {}: {e}", path.display());
+            }
+        }
+        if let Some(path) = &self.paths.requests {
+            if let Err(e) = history::save_requests(path, &requests) {
+                eprintln!("[uidm-daemon] could not save {}: {e}", path.display());
+            }
+        }
     }
 
     /// Forget a download that is no longer running. Its files stay on disk.
@@ -184,7 +347,12 @@ fn run() -> io::Result<()> {
     ipc::write_token(&token)?;
     let token: Arc<str> = token.into();
 
-    let daemon = Arc::new(Daemon::new());
+    let (daemon, dirty) = Daemon::new(Paths::from_env());
+    let daemon = Arc::new(daemon);
+    spawn_history_writer(Arc::clone(&daemon), dirty);
+    if daemon.settings.lock().unwrap().resume_at_startup {
+        daemon.resume_interrupted();
+    }
     spawn_idle_monitor(Arc::clone(&daemon));
 
     for conn in listener.incoming() {
@@ -311,7 +479,7 @@ fn dispatch(raw: &[u8], daemon: &Daemon, reply: &Sender<Vec<u8>>) {
         }),
         Incoming::Ping => send(&Outgoing::Pong),
         Incoming::Add(download) => {
-            let (id, url) = daemon.start(download);
+            let (id, url) = daemon.start(download, None);
             eprintln!("[uidm-daemon] add #{id}: {url}");
             send(&Outgoing::Ack {
                 id,
@@ -340,7 +508,26 @@ fn dispatch(raw: &[u8], daemon: &Daemon, reply: &Sender<Vec<u8>>) {
             }
         }
         Incoming::List => daemon.send_list(reply),
+        Incoming::GetSettings => send(&Outgoing::Settings {
+            settings: daemon.settings.lock().unwrap().clone(),
+        }),
+        Incoming::SetSettings { settings } => match daemon.set_settings(settings) {
+            Ok(()) => eprintln!("[uidm-daemon] settings changed"),
+            Err(message) => send(&Outgoing::Error { message }),
+        },
     }
+}
+
+/// Write the history shortly after it changes, batching bursts of events
+/// (progress, a cleared list) into one write.
+fn spawn_history_writer(daemon: Arc<Daemon>, dirty: Receiver<()>) {
+    thread::spawn(move || {
+        while dirty.recv().is_ok() {
+            thread::sleep(HISTORY_DEBOUNCE);
+            while dirty.try_recv().is_ok() {}
+            daemon.save_history();
+        }
+    });
 }
 
 /// Exit the process once it has been idle (no clients, no downloads) for
@@ -356,6 +543,7 @@ fn spawn_idle_monitor(daemon: Arc<Daemon>) {
                 (true, None) => idle_since = Some(Instant::now()),
                 (true, Some(t)) if t.elapsed() >= IDLE_EXIT => {
                     eprintln!("[uidm-daemon] idle for {}s, exiting", IDLE_EXIT.as_secs());
+                    daemon.save_history();
                     std::process::exit(0);
                 }
                 (false, _) => idle_since = None,

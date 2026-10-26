@@ -43,8 +43,15 @@ Downloaded files are left alone.
   capture off, or while UIDM is not running, the browser keeps its own
   downloads.
 
-Files are saved to your Downloads folder. Closing the browser or the window
-does not stop a download.
+- **Options** (top right of the window) sets the download folder, connections
+  per file (1 to 16), downloads at once (1 to 10), a total speed limit, what
+  to do when a file name is taken, and whether to resume unfinished downloads
+  when UIDM starts. The status bar shows the speed limit and toggles it.
+
+Files are saved to your Downloads folder unless Options says otherwise.
+Closing the browser or the window does not stop a download. The list survives
+restarts: downloads that were running when UIDM stopped show as
+**Interrupted**, and **Retry** resumes them from their partial file.
 
 ## How it fits together
 
@@ -60,7 +67,15 @@ desktop window (uidm-gui) ---------------+   (authenticated)   (owns downloads)
   download events go to every client, so the window, the popup and any open
   browser all stay in step. It exits by itself after 60 seconds with no
   clients and no queued or running downloads. Its log is
-  `%TEMP%\uidm-daemon.log`.
+  `%TEMP%\uidm-daemon.log`. It keeps its files in:
+  - `%APPDATA%\UIDM\settings.json`: the settings. A missing file or field
+    means the default.
+  - `%LOCALAPPDATA%\UIDM\history.json`: the download list and the next id,
+    written about a second after each change and again on exit. It never
+    holds cookies or request headers.
+  - `%LOCALAPPDATA%\UIDM\requests.bin`: the original requests of downloads
+    that can still be retried, cookies included, encrypted with Windows DPAPI
+    for the current user. It is deleted when none is left.
 - **`uidm-host`** is what the browser launches. It connects to the daemon,
   starting it if nothing answers, then copies frames between the browser's
   stdin/stdout and the daemon without parsing them. It waits up to 10 seconds
@@ -143,12 +158,35 @@ Given an `add`, the engine:
 The output filename is, in priority order: an explicit name on the request, the
 server's `Content-Disposition` (including the RFC 5987
 `filename*=UTF-8''...` form, percent-decoded), the URL path, then a generic
-fallback. Up to 3 downloads run at once (`MAX_CONCURRENT_DOWNLOADS`) and the
-rest queue.
+fallback.
+
+A new download never writes into an existing file unless that file is a
+partial copy of the same download, which its `.uidmpart` sidecar proves (same
+size, and same ETag or Last-Modified when the server sends them). Otherwise it
+is saved as `name (1).ext`, `name (2).ext`, and so on, or replaces the file
+when Options says to overwrite. Two downloads never write the same file at
+once. A retry reuses the file its earlier attempt wrote.
+
+Downloads run up to the **Downloads at once** setting (3 by default) and the
+rest queue in order. Changing the setting takes effect at once: raising it
+starts queued downloads, lowering it lets running ones finish. Canceling a
+queued download takes it off the queue at once.
+
+The speed limit is one token bucket shared by every connection of every
+download. Each read takes tokens for the bytes it read and sleeps when the
+bucket runs dry, and reads shrink to about a tenth of a second's worth so
+throttled downloads flow evenly. A new limit, or turning it off, applies to
+running downloads within 100 ms.
 
 The daemon keeps each download's original request, cookies included, while it
 can still be retried, so a retry resends the same headers. It drops the request
-once the download finishes or is removed.
+once the download finishes or is removed. When a retried download is refused
+with HTTP 401, 403, 404 or 410, the error says the link or its sign-in may
+have expired.
+
+Ids keep increasing across restarts, so a new download never reuses a saved
+id. With **Resume unfinished downloads at startup** on, the daemon retries
+every interrupted download as soon as it starts.
 
 ## Messages
 
@@ -163,6 +201,10 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "retry", "id": 1 }
 { "op": "remove", "id": 1 }
 { "op": "list" }
+{ "op": "get_settings" }
+{ "op": "set_settings", "settings": { "download_dir": null, "connections": 8, "max_concurrent": 3,
+  "speed_limit_enabled": false, "speed_limit_kbps": 1024, "resume_at_startup": false,
+  "file_exists": "rename" } }
 ```
 
 Daemon to clients:
@@ -180,13 +222,21 @@ Daemon to clients:
 { "op": "removed", "id": 1 }
 { "op": "downloads", "items": [ { "id": 1, "url": "...", "path": "...", "total": 12345,
   "done": 12345, "status": "done", "error": null, "resumable": true, "connections": 8 } ] }
+{ "op": "settings", "settings": { ... } }
 { "op": "error", "message": "..." }
 ```
 
-`ack`, `downloads` and `error` go only to the client that asked; everything
-else goes to every client. `retry` removes the old entry (`removed`) and queues
-a new one with a new id; it is refused unless the download failed or was
-canceled. `remove` is refused while a download is still running.
+`ack`, `downloads` and `error` go only to the client that asked, as does
+`settings` when it answers `get_settings`; everything else goes to every
+client, including `settings` after a change. A status is one of `queued`,
+`downloading`, `done`, `failed`, `canceled` or `interrupted`. `retry` removes
+the old entry (`removed`) and queues a new one with a new id; it is refused
+unless the download failed, was canceled or was interrupted. `remove` is
+refused while a download is still running. `set_settings` with an invalid
+value (`connections` outside 1-16, `max_concurrent` outside 1-10, a speed
+limit outside 1-10,000,000 KB/s, or a folder that is not a full path) is
+refused with an `error` that says why. `download_dir: null` means the
+Downloads folder, and `file_exists` is `rename` or `overwrite`.
 
 ## Layout
 
@@ -196,10 +246,13 @@ canceled. `remove` is refused while a download is still running.
 | `src/bin/uidm-host.rs` | Native-messaging relay and CLI test mode |
 | `src/bin/uidm-daemon.rs` | Daemon: server, auth, download list, retry/remove, idle exit |
 | `src/state.rs` | `DownloadTable`, kept by both the daemon and the window |
+| `src/settings.rs` | Settings, their defaults, validation and file |
+| `src/history.rs` | Download history and saved requests on disk |
+| `src/dpapi.rs` | DPAPI encryption for saved requests |
 | `src/ipc.rs` | Daemon address, start-up, token file, HMAC handshake |
 | `src/app.rs` | Request building and event mapping |
 | `src/protocol.rs` | Framing and message types |
-| `src/engine/` | Queue, segments, resume sidecar, HTTP |
+| `src/engine/` | Queue, segments, resume sidecar, speed limiter, HTTP |
 | `extension/` | MV3 extension: capture, context menu, popup |
 | `assets/icon-64.rgba` | Window icon, raw RGBA made from `extension/icons/128.png` |
 | `host/com.uidm.host.json` | Template of the native-messaging manifest |
@@ -228,9 +281,23 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 ## Verified
 
-- 34 unit tests: segment splitting, the resume sidecar, framing,
-  `Content-Disposition`, backoff, HMAC proofs, and the download table's
-  lifecycle and ordering cases.
+- 59 unit tests: segment splitting, the resume sidecar, framing,
+  `Content-Disposition`, backoff, HMAC proofs, the download table's
+  lifecycle and ordering cases, settings loading, defaults and validation,
+  history loading (running downloads become interrupted, ids never go
+  backwards), DPAPI round trips, and the speed limiter. Engine tests against a
+  local HTTP server cover an existing file (saved as `name (2)`), an existing
+  file with a stale sidecar, a matching sidecar (resumes and fetches only the
+  missing half), the overwrite setting, a 2 MiB download held to 1 MiB/s
+  within 10%, raising the concurrency live, and canceling a queued download.
+- Settings and history, run under Wine against the real host and daemon:
+  `set_settings` with 99 connections is refused with a message; a saved folder
+  and a 2 MiB/s limit take effect (4 MiB in 1.96 s) and survive a restart; a
+  download killed mid-way shows as interrupted after restart, its retry gets a
+  new id and resumes into the same file byte-identical; with resume at startup
+  on, a killed download finishes on its own once the daemon starts again;
+  `requests.bin` holds no plaintext cookie; clearing the list empties
+  `history.json` and deletes `requests.bin`.
 - Engine: segmented downloads are byte-identical to a reference download; a
   download killed at ~10 MiB of 33 MiB resumes to a byte-identical file.
 - Daemon split: a host closed at 1 MiB of a 33 MiB download exits at once and
@@ -252,7 +319,9 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   host dies, reconnects and restores the list.
 - Window: driven through Windows UI Automation. It starts the daemon, shows a
   running download, and its Cancel, Retry and Remove buttons reach the daemon;
-  the retried download finishes byte-identical.
+  the retried download finishes byte-identical. The Options dialog, its error
+  for a relative folder, saving, and the status bar's speed limit toggle were
+  checked under Wine.
 
 Not verified here: Chrome itself loading the extension and launching the host.
 Current Chrome builds ignore the `--load-extension` flag, so that last step was
@@ -260,9 +329,11 @@ not automated. The pieces on either side of it are tested above.
 
 ## Known gaps
 
-- The daemon's list lives in memory. When the daemon exits (60 seconds after
-  the last client and download), finished entries are forgotten, and an
-  interrupted download resumes only when it is requested again.
+- The history is written about a second after each change, so a crash can
+  lose the last second of progress; the sidecar still has it, so resuming is
+  unaffected.
+- When a file name is taken, UIDM renames or overwrites; it cannot ask yet.
+  That waits on the save-as dialog.
 - Downloads the browser starts with a POST request (some form submissions) are
   re-requested by UIDM as a GET and may fail. Turn capture off for such sites.
 - Every client sees every download, not only the ones it started.

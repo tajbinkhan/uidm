@@ -10,6 +10,8 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+use crate::settings::Settings;
+
 /// A request from a client (the browser via the host, or the desktop window)
 /// to the daemon.
 ///
@@ -35,6 +37,11 @@ pub enum Incoming {
     Remove { id: u64 },
     /// Ask for every download the daemon knows about.
     List,
+    /// Ask for the current settings; answered with `settings`.
+    GetSettings,
+    /// Replace the settings. Invalid values are refused with `error`; valid
+    /// ones are saved and sent to every client as `settings`.
+    SetSettings { settings: Settings },
 }
 
 /// The payload a browser hand-off needs to reissue a request outside the page.
@@ -67,12 +74,23 @@ pub enum Status {
     Done,
     Failed,
     Canceled,
+    /// Was queued or running when the daemon last stopped. It can be retried,
+    /// and resumes from its partial file.
+    Interrupted,
 }
 
 impl Status {
     /// Finished one way or another; nothing is running for it.
     pub fn is_terminal(self) -> bool {
-        matches!(self, Status::Done | Status::Failed | Status::Canceled)
+        matches!(
+            self,
+            Status::Done | Status::Failed | Status::Canceled | Status::Interrupted
+        )
+    }
+
+    /// Stopped before finishing, so it can be started again.
+    pub fn is_retryable(self) -> bool {
+        matches!(self, Status::Failed | Status::Canceled | Status::Interrupted)
     }
 }
 
@@ -131,6 +149,9 @@ pub enum Outgoing {
     Removed { id: u64 },
     /// Reply to `list`: every download the daemon knows about, oldest first.
     Downloads { items: Vec<DownloadEntry> },
+    /// The current settings: a reply to `get_settings`, and sent to every
+    /// client when they change.
+    Settings { settings: Settings },
     /// Any failure the client should hear about.
     Error { message: String },
 }

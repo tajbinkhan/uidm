@@ -2,32 +2,33 @@
 //! ranges on parallel threads into one file, and persist progress so an
 //! interrupted download resumes instead of restarting.
 //!
-//! Downloads run through a bounded worker pool (`Engine`). Each download has an
+//! Downloads run through a queue (`Engine`) that starts at most a set number
+//! at once; the number can change while downloads run. Each download has an
 //! id, a cancel token, and a segment thread per range. Segments retry transient
-//! failures with backoff and resume from their own cursor. Progress is reported
-//! through a cloneable `Reporter` so the host can forward it to the browser.
-//!
-//! Note on lifetime: running the engine inside the native-messaging host means
-//! downloads stop when the browser closes the port. A production build would
-//! move this engine into a long-lived desktop process and keep the host as a
-//! thin relay. The engine is a self-contained module precisely so it can move.
+//! failures with backoff and resume from their own cursor. Every read passes
+//! through one shared `RateLimiter`, so a speed limit covers all downloads.
+//! Progress is reported through a cloneable `Reporter`.
 
 mod http;
+mod limit;
 mod resume;
 mod segments;
+#[cfg(test)]
+mod testserver;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::windows::fs::FileExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::settings::FileExists;
+use limit::RateLimiter;
 use resume::Manifest;
 use segments::split;
 
@@ -58,6 +59,12 @@ pub struct DownloadRequest {
     pub headers: Vec<(String, String)>,
     /// Desired parallel connections; clamped to file size and `MAX_CONNECTIONS`.
     pub connections: usize,
+    /// A file an earlier attempt of this same download wrote (a retry or a
+    /// resume from history). It is reused, and resumed when its sidecar still
+    /// matches, instead of being treated as somebody else's file.
+    pub reuse_path: Option<PathBuf>,
+    /// What to do when the chosen name is taken by an unrelated file.
+    pub file_exists: FileExists,
 }
 
 /// Progress events over the course of a download. `id` matches the `Ack`.
@@ -95,6 +102,8 @@ pub enum Progress {
 
 #[derive(Debug)]
 pub enum EngineError {
+    /// The server answered with an error status.
+    Status(u16),
     Http(String),
     Tls(String),
     Io(String),
@@ -104,6 +113,7 @@ pub enum EngineError {
 impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            EngineError::Status(code) => write!(f, "server returned HTTP {code}"),
             EngineError::Http(s) => write!(f, "http error: {s}"),
             EngineError::Tls(s) => write!(f, "tls error: {s}"),
             EngineError::Io(s) => write!(f, "io error: {s}"),
@@ -138,93 +148,180 @@ struct Job {
     req: DownloadRequest,
 }
 
-/// A bounded, cancelable download queue. `new` starts `concurrency` workers
-/// that pull jobs off a shared channel, so at most that many downloads run at
-/// once. Each download gets an id; `cancel(id)` stops it. Dropping the engine
-/// closes the channel and the workers exit.
+/// Which jobs wait and how many run.
+struct Sched {
+    queue: VecDeque<Job>,
+    running: usize,
+    limit: usize,
+}
+
+/// What every running download shares.
+struct Shared {
+    limiter: RateLimiter,
+    /// Output files in use, so two downloads never pick the same file.
+    claimed: Mutex<HashSet<PathBuf>>,
+}
+
+struct Inner {
+    sched: Mutex<Sched>,
+    registry: Mutex<HashMap<u64, CancelToken>>,
+    shared: Arc<Shared>,
+    reporter: Reporter,
+}
+
+/// A cancelable download queue. At most `concurrency` downloads run at once,
+/// each on its own thread; the rest wait in order. `set_concurrency` changes
+/// the limit live: raising it starts waiting downloads at once, lowering it
+/// lets running ones finish and starts no more until under the new limit.
 pub struct Engine {
-    jobs: Sender<Job>,
+    inner: Arc<Inner>,
     counter: AtomicU64,
-    registry: Arc<Mutex<HashMap<u64, CancelToken>>>,
 }
 
 impl Engine {
     pub fn new(cb: Arc<dyn Fn(Progress) + Send + Sync>, concurrency: usize) -> Self {
-        let (jobs_tx, jobs_rx) = channel::<Job>();
-        let jobs_rx = Arc::new(Mutex::new(jobs_rx));
-        let registry: Arc<Mutex<HashMap<u64, CancelToken>>> = Arc::new(Mutex::new(HashMap::new()));
-        let reporter = Reporter(cb);
-
-        for _ in 0..concurrency.max(1) {
-            let jobs_rx = Arc::clone(&jobs_rx);
-            let reporter = reporter.clone();
-            let registry = Arc::clone(&registry);
-            thread::spawn(move || loop {
-                let job = {
-                    let rx = jobs_rx.lock().unwrap();
-                    rx.recv()
-                };
-                match job {
-                    Ok(job) => {
-                        let id = job.id;
-                        run(job.id, job.token, job.req, reporter.clone());
-                        registry.lock().unwrap().remove(&id);
-                    }
-                    Err(_) => break, // channel closed: engine dropped.
-                }
-            });
-        }
-
         Engine {
-            jobs: jobs_tx,
+            inner: Arc::new(Inner {
+                sched: Mutex::new(Sched {
+                    queue: VecDeque::new(),
+                    running: 0,
+                    limit: concurrency.max(1),
+                }),
+                registry: Mutex::new(HashMap::new()),
+                shared: Arc::new(Shared {
+                    limiter: RateLimiter::default(),
+                    claimed: Mutex::new(HashSet::new()),
+                }),
+                reporter: Reporter(cb),
+            }),
             counter: AtomicU64::new(1),
-            registry,
         }
     }
 
-    /// Queue `req` and return its id. It starts when a worker is free.
+    /// Queue `req` and return its id. It starts when a slot is free.
     pub fn enqueue(&self, req: DownloadRequest) -> u64 {
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
         let token: CancelToken = Arc::new(AtomicBool::new(false));
-        self.registry.lock().unwrap().insert(id, Arc::clone(&token));
-        let _ = self.jobs.send(Job { id, token, req });
+        self.inner.registry.lock().unwrap().insert(id, Arc::clone(&token));
+        self.inner.sched.lock().unwrap().queue.push_back(Job { id, token, req });
+        pump(&self.inner);
         id
+    }
+
+    /// Make the next id at least `next`, so ids keep increasing across
+    /// restarts and never match one saved in the history.
+    pub fn set_next_id(&self, next: u64) {
+        self.counter.fetch_max(next.max(1), Ordering::Relaxed);
+    }
+
+    /// The id the next download will get.
+    pub fn next_id(&self) -> u64 {
+        self.counter.load(Ordering::Relaxed)
+    }
+
+    /// Change how many downloads run at once. Running downloads are never
+    /// interrupted.
+    pub fn set_concurrency(&self, n: usize) {
+        self.inner.sched.lock().unwrap().limit = n.max(1);
+        pump(&self.inner);
+    }
+
+    /// Set the total speed limit in bytes per second, or `None` for no limit.
+    pub fn set_speed_limit(&self, bytes_per_sec: Option<u64>) {
+        self.inner.shared.limiter.set_rate(bytes_per_sec);
     }
 
     /// Downloads queued or running. Each leaves the registry when it finishes,
     /// fails or is canceled.
     pub fn active_count(&self) -> usize {
-        self.registry.lock().unwrap().len()
+        self.inner.registry.lock().unwrap().len()
     }
 
-    /// Signal a download to stop. Unknown ids are ignored.
+    /// Stop a download. A queued one is dropped from the queue and reported
+    /// canceled at once; a running one stops at its next read. Unknown ids are
+    /// ignored.
     pub fn cancel(&self, id: u64) {
-        if let Some(token) = self.registry.lock().unwrap().get(&id) {
-            token.store(true, Ordering::Relaxed);
+        let Some(token) = self.inner.registry.lock().unwrap().get(&id).cloned() else {
+            return;
+        };
+        token.store(true, Ordering::Relaxed);
+        let queued = {
+            let mut sched = self.inner.sched.lock().unwrap();
+            let pos = sched.queue.iter().position(|j| j.id == id);
+            pos.and_then(|p| sched.queue.remove(p))
+        };
+        if let Some(job) = queued {
+            self.inner.registry.lock().unwrap().remove(&id);
+            self.inner.reporter.send(Progress::Canceled { id, url: job.req.url });
         }
+    }
+}
+
+/// Start waiting jobs while there are free slots.
+fn pump(inner: &Arc<Inner>) {
+    loop {
+        let job = {
+            let mut sched = inner.sched.lock().unwrap();
+            if sched.running >= sched.limit {
+                return;
+            }
+            match sched.queue.pop_front() {
+                Some(job) => {
+                    sched.running += 1;
+                    job
+                }
+                None => return,
+            }
+        };
+        let inner = Arc::clone(inner);
+        thread::spawn(move || {
+            let id = job.id;
+            run(job.id, job.token, job.req, inner.reporter.clone(), &inner.shared);
+            inner.registry.lock().unwrap().remove(&id);
+            inner.sched.lock().unwrap().running -= 1;
+            pump(&inner);
+        });
     }
 }
 
 /// Run a download to completion on the calling thread (CLI test mode).
 pub fn run_blocking(req: DownloadRequest, cb: Arc<dyn Fn(Progress) + Send + Sync>) {
-    run(0, Arc::new(AtomicBool::new(false)), req, Reporter(cb));
+    let shared = Shared {
+        limiter: RateLimiter::default(),
+        claimed: Mutex::new(HashSet::new()),
+    };
+    run(0, Arc::new(AtomicBool::new(false)), req, Reporter(cb), &shared);
 }
 
+/// Statuses that, on a retried or resumed download, usually mean the link or
+/// the sign-in it relied on has expired.
+const EXPIRED_STATUSES: [u16; 4] = [401, 403, 404, 410];
+
 /// Run one download to completion (blocking), reporting a terminal event.
-fn run(id: u64, token: CancelToken, req: DownloadRequest, reporter: Reporter) {
+fn run(id: u64, token: CancelToken, req: DownloadRequest, reporter: Reporter, shared: &Shared) {
     let url = req.url.clone();
-    let result = run_inner(id, &token, &req, &reporter);
+    if token.load(Ordering::Relaxed) {
+        reporter.send(Progress::Canceled { id, url });
+        return;
+    }
+    let result = run_inner(id, &token, &req, &reporter, shared);
     if token.load(Ordering::Relaxed) {
         reporter.send(Progress::Canceled { id, url });
         return;
     }
     match result {
         Ok(path) => reporter.send(Progress::Finished { id, url, path }),
-        Err(e) => reporter.send(Progress::Failed {
-            id,
-            url,
-            error: e.to_string(),
-        }),
+        Err(e) => {
+            let mut error = e.to_string();
+            if let EngineError::Status(code) = e {
+                if req.reuse_path.is_some() && EXPIRED_STATUSES.contains(&code) {
+                    error.push_str(
+                        ". The link or its sign-in may have expired; start the download again from its web page.",
+                    );
+                }
+            }
+            reporter.send(Progress::Failed { id, url, error })
+        }
     }
 }
 
@@ -233,6 +330,7 @@ fn run_inner(
     token: &CancelToken,
     req: &DownloadRequest,
     reporter: &Reporter,
+    shared: &Shared,
 ) -> Result<PathBuf, EngineError> {
     let agent = http::build_agent()?;
     let probe = http::probe(&agent, &req.url, &req.headers)?;
@@ -252,8 +350,9 @@ fn run_inner(
                 .filter(|s| !s.is_empty())
         })
         .unwrap_or_else(|| derive_filename(&probe.final_url));
-    let output = req.output_dir.join(filename);
     fs::create_dir_all(&req.output_dir)?;
+    let claim = choose_output(&shared.claimed, &req.output_dir, &filename, req, &probe)?;
+    let output = claim.path.clone();
 
     let segmented = probe.resumable && probe.total.map_or(false, |t| t > 0);
     let connections = if segmented {
@@ -271,10 +370,115 @@ fn run_inner(
         connections,
     });
 
-    if segmented {
-        run_segmented(id, token, &agent, req, output, &probe, connections, reporter)
+    let limiter = &shared.limiter;
+    let result = if segmented {
+        run_segmented(id, token, &agent, req, output, &probe, connections, reporter, limiter)
     } else {
-        run_single(id, token, &agent, req, output, &probe, reporter)
+        run_single(id, token, &agent, req, output, &probe, reporter, limiter)
+    };
+    drop(claim);
+    result
+}
+
+/// An output file reserved for one download; released when dropped.
+struct Claim<'a> {
+    set: &'a Mutex<HashSet<PathBuf>>,
+    path: PathBuf,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.set.lock().unwrap().remove(&self.path);
+    }
+}
+
+/// Most `name (n).ext` variants tried before giving up.
+const MAX_RENAMES: u32 = 9999;
+
+/// Pick the file this download writes, never touching an unrelated file:
+///
+/// - the request's `reuse_path`, written by an earlier attempt of this same
+///   download, is taken as is;
+/// - otherwise the first of `name`, `name (1)`, `name (2)`, ... that is not
+///   in use by another download and either does not exist, holds a partial
+///   copy whose sidecar matches what the server reports now (a resume), or
+///   may be overwritten under the `Overwrite` setting.
+///
+/// A sidecar left without its file is deleted, so it can never mark bytes of a
+/// fresh file as already downloaded.
+fn choose_output<'a>(
+    claimed: &'a Mutex<HashSet<PathBuf>>,
+    dir: &Path,
+    filename: &str,
+    req: &DownloadRequest,
+    probe: &http::Probe,
+) -> Result<Claim<'a>, EngineError> {
+    let mut set = claimed.lock().unwrap();
+    let path = pick_free_path(&set, dir, filename, req, probe).ok_or_else(|| {
+        EngineError::Io(format!("no free file name for {filename} in {}", dir.display()))
+    })?;
+    set.insert(path.clone());
+    Ok(Claim { set: claimed, path })
+}
+
+fn pick_free_path(
+    claimed: &HashSet<PathBuf>,
+    dir: &Path,
+    filename: &str,
+    req: &DownloadRequest,
+    probe: &http::Probe,
+) -> Option<PathBuf> {
+    if let Some(path) = &req.reuse_path {
+        if !claimed.contains(path) {
+            return Some(path.clone());
+        }
+    }
+
+    for n in 0..=MAX_RENAMES {
+        let path = dir.join(numbered_name(filename, n));
+        if claimed.contains(&path) {
+            continue;
+        }
+        let sidecar = Manifest::sidecar_path(&path);
+        if !path.exists() {
+            let _ = fs::remove_file(&sidecar);
+            return Some(path);
+        }
+        if sidecar_matches(&sidecar, probe) {
+            return Some(path);
+        }
+        if req.file_exists == FileExists::Overwrite && path.is_file() {
+            let _ = fs::remove_file(&sidecar);
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// `report.pdf` for 0, then `report (1).pdf`, `report (2).pdf`, ...
+fn numbered_name(filename: &str, n: u32) -> String {
+    if n == 0 {
+        return filename.to_string();
+    }
+    let path = Path::new(filename);
+    let stem = path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default();
+    match path.extension() {
+        Some(ext) => format!("{stem} ({n}).{}", ext.to_string_lossy()),
+        None => format!("{stem} ({n})"),
+    }
+}
+
+/// Whether `sidecar` describes a partial copy of the file the probe found.
+fn sidecar_matches(sidecar: &Path, probe: &http::Probe) -> bool {
+    let (true, Some(total)) = (probe.resumable, probe.total) else {
+        return false;
+    };
+    match Manifest::load(sidecar) {
+        Ok(m) => {
+            !m.segments.is_empty()
+                && m.matches(total, probe.etag.as_deref(), probe.last_modified.as_deref())
+        }
+        Err(_) => false,
     }
 }
 
@@ -289,14 +493,17 @@ fn run_segmented(
     probe: &http::Probe,
     connections: usize,
     reporter: &Reporter,
+    limiter: &RateLimiter,
 ) -> Result<PathBuf, EngineError> {
     let total = probe.total.expect("segmented path requires a known total");
     let url = probe.final_url.clone();
     let sidecar = Manifest::sidecar_path(&output);
 
+    // A sidecar only counts while its partial file is still there.
     let manifest = match Manifest::load(&sidecar) {
         Ok(m)
-            if !m.segments.is_empty()
+            if output.is_file()
+                && !m.segments.is_empty()
                 && m.matches(total, probe.etag.as_deref(), probe.last_modified.as_deref()) =>
         {
             m
@@ -320,50 +527,49 @@ fn run_segmented(
     let last_report = Arc::new(AtomicU64::new(resumed));
     let first_error: Arc<Mutex<Option<EngineError>>> = Arc::new(Mutex::new(None));
 
-    let mut handles = Vec::new();
-    for idx in 0..segment_count {
-        if shared.lock().unwrap().segments[idx].is_complete() {
-            continue;
-        }
-        let agent = agent.clone();
-        let url = url.clone();
-        let headers = req.headers.clone();
-        let output = output.clone();
-        let sidecar = sidecar.clone();
-        let shared = Arc::clone(&shared);
-        let global_done = Arc::clone(&global_done);
-        let last_report = Arc::clone(&last_report);
-        let first_error = Arc::clone(&first_error);
-        let reporter = reporter.clone();
-        let token = Arc::clone(token);
-
-        handles.push(thread::spawn(move || {
-            let ctx = SegmentCtx {
-                id,
-                token: &token,
-                agent: &agent,
-                url: &url,
-                headers: &headers,
-                output: &output,
-                sidecar: &sidecar,
-                shared: &shared,
-                global_done: &global_done,
-                last_report: &last_report,
-                reporter: &reporter,
-                total,
-            };
-            if let Err(e) = download_segment(&ctx, idx) {
-                let mut slot = first_error.lock().unwrap();
-                if slot.is_none() {
-                    *slot = Some(e);
-                }
+    // Scoped threads may borrow the shared limiter.
+    thread::scope(|scope| {
+        for idx in 0..segment_count {
+            if shared.lock().unwrap().segments[idx].is_complete() {
+                continue;
             }
-        }));
-    }
+            let agent = agent.clone();
+            let url = url.clone();
+            let headers = req.headers.clone();
+            let output = output.clone();
+            let sidecar = sidecar.clone();
+            let shared = Arc::clone(&shared);
+            let global_done = Arc::clone(&global_done);
+            let last_report = Arc::clone(&last_report);
+            let first_error = Arc::clone(&first_error);
+            let reporter = reporter.clone();
+            let token = Arc::clone(token);
 
-    for h in handles {
-        let _ = h.join();
-    }
+            scope.spawn(move || {
+                let ctx = SegmentCtx {
+                    id,
+                    token: &token,
+                    agent: &agent,
+                    url: &url,
+                    headers: &headers,
+                    output: &output,
+                    sidecar: &sidecar,
+                    shared: &shared,
+                    global_done: &global_done,
+                    last_report: &last_report,
+                    reporter: &reporter,
+                    limiter,
+                    total,
+                };
+                if let Err(e) = download_segment(&ctx, idx) {
+                    let mut slot = first_error.lock().unwrap();
+                    if slot.is_none() {
+                        *slot = Some(e);
+                    }
+                }
+            });
+        }
+    });
 
     if token.load(Ordering::Relaxed) {
         // Keep the sidecar and partial file so a later request resumes, saved
@@ -400,6 +606,7 @@ struct SegmentCtx<'a> {
     global_done: &'a AtomicU64,
     last_report: &'a AtomicU64,
     reporter: &'a Reporter,
+    limiter: &'a RateLimiter,
     total: u64,
 }
 
@@ -448,10 +655,12 @@ fn download_segment_once(ctx: &SegmentCtx, idx: usize) -> Result<(), EngineError
         if ctx.token.load(Ordering::Relaxed) {
             return Ok(());
         }
-        let n = reader.read(&mut buf)?;
+        let want = ctx.limiter.chunk_size(buf.len());
+        let n = reader.read(&mut buf[..want])?;
         if n == 0 {
             break;
         }
+        ctx.limiter.consume(n, ctx.token);
         // Never write past the segment end, even if the server over-sends.
         let room = (end - cursor + 1) as usize;
         let n = n.min(room);
@@ -508,13 +717,14 @@ fn run_single(
     output: PathBuf,
     probe: &http::Probe,
     reporter: &Reporter,
+    limiter: &RateLimiter,
 ) -> Result<PathBuf, EngineError> {
     let mut attempt = 0u32;
     loop {
         if token.load(Ordering::Relaxed) {
             return Ok(output);
         }
-        match single_once(id, token, agent, req, &output, probe, reporter) {
+        match single_once(id, token, agent, req, &output, probe, reporter, limiter) {
             Ok(()) => return Ok(output),
             Err(e) => {
                 if token.load(Ordering::Relaxed) {
@@ -530,6 +740,7 @@ fn run_single(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn single_once(
     id: u64,
     token: &CancelToken,
@@ -538,6 +749,7 @@ fn single_once(
     output: &std::path::Path,
     probe: &http::Probe,
     reporter: &Reporter,
+    limiter: &RateLimiter,
 ) -> Result<(), EngineError> {
     let mut reader = http::fetch_whole(agent, &probe.final_url, &req.headers)?;
     let mut file = File::create(output)?;
@@ -549,10 +761,12 @@ fn single_once(
         if token.load(Ordering::Relaxed) {
             return Ok(());
         }
-        let n = reader.read(&mut buf)?;
+        let want = limiter.chunk_size(buf.len());
+        let n = reader.read(&mut buf[..want])?;
         if n == 0 {
             break;
         }
+        limiter.consume(n, token);
         file.write_all(&buf[..n])?;
         done += n as u64;
         if done - last >= REPORT_EVERY {
@@ -674,6 +888,222 @@ mod tests {
         // must simply do nothing.
         let engine = Engine::new(Arc::new(|_p: Progress| {}), 1);
         engine.cancel(999);
-        assert!(engine.registry.lock().unwrap().is_empty());
+        assert!(engine.inner.registry.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn numbered_names() {
+        assert_eq!(numbered_name("report.pdf", 0), "report.pdf");
+        assert_eq!(numbered_name("report.pdf", 2), "report (2).pdf");
+        assert_eq!(numbered_name("archive.tar.gz", 1), "archive.tar (1).gz");
+        assert_eq!(numbered_name("README", 1), "README (1)");
+        assert_eq!(numbered_name(".bashrc", 1), ".bashrc (1)");
+    }
+
+    /// End-to-end checks against a local server.
+    mod live {
+        use super::super::testserver::{body, TestServer};
+        use super::*;
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        /// A fresh, empty folder for one test.
+        fn temp_dir(name: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!("uidm_engine_{}_{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        fn request(url: &str, dir: &Path, file_exists: FileExists) -> DownloadRequest {
+            DownloadRequest {
+                url: url.to_string(),
+                output_dir: dir.to_path_buf(),
+                filename: Some("report.pdf".into()),
+                headers: Vec::new(),
+                connections: 4,
+                reuse_path: None,
+                file_exists,
+            }
+        }
+
+        /// Run one download through an engine and return where it was saved.
+        fn download(engine_setup: impl FnOnce(&Engine), req: DownloadRequest) -> PathBuf {
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(
+                Arc::new(move |p: Progress| {
+                    let _ = tx.lock().unwrap().send(p);
+                }),
+                1,
+            );
+            engine_setup(&engine);
+            engine.enqueue(req);
+            loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("download timed out") {
+                    Progress::Finished { path, .. } => return path,
+                    Progress::Failed { error, .. } => panic!("download failed: {error}"),
+                    Progress::Canceled { .. } => panic!("download canceled"),
+                    _ => {}
+                }
+            }
+        }
+
+        const LEN: usize = 2 * 1024 * 1024;
+
+        #[test]
+        fn an_existing_file_is_never_overwritten() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("existing");
+            fs::write(dir.join("report.pdf"), b"someone else's report").unwrap();
+            fs::write(dir.join("report (1).pdf"), b"another one").unwrap();
+
+            let path = download(|_| {}, request(&server.url, &dir, FileExists::Rename));
+            assert_eq!(path, dir.join("report (2).pdf"));
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            assert_eq!(fs::read(dir.join("report.pdf")).unwrap(), b"someone else's report");
+            assert_eq!(fs::read(dir.join("report (1).pdf")).unwrap(), b"another one");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_stale_sidecar_does_not_claim_an_existing_file() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("stale");
+            let existing = dir.join("report.pdf");
+            fs::write(&existing, b"old").unwrap();
+            // A sidecar for a different file: wrong size.
+            Manifest::new(server.url.clone(), 999, None, None, &split(999, 2))
+                .save(&Manifest::sidecar_path(&existing))
+                .unwrap();
+
+            let path = download(|_| {}, request(&server.url, &dir, FileExists::Rename));
+            assert_eq!(path, dir.join("report (1).pdf"));
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            assert_eq!(fs::read(&existing).unwrap(), b"old");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_matching_sidecar_still_resumes() {
+            let data = body(LEN);
+            let server = TestServer::start(data.clone());
+            let dir = temp_dir("resume");
+            let partial = dir.join("report.pdf");
+
+            // The first half was fetched by an earlier run.
+            let half = LEN / 2;
+            let mut on_disk = data[..half].to_vec();
+            on_disk.resize(LEN, 0);
+            fs::write(&partial, &on_disk).unwrap();
+            let mut m = Manifest::new(
+                server.url.clone(),
+                LEN as u64,
+                Some("\"v1\"".into()),
+                None,
+                &split(LEN as u64, 2),
+            );
+            m.segments[0].done = m.segments[0].len();
+            m.save(&Manifest::sidecar_path(&partial)).unwrap();
+
+            let path = download(|_| {}, request(&server.url, &dir, FileExists::Rename));
+            assert_eq!(path, partial);
+            assert_eq!(fs::read(&path).unwrap(), data);
+            assert!(!Manifest::sidecar_path(&partial).exists());
+            // Only the probe byte and the missing half came over the wire.
+            assert_eq!(server.served.load(Ordering::Relaxed), 1 + (LEN - half) as u64);
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn overwrite_setting_replaces_the_file() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("overwrite");
+            let existing = dir.join("report.pdf");
+            fs::write(&existing, vec![7u8; LEN + 1000]).unwrap();
+
+            let path = download(|_| {}, request(&server.url, &dir, FileExists::Overwrite));
+            assert_eq!(path, existing);
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn speed_limit_holds_a_download_within_ten_percent() {
+            // 2 MiB at 1 MiB/s over 4 connections: about 2 seconds.
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("limit");
+            let start = Instant::now();
+            let path = download(
+                |e| e.set_speed_limit(Some(1024 * 1024)),
+                request(&server.url, &dir, FileExists::Rename),
+            );
+            let secs = start.elapsed().as_secs_f64();
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            assert!((secs - 2.0).abs() / 2.0 < 0.10, "took {secs:.2}s, expected about 2s");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn raising_concurrency_starts_waiting_downloads() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("concurrency");
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(
+                Arc::new(move |p: Progress| {
+                    let _ = tx.lock().unwrap().send(p);
+                }),
+                1,
+            );
+            // Slow enough that the first download is still running.
+            engine.set_speed_limit(Some(256 * 1024));
+            let a = engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let b = engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let started = |rx: &mpsc::Receiver<Progress>| loop {
+                if let Progress::Started { id, .. } = rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                    return id;
+                }
+            };
+            assert_eq!(started(&rx), a);
+            thread::sleep(Duration::from_millis(300));
+            assert!(rx.try_iter().all(|p| !matches!(p, Progress::Started { .. })));
+            engine.set_concurrency(2);
+            assert_eq!(started(&rx), b);
+            engine.cancel(a);
+            engine.cancel(b);
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn canceling_a_queued_download_reports_at_once() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("queued");
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(
+                Arc::new(move |p: Progress| {
+                    let _ = tx.lock().unwrap().send(p);
+                }),
+                1,
+            );
+            // The first download runs slowly; the second waits behind it.
+            engine.set_speed_limit(Some(256 * 1024));
+            let a = engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let b = engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            engine.cancel(b);
+            let canceled = rx
+                .iter()
+                .find_map(|p| match p {
+                    Progress::Canceled { id, .. } => Some(id),
+                    Progress::Finished { id, .. } => panic!("download {id} finished first"),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(canceled, b);
+            assert_eq!(engine.active_count(), 1);
+            engine.cancel(a);
+            fs::remove_dir_all(&dir).ok();
+        }
     }
 }

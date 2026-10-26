@@ -49,6 +49,7 @@ const STATUS_TEXT = {
   done: "Done",
   failed: "Failed",
   canceled: "Canceled",
+  interrupted: "Interrupted",
 };
 
 function row(e, connected) {
@@ -69,7 +70,7 @@ function row(e, connected) {
 
   if (e.status === "queued" || e.status === "downloading") {
     meta.append(button("Cancel", () => ask({ type: "cancel", id: e.id }), !connected));
-  } else if (e.status === "failed" || e.status === "canceled") {
+  } else if (e.status === "failed" || e.status === "canceled" || e.status === "interrupted") {
     meta.append(button("Retry", () => ask({ type: "retry", id: e.id }), !connected));
     meta.append(button("Remove", () => ask({ type: "remove", id: e.id }), !connected));
   } else if (e.status === "done") {

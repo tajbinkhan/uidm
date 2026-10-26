@@ -216,9 +216,7 @@ fn basename(name: &str) -> Option<String> {
 /// Flatten a ureq error (transport or HTTP status) into our error type.
 fn map_ureq(e: ureq::Error) -> EngineError {
     match e {
-        ureq::Error::Status(code, _) => {
-            EngineError::Protocol(format!("server returned HTTP {code}"))
-        }
+        ureq::Error::Status(code, _) => EngineError::Status(code),
         ureq::Error::Transport(t) => EngineError::Http(t.to_string()),
     }
 }

@@ -84,7 +84,11 @@ impl DownloadTable {
             Outgoing::Downloads { items } => {
                 self.entries = items.iter().map(|e| (e.id, e.clone())).collect();
             }
-            Outgoing::Hello { .. } | Outgoing::Pong | Outgoing::Ack { .. } | Outgoing::Error { .. } => {}
+            Outgoing::Hello { .. }
+            | Outgoing::Pong
+            | Outgoing::Ack { .. }
+            | Outgoing::Error { .. }
+            | Outgoing::Settings { .. } => {}
         }
     }
 
@@ -108,6 +112,11 @@ impl DownloadTable {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Largest id in the table, or 0 when empty.
+    pub fn max_id(&self) -> u64 {
+        self.entries.keys().next_back().copied().unwrap_or(0)
     }
 
     fn entry(&mut self, id: u64, url: &str) -> &mut DownloadEntry {

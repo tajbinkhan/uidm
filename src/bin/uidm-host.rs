@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use uidm::app::{downloads_dir, DEFAULT_CONNECTIONS, MAX_MESSAGE_BYTES};
+use uidm::app::MAX_MESSAGE_BYTES;
 
 /// After the browser closes, how long to wait for the daemon to deliver
 /// replies already in flight before giving up on them.
@@ -30,6 +30,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 use uidm::engine::{self, DownloadRequest, Progress};
 use uidm::ipc;
 use uidm::protocol::{read_message, write_frame};
+use uidm::settings::{default_downloads_dir, FileExists, DEFAULT_CONNECTIONS};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -102,7 +103,7 @@ fn run_cli(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let output_dir = args.get(3).map(PathBuf::from).unwrap_or_else(downloads_dir);
+    let output_dir = args.get(3).map(PathBuf::from).unwrap_or_else(default_downloads_dir);
     eprintln!("[uidm-host] downloading {url} -> {}", output_dir.display());
 
     let ok = Arc::new(AtomicBool::new(false));
@@ -114,6 +115,8 @@ fn run_cli(args: &[String]) -> i32 {
             filename: None,
             headers: Vec::new(),
             connections: DEFAULT_CONNECTIONS,
+            reuse_path: None,
+            file_exists: FileExists::Rename,
         },
         Arc::new(move |p: Progress| print_progress(p, &ok_cb)),
     );
