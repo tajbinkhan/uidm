@@ -1,0 +1,22 @@
+[package]
+name = "uidm-host"
+version = "0.1.0"
+edition = "2021"
+description = "Native-messaging host and download engine for the UIDM download manager"
+license = "MIT"
+
+[[bin]]
+name = "uidm-host"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+# Blocking HTTP so the engine can use plain threads, one per segment, instead
+# of an async runtime. native-tls routes through Windows SChannel, which builds
+# without a C/assembly toolchain (unlike rustls + ring on windows-gnu).
+ureq = { version = "2.12.1", default-features = false, features = ["native-tls", "gzip"] }
+native-tls = "0.2.14"
+
+[profile.release]
+strip = true
