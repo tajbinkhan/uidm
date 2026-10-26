@@ -30,7 +30,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 use uidm::engine::{self, DownloadRequest, Progress};
 use uidm::ipc;
 use uidm::protocol::{read_message, write_frame};
-use uidm::settings::{default_downloads_dir, FileExists, DEFAULT_CONNECTIONS};
+use uidm::settings::{default_downloads_dir, FileExists, Folders, DEFAULT_CONNECTIONS};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -111,7 +111,7 @@ fn run_cli(args: &[String]) -> i32 {
     engine::run_blocking(
         DownloadRequest {
             url,
-            output_dir,
+            folders: Folders::fixed(output_dir),
             filename: None,
             headers: Vec::new(),
             connections: DEFAULT_CONNECTIONS,

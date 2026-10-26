@@ -23,6 +23,106 @@ pub const CONNECTIONS_RANGE: (usize, usize) = (1, 16);
 pub const MAX_CONCURRENT_RANGE: (usize, usize) = (1, 10);
 /// 1 KB/s up to about 10 GB/s.
 pub const SPEED_LIMIT_RANGE_KBPS: (u64, u64) = (1, 10_000_000);
+/// Up to 10 GB, in KB.
+pub const CAPTURE_MIN_SIZE_MAX_KB: u64 = 10 * 1024 * 1024;
+
+/// The category for files no other category claims. It is not stored in the
+/// list; its files go straight into the download folder.
+pub const GENERAL: &str = "General";
+
+/// A kind of file with its own folder, chosen by file extension.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Category {
+    pub name: String,
+    /// Lowercase extensions without the dot, such as `zip`.
+    pub extensions: Vec<String>,
+    /// Where its files go. `None` means a folder named after the category
+    /// inside the download folder.
+    #[serde(default)]
+    pub folder: Option<String>,
+}
+
+impl Category {
+    fn new(name: &str, extensions: &[&str]) -> Self {
+        Category {
+            name: name.to_string(),
+            extensions: extensions.iter().map(|e| e.to_string()).collect(),
+            folder: None,
+        }
+    }
+}
+
+/// The categories a new settings file starts with.
+pub fn default_categories() -> Vec<Category> {
+    vec![
+        Category::new("Compressed", &["zip", "rar", "7z", "tar", "gz", "bz2", "xz"]),
+        Category::new(
+            "Documents",
+            &["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "odt"],
+        ),
+        Category::new("Music", &["mp3", "flac", "wav", "m4a", "aac", "ogg"]),
+        Category::new("Programs", &["exe", "msi", "apk", "msix"]),
+        Category::new("Video", &["mp4", "mkv", "avi", "mov", "webm", "wmv"]),
+    ]
+}
+
+/// File types the extension captures by default: every category's, plus disk
+/// images and packages.
+pub fn default_capture_types() -> Vec<String> {
+    let mut types: Vec<String> = default_categories()
+        .into_iter()
+        .flat_map(|c| c.extensions)
+        .collect();
+    types.extend(["iso", "img", "dmg", "deb", "rpm", "bin"].map(String::from));
+    types
+}
+
+/// The lowercase extension of a file name, without the dot. A name that only
+/// starts with a dot (`.bashrc`) has none.
+pub fn extension_of(filename: &str) -> Option<String> {
+    let ext = Path::new(filename).extension()?.to_str()?;
+    (!ext.is_empty()).then(|| ext.to_ascii_lowercase())
+}
+
+/// Turn user input such as `.ZIP, mp4 ;7z` into `["zip", "mp4", "7z"]`.
+pub fn parse_extensions(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in text.split(|c: char| c == ',' || c == ';' || c.is_whitespace()) {
+        let ext = part.trim().trim_start_matches('.').to_ascii_lowercase();
+        if !ext.is_empty() && !out.contains(&ext) {
+            out.push(ext);
+        }
+    }
+    out
+}
+
+/// Where each new download's file goes: a category's folder chosen by the
+/// final file name, or one fixed folder (a folder the user picked).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Folders {
+    default: PathBuf,
+    categories: Vec<(Vec<String>, PathBuf)>,
+}
+
+impl Folders {
+    /// Every file goes to `dir`.
+    pub fn fixed(dir: PathBuf) -> Self {
+        Folders {
+            default: dir,
+            categories: Vec::new(),
+        }
+    }
+
+    /// The folder for a file named `filename`.
+    pub fn for_name(&self, filename: &str) -> PathBuf {
+        let ext = extension_of(filename);
+        self.categories
+            .iter()
+            .find(|(exts, _)| ext.as_ref().is_some_and(|e| exts.contains(e)))
+            .map(|(_, dir)| dir.clone())
+            .unwrap_or_else(|| self.default.clone())
+    }
+}
 
 /// What to do when a new download's file name is already taken by a file that
 /// is not a partial copy of the same download.
@@ -53,6 +153,18 @@ pub struct Settings {
     /// Queue interrupted downloads again when the daemon starts.
     pub resume_at_startup: bool,
     pub file_exists: FileExists,
+    /// Show a save-as dialog for each new download before it starts.
+    pub ask_where_to_save: bool,
+    /// File types and their folders. Files of no listed type are `General`.
+    pub categories: Vec<Category>,
+    /// Extensions the browser extension takes from the browser. Empty means
+    /// every type.
+    pub capture_types: Vec<String>,
+    /// Files the browser reports as smaller than this, in KB, stay in the
+    /// browser. 0 captures every size.
+    pub capture_min_size_kb: u64,
+    /// Sites whose downloads stay in the browser, such as `*.example.com`.
+    pub capture_excluded_sites: Vec<String>,
 }
 
 impl Default for Settings {
@@ -65,6 +177,11 @@ impl Default for Settings {
             speed_limit_kbps: DEFAULT_SPEED_LIMIT_KBPS,
             resume_at_startup: false,
             file_exists: FileExists::Rename,
+            ask_where_to_save: true,
+            categories: default_categories(),
+            capture_types: default_capture_types(),
+            capture_min_size_kb: 0,
+            capture_excluded_sites: Vec::new(),
         }
     }
 }
@@ -85,14 +202,44 @@ impl Settings {
             return Err(format!("The speed limit must be between {lo} and {hi} KB/s."));
         }
         if let Some(dir) = &self.download_dir {
-            if dir.trim().is_empty() {
-                return Err("The download folder is empty.".to_string());
+            check_folder("The download folder", dir)?;
+        }
+
+        let mut names: Vec<String> = Vec::new();
+        for c in &self.categories {
+            let name = c.name.trim();
+            if name.is_empty() {
+                return Err("Every category needs a name.".to_string());
             }
-            if !Path::new(dir).is_absolute() {
-                return Err(format!("The download folder must be a full path: {dir}"));
+            if name.eq_ignore_ascii_case(GENERAL) {
+                return Err(format!("\"{GENERAL}\" is kept for files of every other type."));
             }
-            if Path::new(dir).exists() && !Path::new(dir).is_dir() {
-                return Err(format!("The download folder is a file, not a folder: {dir}"));
+            if names.contains(&name.to_lowercase()) {
+                return Err(format!("There are two categories named \"{name}\"."));
+            }
+            names.push(name.to_lowercase());
+            if c.extensions.is_empty() {
+                return Err(format!("The category \"{name}\" has no file types."));
+            }
+            check_extensions(&format!("The category \"{name}\""), &c.extensions)?;
+            if let Some(dir) = &c.folder {
+                check_folder(&format!("The folder of \"{name}\""), dir)?;
+            }
+        }
+
+        check_extensions("The captured file types", &self.capture_types)?;
+        if self.capture_min_size_kb > CAPTURE_MIN_SIZE_MAX_KB {
+            return Err("The minimum size to capture is too large.".to_string());
+        }
+        for site in &self.capture_excluded_sites {
+            let valid = !site.is_empty()
+                && site
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*' | ':'));
+            if !valid {
+                return Err(format!(
+                    "\"{site}\" is not a site. Use a host name such as example.com or *.example.com."
+                ));
             }
         }
         Ok(())
@@ -103,6 +250,37 @@ impl Settings {
         match &self.download_dir {
             Some(dir) => PathBuf::from(dir),
             None => default_downloads_dir(),
+        }
+    }
+
+    /// The category a file named `filename` belongs to, or `None` for
+    /// `General`.
+    pub fn category_of(&self, filename: &str) -> Option<&Category> {
+        let ext = extension_of(filename)?;
+        self.categories.iter().find(|c| c.extensions.contains(&ext))
+    }
+
+    /// The name of `filename`'s category, `General` when none claims it.
+    pub fn category_name(&self, filename: &str) -> &str {
+        self.category_of(filename).map_or(GENERAL, |c| c.name.as_str())
+    }
+
+    /// Where new downloads go, by category.
+    pub fn folders(&self) -> Folders {
+        let base = self.download_dir();
+        Folders {
+            categories: self
+                .categories
+                .iter()
+                .map(|c| {
+                    let dir = match &c.folder {
+                        Some(f) => PathBuf::from(f),
+                        None => base.join(c.name.trim()),
+                    };
+                    (c.extensions.clone(), dir)
+                })
+                .collect(),
+            default: base,
         }
     }
 
@@ -136,6 +314,31 @@ impl Settings {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomic(path, &bytes)
     }
+}
+
+fn check_folder(what: &str, dir: &str) -> Result<(), String> {
+    if dir.trim().is_empty() {
+        return Err(format!("{what} is empty."));
+    }
+    let path = Path::new(dir);
+    if !path.is_absolute() {
+        return Err(format!("{what} must be a full path: {dir}"));
+    }
+    if path.exists() && !path.is_dir() {
+        return Err(format!("{what} is a file, not a folder: {dir}"));
+    }
+    Ok(())
+}
+
+fn check_extensions(what: &str, exts: &[String]) -> Result<(), String> {
+    for e in exts {
+        if e.is_empty() || !e.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+            return Err(format!(
+                "{what} has an invalid file type \"{e}\". Use letters and digits, such as zip or mp4."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `%APPDATA%\UIDM\settings.json`.
@@ -212,6 +415,11 @@ mod tests {
             speed_limit_kbps: 500,
             resume_at_startup: true,
             file_exists: FileExists::Overwrite,
+            ask_where_to_save: false,
+            categories: vec![Category::new("Books", &["epub"])],
+            capture_types: vec!["zip".into()],
+            capture_min_size_kb: 100,
+            capture_excluded_sites: vec!["*.example.com".into()],
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
@@ -274,5 +482,63 @@ mod tests {
             ..Settings::default()
         };
         assert!(dir.validate().is_ok());
+    }
+
+    #[test]
+    fn category_matching() {
+        let s = Settings::default();
+        assert_eq!(s.category_name("setup.EXE"), "Programs");
+        assert_eq!(s.category_name("Report.Final.PDF"), "Documents");
+        assert_eq!(s.category_name("archive.tar.gz"), "Compressed");
+        assert_eq!(s.category_name("movie.mkv"), "Video");
+        assert_eq!(s.category_name("README"), GENERAL);
+        assert_eq!(s.category_name(".bashrc"), GENERAL);
+        assert_eq!(s.category_name("photo.jpg"), GENERAL);
+        assert_eq!(s.category_name("trailing."), GENERAL);
+    }
+
+    #[test]
+    fn category_folders() {
+        let base = std::env::temp_dir().join("uidm-dl");
+        let mut s = Settings {
+            download_dir: Some(base.display().to_string()),
+            ..Settings::default()
+        };
+        let custom = std::env::temp_dir().join("uidm-music");
+        s.categories[2].folder = Some(custom.display().to_string());
+        let f = s.folders();
+        assert_eq!(f.for_name("a.ZIP"), base.join("Compressed"));
+        assert_eq!(f.for_name("song.mp3"), custom);
+        assert_eq!(f.for_name("noext"), base);
+        assert_eq!(f.for_name("photo.jpg"), base);
+
+        let fixed = Folders::fixed(base.join("picked"));
+        assert_eq!(fixed.for_name("a.zip"), base.join("picked"));
+    }
+
+    #[test]
+    fn parse_extension_lists() {
+        assert_eq!(parse_extensions(".ZIP, mp4 ;7z  zip"), ["zip", "mp4", "7z"]);
+        assert!(parse_extensions(" , ").is_empty());
+    }
+
+    #[test]
+    fn category_and_capture_validation() {
+        let with = |f: &dyn Fn(&mut Settings)| {
+            let mut s = Settings::default();
+            f(&mut s);
+            s.validate()
+        };
+        assert!(with(&|s| s.categories[0].name = " ".into()).is_err());
+        assert!(with(&|s| s.categories[0].name = "general".into()).is_err());
+        assert!(with(&|s| s.categories[1].name = "Compressed".into()).is_err());
+        assert!(with(&|s| s.categories[0].extensions.clear()).is_err());
+        assert!(with(&|s| s.categories[0].extensions = vec!["Zip".into()]).is_err());
+        assert!(with(&|s| s.categories[0].folder = Some("rel".into())).is_err());
+        assert!(with(&|s| s.capture_types = vec!["a b".into()]).is_err());
+        assert!(with(&|s| s.capture_types.clear()).is_ok());
+        assert!(with(&|s| s.capture_excluded_sites = vec!["*.example.com".into()]).is_ok());
+        assert!(with(&|s| s.capture_excluded_sites = vec!["http://x/".into()]).is_err());
+        assert!(with(&|s| s.categories.clear()).is_ok());
     }
 }

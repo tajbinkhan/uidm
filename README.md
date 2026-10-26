@@ -43,12 +43,26 @@ Downloaded files are left alone.
   capture off, or while UIDM is not running, the browser keeps its own
   downloads.
 
-- **Options** (top right of the window) sets the download folder, connections
-  per file (1 to 16), downloads at once (1 to 10), a total speed limit, what
-  to do when a file name is taken, and whether to resume unfinished downloads
-  when UIDM starts. The status bar shows the speed limit and toggles it.
+- **A save-as dialog** opens for each new download, with its real name and
+  size, and the folder its category picks. Change the name or folder, then
+  **Start download**, **Download later** (it waits in the list with a
+  **Start** button) or **Cancel**. If the window is closed, UIDM opens it; if
+  no window shows up within 20 seconds, the download starts as proposed.
+  Options can turn the dialog off.
+- **Categories** sort downloads by file type into their own folders:
+  Compressed, Documents, Music, Programs and Video go into folders of those
+  names inside the download folder, and everything else (**General**) goes
+  into the download folder itself. The window's sidebar filters the list by
+  category. Options edits the categories, their file types and folders.
+- **Options** (top right of the window) has three tabs. **General**: the
+  download folder, connections per file (1 to 16), downloads at once (1 to
+  10), a total speed limit, what to do when a file name is taken, the save-as
+  dialog, and whether to resume unfinished downloads when UIDM starts.
+  **Categories**: as above. **Browser capture**: the rules below. The status
+  bar shows the speed limit and toggles it.
 
-Files are saved to your Downloads folder unless Options says otherwise.
+Files are saved to your Downloads folder, sorted by category, unless Options
+says otherwise.
 Closing the browser or the window does not stop a download. The list survives
 restarts: downloads that were running when UIDM stopped show as
 **Interrupted**, and **Retry** resumes them from their partial file.
@@ -104,7 +118,22 @@ It takes a download from the browser only when all of these hold:
   the browser);
 - it is not from a private window, so private downloads never enter UIDM's
   list;
-- the extension did not start it itself (that is how hand-backs avoid loops).
+- the extension did not start it itself (that is how hand-backs avoid loops);
+- it passes the capture rules from **Options > Browser capture**:
+  - its file type is in the list (by default every category's types plus
+    `iso`, `img`, `dmg`, `deb`, `rpm` and `bin`; an empty list takes every
+    type). The type comes from the file name, else the MIME type the server
+    sent, else the URL. A download that says only "a file"
+    (`application/octet-stream`) is taken;
+  - it is not smaller than the minimum size, when the browser already knows
+    the size (often it does not yet, and then only the type and site count);
+  - neither its URL nor the page it came from is on an excluded site.
+    `example.com` and `*.example.com` both cover the site and every subdomain;
+- **Skip next download** in the popup was not pressed; it lets exactly one
+  download stay in the browser.
+
+The extension asks for the rules when it connects and gets every change as it
+is saved, so they are edited only in the window.
 
 If UIDM takes a download but cannot even start it, for example because the
 server refuses the request, the extension removes it from UIDM's list and
@@ -158,7 +187,8 @@ Given an `add`, the engine:
 The output filename is, in priority order: an explicit name on the request, the
 server's `Content-Disposition` (including the RFC 5987
 `filename*=UTF-8''...` form, percent-decoded), the URL path, then a generic
-fallback.
+fallback. The file's folder is its category's, from that final name, unless
+the save-as dialog chose one.
 
 A new download never writes into an existing file unless that file is a
 partial copy of the same download, which its `.uidmpart` sidecar proves (same
@@ -193,18 +223,22 @@ every interrupted download as soon as it starts.
 Client to daemon (the host relays the browser's unchanged):
 
 ```json
-{ "op": "hello", "version": "0.2.0" }
+{ "op": "hello", "version": "0.2.0", "client": "window" }
 { "op": "ping" }
 { "op": "add", "url": "https://...", "headers": { "X-Example": "1" }, "cookies": "...",
   "referrer": "https://...", "user_agent": "...", "filename": "f.zip" }
 { "op": "cancel", "id": 1 }
 { "op": "retry", "id": 1 }
 { "op": "remove", "id": 1 }
+{ "op": "confirm", "id": 1, "filename": "f.zip", "folder": "D:\\Downloads", "start": true }
 { "op": "list" }
 { "op": "get_settings" }
 { "op": "set_settings", "settings": { "download_dir": null, "connections": 8, "max_concurrent": 3,
   "speed_limit_enabled": false, "speed_limit_kbps": 1024, "resume_at_startup": false,
-  "file_exists": "rename" } }
+  "file_exists": "rename", "ask_where_to_save": true,
+  "categories": [ { "name": "Compressed", "extensions": ["zip", "rar"], "folder": null } ],
+  "capture_types": ["zip", "pdf"], "capture_min_size_kb": 0,
+  "capture_excluded_sites": ["*.example.com"] } }
 ```
 
 Daemon to clients:
@@ -220,6 +254,8 @@ Daemon to clients:
 { "op": "failed", "id": 1, "url": "...", "error": "..." }
 { "op": "canceled", "id": 1, "url": "..." }
 { "op": "removed", "id": 1 }
+{ "op": "updated", "item": { "id": 1, "url": "...", "path": "C:\\Users\\...\\Compressed\\f.zip",
+  "total": 12345, "done": 0, "status": "confirming", "error": null, "resumable": true, "connections": 0 } }
 { "op": "downloads", "items": [ { "id": 1, "url": "...", "path": "...", "total": 12345,
   "done": 12345, "status": "done", "error": null, "resumable": true, "connections": 8 } ] }
 { "op": "settings", "settings": { ... } }
@@ -229,14 +265,25 @@ Daemon to clients:
 `ack`, `downloads` and `error` go only to the client that asked, as does
 `settings` when it answers `get_settings`; everything else goes to every
 client, including `settings` after a change. A status is one of `queued`,
-`downloading`, `done`, `failed`, `canceled` or `interrupted`. `retry` removes
+`downloading`, `done`, `failed`, `canceled`, `interrupted`, `confirming`
+(waiting for the save-as dialog; `path` is the proposed file) or `waiting`
+(added to start later). `updated` replaces a whole entry, for the changes no
+other event covers. A `hello` with `client: "window"` tells the daemon a
+window is open to show save-as dialogs. `confirm` answers the dialog of a
+`confirming` download or starts a `waiting` one, keeping its id; `filename`
+and `folder` default to the proposed ones, and `start: false` makes it
+`waiting`. Canceling a `confirming` download reports `canceled`. `retry` removes
 the old entry (`removed`) and queues a new one with a new id; it is refused
 unless the download failed, was canceled or was interrupted. `remove` is
 refused while a download is still running. `set_settings` with an invalid
 value (`connections` outside 1-16, `max_concurrent` outside 1-10, a speed
 limit outside 1-10,000,000 KB/s, or a folder that is not a full path) is
 refused with an `error` that says why. `download_dir: null` means the
-Downloads folder, and `file_exists` is `rename` or `overwrite`.
+Downloads folder, and `file_exists` is `rename` or `overwrite`. A category
+needs a unique name other than `General`, at least one file type, and a full
+path or `null` for its folder (`null` means a folder named after it inside the
+download folder). File types are lowercase letters and digits without the
+dot.
 
 ## Layout
 
@@ -254,6 +301,8 @@ Downloads folder, and `file_exists` is `rename` or `overwrite`.
 | `src/protocol.rs` | Framing and message types |
 | `src/engine/` | Queue, segments, resume sidecar, speed limiter, HTTP |
 | `extension/` | MV3 extension: capture, context menu, popup |
+| `extension/rules.js` | Capture rules (file types, minimum size, excluded sites) |
+| `extension/test/` | Node tests for the rules and the service worker |
 | `assets/icon-64.rgba` | Window icon, raw RGBA made from `extension/icons/128.png` |
 | `host/com.uidm.host.json` | Template of the native-messaging manifest |
 | `install-host.ps1` | Builds, registers with Chrome and Edge, adds the Start menu entry |
@@ -266,7 +315,13 @@ Rust on Windows needs a linker. This project builds with the
 ```bash
 cargo test
 cargo build --release
+node --test extension/test/*.test.js
 ```
+
+The Rust tests also run on Linux under Wine, cross-compiled with
+`cargo test --target x86_64-pc-windows-gnu` and
+`CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine` (needs the `mingw-w64` and
+`wine64` packages).
 
 `cargo build --release` produces `uidm-host.exe`, `uidm-daemon.exe` and
 `uidm-gui.exe` in `target\release`. The host and the window start the daemon
@@ -281,7 +336,7 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 ## Verified
 
-- 59 unit tests: segment splitting, the resume sidecar, framing,
+- 65 unit tests: segment splitting, the resume sidecar, framing,
   `Content-Disposition`, backoff, HMAC proofs, the download table's
   lifecycle and ordering cases, settings loading, defaults and validation,
   history loading (running downloads become interrupted, ids never go
@@ -289,7 +344,22 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   local HTTP server cover an existing file (saved as `name (2)`), an existing
   file with a stale sidecar, a matching sidecar (resumes and fetches only the
   missing half), the overwrite setting, a 2 MiB download held to 1 MiB/s
-  within 10%, raising the concurrency live, and canceling a queued download.
+  within 10%, raising the concurrency live, canceling a queued download,
+  category folders, and probing a download for the save-as dialog. Category
+  tests cover uppercase extensions, names without one and dot files.
+- 10 extension tests: each capture rule, and the real `background.js` run
+  with a stand-in `chrome` API: it asks for the rules on connect, takes or
+  leaves downloads by type, size and site, applies changed rules at once,
+  skips exactly one download after **Skip next download**, and starts a
+  download waiting for its dialog from the popup.
+- Save-as dialog, under Wine against the real host and daemon: the proposal
+  lands in `Downloads\Documents\report.pdf` with the real size; with no window
+  possible the download starts as proposed after 19.6 s; a new name and folder
+  are used; **Download later** waits and later starts under the same id;
+  canceling in the dialog reports `canceled` and a later `confirm` is
+  refused. With a display, the daemon opened the window itself and it showed
+  the dialog; **Download later**, the category sidebar, and adding a category
+  in Options (`JPG, .png webp` saved as `jpg`, `png`, `webp`) were checked.
 - Settings and history, run under Wine against the real host and daemon:
   `set_settings` with 99 connections is refused with a message; a saved folder
   and a 2 MiB/s limit take effect (4 MiB in 1.96 s) and survive a restart; a
@@ -332,8 +402,11 @@ not automated. The pieces on either side of it are tested above.
 - The history is written about a second after each change, so a crash can
   lose the last second of progress; the sidecar still has it, so resuming is
   unaffected.
-- When a file name is taken, UIDM renames or overwrites; it cannot ask yet.
-  That waits on the save-as dialog.
+- When a file name is taken, UIDM renames or overwrites; it cannot ask. The
+  save-as dialog shows the proposed name, not the `name (1)` the engine may
+  pick if that name is taken when the download starts.
+- Adding a category does not add its types to the captured types; that list
+  is edited on its own.
 - Downloads the browser starts with a POST request (some form submissions) are
   re-requested by UIDM as a GET and may fail. Turn capture off for such sites.
 - Every client sees every download, not only the ones it started.

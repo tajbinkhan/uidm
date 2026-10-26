@@ -50,6 +50,8 @@ const STATUS_TEXT = {
   failed: "Failed",
   canceled: "Canceled",
   interrupted: "Interrupted",
+  confirming: "Waiting for you in UIDM",
+  waiting: "Waiting to start",
 };
 
 function row(e, connected) {
@@ -68,7 +70,13 @@ function row(e, connected) {
   meta.append(status);
   meta.append(el("span", { className: "grow" }, e.total ? `${human(e.done)} / ${human(e.total)}` : human(e.done)));
 
-  if (e.status === "queued" || e.status === "downloading") {
+  if (e.status === "confirming") {
+    meta.append(button("Start", () => ask({ type: "start", id: e.id }), !connected));
+    meta.append(button("Cancel", () => ask({ type: "cancel", id: e.id }), !connected));
+  } else if (e.status === "waiting") {
+    meta.append(button("Start", () => ask({ type: "start", id: e.id }), !connected));
+    meta.append(button("Remove", () => ask({ type: "remove", id: e.id }), !connected));
+  } else if (e.status === "queued" || e.status === "downloading") {
     meta.append(button("Cancel", () => ask({ type: "cancel", id: e.id }), !connected));
   } else if (e.status === "failed" || e.status === "canceled" || e.status === "interrupted") {
     meta.append(button("Retry", () => ask({ type: "retry", id: e.id }), !connected));
@@ -80,8 +88,12 @@ function row(e, connected) {
   return li;
 }
 
+// Whether the next download is set to stay in the browser, as last reported.
+let skipNext = false;
+
 function render(state) {
   if (!state) return;
+  skipNext = state.skipNext;
   $("dot").className = state.connected ? "dot on" : "dot";
   const status = $("status");
   if (state.connected) {
@@ -94,6 +106,12 @@ function render(state) {
     status.textContent = `Not connected to UIDM${state.lastError ? `: ${state.lastError}` : ""}. Downloads stay in the browser.`;
   }
   $("capture").checked = state.capture;
+  const skip = $("skip");
+  skip.disabled = !state.connected || !state.capture;
+  skip.textContent = state.skipNext ? "Don't skip" : "Skip next download";
+  skip.title = state.skipNext
+    ? "The next download stays in the browser"
+    : "Let the next download stay in the browser";
   $("add").disabled = !state.connected;
 
   const list = $("list");
@@ -107,6 +125,7 @@ function render(state) {
 }
 
 $("capture").addEventListener("change", (ev) => ask({ type: "setCapture", value: ev.target.checked }));
+$("skip").addEventListener("click", () => ask({ type: "setSkipNext", value: !skipNext }));
 
 function addFromInput() {
   const url = $("url").value.trim();

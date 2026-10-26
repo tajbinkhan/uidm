@@ -25,7 +25,7 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
     }
     DownloadRequest {
         url: d.url,
-        output_dir: settings.download_dir(),
+        folders: settings.folders(),
         filename: d.filename,
         headers,
         connections: settings.connections,

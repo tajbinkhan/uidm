@@ -1,0 +1,140 @@
+// Capture rules: which downloads the browser starts are taken by UIDM.
+//
+// The rules come from UIDM's settings (`capture_types`, `capture_min_size_kb`
+// and `capture_excluded_sites`), so they are edited in one place, the
+// window's Options. These are plain functions: the service worker loads them
+// with importScripts, and the tests load them with require.
+
+// Types for downloads whose name is not known yet when the browser reports
+// them, by the MIME type the server sent.
+const MIME_EXTENSIONS = {
+  "application/pdf": "pdf",
+  "application/zip": "zip",
+  "application/x-zip-compressed": "zip",
+  "application/vnd.rar": "rar",
+  "application/x-rar-compressed": "rar",
+  "application/x-7z-compressed": "7z",
+  "application/x-tar": "tar",
+  "application/gzip": "gz",
+  "application/x-gzip": "gz",
+  "application/x-bzip2": "bz2",
+  "application/x-xz": "xz",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-powerpoint": "ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "application/rtf": "rtf",
+  "application/vnd.oasis.opendocument.text": "odt",
+  "text/plain": "txt",
+  "audio/mpeg": "mp3",
+  "audio/flac": "flac",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/mp4": "m4a",
+  "audio/aac": "aac",
+  "audio/ogg": "ogg",
+  "application/x-msdownload": "exe",
+  "application/vnd.microsoft.portable-executable": "exe",
+  "application/x-msi": "msi",
+  "application/vnd.android.package-archive": "apk",
+  "video/mp4": "mp4",
+  "video/x-matroska": "mkv",
+  "video/x-msvideo": "avi",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "video/x-ms-wmv": "wmv",
+  "application/x-iso9660-image": "iso",
+};
+
+// MIME types that say only "a file": taken when the type list is not empty
+// but the name says nothing yet, because that is what most real downloads
+// look like before their name is known.
+const GENERIC_MIME = new Set(["application/octet-stream", "binary/octet-stream", "application/force-download"]);
+
+// "report.PDF" -> "pdf"; "README" and ".bashrc" -> "".
+function extensionOf(name) {
+  const base = String(name || "").split(/[\\/]/).pop();
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0 || dot === base.length - 1) return "";
+  return base.slice(dot + 1).toLowerCase();
+}
+
+function urlPath(url) {
+  try {
+    return new URL(url).pathname;
+  } catch (_) {
+    return "";
+  }
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch (_) {
+    return "";
+  }
+}
+
+// Whether `host` belongs to the site `pattern`. "example.com" and
+// "*.example.com" both cover example.com and every subdomain; any other "*"
+// matches within the host name. A port in the pattern is ignored.
+function siteMatches(pattern, host) {
+  if (!host) return false;
+  const p = String(pattern || "").trim().toLowerCase().replace(/:\d*$/, "");
+  if (!p) return false;
+  if (p.startsWith("*.") && !p.slice(2).includes("*")) {
+    const base = p.slice(2);
+    return host === base || host.endsWith("." + base);
+  }
+  if (p.includes("*")) {
+    const re = new RegExp("^" + p.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\-]/g, "\\$&")).join("[a-z0-9.-]*") + "$");
+    return re.test(host);
+  }
+  return host === p || host.endsWith("." + p);
+}
+
+// The file type of a download: from its name, else its MIME type, else its
+// URL path. "" when none says.
+function downloadType(item) {
+  const mime = String(item.mime || "").split(";")[0].trim().toLowerCase();
+  return extensionOf(item.filename) || MIME_EXTENSIONS[mime] || extensionOf(urlPath(item.url));
+}
+
+// Decide whether UIDM takes `item`, a download the browser just reported:
+// { url, referrer, filename, mime, size }. `size` is 0 or missing when the
+// browser does not know it yet; then only the name and site are checked.
+// `rules` is UIDM's settings, or null before they arrive (take everything).
+// Returns { capture, reason }; `reason` says why a download stays.
+function captureDecision(rules, item) {
+  if (!rules) return { capture: true, reason: "" };
+
+  for (const site of rules.capture_excluded_sites || []) {
+    if (siteMatches(site, hostOf(item.url)) || siteMatches(site, hostOf(item.referrer))) {
+      return { capture: false, reason: `excluded site ${site}` };
+    }
+  }
+
+  const minBytes = (rules.capture_min_size_kb || 0) * 1024;
+  if (minBytes > 0 && item.size > 0 && item.size < minBytes) {
+    return { capture: false, reason: `smaller than ${rules.capture_min_size_kb} KB` };
+  }
+
+  const types = rules.capture_types || [];
+  if (types.length === 0) return { capture: true, reason: "" };
+  const type = downloadType(item);
+  if (type) {
+    return types.includes(type)
+      ? { capture: true, reason: "" }
+      : { capture: false, reason: `.${type} is not a captured type` };
+  }
+  const mime = String(item.mime || "").split(";")[0].trim().toLowerCase();
+  return GENERIC_MIME.has(mime)
+    ? { capture: true, reason: "" }
+    : { capture: false, reason: "unknown file type" };
+}
+
+if (typeof module !== "undefined") {
+  module.exports = { extensionOf, siteMatches, downloadType, captureDecision };
+}

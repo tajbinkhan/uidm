@@ -4,9 +4,12 @@
 // daemon), takes downloads away from the browser and hands them to UIDM,
 // adds a "Download with UIDM" context menu, and serves the popup.
 //
-// A download is only taken from the browser while UIDM is connected and
-// capture is on; otherwise the browser downloads it as usual. If UIDM cannot
-// even start a download it took, it is handed back to the browser.
+// A download is only taken from the browser while UIDM is connected, capture
+// is on, and it passes the capture rules from UIDM's settings (see rules.js);
+// otherwise the browser downloads it as usual. If UIDM cannot even start a
+// download it took, it is handed back to the browser.
+
+importScripts("rules.js");
 
 const HOST = "com.uidm.host";
 const RECONNECT_MIN_MS = 1000;
@@ -26,6 +29,10 @@ const awaitingAck = new Map();
 const captured = new Map();
 
 let captureEnabled = true;
+// UIDM's settings, which carry the capture rules; null until they arrive.
+let rules = null;
+// "Skip next download" in the popup: the next download stays in the browser.
+let skipNext = false;
 const settingsReady = chrome.storage.local.get({ capture: true }).then((s) => {
   captureEnabled = s.capture;
 });
@@ -50,6 +57,7 @@ function connect() {
   });
   port.postMessage({ op: "hello", version: chrome.runtime.getManifest().version });
   port.postMessage({ op: "list" });
+  port.postMessage({ op: "get_settings" });
 }
 
 function onDisconnect(reason) {
@@ -82,7 +90,7 @@ function upsert(id, url) {
   return e;
 }
 
-const TERMINAL = new Set(["done", "failed", "canceled", "interrupted"]);
+const TERMINAL = new Set(["done", "failed", "canceled", "interrupted", "waiting"]);
 
 function onHostMessage(msg) {
   switch (msg.op) {
@@ -134,6 +142,14 @@ function onHostMessage(msg) {
       break;
     case "removed":
       downloads.delete(msg.id);
+      break;
+    case "updated":
+      downloads.set(msg.item.id, msg.item);
+      // Kept for later: it is UIDM's now, so no hand-back.
+      if (msg.item.status === "waiting") captured.delete(msg.item.id);
+      break;
+    case "settings":
+      rules = msg.settings;
       break;
     case "error":
       lastError = msg.message;
@@ -193,6 +209,19 @@ chrome.downloads.onCreated.addListener(async (item) => {
   if (item.byExtensionId === chrome.runtime.id) return; // our own hand-back
   const url = item.finalUrl || item.url;
   if (!isWeb(url)) return; // blob:, data:, file: only exist in the browser
+  if (skipNext) {
+    skipNext = false;
+    return;
+  }
+  const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
+  const decision = captureDecision(rules, {
+    url,
+    referrer: item.referrer,
+    filename: baseName(item.filename),
+    mime: item.mime,
+    size,
+  });
+  if (!decision.capture) return;
 
   // Take it from the browser before it writes much, then hand it over.
   try {
@@ -239,6 +268,7 @@ function snapshot() {
     connected,
     lastError,
     capture: captureEnabled,
+    skipNext,
     items: [...downloads.values()].sort((a, b) => b.id - a.id),
   };
 }
@@ -253,8 +283,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       captureEnabled = !!msg.value;
       chrome.storage.local.set({ capture: captureEnabled });
       break;
+    case "setSkipNext":
+      skipNext = !!msg.value;
+      break;
     case "add":
       if (isWeb(msg.url)) send({ op: "add", url: msg.url });
+      break;
+    case "start":
+      if (Number.isInteger(msg.id)) send({ op: "confirm", id: msg.id, start: true });
       break;
     case "cancel":
     case "retry":

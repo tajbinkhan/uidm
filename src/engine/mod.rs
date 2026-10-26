@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::settings::FileExists;
+use crate::settings::{FileExists, Folders};
 use limit::RateLimiter;
 use resume::Manifest;
 use segments::split;
@@ -52,7 +52,8 @@ type CancelToken = Arc<AtomicBool>;
 /// A download to perform.
 pub struct DownloadRequest {
     pub url: String,
-    pub output_dir: PathBuf,
+    /// Where the file goes, chosen by its final name (its category).
+    pub folders: Folders,
     /// Suggested filename; derived from the server or URL when absent.
     pub filename: Option<String>,
     /// Extra request headers (user agent, cookies, referrer, explicit headers).
@@ -200,12 +201,23 @@ impl Engine {
 
     /// Queue `req` and return its id. It starts when a slot is free.
     pub fn enqueue(&self, req: DownloadRequest) -> u64 {
-        let id = self.counter.fetch_add(1, Ordering::Relaxed);
+        let id = self.reserve_id();
+        self.enqueue_as(id, req);
+        id
+    }
+
+    /// Take the next id without queuing anything, for a download that waits
+    /// (for the user to confirm it, say) before it is queued with `enqueue_as`.
+    pub fn reserve_id(&self) -> u64 {
+        self.counter.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Queue `req` under an id from `reserve_id`.
+    pub fn enqueue_as(&self, id: u64, req: DownloadRequest) {
         let token: CancelToken = Arc::new(AtomicBool::new(false));
         self.inner.registry.lock().unwrap().insert(id, Arc::clone(&token));
         self.inner.sched.lock().unwrap().queue.push_back(Job { id, token, req });
         pump(&self.inner);
-        id
     }
 
     /// Make the next id at least `next`, so ids keep increasing across
@@ -334,24 +346,10 @@ fn run_inner(
 ) -> Result<PathBuf, EngineError> {
     let agent = http::build_agent()?;
     let probe = http::probe(&agent, &req.url, &req.headers)?;
-
-    // Filename priority: explicit request, then Content-Disposition, then the
-    // URL path, then a generic fallback.
-    let filename = req
-        .filename
-        .as_deref()
-        .map(sanitize_filename)
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            probe
-                .suggested_filename
-                .as_deref()
-                .map(sanitize_filename)
-                .filter(|s| !s.is_empty())
-        })
-        .unwrap_or_else(|| derive_filename(&probe.final_url));
-    fs::create_dir_all(&req.output_dir)?;
-    let claim = choose_output(&shared.claimed, &req.output_dir, &filename, req, &probe)?;
+    let filename = pick_filename(req.filename.as_deref(), &probe);
+    let dir = req.folders.for_name(&filename);
+    fs::create_dir_all(&dir)?;
+    let claim = choose_output(&shared.claimed, &dir, &filename, req, &probe)?;
     let output = claim.path.clone();
 
     let segmented = probe.resumable && probe.total.map_or(false, |t| t > 0);
@@ -378,6 +376,51 @@ fn run_inner(
     };
     drop(claim);
     result
+}
+
+/// Filename priority: explicit request, then Content-Disposition, then the URL
+/// path, then a generic fallback.
+fn pick_filename(requested: Option<&str>, probe: &http::Probe) -> String {
+    requested
+        .map(sanitize_filename)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            probe
+                .suggested_filename
+                .as_deref()
+                .map(sanitize_filename)
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| derive_filename(&probe.final_url))
+}
+
+/// What a download will be before it starts, for a save-as dialog.
+pub struct Inspection {
+    /// The name the file would be saved under.
+    pub filename: String,
+    pub total: Option<u64>,
+    pub resumable: bool,
+}
+
+/// Probe `url` the way a download would and report its name and size,
+/// without writing anything.
+pub fn inspect(
+    url: &str,
+    filename: Option<&str>,
+    headers: &[(String, String)],
+) -> Result<Inspection, EngineError> {
+    let agent = http::build_agent()?;
+    let probe = http::probe(&agent, url, headers)?;
+    Ok(Inspection {
+        filename: pick_filename(filename, &probe),
+        total: probe.total,
+        resumable: probe.resumable,
+    })
+}
+
+/// Make `name` safe to use as a Windows file name, as the engine will.
+pub fn clean_filename(name: &str) -> String {
+    sanitize_filename(name)
 }
 
 /// An output file reserved for one download; released when dropped.
@@ -918,7 +961,7 @@ mod tests {
         fn request(url: &str, dir: &Path, file_exists: FileExists) -> DownloadRequest {
             DownloadRequest {
                 url: url.to_string(),
-                output_dir: dir.to_path_buf(),
+                folders: Folders::fixed(dir.to_path_buf()),
                 filename: Some("report.pdf".into()),
                 headers: Vec::new(),
                 connections: 4,
@@ -1026,6 +1069,37 @@ mod tests {
             assert_eq!(path, existing);
             assert_eq!(fs::read(&path).unwrap(), body(LEN));
             fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn downloads_go_to_their_category_folder() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("categories");
+            let settings = crate::settings::Settings {
+                download_dir: Some(dir.display().to_string()),
+                ..crate::settings::Settings::default()
+            };
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.folders = settings.folders();
+            req.filename = Some("Report.PDF".into());
+            assert_eq!(download(|_| {}, req), dir.join("Documents").join("Report.PDF"));
+
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.folders = settings.folders();
+            req.filename = Some("photo.jpg".into());
+            assert_eq!(download(|_| {}, req), dir.join("photo.jpg"));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn inspect_reports_name_and_size_without_writing() {
+            let server = TestServer::start(body(LEN));
+            let found = inspect(&server.url, None, &[]).unwrap();
+            assert_eq!(found.filename, "file.bin");
+            assert_eq!(found.total, Some(LEN as u64));
+            assert!(found.resumable);
+            let named = inspect(&server.url, Some("a/b:c.txt"), &[]).unwrap();
+            assert_eq!(named.filename, "a_b_c.txt");
         }
 
         #[test]

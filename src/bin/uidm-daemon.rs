@@ -20,11 +20,17 @@
 //! (debounced, and again on exit), and the requests that may still be retried
 //! go to a DPAPI-encrypted file next to it (see `uidm::history`). Settings are
 //! loaded at start and changed with `set_settings` (see `uidm::settings`).
+//!
+//! With the save-as dialog on, a new download is probed first and waits as
+//! `confirming` until a window answers with `confirm`. If no window is open
+//! the daemon starts one; if none connects within `CONFIRM_FALLBACK`, the
+//! download starts with the proposed name and folder.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -32,11 +38,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use uidm::app::{progress_to_outgoing, to_request, MAX_MESSAGE_BYTES};
-use uidm::engine::{Engine, Progress};
+use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
-use uidm::protocol::{read_message, write_frame, Download, Incoming, Outgoing, Status};
-use uidm::settings::{self, Settings};
+use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Status};
+use uidm::settings::{self, Folders, Settings};
 use uidm::state::DownloadTable;
 
 /// Exit after this long with no clients and no queued or running downloads.
@@ -44,6 +50,11 @@ const IDLE_EXIT: Duration = Duration::from_secs(60);
 const IDLE_POLL: Duration = Duration::from_secs(5);
 /// Collect changes for this long before writing the history.
 const HISTORY_DEBOUNCE: Duration = Duration::from_secs(1);
+/// How long a download waits for a window to show its save-as dialog before
+/// it starts with the proposed name and folder.
+const CONFIRM_FALLBACK: Duration = Duration::from_secs(20);
+/// The `client` a desktop window names in its `hello`.
+const WINDOW_CLIENT: &str = "window";
 
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
 
@@ -60,6 +71,8 @@ struct Hub {
     requests: Mutex<HashMap<u64, Download>>,
     /// Wakes the history writer after every change.
     dirty: Sender<()>,
+    /// Clients that said they are a desktop window.
+    windows: Mutex<HashSet<u64>>,
 }
 
 impl Hub {
@@ -74,6 +87,31 @@ impl Hub {
         }
         let _ = self.dirty.send(());
         self.broadcast(msg);
+    }
+
+    /// Change download `id` with `f` and announce the new entry, all under the
+    /// table lock, so the check `f` makes cannot race another change. `f`
+    /// returns an error to leave the entry alone.
+    fn update(
+        &self,
+        id: u64,
+        f: impl FnOnce(&mut DownloadEntry) -> Result<(), String>,
+    ) -> Result<DownloadEntry, String> {
+        let mut table = self.table.lock().unwrap();
+        let mut item = table
+            .get(id)
+            .cloned()
+            .ok_or_else(|| format!("no download with id {id}"))?;
+        f(&mut item)?;
+        let msg = Outgoing::Updated { item: item.clone() };
+        table.apply(&msg);
+        let _ = self.dirty.send(());
+        self.broadcast(&msg);
+        Ok(item)
+    }
+
+    fn window_open(&self) -> bool {
+        !self.windows.lock().unwrap().is_empty()
     }
 
     /// Send `msg` to every client.
@@ -165,6 +203,7 @@ impl Daemon {
             table: Mutex::new(table),
             requests: Mutex::new(requests),
             dirty,
+            windows: Mutex::new(HashSet::new()),
         });
         let events = Arc::clone(&hub);
         let engine = Engine::new(
@@ -183,6 +222,151 @@ impl Daemon {
             save_lock: Mutex::new(()),
         };
         (daemon, dirty_rx)
+    }
+
+    /// Take a new download: ask where to save it when the settings say so,
+    /// otherwise queue it at once.
+    fn add(self: &Arc<Self>, download: Download) -> (u64, String) {
+        if self.settings.lock().unwrap().ask_where_to_save {
+            self.ask(download)
+        } else {
+            self.start(download, None)
+        }
+    }
+
+    /// Announce `download` as queued, probe it on another thread, then hold it
+    /// as `confirming` with the proposed file until a window answers.
+    fn ask(self: &Arc<Self>, download: Download) -> (u64, String) {
+        let url = download.url.clone();
+        let id = self.engine.reserve_id();
+        self.hub.requests.lock().unwrap().insert(id, download.clone());
+        self.hub.publish(&Outgoing::Added {
+            id,
+            url: url.clone(),
+        });
+
+        let daemon = Arc::clone(self);
+        thread::spawn(move || {
+            let (headers, folders) = {
+                let settings = daemon.settings.lock().unwrap();
+                (to_request(download.clone(), &settings).headers, settings.folders())
+            };
+            let found = match engine::inspect(&download.url, download.filename.as_deref(), &headers) {
+                Ok(found) => found,
+                Err(e) => {
+                    // Same as a download that fails to start, so the browser
+                    // can take it back.
+                    daemon.hub.publish(&Outgoing::Failed {
+                        id,
+                        url: download.url,
+                        error: e.to_string(),
+                    });
+                    return;
+                }
+            };
+            let path = folders.for_name(&found.filename).join(&found.filename);
+            let asked = daemon.hub.update(id, |e| {
+                if e.status != Status::Queued {
+                    return Err("no longer queued".into());
+                }
+                e.status = Status::Confirming;
+                e.path = Some(path.display().to_string());
+                e.total = found.total;
+                e.resumable = found.resumable;
+                Ok(())
+            });
+            if asked.is_err() {
+                return; // canceled while being probed
+            }
+            if !daemon.hub.window_open() {
+                if let Err(e) = open_window() {
+                    eprintln!("[uidm-daemon] could not open the window: {e}");
+                }
+            }
+            thread::sleep(CONFIRM_FALLBACK);
+            if daemon.status(id) == Some(Status::Confirming) && !daemon.hub.window_open() {
+                eprintln!("[uidm-daemon] no window to confirm #{id}; starting it as proposed");
+                if let Err(e) = daemon.confirm(id, None, None, true) {
+                    eprintln!("[uidm-daemon] could not start #{id}: {e}");
+                }
+            }
+        });
+        (id, url)
+    }
+
+    /// Answer the save-as dialog of a `confirming` download, or start a
+    /// `waiting` one. Missing names and folders keep the proposed ones.
+    fn confirm(
+        &self,
+        id: u64,
+        filename: Option<String>,
+        folder: Option<String>,
+        start: bool,
+    ) -> Result<(), String> {
+        let download = self
+            .hub
+            .requests
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned();
+        let mut chosen: Option<(String, PathBuf)> = None;
+        let item = self.hub.update(id, |e| {
+            if !matches!(e.status, Status::Confirming | Status::Waiting) {
+                return Err(format!("download {id} is not waiting to be started"));
+            }
+            let proposed = e.path.as_deref().map(Path::new);
+            let name = filename
+                .as_deref()
+                .map(engine::clean_filename)
+                .filter(|n| !n.is_empty())
+                .or_else(|| {
+                    proposed
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().into_owned())
+                })
+                .ok_or("the download has no file name")?;
+            let dir = match folder.as_deref().map(str::trim) {
+                Some(f) if !f.is_empty() => PathBuf::from(f),
+                _ => proposed
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+                    .ok_or("the download has no folder")?,
+            };
+            if !dir.is_absolute() {
+                return Err(format!("the folder must be a full path: {}", dir.display()));
+            }
+            e.path = Some(dir.join(&name).display().to_string());
+            e.status = if start { Status::Queued } else { Status::Waiting };
+            chosen = Some((name, dir));
+            Ok(())
+        })?;
+        let Some((name, dir)) = chosen else {
+            return Ok(());
+        };
+        if start {
+            let download = download.unwrap_or_else(|| Download {
+                url: item.url.clone(),
+                ..Download::default()
+            });
+            let mut req = to_request(download, &self.settings.lock().unwrap());
+            req.filename = Some(name);
+            req.folders = Folders::fixed(dir);
+            self.engine.enqueue_as(id, req);
+        }
+        Ok(())
+    }
+
+    /// Cancel a download, whether it waits for its dialog or is in the engine.
+    fn cancel(&self, id: u64) {
+        if self.status(id) == Some(Status::Confirming) {
+            let url = self.hub.table.lock().unwrap().get(id).map(|e| e.url.clone());
+            if let Some(url) = url {
+                self.hub.publish(&Outgoing::Canceled { id, url });
+            }
+            return;
+        }
+        self.engine.cancel(id);
     }
 
     /// Queue `download`, remember it for retries, and announce it.
@@ -236,7 +420,12 @@ impl Daemon {
                 ..Download::default()
             });
         self.hub.publish(&Outgoing::Removed { id });
-        Ok(self.start(download, entry.path.map(PathBuf::from)))
+        // Only a download that started has a file of its own to resume. One
+        // that never got past its save-as dialog only has a proposed path,
+        // which may be somebody else's file.
+        let started = entry.connections > 0;
+        let reuse_path = entry.path.filter(|_| started).map(PathBuf::from);
+        Ok(self.start(download, reuse_path))
     }
 
     /// Validate, save and apply new settings, then tell every client. Running
@@ -370,7 +559,7 @@ fn run() -> io::Result<()> {
 
 /// Serve one client until it disconnects. The client is registered for
 /// broadcasts only after it authenticates.
-fn handle_client(mut stream: TcpStream, daemon: &Daemon, token: &str) {
+fn handle_client(mut stream: TcpStream, daemon: &Arc<Daemon>, token: &str) {
     let id = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
     let peer = stream
         .peer_addr()
@@ -405,7 +594,7 @@ fn handle_client(mut stream: TcpStream, daemon: &Daemon, token: &str) {
     let mut reader = stream;
     loop {
         match read_message(&mut reader, MAX_MESSAGE_BYTES) {
-            Ok(Some(raw)) => dispatch(&raw, daemon, &tx),
+            Ok(Some(raw)) => dispatch(&raw, daemon, id, &tx),
             Ok(None) => break, // clean disconnect
             Err(e) => {
                 eprintln!("[uidm-daemon] client #{id} read error: {e}");
@@ -418,6 +607,7 @@ fn handle_client(mut stream: TcpStream, daemon: &Daemon, token: &str) {
     // with no senders, so it drains what is queued and ends. Downloads this
     // client started keep running.
     daemon.hub.clients.lock().unwrap().remove(&id);
+    daemon.hub.windows.lock().unwrap().remove(&id);
     drop(tx);
     let _ = writer.join();
     eprintln!("[uidm-daemon] client #{id} disconnected");
@@ -455,8 +645,9 @@ fn denied(why: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, why.to_string())
 }
 
-/// Handle one request frame, sending any direct reply to `reply`.
-fn dispatch(raw: &[u8], daemon: &Daemon, reply: &Sender<Vec<u8>>) {
+/// Handle one request frame from client `client`, sending any direct reply to
+/// `reply`.
+fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8>>) {
     let send = |msg: &Outgoing| {
         if let Ok(frame) = serde_json::to_vec(msg) {
             let _ = reply.send(frame);
@@ -473,13 +664,18 @@ fn dispatch(raw: &[u8], daemon: &Daemon, reply: &Sender<Vec<u8>>) {
     };
 
     match incoming {
-        Incoming::Hello { .. } => send(&Outgoing::Hello {
-            name: "uidm-daemon".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        }),
+        Incoming::Hello { client: kind, .. } => {
+            if kind.as_deref() == Some(WINDOW_CLIENT) {
+                daemon.hub.windows.lock().unwrap().insert(client);
+            }
+            send(&Outgoing::Hello {
+                name: "uidm-daemon".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            })
+        }
         Incoming::Ping => send(&Outgoing::Pong),
         Incoming::Add(download) => {
-            let (id, url) = daemon.start(download, None);
+            let (id, url) = daemon.add(download);
             eprintln!("[uidm-daemon] add #{id}: {url}");
             send(&Outgoing::Ack {
                 id,
@@ -489,8 +685,17 @@ fn dispatch(raw: &[u8], daemon: &Daemon, reply: &Sender<Vec<u8>>) {
         }
         Incoming::Cancel { id } => {
             eprintln!("[uidm-daemon] cancel #{id}");
-            daemon.engine.cancel(id);
+            daemon.cancel(id);
         }
+        Incoming::Confirm {
+            id,
+            filename,
+            folder,
+            start,
+        } => match daemon.confirm(id, filename, folder, start) {
+            Ok(()) => eprintln!("[uidm-daemon] confirm #{id} (start: {start})"),
+            Err(message) => send(&Outgoing::Error { message }),
+        },
         Incoming::Retry { id } => match daemon.retry(id) {
             Ok((new_id, url)) => {
                 eprintln!("[uidm-daemon] retry #{id} as #{new_id}");
@@ -516,6 +721,17 @@ fn dispatch(raw: &[u8], daemon: &Daemon, reply: &Sender<Vec<u8>>) {
             Err(message) => send(&Outgoing::Error { message }),
         },
     }
+}
+
+/// Start the desktop window from this daemon's folder.
+fn open_window() -> io::Result<()> {
+    let gui = std::env::current_exe()?.with_file_name("uidm-gui.exe");
+    Command::new(gui)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
 }
 
 /// Write the history shortly after it changes, batching bursts of events

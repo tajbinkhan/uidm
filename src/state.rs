@@ -81,6 +81,9 @@ impl DownloadTable {
             Outgoing::Removed { id } => {
                 self.entries.remove(id);
             }
+            Outgoing::Updated { item } => {
+                self.entries.insert(item.id, item.clone());
+            }
             Outgoing::Downloads { items } => {
                 self.entries = items.iter().map(|e| (e.id, e.clone())).collect();
             }

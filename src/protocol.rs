@@ -23,6 +23,10 @@ pub enum Incoming {
     Hello {
         #[serde(default)]
         version: Option<String>,
+        /// What kind of client this is. The desktop window says `window`, so
+        /// the daemon knows whether one is open to show a save-as dialog.
+        #[serde(default)]
+        client: Option<String>,
     },
     /// Liveness check.
     Ping,
@@ -37,11 +41,27 @@ pub enum Incoming {
     Remove { id: u64 },
     /// Ask for every download the daemon knows about.
     List,
+    /// Answer the save-as dialog for a `confirming` download, or start a
+    /// `waiting` one. `filename` and `folder` replace the proposed ones when
+    /// given. With `start` false the download waits until started.
+    Confirm {
+        id: u64,
+        #[serde(default)]
+        filename: Option<String>,
+        #[serde(default)]
+        folder: Option<String>,
+        #[serde(default = "yes")]
+        start: bool,
+    },
     /// Ask for the current settings; answered with `settings`.
     GetSettings,
     /// Replace the settings. Invalid values are refused with `error`; valid
     /// ones are saved and sent to every client as `settings`.
     SetSettings { settings: Settings },
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// The payload a browser hand-off needs to reissue a request outside the page.
@@ -77,6 +97,11 @@ pub enum Status {
     /// Was queued or running when the daemon last stopped. It can be retried,
     /// and resumes from its partial file.
     Interrupted,
+    /// Probed and waiting for the user to answer the save-as dialog. `path`
+    /// holds the proposed file.
+    Confirming,
+    /// Added to start later ("Download later"). `path` holds the chosen file.
+    Waiting,
 }
 
 impl Status {
@@ -84,13 +109,20 @@ impl Status {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Status::Done | Status::Failed | Status::Canceled | Status::Interrupted
+            Status::Done
+                | Status::Failed
+                | Status::Canceled
+                | Status::Interrupted
+                | Status::Waiting
         )
     }
 
     /// Stopped before finishing, so it can be started again.
     pub fn is_retryable(self) -> bool {
-        matches!(self, Status::Failed | Status::Canceled | Status::Interrupted)
+        matches!(
+            self,
+            Status::Failed | Status::Canceled | Status::Interrupted | Status::Waiting
+        )
     }
 }
 
@@ -147,6 +179,10 @@ pub enum Outgoing {
     Canceled { id: u64, url: String },
     /// A download was removed from the list (removed or retried).
     Removed { id: u64 },
+    /// A download's whole entry, replacing what clients had: used for the
+    /// changes no other event covers (`confirming`, `waiting`, and back to
+    /// `queued` once confirmed).
+    Updated { item: DownloadEntry },
     /// Reply to `list`: every download the daemon knows about, oldest first.
     Downloads { items: Vec<DownloadEntry> },
     /// The current settings: a reply to `get_settings`, and sent to every
