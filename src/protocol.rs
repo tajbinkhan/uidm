@@ -10,6 +10,7 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+use crate::queue::{Queue, WhenDone};
 use crate::settings::Settings;
 
 /// A request from a client (the browser via the host, or the desktop window)
@@ -56,7 +57,36 @@ pub enum Incoming {
         folder: Option<String>,
         #[serde(default = "yes")]
         start: bool,
+        /// With `start` false, the queue it waits in (the main queue when
+        /// missing).
+        #[serde(default)]
+        queue: Option<u64>,
     },
+    /// Create a queue (`id` 0) or change one: name, downloads at once,
+    /// schedule, what happens when done, retries.
+    SaveQueue { queue: Queue },
+    /// Delete a queue; its waiting downloads move to the main queue.
+    DeleteQueue { id: u64 },
+    StartQueue { id: u64 },
+    /// Stop a queue; its running downloads go back to waiting in it, with
+    /// their progress kept.
+    StopQueue { id: u64 },
+    /// What happens when this queue's current run ends, this time only.
+    SetQueueOnce {
+        id: u64,
+        #[serde(default)]
+        when_done: Option<WhenDone>,
+    },
+    /// Put a download in a queue (or move it within one) at `position`, or at
+    /// the end. A download that is not running waits there.
+    MoveToQueue {
+        id: u64,
+        queue: u64,
+        #[serde(default)]
+        position: Option<usize>,
+    },
+    /// Stop the countdown before sleeping or shutting down.
+    CancelCountdown,
     /// Ask for the current settings; answered with `settings`.
     GetSettings,
     /// Replace the settings. Invalid values are refused with `error`; valid
@@ -87,6 +117,14 @@ pub struct Download {
     /// Suggested filename, when the client could derive one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    /// `false` adds the download to a queue without starting it ("Download
+    /// later"). Missing means start it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<bool>,
+    /// The queue a download added with `start: false` waits in; the main
+    /// queue when missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<u64>,
 }
 
 /// Where a download is in its life.
@@ -210,6 +248,19 @@ pub enum Outgoing {
     /// Ask the desktop window to come to the front (from a notification).
     /// Other clients ignore it.
     Show,
+    /// Every queue, in order: a reply to `list`, and sent to every client when
+    /// one changes.
+    Queues { items: Vec<Queue> },
+    /// A finished queue will put the computer to sleep, hibernate it or shut
+    /// it down in `seconds` unless someone sends `cancel_countdown`.
+    Countdown {
+        action: WhenDone,
+        seconds: u32,
+        queue: String,
+    },
+    CountdownCanceled,
+    /// A finished queue asked UIDM to exit: windows close.
+    Quit,
     /// Any failure the client should hear about.
     Error { message: String },
 }

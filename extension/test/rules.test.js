@@ -194,3 +194,13 @@ test("downloads waiting for the save-as dialog show in the popup and can be star
   await w.popup({ type: "start", id: 7 });
   assert.equal(JSON.stringify(w.sent.at(-1)), JSON.stringify({ op: "confirm", id: 7, start: true }));
 });
+
+test("download later from the context menu adds without starting", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  await w.chrome.contextMenus.onClicked.fire({ menuItemId: "uidm-later-link", linkUrl: "https://dl.net/a.zip", pageUrl: "https://dl.net/" });
+  await w.chrome.contextMenus.onClicked.fire({ menuItemId: "uidm-link", linkUrl: "https://dl.net/b.zip", pageUrl: "https://dl.net/" });
+  await w.chrome.contextMenus.onClicked.fire({ menuItemId: "uidm-later-media", srcUrl: "https://dl.net/c.mp4", pageUrl: "https://dl.net/" });
+  const adds = w.sent.filter((m) => m.op === "add").map((m) => [m.url, m.start]);
+  assert.equal(JSON.stringify(adds), JSON.stringify([["https://dl.net/a.zip", false], ["https://dl.net/b.zip", undefined], ["https://dl.net/c.mp4", false]]));
+});

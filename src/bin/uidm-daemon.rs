@@ -30,6 +30,14 @@
 //! asked, plays the chosen sound, and shows a Windows notification, whose
 //! buttons it handles itself (open, show in folder, retry). In dialog mode an
 //! open window shows a dialog instead.
+//!
+//! Queues sit above the engine. Each holds downloads waiting in order; while a
+//! queue is started, a scheduler thread starts its waiting downloads up to the
+//! queue's own limit (the engine's limit still caps the total), starts and
+//! stops queues on their schedules, and when a queue's run is done does what
+//! it asks: exit, or sleep, hibernate or shut down after a countdown the
+//! window can cancel. Stopping a queue puts its running downloads back to
+//! waiting in it, progress kept.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -37,7 +45,7 @@ use std::net::{TcpListener, TcpStream};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -50,6 +58,8 @@ use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_L
 use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Status};
 use uidm::settings::{self, Folders, Settings};
 use uidm::notify::{self, Sound, Toast};
+use uidm::power;
+use uidm::queue::{self, Queue, WhenDone, COUNTDOWN_SECS, MAIN_QUEUE};
 use uidm::protocol::Scan;
 use uidm::registry;
 use uidm::scan;
@@ -74,6 +84,11 @@ const KEEP_TOASTS: usize = 32;
 const ICON_PNG: &[u8] = include_bytes!("../../extension/icons/128.png");
 /// The `client` a desktop window names in its `hello`.
 const WINDOW_CLIENT: &str = "window";
+/// How often the scheduler looks at the clock when nothing wakes it.
+const SCHEDULER_POLL: Duration = Duration::from_secs(5);
+/// Set to make sleep, hibernate and shut down only log what they would do
+/// (for testing the countdown without losing the machine).
+const POWER_DRY_RUN_ENV: &str = "UIDM_POWER_DRY_RUN";
 
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
 
@@ -94,6 +109,13 @@ struct Hub {
     windows: Mutex<HashSet<u64>>,
     /// Finished and failed downloads, for the notification thread.
     notes: Sender<Note>,
+    /// The queues, the main queue first. Lock after `table`, never before.
+    queues: Mutex<Vec<Queue>>,
+    /// Downloads being stopped to wait in their queue again: their
+    /// `canceled` event becomes `waiting`.
+    held: Mutex<HashSet<u64>>,
+    /// Wakes the scheduler when a download ends or a queue changes.
+    wake: Sender<()>,
 }
 
 /// Work for the notification thread.
@@ -110,7 +132,36 @@ impl Hub {
     /// a `downloads` snapshot (taken under the same lock) is never stale.
     fn publish(&self, msg: &Outgoing) {
         let mut table = self.table.lock().unwrap();
+        if let Outgoing::Canceled { id, .. } = msg {
+            if self.held.lock().unwrap().remove(id) {
+                if let Some(mut item) = table.get(*id).cloned() {
+                    item.status = Status::Waiting;
+                    let waiting = Outgoing::Updated { item };
+                    table.apply(&waiting);
+                    let _ = self.dirty.send(());
+                    let _ = self.wake.send(());
+                    self.broadcast(&waiting);
+                    return;
+                }
+            }
+        }
         table.apply(msg);
+        if let Outgoing::Done { id, .. } | Outgoing::Failed { id, .. } = msg {
+            // It ended before the stop reached it; nothing to hold.
+            self.held.lock().unwrap().remove(id);
+        }
+        // A queue holds what is still to do: a finished download leaves it.
+        if let Outgoing::Done { id, .. } = msg {
+            if self.leave_queues(*id) {
+                self.publish_queues();
+            }
+        }
+        if matches!(
+            msg,
+            Outgoing::Done { .. } | Outgoing::Failed { .. } | Outgoing::Canceled { .. }
+        ) {
+            let _ = self.wake.send(());
+        }
         match msg {
             Outgoing::Done { id, .. } => {
                 self.requests.lock().unwrap().remove(id);
@@ -148,6 +199,49 @@ impl Hub {
 
     fn window_open(&self) -> bool {
         !self.windows.lock().unwrap().is_empty()
+    }
+
+    /// Send every queue to every client, and save them.
+    fn publish_queues(&self) {
+        let items = self.queues.lock().unwrap().clone();
+        let _ = self.dirty.send(());
+        self.broadcast(&Outgoing::Queues { items });
+    }
+
+    /// Change queue `id` with `f`, then announce the queues.
+    fn update_queue<T>(&self, id: u64, f: impl FnOnce(&mut Queue) -> Result<T, String>) -> Result<T, String> {
+        let result = {
+            let mut queues = self.queues.lock().unwrap();
+            let q = queues
+                .iter_mut()
+                .find(|q| q.id == id)
+                .ok_or_else(|| format!("no queue with id {id}"))?;
+            f(q)?
+        };
+        self.publish_queues();
+        let _ = self.wake.send(());
+        Ok(result)
+    }
+
+    /// Take download `id` out of whatever queue holds it.
+    fn leave_queues(&self, id: u64) -> bool {
+        let mut changed = false;
+        for q in self.queues.lock().unwrap().iter_mut() {
+            let before = q.order.len();
+            q.order.retain(|x| *x != id);
+            changed |= q.order.len() != before;
+        }
+        changed
+    }
+
+    /// The queue holding download `id`.
+    fn queue_of(&self, id: u64) -> Option<u64> {
+        self.queues
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|q| q.order.contains(&id))
+            .map(|q| q.id)
     }
 
     /// Send `msg` to every client.
@@ -195,13 +289,31 @@ struct Daemon {
     paused: Mutex<HashSet<u64>>,
     /// Recent notifications; dropping one can stop its buttons working.
     toasts: Mutex<VecDeque<windows::UI::Notifications::ToastNotification>>,
+    /// Queues stopped by `pause_all`, for `resume_all`.
+    paused_queues: Mutex<HashSet<u64>>,
+    /// What each started queue has started in its current run.
+    runs: Mutex<HashMap<u64, HashSet<u64>>>,
+    /// Retries each download got from its queue in the current run.
+    attempts: Mutex<HashMap<u64, u32>>,
+    /// The countdown before a power action, while one runs.
+    countdown: Mutex<Option<Countdown>>,
+    /// Keeps two scheduler passes from running at once.
+    tick_lock: Mutex<()>,
+}
+
+/// A countdown before sleeping, hibernating or shutting down.
+struct Countdown {
+    action: WhenDone,
+    queue: String,
+    deadline: Instant,
+    canceled: Arc<AtomicBool>,
 }
 
 impl Daemon {
     /// Load settings, history and saved requests, and start the engine with
     /// them. Returns the receivers the history writer and the notification
     /// thread wait on.
-    fn new(paths: Paths) -> (Self, Receiver<()>, Receiver<Note>) {
+    fn new(paths: Paths) -> (Self, Receiver<()>, Receiver<Note>, Receiver<()>) {
         let settings = match &paths.settings {
             Some(path) => Settings::load(path).unwrap_or_else(|e| {
                 eprintln!("[uidm-daemon] ignoring {}: {e}", path.display());
@@ -233,6 +345,10 @@ impl Daemon {
         };
 
         let mut table = DownloadTable::new();
+        let mut queues = history.queues;
+        if queues.is_empty() {
+            queues.push(Queue::main());
+        }
         table.apply(&Outgoing::Downloads {
             items: history.items,
         });
@@ -240,6 +356,7 @@ impl Daemon {
 
         let (dirty, dirty_rx) = channel();
         let (notes, notes_rx) = channel();
+        let (wake, wake_rx) = channel();
         let hub = Arc::new(Hub {
             clients: Mutex::new(HashMap::new()),
             table: Mutex::new(table),
@@ -247,6 +364,9 @@ impl Daemon {
             dirty,
             windows: Mutex::new(HashSet::new()),
             notes,
+            queues: Mutex::new(queues),
+            held: Mutex::new(HashSet::new()),
+            wake,
         });
         let events = Arc::clone(&hub);
         let engine = Engine::new(
@@ -265,8 +385,388 @@ impl Daemon {
             save_lock: Mutex::new(()),
             paused: Mutex::new(HashSet::new()),
             toasts: Mutex::new(VecDeque::new()),
+            paused_queues: Mutex::new(HashSet::new()),
+            runs: Mutex::new(HashMap::new()),
+            attempts: Mutex::new(HashMap::new()),
+            countdown: Mutex::new(None),
+            tick_lock: Mutex::new(()),
         };
-        (daemon, dirty_rx, notes_rx)
+        (daemon, dirty_rx, notes_rx, wake_rx)
+    }
+
+    /// Start a `waiting` (or `confirming`) download now. A download that ran
+    /// before resumes its own file; one that never ran goes to the file chosen
+    /// for it, if any.
+    fn dispatch(&self, id: u64) -> Result<(), String> {
+        let download = self.hub.requests.lock().unwrap().get(&id).cloned();
+        let mut plan = (None, false);
+        let item = self.hub.update(id, |e| {
+            if !matches!(e.status, Status::Waiting | Status::Confirming) {
+                return Err(format!("download {id} is not waiting to be started"));
+            }
+            plan = (e.path.clone(), e.connections > 0);
+            e.status = Status::Queued;
+            Ok(())
+        })?;
+        let download = download.unwrap_or_else(|| Download {
+            url: item.url.clone(),
+            ..Download::default()
+        });
+        let mut req = to_request(download, &self.settings.lock().unwrap());
+        match plan {
+            (Some(path), true) => req.reuse_path = Some(PathBuf::from(path)),
+            (Some(path), false) => {
+                let path = PathBuf::from(path);
+                if let (Some(name), Some(dir)) = (path.file_name(), path.parent()) {
+                    req.filename = Some(name.to_string_lossy().into_owned());
+                    req.folders = Folders::fixed(dir.to_path_buf());
+                }
+            }
+            (None, _) => {}
+        }
+        self.engine.enqueue_as(id, req);
+        Ok(())
+    }
+
+    /// Put download `id` in queue `queue` at `position` (or at the end). A
+    /// download that is not running waits there.
+    fn move_to_queue(&self, id: u64, queue: u64, position: Option<usize>) -> Result<(), String> {
+        let status = self.status(id).ok_or_else(|| format!("no download with id {id}"))?;
+        if matches!(status, Status::Done | Status::Confirming) {
+            return Err("Only a download that has not finished can wait in a queue.".to_string());
+        }
+        if !self.hub.queues.lock().unwrap().iter().any(|q| q.id == queue) {
+            return Err(format!("no queue with id {queue}"));
+        }
+        // Joining a queue (not just moving within it) makes a stopped download
+        // wait to run again.
+        let reorder = position.is_some() && self.hub.queue_of(id) == Some(queue);
+        if status.is_retryable() && status != Status::Waiting && !reorder {
+            self.hub.update(id, |e| {
+                e.status = Status::Waiting;
+                Ok(())
+            })?;
+        }
+        self.hub.leave_queues(id);
+        self.hub.update_queue(queue, |q| {
+            let at = position.unwrap_or(q.order.len()).min(q.order.len());
+            q.order.insert(at, id);
+            Ok(())
+        })
+    }
+
+    /// Create a queue (id 0) or change one. Its downloads and running state
+    /// are kept; only what the user edits changes.
+    fn save_queue(&self, edited: Queue) -> Result<u64, String> {
+        edited.validate()?;
+        let name = edited.name.trim().to_string();
+        let id = {
+            let mut queues = self.hub.queues.lock().unwrap();
+            if queues
+                .iter()
+                .any(|q| q.id != edited.id && q.name.eq_ignore_ascii_case(&name))
+            {
+                return Err(format!("There is already a queue named \"{name}\"."));
+            }
+            let id = if edited.id == 0 {
+                let id = queues.iter().map(|q| q.id).max().unwrap_or(MAIN_QUEUE) + 1;
+                queues.push(Queue::new(id, &name));
+                id
+            } else {
+                edited.id
+            };
+            let q = queues
+                .iter_mut()
+                .find(|q| q.id == id)
+                .ok_or_else(|| format!("no queue with id {id}"))?;
+            if q.schedule != edited.schedule && !q.running {
+                // A new schedule may start today even if the old one ran. A
+                // run in progress keeps its day, so its stop time still holds.
+                q.last_scheduled_day = None;
+            }
+            q.name = name;
+            q.max_concurrent = edited.max_concurrent;
+            q.schedule = edited.schedule;
+            q.when_done = edited.when_done;
+            q.retries = edited.retries;
+            id
+        };
+        self.hub.publish_queues();
+        let _ = self.hub.wake.send(());
+        Ok(id)
+    }
+
+    /// Delete a queue. Its downloads move to the main queue, which cannot be
+    /// deleted; the running ones keep running.
+    fn delete_queue(&self, id: u64) -> Result<(), String> {
+        if id == MAIN_QUEUE {
+            return Err("The main queue cannot be deleted.".to_string());
+        }
+        {
+            let mut queues = self.hub.queues.lock().unwrap();
+            let pos = queues
+                .iter()
+                .position(|q| q.id == id)
+                .ok_or_else(|| format!("no queue with id {id}"))?;
+            let gone = queues.remove(pos);
+            if let Some(main) = queues.iter_mut().find(|q| q.id == MAIN_QUEUE) {
+                main.order.extend(gone.order);
+            }
+        }
+        self.runs.lock().unwrap().remove(&id);
+        self.hub.publish_queues();
+        Ok(())
+    }
+
+    /// Start a queue: its waiting downloads run in order.
+    fn start_queue(&self, id: u64, scheduled_day: Option<i64>) -> Result<(), String> {
+        self.hub.update_queue(id, |q| {
+            q.running = true;
+            q.started_by_schedule = scheduled_day.is_some();
+            if scheduled_day.is_some() {
+                q.last_scheduled_day = scheduled_day;
+            }
+            Ok(())
+        })?;
+        self.runs.lock().unwrap().insert(id, HashSet::new());
+        Ok(())
+    }
+
+    /// Stop a queue. Its running downloads stop and wait in it again, with
+    /// their progress kept.
+    fn stop_queue(&self, id: u64) -> Result<(), String> {
+        let order = self.hub.update_queue(id, |q| {
+            q.running = false;
+            q.started_by_schedule = false;
+            q.when_done_once = None;
+            Ok(q.order.clone())
+        })?;
+        self.runs.lock().unwrap().remove(&id);
+        let running: Vec<u64> = {
+            let table = self.hub.table.lock().unwrap();
+            order
+                .into_iter()
+                .filter(|i| {
+                    table
+                        .get(*i)
+                        .is_some_and(|e| matches!(e.status, Status::Queued | Status::Downloading))
+                })
+                .collect()
+        };
+        for i in running {
+            self.hub.held.lock().unwrap().insert(i);
+            self.engine.cancel(i);
+        }
+        Ok(())
+    }
+
+    /// One pass of the scheduler: start and stop queues on their schedules,
+    /// start waiting downloads in started queues, retry failed ones, and end
+    /// the runs that are done.
+    fn tick(&self) {
+        let _guard = self.tick_lock.lock().unwrap();
+        let now = queue::local_now();
+
+        let queues = self.hub.queues.lock().unwrap().clone();
+        for q in &queues {
+            let Some(schedule) = &q.schedule else {
+                continue;
+            };
+            if let Some(day) = schedule.open_run(now) {
+                if q.last_scheduled_day != Some(day) && !q.running {
+                    eprintln!("[uidm-daemon] schedule starts queue {}", q.name);
+                    let _ = self.start_queue(q.id, Some(day));
+                }
+            }
+            // At the end of its time a scheduled run stops: always when it
+            // has a stop time, and without one only if it never started
+            // anything (otherwise it runs until it is done).
+            let started_any = !self.runs.lock().unwrap().get(&q.id).is_none_or(|r| r.is_empty());
+            if q.running && q.started_by_schedule && (schedule.stop.is_some() || !started_any) {
+                let ended = q
+                    .last_scheduled_day
+                    .and_then(|day| schedule.end_of_run(day))
+                    .is_some_and(|end| now >= end);
+                if ended {
+                    eprintln!("[uidm-daemon] schedule stops queue {}", q.name);
+                    let _ = self.stop_queue(q.id);
+                }
+            }
+        }
+
+        let queues = self.hub.queues.lock().unwrap().clone();
+        for q in queues.iter().filter(|q| q.running) {
+            let statuses: Vec<(u64, Status)> = {
+                let table = self.hub.table.lock().unwrap();
+                q.order
+                    .iter()
+                    .filter_map(|id| table.get(*id).map(|e| (*id, e.status)))
+                    .collect()
+            };
+            let started = self.runs.lock().unwrap().entry(q.id).or_default().clone();
+
+            // Failed in this run and retries left: wait again.
+            for (id, status) in &statuses {
+                if *status == Status::Failed && started.contains(id) {
+                    let mut attempts = self.attempts.lock().unwrap();
+                    let n = attempts.entry(*id).or_insert(0);
+                    if *n < q.retries {
+                        *n += 1;
+                        eprintln!("[uidm-daemon] queue {} retries #{id} ({}/{})", q.name, n, q.retries);
+                        drop(attempts);
+                        let _ = self.hub.update(*id, |e| {
+                            e.status = Status::Waiting;
+                            Ok(())
+                        });
+                    }
+                }
+            }
+            let statuses: Vec<(u64, Status)> = {
+                let table = self.hub.table.lock().unwrap();
+                q.order
+                    .iter()
+                    .filter_map(|id| table.get(*id).map(|e| (*id, e.status)))
+                    .collect()
+            };
+
+            let mut active = statuses
+                .iter()
+                .filter(|(_, s)| matches!(s, Status::Queued | Status::Downloading))
+                .count();
+            for (id, status) in &statuses {
+                if active >= q.max_concurrent {
+                    break;
+                }
+                if *status == Status::Waiting && self.dispatch(*id).is_ok() {
+                    self.runs.lock().unwrap().entry(q.id).or_default().insert(*id);
+                    active += 1;
+                }
+            }
+
+            let busy = active > 0 || statuses.iter().any(|(_, s)| *s == Status::Waiting);
+            // A scheduled run that has started nothing yet stays open until
+            // its stop time, for downloads added meanwhile.
+            let started_any = !self.runs.lock().unwrap().get(&q.id).is_none_or(|r| r.is_empty());
+            if !busy && (started_any || !q.started_by_schedule) {
+                self.finish_run(q.id);
+            }
+        }
+    }
+
+    /// A started queue has nothing left to do: stop it and, if it started
+    /// anything, do what it asks when done.
+    fn finish_run(&self, id: u64) {
+        let started = self.runs.lock().unwrap().remove(&id).unwrap_or_default();
+        {
+            let mut attempts = self.attempts.lock().unwrap();
+            for d in &started {
+                attempts.remove(d);
+            }
+        }
+        let Ok((name, action)) = self.hub.update_queue(id, |q| {
+            q.running = false;
+            q.started_by_schedule = false;
+            let action = q.when_done_once.take().unwrap_or(q.when_done);
+            Ok((q.name.clone(), action))
+        }) else {
+            return;
+        };
+        eprintln!("[uidm-daemon] queue {name} is done");
+        if !started.is_empty() {
+            self.when_done(action, &name);
+        }
+    }
+
+    /// Do what a finished queue asks.
+    fn when_done(&self, action: WhenDone, queue: &str) {
+        match action {
+            WhenDone::Nothing => {}
+            WhenDone::Exit => {
+                eprintln!("[uidm-daemon] queue {queue} done: exiting");
+                self.hub.broadcast(&Outgoing::Quit);
+                self.save_history();
+                // Other downloads may still run; the idle monitor ends the
+                // daemon once they are done and every window has closed.
+            }
+            _ => self.start_countdown(action, queue),
+        }
+    }
+
+    fn start_countdown(&self, action: WhenDone, queue: &str) {
+        let canceled = Arc::new(AtomicBool::new(false));
+        let deadline = Instant::now() + Duration::from_secs(COUNTDOWN_SECS as u64);
+        if let Some(old) = self.countdown.lock().unwrap().replace(Countdown {
+            action,
+            queue: queue.to_string(),
+            deadline,
+            canceled: Arc::clone(&canceled),
+        }) {
+            old.canceled.store(true, Ordering::Relaxed);
+        }
+        eprintln!("[uidm-daemon] queue {queue} done: {} in {COUNTDOWN_SECS}s", action.label());
+        self.hub.broadcast(&Outgoing::Countdown {
+            action,
+            seconds: COUNTDOWN_SECS,
+            queue: queue.to_string(),
+        });
+        self.show_window();
+        // Save now: the machine may go away when the countdown ends.
+        self.save_history();
+        thread::spawn(move || {
+            while Instant::now() < deadline {
+                if canceled.load(Ordering::Relaxed) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+            if canceled.load(Ordering::Relaxed) {
+                return;
+            }
+            if std::env::var_os(POWER_DRY_RUN_ENV).is_some() {
+                eprintln!("[uidm-daemon] dry run: would {}", action.label());
+                return;
+            }
+            eprintln!("[uidm-daemon] {}", action.label());
+            if let Err(e) = power::perform(action) {
+                eprintln!("[uidm-daemon] could not {}: {e}", action.label());
+            }
+        });
+    }
+
+    fn cancel_countdown(&self) {
+        if let Some(c) = self.countdown.lock().unwrap().take() {
+            c.canceled.store(true, Ordering::Relaxed);
+            eprintln!("[uidm-daemon] countdown canceled");
+            self.hub.broadcast(&Outgoing::CountdownCanceled);
+        }
+    }
+
+    /// The countdown still running, as the message a window joining now needs.
+    fn countdown_message(&self) -> Option<Outgoing> {
+        let mut slot = self.countdown.lock().unwrap();
+        let c = slot.as_ref()?;
+        if c.canceled.load(Ordering::Relaxed) || Instant::now() >= c.deadline {
+            *slot = None;
+            return None;
+        }
+        Some(Outgoing::Countdown {
+            action: c.action,
+            seconds: c.deadline.saturating_duration_since(Instant::now()).as_secs() as u32,
+            queue: c.queue.clone(),
+        })
+    }
+
+    /// Whether the daemon must stay up for a queue: one is started, one has a
+    /// schedule ahead, or a countdown runs.
+    fn queues_need_daemon(&self) -> bool {
+        let now = queue::local_now();
+        self.countdown_message().is_some()
+            || self.hub.queues.lock().unwrap().iter().any(|q| {
+                q.running
+                    || q.schedule.as_ref().is_some_and(|s| {
+                        s.next_start(now).is_some() || s.open_run(now).is_some()
+                    })
+            })
     }
 
     fn entry(&self, id: u64) -> Option<DownloadEntry> {
@@ -285,6 +785,11 @@ impl Daemon {
     /// Stop every queued or running download, remembering them for
     /// `resume_all`.
     fn pause_all(&self) {
+        let running: Vec<u64> = self.hub.queues.lock().unwrap().iter().filter(|q| q.running).map(|q| q.id).collect();
+        for q in &running {
+            let _ = self.stop_queue(*q);
+        }
+        self.paused_queues.lock().unwrap().extend(running);
         let ids: Vec<u64> = self
             .hub
             .table
@@ -302,6 +807,10 @@ impl Daemon {
 
     /// Start again what `pause_all` stopped, and every interrupted download.
     fn resume_all(&self) {
+        let queues: HashSet<u64> = std::mem::take(&mut *self.paused_queues.lock().unwrap());
+        for q in queues {
+            let _ = self.start_queue(q, None);
+        }
         let paused: HashSet<u64> = std::mem::take(&mut *self.paused.lock().unwrap());
         let ids: Vec<u64> = self
             .hub
@@ -425,11 +934,39 @@ impl Daemon {
     /// Take a new download: ask where to save it when the settings say so,
     /// otherwise queue it at once.
     fn add(self: &Arc<Self>, download: Download) -> (u64, String) {
+        if download.start == Some(false) {
+            return self.add_later(download);
+        }
         if self.settings.lock().unwrap().ask_where_to_save {
             self.ask(download)
         } else {
             self.start(download, None)
         }
+    }
+
+    /// Add `download` to a queue (the main one unless it names another)
+    /// without starting it or opening a connection.
+    fn add_later(&self, download: Download) -> (u64, String) {
+        let url = download.url.clone();
+        let queue = download
+            .queue
+            .filter(|q| self.hub.queues.lock().unwrap().iter().any(|x| x.id == *q))
+            .unwrap_or(MAIN_QUEUE);
+        let id = self.engine.reserve_id();
+        self.hub.requests.lock().unwrap().insert(id, download);
+        self.hub.publish(&Outgoing::Added {
+            id,
+            url: url.clone(),
+        });
+        let _ = self.hub.update(id, |e| {
+            e.status = Status::Waiting;
+            Ok(())
+        });
+        let _ = self.hub.update_queue(queue, |q| {
+            q.order.push(id);
+            Ok(())
+        });
+        (id, url)
     }
 
     /// Announce `download` as queued, probe it on another thread, then hold it
@@ -484,7 +1021,7 @@ impl Daemon {
             thread::sleep(CONFIRM_FALLBACK);
             if daemon.status(id) == Some(Status::Confirming) && !daemon.hub.window_open() {
                 eprintln!("[uidm-daemon] no window to confirm #{id}; starting it as proposed");
-                if let Err(e) = daemon.confirm(id, None, None, true) {
+                if let Err(e) = daemon.confirm(id, None, None, true, None) {
                     eprintln!("[uidm-daemon] could not start #{id}: {e}");
                 }
             }
@@ -493,25 +1030,25 @@ impl Daemon {
     }
 
     /// Answer the save-as dialog of a `confirming` download, or start a
-    /// `waiting` one. Missing names and folders keep the proposed ones.
+    /// `waiting` one. Missing names and folders keep the proposed ones. With
+    /// `start` false it waits in `queue` (the main queue by default).
     fn confirm(
         &self,
         id: u64,
         filename: Option<String>,
         folder: Option<String>,
         start: bool,
+        queue: Option<u64>,
     ) -> Result<(), String> {
-        let download = self
-            .hub
-            .requests
-            .lock()
-            .unwrap()
-            .get(&id)
-            .cloned();
-        let mut chosen: Option<(String, PathBuf)> = None;
         let item = self.hub.update(id, |e| {
             if !matches!(e.status, Status::Confirming | Status::Waiting) {
                 return Err(format!("download {id} is not waiting to be started"));
+            }
+            if filename.is_none() && folder.is_none() {
+                // Keep whatever the download already has: a chosen file, a
+                // partial file, or nothing yet.
+                e.status = Status::Waiting;
+                return Ok(());
             }
             let proposed = e.path.as_deref().map(Path::new);
             let name = filename
@@ -535,29 +1072,21 @@ impl Daemon {
                 return Err(format!("the folder must be a full path: {}", dir.display()));
             }
             e.path = Some(dir.join(&name).display().to_string());
-            e.status = if start { Status::Queued } else { Status::Waiting };
-            chosen = Some((name, dir));
+            e.status = Status::Waiting;
             Ok(())
         })?;
-        let Some((name, dir)) = chosen else {
-            return Ok(());
-        };
         if start {
-            let download = download.unwrap_or_else(|| Download {
-                url: item.url.clone(),
-                ..Download::default()
-            });
-            let mut req = to_request(download, &self.settings.lock().unwrap());
-            req.filename = Some(name);
-            req.folders = Folders::fixed(dir);
-            self.engine.enqueue_as(id, req);
+            return self.dispatch(id);
+        }
+        if self.hub.queue_of(id).is_none() {
+            self.move_to_queue(item.id, queue.unwrap_or(MAIN_QUEUE), None)?;
         }
         Ok(())
     }
 
     /// Cancel a download, whether it waits for its dialog or is in the engine.
     fn cancel(&self, id: u64) {
-        if self.status(id) == Some(Status::Confirming) {
+        if matches!(self.status(id), Some(Status::Confirming | Status::Waiting)) {
             let url = self.hub.table.lock().unwrap().get(id).map(|e| e.url.clone());
             if let Some(url) = url {
                 self.hub.publish(&Outgoing::Canceled { id, url });
@@ -617,13 +1146,20 @@ impl Daemon {
                 url: entry.url.clone(),
                 ..Download::default()
             });
+        // A retried download keeps its place in its queue.
+        let queue = self.hub.queue_of(id);
+        self.hub.leave_queues(id);
         self.hub.publish(&Outgoing::Removed { id });
         // Only a download that started has a file of its own to resume. One
         // that never got past its save-as dialog only has a proposed path,
         // which may be somebody else's file.
         let started = entry.connections > 0;
         let reuse_path = entry.path.filter(|_| started).map(PathBuf::from);
-        Ok(self.start(download, reuse_path))
+        let (new_id, url) = self.start(download, reuse_path);
+        if let Some(q) = queue {
+            let _ = self.move_to_queue(new_id, q, None);
+        }
+        Ok((new_id, url))
     }
 
     /// Validate, save and apply new settings, then tell every client. Running
@@ -675,6 +1211,7 @@ impl Daemon {
         let history = History {
             next_id: self.engine.next_id(),
             items: self.hub.table.lock().unwrap().snapshot(),
+            queues: self.hub.queues.lock().unwrap().clone(),
         };
         let requests = self.hub.requests.lock().unwrap().clone();
         if let Some(path) = &self.paths.history {
@@ -699,7 +1236,11 @@ impl Daemon {
             Some(_) => {}
         }
         self.hub.requests.lock().unwrap().remove(&id);
+        let in_queue = self.hub.leave_queues(id);
         self.hub.publish(&Outgoing::Removed { id });
+        if in_queue {
+            self.hub.publish_queues();
+        }
         Ok(())
     }
 
@@ -710,8 +1251,13 @@ impl Daemon {
         let msg = Outgoing::Downloads {
             items: table.snapshot(),
         };
-        if let Ok(frame) = serde_json::to_vec(&msg) {
-            let _ = reply.send(frame);
+        let queues = Outgoing::Queues {
+            items: self.hub.queues.lock().unwrap().clone(),
+        };
+        for msg in [msg, queues] {
+            if let Ok(frame) = serde_json::to_vec(&msg) {
+                let _ = reply.send(frame);
+            }
         }
     }
 }
@@ -742,8 +1288,9 @@ fn run() -> io::Result<()> {
     ipc::write_token(&token)?;
     let token: Arc<str> = token.into();
 
-    let (daemon, dirty, notes) = Daemon::new(Paths::from_env());
+    let (daemon, dirty, notes, wake) = Daemon::new(Paths::from_env());
     let daemon = Arc::new(daemon);
+    spawn_scheduler(Arc::clone(&daemon), wake);
     spawn_history_writer(Arc::clone(&daemon), dirty);
     spawn_notifier(Arc::clone(&daemon), notes);
     if let Err(e) = register_notifications() {
@@ -877,6 +1424,10 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
         Incoming::Hello { client: kind, .. } => {
             if kind.as_deref() == Some(WINDOW_CLIENT) {
                 daemon.hub.windows.lock().unwrap().insert(client);
+                // A window that opens during a countdown shows it too.
+                if let Some(countdown) = daemon.countdown_message() {
+                    send(&countdown);
+                }
             }
             send(&Outgoing::Hello {
                 name: "uidm-daemon".to_string(),
@@ -902,7 +1453,8 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             filename,
             folder,
             start,
-        } => match daemon.confirm(id, filename, folder, start) {
+            queue,
+        } => match daemon.confirm(id, filename, folder, start, queue) {
             Ok(()) => eprintln!("[uidm-daemon] confirm #{id} (start: {start})"),
             Err(message) => send(&Outgoing::Error { message }),
         },
@@ -923,6 +1475,40 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::List => daemon.send_list(reply),
+        Incoming::SaveQueue { queue } => match daemon.save_queue(queue) {
+            Ok(id) => eprintln!("[uidm-daemon] queue {id} saved"),
+            Err(message) => send(&Outgoing::Error { message }),
+        },
+        Incoming::DeleteQueue { id } => {
+            if let Err(message) = daemon.delete_queue(id) {
+                send(&Outgoing::Error { message });
+            }
+        }
+        Incoming::StartQueue { id } => match daemon.start_queue(id, None) {
+            Ok(()) => {
+                eprintln!("[uidm-daemon] start queue {id}");
+                let _ = daemon.hub.wake.send(());
+            }
+            Err(message) => send(&Outgoing::Error { message }),
+        },
+        Incoming::StopQueue { id } => match daemon.stop_queue(id) {
+            Ok(()) => eprintln!("[uidm-daemon] stop queue {id}"),
+            Err(message) => send(&Outgoing::Error { message }),
+        },
+        Incoming::SetQueueOnce { id, when_done } => {
+            if let Err(message) = daemon.hub.update_queue(id, |q| {
+                q.when_done_once = when_done;
+                Ok(())
+            }) {
+                send(&Outgoing::Error { message });
+            }
+        }
+        Incoming::MoveToQueue { id, queue, position } => {
+            if let Err(message) = daemon.move_to_queue(id, queue, position) {
+                send(&Outgoing::Error { message });
+            }
+        }
+        Incoming::CancelCountdown => daemon.cancel_countdown(),
         Incoming::PauseAll => {
             eprintln!("[uidm-daemon] pause all");
             daemon.pause_all();
@@ -939,6 +1525,20 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             Err(message) => send(&Outgoing::Error { message }),
         },
     }
+}
+
+/// Run the queue scheduler: a pass whenever something wakes it (a download
+/// ended, a queue changed) and every few seconds for the clock.
+fn spawn_scheduler(daemon: Arc<Daemon>, wake: Receiver<()>) {
+    thread::spawn(move || loop {
+        match wake.recv_timeout(SCHEDULER_POLL) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                while wake.try_recv().is_ok() {}
+                daemon.tick();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    });
 }
 
 /// Run notifications on their own thread, so a slow toast or a scan never
@@ -1049,7 +1649,8 @@ fn spawn_idle_monitor(daemon: Arc<Daemon>) {
         loop {
             thread::sleep(IDLE_POLL);
             let idle = daemon.hub.clients.lock().unwrap().is_empty()
-                && daemon.engine.active_count() == 0;
+                && daemon.engine.active_count() == 0
+                && !daemon.queues_need_daemon();
             match (idle, idle_since) {
                 (true, None) => idle_since = Some(Instant::now()),
                 (true, Some(t)) if t.elapsed() >= IDLE_EXIT => {

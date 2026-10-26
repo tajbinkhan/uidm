@@ -288,8 +288,15 @@ fn pump(inner: &Arc<Inner>) {
         let inner = Arc::clone(inner);
         thread::spawn(move || {
             let id = job.id;
+            let token = Arc::clone(&job.token);
             run(job.id, job.token, job.req, inner.reporter.clone(), &inner.shared);
-            inner.registry.lock().unwrap().remove(&id);
+            // The same id may already be queued again (a paused download put
+            // back in its queue); leave that run's token alone.
+            let mut registry = inner.registry.lock().unwrap();
+            if registry.get(&id).is_some_and(|t| Arc::ptr_eq(t, &token)) {
+                registry.remove(&id);
+            }
+            drop(registry);
             inner.sched.lock().unwrap().running -= 1;
             pump(&inner);
         });

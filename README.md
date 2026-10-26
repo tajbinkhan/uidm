@@ -54,6 +54,28 @@ Downloaded files are left alone.
   names inside the download folder, and everything else (**General**) goes
   into the download folder itself. The window's sidebar filters the list by
   category. Options edits the categories, their file types and folders.
+- **Queues** hold downloads to run later. **Later** (next to Download), the
+  save-as dialog's **Download later**, and the browser's **Download later
+  with UIDM** menu item add a download to a queue without opening a
+  connection. Pick a queue in the sidebar to see its downloads in order, with
+  **Up** and **Down** to reorder them, **Start**/**Stop** for the queue, and
+  what happens when this run ends. A download's **Queue** menu moves it to
+  another queue. A started queue runs its waiting downloads in order, as many
+  at once as it allows. **Stop** pauses its running downloads back into it,
+  progress kept. When nothing is left the queue stops by itself. Finished
+  downloads leave their queue. **Manage queues...** creates, renames and
+  deletes queues (the main queue stays) and sets each one's downloads at
+  once, retries for failed downloads, and what to do when it is done.
+- **Scheduler**: a queue can start at a set time on chosen days of the week,
+  or once on a date, and optionally stop at a set time (the next morning if
+  earlier than the start). The queue's header shows its next run. If UIDM was
+  not running at the start time, the queue starts as soon as it is, while the
+  time window is still open.
+- **When a queue is done**, UIDM can do nothing, exit, or put the computer to
+  sleep, hibernate or shut it down, per queue or for the current run only.
+  Sleeping, hibernating and shutting down wait for a 60-second countdown in
+  the window, which **Cancel** stops. Failed downloads count as finished,
+  unless the queue retries them.
 - **The tray icon** keeps UIDM at hand. Closing the window hides it there;
   click the icon to bring it back. Its tooltip shows how many downloads run
   and how fast, and its menu has **Open UIDM**, **Add URL from clipboard**,
@@ -257,6 +279,16 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "list" }
 { "op": "pause_all" }
 { "op": "resume_all" }
+{ "op": "add", "url": "https://...", "start": false, "queue": 1 }
+{ "op": "save_queue", "queue": { "id": 0, "name": "Night", "max_concurrent": 2, "retries": 1,
+  "when_done": "shut_down", "schedule": { "start": "23:00", "stop": "07:00", "days": [0, 1, 2, 3, 4],
+  "date": null } } }
+{ "op": "delete_queue", "id": 2 }
+{ "op": "start_queue", "id": 2 }
+{ "op": "stop_queue", "id": 2 }
+{ "op": "set_queue_once", "id": 2, "when_done": "sleep" }
+{ "op": "move_to_queue", "id": 7, "queue": 2, "position": 0 }
+{ "op": "cancel_countdown" }
 { "op": "get_settings" }
 { "op": "set_settings", "settings": { "download_dir": null, "connections": 8, "max_concurrent": 3,
   "speed_limit_enabled": false, "speed_limit_kbps": 1024, "resume_at_startup": false,
@@ -288,6 +320,12 @@ Daemon to clients:
   "done": 12345, "status": "done", "error": null, "resumable": true, "connections": 8 } ] }
 { "op": "settings", "settings": { ... } }
 { "op": "show" }
+{ "op": "queues", "items": [ { "id": 1, "name": "Main queue", "max_concurrent": 1, "running": false,
+  "order": [7, 9], "schedule": null, "when_done": "nothing", "when_done_once": null, "retries": 0,
+  "last_scheduled_day": null, "started_by_schedule": false } ] }
+{ "op": "countdown", "action": "shut_down", "seconds": 60, "queue": "Night" }
+{ "op": "countdown_canceled" }
+{ "op": "quit" }
 { "op": "error", "message": "..." }
 ```
 
@@ -324,6 +362,58 @@ scanner's output) when scanning is on. `pause_all` cancels every queued and
 running download; `resume_all` retries those and every interrupted one. `show`
 asks the window to come forward, after a click on a notification.
 
+`add` with `"start": false` puts the download in `queue` (the main queue,
+id 1, by default) as `waiting`, without probing it. `confirm` takes `queue`
+too, for **Download later** in the save-as dialog, and starts a `waiting`
+download now. `queues` goes to the client that sent `list` (after
+`downloads`) and to every client when a queue changes. `save_queue` with id 0
+creates a queue; with an id it changes the name, `max_concurrent` (1 to 10),
+`retries` (0 to 10), `when_done` and `schedule` and keeps the queue's
+downloads and state. Names must be unique, ignoring case. `delete_queue`
+moves the queue's downloads to the main queue, which cannot be deleted.
+`move_to_queue` with a `position` in the same queue only reorders; joining a
+queue makes a failed, canceled or interrupted download `waiting` there.
+`when_done` is `nothing`, `exit`, `sleep`, `hibernate` or `shut_down`.
+`set_queue_once` overrides it for the current run; stopping the queue clears
+it. A schedule's times are `HH:MM` local time; `days` count 0 = Monday to
+6 = Sunday, and `date` (`YYYY-MM-DD`) replaces them for a single run.
+`countdown` goes to every client, and to a window that connects while one is
+running; `quit` tells windows to close.
+
+## Queues and the scheduler
+
+Queues live in the daemon, above the engine, and are saved in
+`history.json`. A scheduler thread runs a pass whenever a download ends or a
+queue changes, and every 5 seconds for the clock. Each pass:
+
+1. starts a queue whose scheduled run is open now and has not run today (it
+   records the run's day, so a queue stopped by hand or finished early does
+   not start again in the same window);
+2. stops a queue its schedule started once that run's stop time passes; a
+   run without a stop time that never got any downloads ends with its day;
+3. in each started queue, starts waiting downloads in order until the queue's
+   own limit is reached (the engine's **Downloads at once** still caps the
+   total), and puts a download that failed in this run back to waiting while
+   it has retries left;
+4. ends the run of a started queue with nothing waiting or running, stops it,
+   and if the run started anything, does its **when done** action. A
+   scheduled run that has not started anything yet stays open until its stop
+   time, so downloads added during the window still run.
+
+A stopped queue's running downloads are canceled and their `canceled` event
+becomes `waiting`, so they stay in the queue with their partial file and
+sidecar. Starting one again resumes that file under the same id. After a
+restart, a queue's downloads that were running wait in it again, a queue
+that was started carries on, and a schedule whose window is still open
+starts its queue. The daemon does not exit when idle while a queue is
+started, a schedule has a run ahead, or a countdown runs. Without Start with
+Windows nothing starts the daemon, though; see Known gaps.
+
+Sleep and hibernate use `SetSuspendState`; shutting down runs
+`shutdown.exe /s /t 0`. The daemon saves the history as the countdown starts.
+With the environment variable `UIDM_POWER_DRY_RUN` set, the daemon only logs
+what it would do, which is how these were tested.
+
 ## Notifications and virus scans
 
 Windows only shows notifications from an app it knows, so at start the daemon
@@ -359,7 +449,9 @@ is a failed scan, as is one that runs over 10 minutes.
 | `src/registry.rs` | Start with Windows and the notification app id |
 | `src/notify.rs` | Windows notifications and sounds |
 | `src/scan.rs` | Virus scans of finished downloads |
-| `src/bin/gui/` | The window's tray icon and Win32 helpers |
+| `src/queue.rs` | Queues, schedules and their calendar arithmetic |
+| `src/power.rs` | Sleep, hibernate and shut down |
+| `src/bin/gui/` | The window's tray icon, queue controls and Win32 helpers |
 | `src/ipc.rs` | Daemon address, start-up, token file, HMAC handshake |
 | `src/app.rs` | Request building and event mapping |
 | `src/protocol.rs` | Framing and message types |
@@ -400,7 +492,7 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 ## Verified
 
-- 75 unit tests: segment splitting, the resume sidecar, framing,
+- 84 unit tests: segment splitting, the resume sidecar, framing,
   `Content-Disposition`, backoff, HMAC proofs, the download table's
   lifecycle and ordering cases, settings loading, defaults and validation,
   history loading (running downloads become interrupted, ids never go
@@ -411,11 +503,12 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   within 10%, raising the concurrency live, canceling a queued download,
   category folders, and probing a download for the save-as dialog. Category
   tests cover uppercase extensions, names without one and dot files.
-- 10 extension tests: each capture rule, and the real `background.js` run
+- 11 extension tests: each capture rule, and the real `background.js` run
   with a stand-in `chrome` API: it asks for the rules on connect, takes or
   leaves downloads by type, size and site, applies changed rules at once,
   skips exactly one download after **Skip next download**, and starts a
-  download waiting for its dialog from the popup.
+  download waiting for its dialog from the popup; **Download later with
+  UIDM** adds with `start: false`.
 - Save-as dialog, under Wine against the real host and daemon: the proposal
   lands in `Downloads\Documents\report.pdf` with the real size; with no window
   possible the download starts as proposed after 19.6 s; a new name and folder
@@ -438,6 +531,30 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   forward with its completion dialog and scan result; **Open** on a file with
   a threat asked first; closing the window hid it while the process kept
   running, and the next finished download brought it back.
+- Queues. Unit tests cover the calendar (round trips over ±5,000 years, leap
+  days, invalid dates and times, weekdays), schedules (an overnight run open
+  across midnight and closed at its stop time, same-day runs, runs without a
+  stop time, the next start over a week and for a single date), queue
+  validation, history loading (the main queue added, missing, repeated and
+  finished ids dropped, waiting downloads kept in their queue) and the Queues
+  dialog's fields. Under Wine against the real daemon: three downloads added
+  with `start: false` wait in the main queue; one moves to another queue and
+  another to the top; a second queue named the same in another case is
+  refused; the main queue runs its two one at a time in the new order and
+  stops when done, leaving the other queue's untouched; the main queue cannot
+  be deleted; stopping a queue mid-download puts it back to waiting with 1 MB
+  kept, and starting it again resumes the same file byte-identical; a queue
+  with one retry runs a failing download twice and then ends; a "sleep when
+  done" queue sends a 60-second countdown that `cancel_countdown` stops, and
+  a once-only "hibernate" replaces it for one run, runs out and (dry run)
+  hibernates while the queue keeps "sleep"; a schedule starts its queue within
+  seconds and stops it at its stop time with progress kept, and does not
+  start it again in the same window; a schedule whose window opened while the
+  daemon was not running starts the queue as soon as the daemon starts; the
+  queues survive a restart. In the window: the sidebar's queues, a queue's
+  header and order, Down, the Queues dialog with a schedule and its next run,
+  and the countdown bringing the minimized window forward, with Cancel
+  reaching the daemon.
 - Settings and history, run under Wine against the real host and daemon:
   `set_settings` with 99 connections is refused with a message; a saved folder
   and a 2 MiB/s limit take effect (4 MiB in 1.96 s) and survive a restart; a
@@ -491,6 +608,12 @@ not automated. The pieces on either side of it are tested above.
   pick if that name is taken when the download starts.
 - Adding a category does not add its types to the captured types; that list
   is edited on its own.
+- A schedule only works while the daemon runs. It stays up for a schedule
+  once started, but after a reboot something has to start it: turn on Start
+  with Windows, or open the window or the browser.
+- A queue run started by hand with nothing in it ends at once, and a run that
+  is only waiting on failed downloads ends too: failed downloads count as
+  finished unless the queue retries them.
 - Downloads the browser starts with a POST request (some form submissions) are
   re-requested by UIDM as a GET and may fail. Turn capture off for such sites.
 - Every client sees every download, not only the ones it started.

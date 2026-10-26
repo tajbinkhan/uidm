@@ -193,9 +193,11 @@ function baseName(path) {
   return name || undefined;
 }
 
-async function handOff(url, referrer, filename) {
+async function handOff(url, referrer, filename, later = false) {
   const cookies = await cookieHeader(url);
   const msg = { op: "add", url, user_agent: navigator.userAgent };
+  // "Download later": UIDM adds it to its main queue without starting it.
+  if (later) msg.start = false;
   if (referrer) msg.referrer = referrer;
   if (filename) msg.filename = filename;
   if (cookies) msg.cookies = cookies;
@@ -250,13 +252,21 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "Download with UIDM",
       contexts: ["image", "video", "audio"],
     });
+    chrome.contextMenus.create({ id: "uidm-later-link", title: "Download later with UIDM", contexts: ["link"] });
+    chrome.contextMenus.create({
+      id: "uidm-later-media",
+      title: "Download later with UIDM",
+      contexts: ["image", "video", "audio"],
+    });
   });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info) => {
-  const url = info.menuItemId === "uidm-link" ? info.linkUrl : info.srcUrl;
+  const isLink = info.menuItemId === "uidm-link" || info.menuItemId === "uidm-later-link";
+  const later = info.menuItemId === "uidm-later-link" || info.menuItemId === "uidm-later-media";
+  const url = isLink ? info.linkUrl : info.srcUrl;
   if (!isWeb(url)) return;
-  if (connected && (await handOff(url, info.pageUrl))) return;
+  if (connected && (await handOff(url, info.pageUrl, undefined, later))) return;
   // UIDM is not available; the click should still download something.
   chrome.downloads.download({ url }).catch(() => {});
 });

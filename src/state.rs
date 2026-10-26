@@ -93,7 +93,11 @@ impl DownloadTable {
             | Outgoing::Ack { .. }
             | Outgoing::Error { .. }
             | Outgoing::Settings { .. }
-            | Outgoing::Show => {}
+            | Outgoing::Show
+            | Outgoing::Queues { .. }
+            | Outgoing::Countdown { .. }
+            | Outgoing::CountdownCanceled
+            | Outgoing::Quit => {}
         }
     }
 

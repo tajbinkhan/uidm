@@ -15,6 +15,8 @@
 
 #![windows_subsystem = "windows"]
 
+#[path = "gui/queues.rs"]
+mod queues;
 #[path = "gui/tray.rs"]
 mod tray;
 #[path = "gui/win.rs"]
@@ -34,6 +36,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
 use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Scan, Status};
+use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
     parse_extensions, Category, FileExists, Notify, Scanner, Settings, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS,
@@ -121,6 +124,11 @@ struct Shared {
     save_result: Option<Result<(), String>>,
     /// Downloads to show a completion dialog for, and whether each failed.
     completed: VecDeque<(u64, bool)>,
+    /// The daemon's queues, the main queue first.
+    queues: Vec<Queue>,
+    /// A countdown before a finished queue sleeps or shuts down: the action,
+    /// when it happens, and the queue's name.
+    countdown: Option<(WhenDone, Instant, String)>,
 }
 
 impl Shared {
@@ -151,6 +159,12 @@ impl Shared {
     fn apply(&mut self, msg: &Outgoing) {
         self.table.apply(msg);
         match msg {
+            Outgoing::Queues { items } => self.queues = items.clone(),
+            Outgoing::Countdown { action, seconds, queue } => {
+                let deadline = Instant::now() + Duration::from_secs(*seconds as u64);
+                self.countdown = Some((*action, deadline, queue.clone()));
+            }
+            Outgoing::CountdownCanceled => self.countdown = None,
             Outgoing::Settings { settings } => {
                 self.settings = Some(settings.clone());
                 if self.saving {
@@ -221,7 +235,34 @@ enum Action {
         filename: Option<String>,
         folder: Option<String>,
         start: bool,
+        queue: Option<u64>,
     },
+    /// Add a URL to the main queue without starting it.
+    AddLater(String),
+    StartQueue(u64),
+    StopQueue(u64),
+    SaveQueue(Queue),
+    DeleteQueue(u64),
+    /// Put a download in a queue, at a position or at the end.
+    MoveToQueue {
+        id: u64,
+        queue: u64,
+        position: Option<usize>,
+    },
+    /// What a queue does when this run ends, this time only.
+    SetQueueOnce(u64, Option<WhenDone>),
+    CancelCountdown,
+    /// Open the Queues dialog, on a queue if given.
+    OpenQueues(Option<u64>),
+}
+
+/// Which downloads the list shows.
+#[derive(Clone, PartialEq)]
+enum Filter {
+    All,
+    Category(String),
+    /// A queue's downloads, in its order.
+    Queue(u64),
 }
 
 struct App {
@@ -239,8 +280,10 @@ struct App {
     threat_prompt: Option<(String, String, String)>,
     /// The tray tooltip last set, so it is only updated when it changes.
     tooltip: String,
-    /// Show only this category; `None` shows every download.
-    category_filter: Option<String>,
+    /// Which downloads the list shows.
+    filter: Filter,
+    /// The Queues dialog, while it is open.
+    queues_dialog: Option<queues::QueuesDialog>,
 }
 
 /// A folder chosen in the picker, delivered by its thread.
@@ -276,6 +319,8 @@ fn take_picked(slot: &Picked, field: &mut String) {
 /// The save-as dialog's fields.
 struct ConfirmDraft {
     id: u64,
+    /// The queue "Download later" puts it in.
+    later_queue: u64,
     filename: String,
     folder: String,
     picked: Picked,
@@ -455,6 +500,8 @@ impl App {
                 saving: false,
                 save_result: None,
                 completed: VecDeque::new(),
+                queues: Vec::new(),
+                countdown: None,
             })),
             writer: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
@@ -463,7 +510,8 @@ impl App {
             confirm: None,
             threat_prompt: None,
             tooltip: String::new(),
-            category_filter: None,
+            filter: Filter::All,
+            queues_dialog: None,
         };
         app.connect();
         app.install_tray();
@@ -664,6 +712,7 @@ impl App {
                 filename,
                 folder,
                 start,
+                queue,
             } => {
                 send(
                     &self.writer,
@@ -672,8 +721,47 @@ impl App {
                         filename,
                         folder,
                         start,
+                        queue,
                     },
                 );
+            }
+            Action::AddLater(url) => {
+                send(
+                    &self.writer,
+                    &Incoming::Add(Download {
+                        url,
+                        start: Some(false),
+                        ..Download::default()
+                    }),
+                );
+            }
+            Action::StartQueue(id) => {
+                send(&self.writer, &Incoming::StartQueue { id });
+            }
+            Action::StopQueue(id) => {
+                send(&self.writer, &Incoming::StopQueue { id });
+            }
+            Action::SaveQueue(queue) => {
+                send(&self.writer, &Incoming::SaveQueue { queue });
+            }
+            Action::DeleteQueue(id) => {
+                if self.filter == Filter::Queue(id) {
+                    self.filter = Filter::All;
+                }
+                send(&self.writer, &Incoming::DeleteQueue { id });
+            }
+            Action::MoveToQueue { id, queue, position } => {
+                send(&self.writer, &Incoming::MoveToQueue { id, queue, position });
+            }
+            Action::SetQueueOnce(id, when_done) => {
+                send(&self.writer, &Incoming::SetQueueOnce { id, when_done });
+            }
+            Action::CancelCountdown => {
+                send(&self.writer, &Incoming::CancelCountdown);
+            }
+            Action::OpenQueues(select) => {
+                let list = self.shared.lock().unwrap().queues.clone();
+                self.queues_dialog = Some(queues::QueuesDialog::open(&list, select));
             }
         }
     }
@@ -695,6 +783,7 @@ impl App {
             let path = entry.path.as_deref().map(Path::new);
             self.confirm = Some(ConfirmDraft {
                 id: entry.id,
+                later_queue: MAIN_QUEUE,
                 filename: path
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
@@ -711,6 +800,7 @@ impl App {
         };
         take_picked(&draft.picked, &mut draft.folder);
         let waiting = rows.iter().filter(|e| e.status == Status::Confirming).count();
+        let queue_list = self.shared.lock().unwrap().queues.clone();
 
         egui::Window::new("Save download")
             .id(egui::Id::new("confirm"))
@@ -745,6 +835,22 @@ impl App {
                 if waiting > 1 {
                     ui.weak(format!("{} more downloads are waiting after this one.", waiting - 1));
                 }
+                if queue_list.len() > 1 {
+                    ui.horizontal(|ui| {
+                        ui.label("Download later in");
+                        let name = queue_list
+                            .iter()
+                            .find(|q| q.id == draft.later_queue)
+                            .map_or("Main queue", |q| q.name.as_str());
+                        egui::ComboBox::from_id_salt("later_queue")
+                            .selected_text(name)
+                            .show_ui(ui, |ui| {
+                                for q in &queue_list {
+                                    ui.selectable_value(&mut draft.later_queue, q.id, &q.name);
+                                }
+                            });
+                    });
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(connected, |ui| {
@@ -753,6 +859,7 @@ impl App {
                             filename: Some(draft.filename.trim().to_string()),
                             folder: Some(draft.folder.trim().to_string()),
                             start,
+                            queue: Some(draft.later_queue),
                         };
                         if ui.button("Start download").clicked() {
                             actions.push(answer(true));
@@ -1067,6 +1174,8 @@ fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) 
         s.apply(msg);
         match msg {
             Outgoing::Show => true,
+            Outgoing::Countdown { .. } => true,
+            Outgoing::Quit => std::process::exit(0),
             Outgoing::Updated { item } => item.status == Status::Confirming,
             Outgoing::Done { id, .. } if s.dialog_mode() => {
                 s.completed.push_back((*id, false));
@@ -1281,14 +1390,21 @@ impl eframe::App for App {
                 let input = ui.add(
                     egui::TextEdit::singleline(&mut self.url_input)
                         .hint_text("Paste a download URL")
-                        .desired_width((ui.available_width() - 180.0).max(120.0)),
+                        .desired_width((ui.available_width() - 240.0).max(120.0)),
                 );
                 let entered = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let url = self.url_input.trim().to_string();
                 let can_add = connected && (url.starts_with("http://") || url.starts_with("https://"));
                 let clicked = ui.add_enabled(can_add, egui::Button::new("Download")).clicked();
                 if can_add && (clicked || entered) {
-                    actions.push(Action::Add(url));
+                    actions.push(Action::Add(url.clone()));
+                    self.url_input.clear();
+                }
+                let later = ui
+                    .add_enabled(can_add, egui::Button::new("Later"))
+                    .on_hover_text("Add it to the main queue without starting it");
+                if can_add && later.clicked() {
+                    actions.push(Action::AddLater(url));
                     self.url_input.clear();
                 }
                 let can_open = connected && settings.is_some();
@@ -1368,33 +1484,72 @@ impl eframe::App for App {
                 .map_or(GENERAL, |s| s.category_name(&display_name(e)))
                 .to_string()
         };
+        let queue_list = self.shared.lock().unwrap().queues.clone();
         if let Some(s) = &settings {
             let mut names: Vec<String> = s.categories.iter().map(|c| c.name.clone()).collect();
             names.push(GENERAL.to_string());
-            if self.category_filter.as_ref().is_some_and(|f| !names.contains(f)) {
-                self.category_filter = None;
+            let gone = match &self.filter {
+                Filter::Category(name) => !names.contains(name),
+                Filter::Queue(id) => !queue_list.iter().any(|q| q.id == *id),
+                Filter::All => false,
+            };
+            if gone {
+                self.filter = Filter::All;
             }
             egui::SidePanel::left("categories")
                 .resizable(false)
-                .exact_width(150.0)
+                .exact_width(170.0)
                 .show(ctx, |ui| {
                     ui.add_space(6.0);
                     let all = format!("All downloads ({})", rows.len());
-                    ui.selectable_value(&mut self.category_filter, None, all);
+                    ui.selectable_value(&mut self.filter, Filter::All, all);
                     ui.add_space(4.0);
                     for name in names {
                         let count = rows.iter().filter(|e| category(e) == name).count();
                         let label = format!("{name} ({count})");
-                        ui.selectable_value(&mut self.category_filter, Some(name), label);
+                        ui.selectable_value(&mut self.filter, Filter::Category(name), label);
+                    }
+                    ui.add_space(10.0);
+                    ui.weak("Queues");
+                    for q in &queue_list {
+                        let label = if q.running {
+                            format!("{} ({}, started)", q.name, q.order.len())
+                        } else {
+                            format!("{} ({})", q.name, q.order.len())
+                        };
+                        ui.selectable_value(&mut self.filter, Filter::Queue(q.id), label);
+                    }
+                    ui.add_space(4.0);
+                    if ui.add_enabled(connected, egui::Button::new("Manage queues...")).clicked() {
+                        actions.push(Action::OpenQueues(None));
                     }
                 });
         }
-        let shown: Vec<&DownloadEntry> = rows
-            .iter()
-            .filter(|e| self.category_filter.as_ref().is_none_or(|f| *f == category(e)))
-            .collect();
+        let current_queue = match &self.filter {
+            Filter::Queue(id) => queue_list.iter().find(|q| q.id == *id).cloned(),
+            _ => None,
+        };
+        let shown: Vec<&DownloadEntry> = match (&self.filter, &current_queue) {
+            (Filter::Queue(_), Some(q)) => q
+                .order
+                .iter()
+                .filter_map(|id| rows.iter().find(|e| e.id == *id))
+                .collect(),
+            (Filter::Category(name), _) => rows.iter().filter(|e| category(e) == *name).collect(),
+            _ => rows.iter().collect(),
+        };
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if let Some(q) = &current_queue {
+                queues::header(ui, q, connected, &mut actions);
+                ui.separator();
+                if shown.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.weak("This queue is empty. Use Later, or a download's Queue menu, to add one.");
+                    });
+                    return;
+                }
+            }
             if shown.is_empty() && !rows.is_empty() {
                 ui.centered_and_justified(|ui| {
                     ui.weak("No downloads in this category.");
@@ -1417,8 +1572,16 @@ impl eframe::App for App {
                             ui.strong(title);
                         }
                         ui.end_row();
-                        for entry in shown.iter().copied() {
-                            draw_row(ui, entry, speeds.get(&entry.id).copied(), connected, &mut actions);
+                        let len = shown.len();
+                        for (i, entry) in shown.iter().copied().enumerate() {
+                            let place = current_queue.as_ref().map(|q| (q.id, i, len));
+                            let row = Row {
+                                speed: speeds.get(&entry.id).copied(),
+                                connected,
+                                queues: &queue_list,
+                                place,
+                            };
+                            draw_row(ui, entry, &row, &mut actions);
                             ui.end_row();
                         }
                     });
@@ -1428,6 +1591,19 @@ impl eframe::App for App {
         self.confirm_window(ctx, &rows, connected, &mut actions);
         self.completed_window(ctx, connected, &mut actions);
         self.threat_window(ctx, &mut actions);
+        if let Some(d) = self.queues_dialog.as_mut() {
+            if !queues::dialog(ctx, d, &queue_list, connected, &mut actions) {
+                self.queues_dialog = None;
+            }
+        }
+        let countdown = self.shared.lock().unwrap().countdown.clone();
+        if let Some((action, deadline, queue)) = countdown {
+            if Instant::now() < deadline {
+                queues::countdown(ctx, action, deadline, &queue, connected, &mut actions);
+            } else {
+                self.shared.lock().unwrap().countdown = None;
+            }
+        }
         self.options_window(ctx, connected, &mut actions);
 
         for action in actions {
@@ -1436,13 +1612,34 @@ impl eframe::App for App {
     }
 }
 
-fn draw_row(
-    ui: &mut egui::Ui,
-    e: &DownloadEntry,
+/// What a row needs besides its download.
+struct Row<'a> {
     speed: Option<f64>,
     connected: bool,
-    actions: &mut Vec<Action>,
-) {
+    queues: &'a [Queue],
+    /// In a queue's view: the queue, this row's place and the row count, for
+    /// the move up and down buttons.
+    place: Option<(u64, usize, usize)>,
+}
+
+/// A "Queue" menu that puts the download in a queue.
+fn queue_menu(ui: &mut egui::Ui, e: &DownloadEntry, queues: &[Queue], actions: &mut Vec<Action>) {
+    ui.menu_button("Queue", |ui| {
+        for q in queues {
+            if ui.button(&q.name).clicked() {
+                actions.push(Action::MoveToQueue {
+                    id: e.id,
+                    queue: q.id,
+                    position: None,
+                });
+                ui.close_menu();
+            }
+        }
+    });
+}
+
+fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<Action>) {
+    let (speed, connected) = (row.speed, row.connected);
     // A fixed-width, left-aligned cell so long names truncate instead of
     // pushing the action buttons off the window.
     ui.allocate_ui_with_layout(
@@ -1508,6 +1705,28 @@ fn draw_row(
     });
 
     ui.horizontal(|ui| {
+        if let Some((queue, i, len)) = row.place {
+            ui.add_enabled_ui(connected, |ui| {
+                if ui.add_enabled(i > 0, egui::Button::new("Up").small()).on_hover_text("Run it earlier").clicked() {
+                    actions.push(Action::MoveToQueue {
+                        id: e.id,
+                        queue,
+                        position: Some(i - 1),
+                    });
+                }
+                if ui
+                    .add_enabled(i + 1 < len, egui::Button::new("Down").small())
+                    .on_hover_text("Run it later")
+                    .clicked()
+                {
+                    actions.push(Action::MoveToQueue {
+                        id: e.id,
+                        queue,
+                        position: Some(i + 1),
+                    });
+                }
+            });
+        }
         ui.add_enabled_ui(connected, |ui| match e.status {
             Status::Queued | Status::Downloading | Status::Confirming => {
                 if ui.small_button("Cancel").clicked() {
@@ -1521,8 +1740,10 @@ fn draw_row(
                         filename: None,
                         folder: None,
                         start: true,
+                        queue: None,
                     });
                 }
+                queue_menu(ui, e, row.queues, actions);
                 if ui.small_button("Remove").clicked() {
                     actions.push(Action::Remove(e.id));
                 }
@@ -1531,6 +1752,7 @@ fn draw_row(
                 if ui.small_button("Retry").clicked() {
                     actions.push(Action::Retry(e.id));
                 }
+                queue_menu(ui, e, row.queues, actions);
                 if ui.small_button("Remove").clicked() {
                     actions.push(Action::Remove(e.id));
                 }
