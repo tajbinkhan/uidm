@@ -102,8 +102,13 @@ fn yes() -> bool {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Download {
     pub url: String,
+    /// `POST` for a download a form started; anything else is a GET.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
+    /// The form body of a POST, base64-encoded. Its content type goes in
+    /// `headers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     /// Request headers as name -> value. A map keeps lookup simple; switch to a
     /// `Vec<(String, String)>` if you need to preserve duplicate header names.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

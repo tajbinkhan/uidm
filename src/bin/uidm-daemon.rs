@@ -986,7 +986,14 @@ impl Daemon {
                 let settings = daemon.settings.lock().unwrap();
                 (to_request(download.clone(), &settings).headers, settings.folders())
             };
-            let found = match engine::inspect(&download.url, download.filename.as_deref(), &headers) {
+            // Probing a POST download would send a GET (or repeat the POST),
+            // so its dialog proposes a name from the request alone.
+            let probed = if uidm::app::post_body(&download).is_some() {
+                Ok(engine::Inspection::unprobed(&download.url, download.filename.as_deref()))
+            } else {
+                engine::inspect(&download.url, download.filename.as_deref(), &headers)
+            };
+            let found = match probed {
                 Ok(found) => found,
                 Err(e) => {
                     // Same as a download that fails to start, so the browser
@@ -1436,6 +1443,10 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
         }
         Incoming::Ping => send(&Outgoing::Pong),
         Incoming::Add(download) => {
+            if let Err(message) = check_body(&download) {
+                send(&Outgoing::Error { message });
+                return;
+            }
             let (id, url) = daemon.add(download);
             eprintln!("[uidm-daemon] add #{id}: {url}");
             send(&Outgoing::Ack {
@@ -1615,6 +1626,18 @@ fn human_bytes(n: u64) -> String {
         format!("{n} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Refuse a POST whose body is not valid base64, rather than send another
+/// body than the form's.
+fn check_body(d: &Download) -> Result<(), String> {
+    use base64::Engine as _;
+    match &d.body {
+        Some(body) if base64::engine::general_purpose::STANDARD.decode(body).is_err() => {
+            Err(format!("the form body of {} is not valid base64", d.url))
+        }
+        _ => Ok(()),
     }
 }
 

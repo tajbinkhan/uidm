@@ -34,6 +34,10 @@ use segments::split;
 
 /// Smallest file worth splitting; below this, one connection is used.
 const MIN_SEGMENT_BYTES: u64 = 256 * 1024;
+/// A connection that finishes early splits the largest remaining range in
+/// two, if both halves get at least this much. It is well above one read
+/// (`BUF_SIZE`), so a read in flight never crosses into the new half.
+const MIN_SPLIT_BYTES: u64 = 256 * 1024;
 /// Hard cap on parallel connections per download.
 const MAX_CONNECTIONS: usize = 16;
 /// Read buffer per segment.
@@ -66,6 +70,10 @@ pub struct DownloadRequest {
     pub reuse_path: Option<PathBuf>,
     /// What to do when the chosen name is taken by an unrelated file.
     pub file_exists: FileExists,
+    /// A form body to send with POST instead of a GET. The response is saved
+    /// as one stream, and the POST is sent once: it is not repeated on
+    /// failure, since a POST may not be safe to repeat.
+    pub post_body: Option<Vec<u8>>,
 }
 
 /// Progress events over the course of a download. `id` matches the `Ack`.
@@ -159,6 +167,9 @@ struct Sched {
 /// What every running download shares.
 struct Shared {
     limiter: RateLimiter,
+    /// Whether a connection that finishes early takes over half of the
+    /// largest remaining range. Only tests turn it off, to compare.
+    resplit: AtomicBool,
     /// Output files in use, so two downloads never pick the same file.
     claimed: Mutex<HashSet<PathBuf>>,
 }
@@ -191,6 +202,7 @@ impl Engine {
                 registry: Mutex::new(HashMap::new()),
                 shared: Arc::new(Shared {
                     limiter: RateLimiter::default(),
+                    resplit: AtomicBool::new(true),
                     claimed: Mutex::new(HashSet::new()),
                 }),
                 reporter: Reporter(cb),
@@ -236,6 +248,11 @@ impl Engine {
     pub fn set_concurrency(&self, n: usize) {
         self.inner.sched.lock().unwrap().limit = n.max(1);
         pump(&self.inner);
+    }
+
+    #[cfg(test)]
+    fn set_resplit(&self, on: bool) {
+        self.inner.shared.resplit.store(on, Ordering::Relaxed);
     }
 
     /// Set the total speed limit in bytes per second, or `None` for no limit.
@@ -307,6 +324,7 @@ fn pump(inner: &Arc<Inner>) {
 pub fn run_blocking(req: DownloadRequest, cb: Arc<dyn Fn(Progress) + Send + Sync>) {
     let shared = Shared {
         limiter: RateLimiter::default(),
+        resplit: AtomicBool::new(true),
         claimed: Mutex::new(HashSet::new()),
     };
     run(0, Arc::new(AtomicBool::new(false)), req, Reporter(cb), &shared);
@@ -352,6 +370,9 @@ fn run_inner(
     shared: &Shared,
 ) -> Result<PathBuf, EngineError> {
     let agent = http::build_agent()?;
+    if let Some(body) = &req.post_body {
+        return run_post(id, token, &agent, req, body, reporter, shared);
+    }
     let probe = http::probe(&agent, &req.url, &req.headers)?;
     let filename = pick_filename(req.filename.as_deref(), &probe);
     let dir = req.folders.for_name(&filename);
@@ -376,13 +397,79 @@ fn run_inner(
     });
 
     let limiter = &shared.limiter;
+    let resplit = shared.resplit.load(Ordering::Relaxed);
     let result = if segmented {
-        run_segmented(id, token, &agent, req, output, &probe, connections, reporter, limiter)
+        let plan = Plan {
+            connections,
+            resplit,
+        };
+        run_segmented(id, token, &agent, req, output, &probe, plan, reporter, limiter)
     } else {
         run_single(id, token, &agent, req, output, &probe, reporter, limiter)
     };
     drop(claim);
     result
+}
+
+/// A download sent as a POST: one request, its response saved as one stream.
+fn run_post(
+    id: u64,
+    token: &CancelToken,
+    agent: &ureq::Agent,
+    req: &DownloadRequest,
+    body: &[u8],
+    reporter: &Reporter,
+    shared: &Shared,
+) -> Result<PathBuf, EngineError> {
+    let (probe, mut reader) = http::post(agent, &req.url, &req.headers, body)?;
+    let filename = pick_filename(req.filename.as_deref(), &probe);
+    let dir = req.folders.for_name(&filename);
+    fs::create_dir_all(&dir)?;
+    let claim = choose_output(&shared.claimed, &dir, &filename, req, &probe)?;
+    let output = claim.path.clone();
+    reporter.send(Progress::Started {
+        id,
+        url: req.url.clone(),
+        path: output.clone(),
+        total: probe.total,
+        resumable: false,
+        connections: 1,
+    });
+    let mut file = File::create(&output)?;
+    let mut buf = vec![0u8; BUF_SIZE];
+    let (mut done, mut last) = (0u64, 0u64);
+    let limiter = &shared.limiter;
+    loop {
+        if token.load(Ordering::Relaxed) {
+            return Ok(output);
+        }
+        let want = limiter.chunk_size(buf.len());
+        let n = reader.read(&mut buf[..want])?;
+        if n == 0 {
+            break;
+        }
+        limiter.consume(n, token);
+        file.write_all(&buf[..n])?;
+        done += n as u64;
+        if done - last >= REPORT_EVERY {
+            last = done;
+            reporter.send(Progress::Advanced {
+                id,
+                url: req.url.clone(),
+                done,
+                total: probe.total,
+            });
+        }
+    }
+    if let Some(total) = probe.total {
+        if done < total {
+            return Err(EngineError::Http(format!(
+                "the response ended after {done} of {total} bytes"
+            )));
+        }
+    }
+    drop(claim);
+    Ok(output)
 }
 
 /// Filename priority: explicit request, then Content-Disposition, then the URL
@@ -407,6 +494,21 @@ pub struct Inspection {
     pub filename: String,
     pub total: Option<u64>,
     pub resumable: bool,
+}
+
+impl Inspection {
+    /// What can be said without asking the server: the name from the request
+    /// or the URL, and no size.
+    pub fn unprobed(url: &str, filename: Option<&str>) -> Self {
+        Inspection {
+            filename: filename
+                .map(sanitize_filename)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| derive_filename(url)),
+            total: None,
+            resumable: false,
+        }
+    }
 }
 
 /// Probe `url` the way a download would and report its name and size,
@@ -532,6 +634,58 @@ fn sidecar_matches(sidecar: &Path, probe: &http::Probe) -> bool {
     }
 }
 
+/// How a segmented download is split.
+#[derive(Clone, Copy)]
+struct Plan {
+    /// Connections at once.
+    connections: usize,
+    /// Whether a connection that finishes early splits the largest remaining
+    /// range and takes its second half.
+    resplit: bool,
+}
+
+/// The manifest plus which segments a connection is working on. The busy
+/// flags only live while the download runs.
+struct Work {
+    manifest: Manifest,
+    busy: Vec<bool>,
+}
+
+impl Work {
+    /// The next segment for a free connection: an unstarted one, or else (when
+    /// `resplit`) the second half of the busy segment with the most left. The
+    /// original connection stops at the new end of its first half without a
+    /// new request.
+    fn next(&mut self, resplit: bool) -> Option<usize> {
+        let segments = &self.manifest.segments;
+        if let Some(i) = (0..segments.len()).find(|&i| !self.busy[i] && !segments[i].is_complete()) {
+            self.busy[i] = true;
+            return Some(i);
+        }
+        if !resplit {
+            return None;
+        }
+        let (i, left) = (0..segments.len())
+            .filter(|&i| self.busy[i])
+            .map(|i| (i, segments[i].end + 1 - segments[i].cursor().min(segments[i].end + 1)))
+            .max_by_key(|(_, left)| *left)?;
+        if left < 2 * MIN_SPLIT_BYTES {
+            return None;
+        }
+        let seg = &mut self.manifest.segments[i];
+        let mid = seg.cursor() + left / 2;
+        let new = resume::SegmentProgress {
+            start: mid,
+            end: seg.end,
+            done: 0,
+        };
+        seg.end = mid - 1;
+        self.manifest.segments.push(new);
+        self.busy.push(true);
+        Some(self.manifest.segments.len() - 1)
+    }
+}
+
 /// Parallel, resumable path for a server that honors byte ranges.
 #[allow(clippy::too_many_arguments)]
 fn run_segmented(
@@ -541,7 +695,7 @@ fn run_segmented(
     req: &DownloadRequest,
     output: PathBuf,
     probe: &http::Probe,
-    connections: usize,
+    plan: Plan,
     reporter: &Reporter,
     limiter: &RateLimiter,
 ) -> Result<PathBuf, EngineError> {
@@ -563,26 +717,26 @@ fn run_segmented(
             total,
             probe.etag.clone(),
             probe.last_modified.clone(),
-            &split(total, connections),
+            &split(total, plan.connections),
         ),
     };
 
     ensure_file_len(&output, total)?;
     manifest.save(&sidecar).ok();
 
-    let segment_count = manifest.segments.len();
+    let unfinished = manifest.segments.iter().filter(|s| !s.is_complete()).count();
     let resumed = manifest.bytes_done();
-    let shared = Arc::new(Mutex::new(manifest));
+    let busy = vec![false; manifest.segments.len()];
+    let shared = Arc::new(Mutex::new(Work { manifest, busy }));
     let global_done = Arc::new(AtomicU64::new(resumed));
     let last_report = Arc::new(AtomicU64::new(resumed));
     let first_error: Arc<Mutex<Option<EngineError>>> = Arc::new(Mutex::new(None));
 
+    // Each connection takes segments until none is left to take or split.
     // Scoped threads may borrow the shared limiter.
+    let workers = plan.connections.min(unfinished).max(1);
     thread::scope(|scope| {
-        for idx in 0..segment_count {
-            if shared.lock().unwrap().segments[idx].is_complete() {
-                continue;
-            }
+        for _ in 0..workers {
             let agent = agent.clone();
             let url = url.clone();
             let headers = req.headers.clone();
@@ -611,10 +765,21 @@ fn run_segmented(
                     limiter,
                     total,
                 };
-                if let Err(e) = download_segment(&ctx, idx) {
-                    let mut slot = first_error.lock().unwrap();
-                    if slot.is_none() {
-                        *slot = Some(e);
+                loop {
+                    if token.load(Ordering::Relaxed) || first_error.lock().unwrap().is_some() {
+                        return;
+                    }
+                    let Some(idx) = shared.lock().unwrap().next(plan.resplit) else {
+                        return;
+                    };
+                    let result = download_segment(&ctx, idx);
+                    shared.lock().unwrap().busy[idx] = false;
+                    if let Err(e) = result {
+                        let mut slot = first_error.lock().unwrap();
+                        if slot.is_none() {
+                            *slot = Some(e);
+                        }
+                        return;
                     }
                 }
             });
@@ -624,15 +789,15 @@ fn run_segmented(
     if token.load(Ordering::Relaxed) {
         // Keep the sidecar and partial file so a later request resumes, saved
         // with the latest progress rather than the last periodic flush.
-        shared.lock().unwrap().save(&sidecar).ok();
+        shared.lock().unwrap().manifest.save(&sidecar).ok();
         return Ok(output);
     }
     if let Some(err) = first_error.lock().unwrap().take() {
-        shared.lock().unwrap().save(&sidecar).ok();
+        shared.lock().unwrap().manifest.save(&sidecar).ok();
         return Err(err);
     }
 
-    let done = shared.lock().unwrap().bytes_done();
+    let done = shared.lock().unwrap().manifest.bytes_done();
     reporter.send(Progress::Advanced {
         id,
         url: url.clone(),
@@ -652,7 +817,7 @@ struct SegmentCtx<'a> {
     headers: &'a [(String, String)],
     output: &'a std::path::Path,
     sidecar: &'a std::path::Path,
-    shared: &'a Arc<Mutex<Manifest>>,
+    shared: &'a Arc<Mutex<Work>>,
     global_done: &'a AtomicU64,
     last_report: &'a AtomicU64,
     reporter: &'a Reporter,
@@ -687,8 +852,8 @@ fn download_segment(ctx: &SegmentCtx, idx: usize) -> Result<(), EngineError> {
 
 fn download_segment_once(ctx: &SegmentCtx, idx: usize) -> Result<(), EngineError> {
     let (start, end, mut cursor) = {
-        let m = ctx.shared.lock().unwrap();
-        let s = &m.segments[idx];
+        let w = ctx.shared.lock().unwrap();
+        let s = &w.manifest.segments[idx];
         (s.start, s.end, s.cursor())
     };
     if cursor > end {
@@ -711,15 +876,21 @@ fn download_segment_once(ctx: &SegmentCtx, idx: usize) -> Result<(), EngineError
             break;
         }
         ctx.limiter.consume(n, ctx.token);
-        // Never write past the segment end, even if the server over-sends.
+        // The end can move closer while this runs: another connection may
+        // have taken the second half of this range. Never write past it, even
+        // if the server over-sends.
+        let end = ctx.shared.lock().unwrap().manifest.segments[idx].end;
+        if cursor > end {
+            break;
+        }
         let room = (end - cursor + 1) as usize;
         let n = n.min(room);
         write_at(&file, &buf[..n], cursor)?;
         cursor += n as u64;
 
         {
-            let mut m = ctx.shared.lock().unwrap();
-            m.segments[idx].done = cursor - start;
+            let mut w = ctx.shared.lock().unwrap();
+            w.manifest.segments[idx].done = cursor - start;
         }
         let g = ctx.global_done.fetch_add(n as u64, Ordering::Relaxed) + n as u64;
         maybe_report(ctx, g);
@@ -751,8 +922,8 @@ fn maybe_report(ctx: &SegmentCtx, global: u64) {
         done: global,
         total: Some(ctx.total),
     });
-    if let Ok(m) = ctx.shared.lock() {
-        m.save(ctx.sidecar).ok();
+    if let Ok(w) = ctx.shared.lock() {
+        w.manifest.save(ctx.sidecar).ok();
     }
 }
 
@@ -952,7 +1123,7 @@ mod tests {
 
     /// End-to-end checks against a local server.
     mod live {
-        use super::super::testserver::{body, TestServer};
+        use super::super::testserver::{body, Behavior, TestServer};
         use super::*;
         use std::sync::mpsc;
         use std::time::Instant;
@@ -974,6 +1145,7 @@ mod tests {
                 connections: 4,
                 reuse_path: None,
                 file_exists,
+                post_body: None,
             }
         }
 
@@ -1075,6 +1247,126 @@ mod tests {
             let path = download(|_| {}, request(&server.url, &dir, FileExists::Overwrite));
             assert_eq!(path, existing);
             assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        /// One connection is slow. With re-splitting, the free connections
+        /// take over halves of its range, so the download ends far sooner
+        /// than with fixed ranges, and the file still matches.
+        #[test]
+        fn a_slow_range_is_taken_over_by_free_connections() {
+            const LEN: usize = 4 * 1024 * 1024;
+            let data = body(LEN);
+            // 4 connections: 1 MiB each; the last range starts at 3 MiB and is
+            // sent at 128 KiB/s, so fixed ranges need about 8 s.
+            let behavior = Behavior {
+                slow_range_start: Some(3 * 1024 * 1024),
+                slow_bytes_per_sec: 128 * 1024,
+                post_only_body: None,
+            };
+            let run = |resplit: bool| {
+                let server = TestServer::start_with(data.clone(), behavior.clone());
+                let dir = temp_dir(if resplit { "resplit" } else { "fixed" });
+                let start = Instant::now();
+                let path = download(|e| e.set_resplit(resplit), request(&server.url, &dir, FileExists::Rename));
+                let secs = start.elapsed().as_secs_f64();
+                assert_eq!(fs::read(&path).unwrap(), data, "resplit {resplit}: file matches");
+                assert!(!Manifest::sidecar_path(&path).exists());
+                fs::remove_dir_all(&dir).ok();
+                secs
+            };
+            let fixed = run(false);
+            let resplit = run(true);
+            eprintln!("slow range: fixed ranges {fixed:.1}s, re-split {resplit:.1}s");
+            assert!(fixed > 7.0, "fixed ranges wait for the slow one: {fixed:.1}s");
+            assert!(resplit < fixed * 0.7, "re-split {resplit:.1}s vs fixed {fixed:.1}s");
+        }
+
+        #[test]
+        fn a_download_canceled_after_splits_resumes_byte_identical() {
+            const LEN: usize = 4 * 1024 * 1024;
+            let data = body(LEN);
+            let behavior = Behavior {
+                slow_range_start: Some(3 * 1024 * 1024),
+                slow_bytes_per_sec: 128 * 1024,
+                post_only_body: None,
+            };
+            let server = TestServer::start_with(data.clone(), behavior);
+            let dir = temp_dir("split-resume");
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(
+                Arc::new(move |p: Progress| {
+                    let _ = tx.lock().unwrap().send(p);
+                }),
+                1,
+            );
+            let id = engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let path = loop {
+                if let Progress::Started { path, .. } = rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                    break path;
+                }
+            };
+            // The fast ranges finish at once; give the free connections time
+            // to split the slow one, then stop.
+            thread::sleep(Duration::from_millis(1500));
+            engine.cancel(id);
+            while !matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), Progress::Canceled { .. }) {}
+            let m = Manifest::load(&Manifest::sidecar_path(&path)).unwrap();
+            assert!(m.segments.len() > 4, "the split ranges are saved: {}", m.segments.len());
+            assert!(m.bytes_done() < LEN as u64);
+
+            let resumed = download(|_| {}, request(&server.url, &dir, FileExists::Rename));
+            assert_eq!(resumed, path, "resumes into the same file");
+            assert_eq!(fs::read(&path).unwrap(), data);
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_free_connection_takes_the_second_half() {
+            // A plan with one busy segment: a free connection takes its second
+            // half; tiny remainders are left alone.
+            let mut w = Work {
+                manifest: Manifest::new("u".into(), 4 << 20, None, None, &split(4 << 20, 1)),
+                busy: vec![true],
+            };
+            w.manifest.segments[0].done = 1 << 20;
+            let i = w.next(true).unwrap();
+            let (a, b) = (w.manifest.segments[0].clone(), w.manifest.segments[i].clone());
+            assert_eq!(a.end + 1, b.start, "the halves meet");
+            assert_eq!(b.end, (4 << 20) - 1);
+            assert_eq!(b.start - a.cursor(), (3 << 20) / 2, "split at the middle of what is left");
+            assert!(w.next(false).is_none(), "no splitting when it is off");
+            w.manifest.segments[0].done = a.len() - 1000;
+            w.manifest.segments[i].done = b.len() - 1000;
+            assert!(w.next(true).is_none(), "too little left to split");
+        }
+
+        /// A download a form started: the server sends the file only to the
+        /// POST with the right body, and an HTML page to a GET.
+        #[test]
+        fn a_form_post_is_sent_once_and_saved() {
+            let data = body(LEN);
+            let form = b"session=abc&file=report".to_vec();
+            let behavior = Behavior {
+                post_only_body: Some(form.clone()),
+                ..Behavior::default()
+            };
+            let server = TestServer::start_with(data.clone(), behavior);
+            let dir = temp_dir("post");
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.filename = None;
+            req.post_body = Some(form);
+            let path = download(|_| {}, req);
+            assert_eq!(path, dir.join("report.pdf"), "named by Content-Disposition");
+            assert_eq!(fs::read(&path).unwrap(), data);
+            assert_eq!(server.served.load(Ordering::Relaxed), LEN as u64, "one request, no probe");
+
+            // The same URL as a GET only gets the error page.
+            let mut get = request(&server.url, &dir, FileExists::Rename);
+            get.filename = Some("as-get.html".into());
+            let html = fs::read(download(|_| {}, get)).unwrap();
+            assert!(html.starts_with(b"<html>"));
             fs::remove_dir_all(&dir).ok();
         }
 

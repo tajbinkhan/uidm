@@ -180,9 +180,20 @@ It takes a download from the browser only when all of these hold:
 The extension asks for the rules when it connects and gets every change as it
 is saved, so they are edited only in the window.
 
+A download a form started, with a POST, is sent to UIDM as the same POST.
+The extension records the method and body of recent form submissions in
+frames (`webRequest`, `requestBody`) and matches a new download to the latest
+one to the same URL in the last minute. It rebuilds URL-encoded forms and raw
+bodies. A multipart form (which may carry files), or a body the browser did
+not share, cannot be resent, so that download stays in the browser. UIDM sends
+the POST once and saves the response as one stream; it is not resumable, and
+it is not repeated on a failure, since a form may not be safe to send twice.
+Downloads without a recorded POST are fetched with GET as before.
+
 If UIDM takes a download but cannot even start it, for example because the
 server refuses the request, the extension removes it from UIDM's list and
-hands it back to the browser, so it is never silently lost.
+hands it back to the browser, so it is never silently lost. A POST goes back
+as a POST with its form, when the form is text.
 
 ## Host-daemon authentication
 
@@ -220,6 +231,11 @@ Given an `add`, the engine:
 2. Splits the total into up to 8 contiguous byte ranges (one connection per
    ~256 KiB, capped at 16), and fetches them on parallel threads. Each thread
    opens its own file handle and writes at its own offset, so writes never race.
+   A connection that finishes its range early takes over the second half of
+   the range with the most left, as long as both halves keep at least 256 KiB.
+   The connection that had it stops at the new end of its first half without a
+   new request, so the download no longer ends at the pace of its slowest
+   range. The split ranges are saved in the sidecar like the first ones.
 3. Records progress in a `<file>.uidmpart` JSON sidecar next to the output,
    flushed about every 1 MiB and again on cancel or failure. Re-running the
    download reads the sidecar and refetches only the missing bytes of each
@@ -272,6 +288,8 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "ping" }
 { "op": "add", "url": "https://...", "headers": { "X-Example": "1" }, "cookies": "...",
   "referrer": "https://...", "user_agent": "...", "filename": "f.zip" }
+{ "op": "add", "url": "https://.../export", "method": "POST", "body": "<base64>",
+  "headers": { "Content-Type": "application/x-www-form-urlencoded" } }
 { "op": "cancel", "id": 1 }
 { "op": "retry", "id": 1 }
 { "op": "remove", "id": 1 }
@@ -458,6 +476,7 @@ is a failed scan, as is one that runs over 10 minutes.
 | `src/engine/` | Queue, segments, resume sidecar, speed limiter, HTTP |
 | `extension/` | MV3 extension: capture, context menu, popup |
 | `extension/rules.js` | Capture rules (file types, minimum size, excluded sites) |
+| `extension/post.js` | Matching downloads to the form POSTs that started them |
 | `extension/test/` | Node tests for the rules and the service worker |
 | `assets/icon-64.rgba` | Window icon, raw RGBA made from `extension/icons/128.png` |
 | `host/com.uidm.host.json` | Template of the native-messaging manifest |
@@ -492,7 +511,7 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 ## Verified
 
-- 84 unit tests: segment splitting, the resume sidecar, framing,
+- 88 unit tests: segment splitting, the resume sidecar, framing,
   `Content-Disposition`, backoff, HMAC proofs, the download table's
   lifecycle and ordering cases, settings loading, defaults and validation,
   history loading (running downloads become interrupted, ids never go
@@ -503,12 +522,25 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   within 10%, raising the concurrency live, canceling a queued download,
   category folders, and probing a download for the save-as dialog. Category
   tests cover uppercase extensions, names without one and dot files.
-- 11 extension tests: each capture rule, and the real `background.js` run
+  Re-splitting: with one connection served at 128 KiB/s, a 4 MiB download
+  over 4 connections took 8.0 s with fixed ranges and 4.1 s with
+  re-splitting, byte-identical; one canceled after its ranges were split saved
+  the extra ranges in its sidecar and resumed byte-identical. A server that
+  sends a file only to a POST with the right form, and an HTML page to a GET,
+  gives the file to the POST in one request, named by its
+  `Content-Disposition`.
+- 17 extension tests: each capture rule, and the real `background.js` run
   with a stand-in `chrome` API: it asks for the rules on connect, takes or
   leaves downloads by type, size and site, applies changed rules at once,
   skips exactly one download after **Skip next download**, and starts a
   download waiting for its dialog from the popup; **Download later with
-  UIDM** adds with `start: false`.
+  UIDM** adds with `start: false`. Form downloads: URL-encoded forms rebuild
+  as the browser encodes them and raw bodies byte for byte; multipart forms,
+  forms with files and bodies the browser withheld stay in the browser; a
+  download matches the latest POST to its URL within a minute; a form's
+  download reaches UIDM as the same POST with its content type while a link
+  next to it stays a GET; and a POST UIDM cannot start goes back to the
+  browser as a POST with its form.
 - Save-as dialog, under Wine against the real host and daemon: the proposal
   lands in `Downloads\Documents\report.pdf` with the real size; with no window
   possible the download starts as proposed after 19.6 s; a new name and folder
@@ -614,8 +646,8 @@ not automated. The pieces on either side of it are tested above.
 - A queue run started by hand with nothing in it ends at once, and a run that
   is only waiting on failed downloads ends too: failed downloads count as
   finished unless the queue retries them.
-- Downloads the browser starts with a POST request (some form submissions) are
-  re-requested by UIDM as a GET and may fail. Turn capture off for such sites.
+- Form downloads with a multipart body stay in the browser, and a POST
+  download cannot resume: a failure means sending the form again with Retry.
 - Every client sees every download, not only the ones it started.
 - A process that squats on the port cannot learn anything, but it does stop
   downloads from starting until it goes away. A per-user named pipe would close

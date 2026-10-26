@@ -1,0 +1,78 @@
+// A stand-in for the chrome API that runs the real background.js, for the
+// extension's tests. `loadWorker()` returns the fake native port, what was
+// posted to it, the browser calls made, and the fake chrome object.
+
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+
+
+function event() {
+  const listeners = [];
+  return {
+    addListener: (f) => listeners.push(f),
+    fire: (...args) => Promise.all(listeners.map((f) => f(...args))),
+  };
+}
+
+function loadWorker() {
+  const sent = [];
+  const browserCalls = [];
+  const port = {
+    onMessage: event(),
+    onDisconnect: event(),
+    postMessage: (m) => sent.push(m),
+  };
+  const chrome = {
+    runtime: {
+      id: "uidm",
+      connectNative: () => port,
+      getManifest: () => ({ version: "test" }),
+      onMessage: event(),
+      onInstalled: event(),
+      lastError: null,
+    },
+    storage: {
+      local: { get: async (d) => d, set: async () => {} },
+      onChanged: event(),
+    },
+    webRequest: {
+      onBeforeRequest: event(),
+      onBeforeSendHeaders: event(),
+    },
+    downloads: {
+      onCreated: event(),
+      cancel: async (id) => browserCalls.push(["cancel", id]),
+      erase: async () => {},
+      download: async (o) => browserCalls.push(["download", o.url, o]),
+    },
+    cookies: { getAll: async () => [] },
+    contextMenus: { removeAll: () => {}, create: () => {}, onClicked: event() },
+    action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
+  };
+  const dir = path.join(__dirname, "..");
+  const context = vm.createContext({
+    chrome,
+    navigator: { userAgent: "test-agent" },
+    console,
+    setTimeout,
+    clearTimeout,
+    URL,
+    TextEncoder,
+    btoa,
+  });
+  context.importScripts = (...files) => {
+    for (const file of files) vm.runInContext(fs.readFileSync(path.join(dir, file), "utf8"), context);
+  };
+  vm.runInContext(fs.readFileSync(path.join(dir, "background.js"), "utf8"), context);
+  const popup = (msg) =>
+    new Promise((resolve) => chrome.runtime.onMessage.fire(msg, { id: "uidm" }, resolve));
+  return { port, sent, browserCalls, chrome, popup };
+}
+
+let nextDownloadId = 1;
+function download(fields) {
+  return { id: nextDownloadId++, url: "", referrer: "", filename: "", mime: "", totalBytes: 0, fileSize: 0, incognito: false, ...fields };
+}
+
+module.exports = { loadWorker, download, event };

@@ -34,6 +34,8 @@ ureq = { version = "2.12.1", default-features = false, features = ["native-tls",
 native-tls = "0.2.14"
 # OS randomness for the daemon's per-start auth token and handshake nonces.
 getrandom = "0.4"
+# Form bodies of POST downloads travel base64-encoded in JSON.
+base64 = "0.22"
 # HMAC-SHA256 proofs in the host <-> daemon handshake, so neither side ever
 # sends the token itself.
 hmac = "0.13.0"

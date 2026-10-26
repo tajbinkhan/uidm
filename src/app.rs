@@ -13,6 +13,7 @@ pub const MAX_MESSAGE_BYTES: u32 = 4 * 1024 * 1024;
 /// count and file-name policy from the settings, and fold the browser context
 /// (user agent, cookies, referrer) into headers.
 pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
+    let post_body = post_body(&d);
     let mut headers: Vec<(String, String)> = d.headers.into_iter().collect();
     if let Some(ua) = d.user_agent {
         headers.push(("User-Agent".to_string(), ua));
@@ -31,7 +32,19 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         connections: settings.connections,
         reuse_path: None,
         file_exists: settings.file_exists,
+        post_body,
     }
+}
+
+/// The decoded form body when `d` is a POST. A POST without a body sends an
+/// empty one.
+pub fn post_body(d: &Download) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    if !d.method.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("POST")) {
+        return None;
+    }
+    let body = d.body.as_deref().unwrap_or("");
+    Some(base64::engine::general_purpose::STANDARD.decode(body).unwrap_or_default())
 }
 
 /// Map an engine event to the message sent to clients.

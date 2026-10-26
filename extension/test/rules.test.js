@@ -3,9 +3,6 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
 
 const { extensionOf, siteMatches, downloadType, captureDecision } = require("../rules.js");
 
@@ -83,67 +80,9 @@ test("excluded sites, by download URL or referring page", () => {
   assert.equal(take("https://test.org/a.zip"), true);
 });
 
-// --- The service worker with a stand-in chrome API ----------------------------
+// --- The service worker with a stand-in chrome API (see harness.js) ---------
 
-function event() {
-  const listeners = [];
-  return {
-    addListener: (f) => listeners.push(f),
-    fire: (...args) => Promise.all(listeners.map((f) => f(...args))),
-  };
-}
-
-function loadWorker() {
-  const sent = [];
-  const browserCalls = [];
-  const port = {
-    onMessage: event(),
-    onDisconnect: event(),
-    postMessage: (m) => sent.push(m),
-  };
-  const chrome = {
-    runtime: {
-      id: "uidm",
-      connectNative: () => port,
-      getManifest: () => ({ version: "test" }),
-      onMessage: event(),
-      onInstalled: event(),
-      lastError: null,
-    },
-    storage: {
-      local: { get: async (d) => d, set: async () => {} },
-      onChanged: event(),
-    },
-    downloads: {
-      onCreated: event(),
-      cancel: async (id) => browserCalls.push(["cancel", id]),
-      erase: async () => {},
-      download: async (o) => browserCalls.push(["download", o.url]),
-    },
-    cookies: { getAll: async () => [] },
-    contextMenus: { removeAll: () => {}, create: () => {}, onClicked: event() },
-    action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
-  };
-  const dir = path.join(__dirname, "..");
-  const context = vm.createContext({
-    chrome,
-    navigator: { userAgent: "test-agent" },
-    console,
-    setTimeout,
-    clearTimeout,
-    URL,
-  });
-  context.importScripts = (file) => vm.runInContext(fs.readFileSync(path.join(dir, file), "utf8"), context);
-  vm.runInContext(fs.readFileSync(path.join(dir, "background.js"), "utf8"), context);
-  const popup = (msg) =>
-    new Promise((resolve) => chrome.runtime.onMessage.fire(msg, { id: "uidm" }, resolve));
-  return { port, sent, browserCalls, chrome, popup };
-}
-
-let nextDownloadId = 1;
-function download(fields) {
-  return { id: nextDownloadId++, url: "", referrer: "", filename: "", mime: "", totalBytes: 0, fileSize: 0, incognito: false, ...fields };
-}
+const { loadWorker, download } = require("./harness.js");
 
 test("the worker asks for the rules and applies them to browser downloads", async () => {
   const w = loadWorker();

@@ -3937,6 +3937,7 @@ dependencies = [
 name = "uidm"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "eframe",
  "getrandom 0.4.3",
  "hmac",

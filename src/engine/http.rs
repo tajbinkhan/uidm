@@ -96,6 +96,32 @@ pub fn fetch_range(
     Ok(Box::new(resp.into_reader()))
 }
 
+/// Send a form as a POST and return what the response says about the file
+/// with a reader over its body. The response cannot be resumed.
+pub fn post(
+    agent: &ureq::Agent,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Result<(Probe, Box<dyn Read + Send>), EngineError> {
+    let resp = apply_headers(agent.post(url), headers)
+        .send_bytes(body)
+        .map_err(map_ureq)?;
+    let probe = Probe {
+        final_url: resp.get_url().to_string(),
+        total: resp
+            .header("content-length")
+            .and_then(|s| s.trim().parse::<u64>().ok()),
+        resumable: false,
+        etag: None,
+        last_modified: None,
+        suggested_filename: resp
+            .header("content-disposition")
+            .and_then(parse_content_disposition_filename),
+    };
+    Ok((probe, Box::new(resp.into_reader())))
+}
+
 /// Fetch the whole body in one stream, for servers without range support.
 pub fn fetch_whole(
     agent: &ureq::Agent,

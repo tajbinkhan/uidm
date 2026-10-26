@@ -117,6 +117,7 @@ fn run_cli(args: &[String]) -> i32 {
             connections: DEFAULT_CONNECTIONS,
             reuse_path: None,
             file_exists: FileExists::Rename,
+            post_body: None,
         },
         Arc::new(move |p: Progress| print_progress(p, &ok_cb)),
     );

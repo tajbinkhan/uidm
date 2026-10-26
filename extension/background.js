@@ -9,7 +9,7 @@
 // otherwise the browser downloads it as usual. If UIDM cannot even start a
 // download it took, it is handed back to the browser.
 
-importScripts("rules.js");
+importScripts("rules.js", "post.js");
 
 const HOST = "com.uidm.host";
 const RECONNECT_MIN_MS = 1000;
@@ -23,10 +23,40 @@ let reconnectTimer = null;
 
 // Mirror of the daemon's download list, by id.
 const downloads = new Map();
-// Downloads taken from the browser: url -> true until their ack arrives, then
-// id -> url until they start, finish, or are handed back.
+// Downloads taken from the browser: url -> how it was requested (null for a
+// GET, else the rebuilt POST) until their ack arrives, then id -> { url, post }
+// until they start, finish, or are handed back.
 const awaitingAck = new Map();
 const captured = new Map();
+
+// Recent requests in frames that sent a body (form submissions), oldest
+// first, and the Content-Type each sent, by request id. A download a form
+// started is matched to its request here (see post.js).
+const posts = [];
+const postTypes = new Map();
+if (chrome.webRequest) {
+  const frames = { urls: ["<all_urls>"], types: ["main_frame", "sub_frame"] };
+  chrome.webRequest.onBeforeRequest.addListener(
+    (d) => {
+      if (d.method !== "POST" || d.incognito) return;
+      const now = Date.now();
+      prunePosts(posts, now);
+      posts.push({ id: d.requestId, url: d.url, time: now, requestBody: d.requestBody });
+    },
+    frames,
+    ["requestBody"],
+  );
+  chrome.webRequest.onBeforeSendHeaders.addListener(
+    (d) => {
+      if (d.method !== "POST") return;
+      const type = (d.requestHeaders || []).find((h) => h.name.toLowerCase() === "content-type");
+      const record = posts.find((r) => r.id === d.requestId);
+      if (record && type) record.contentType = type.value;
+    },
+    frames,
+    ["requestHeaders"],
+  );
+}
 
 let captureEnabled = true;
 // UIDM's settings, which carry the capture rules; null until they arrive.
@@ -100,7 +130,10 @@ function onHostMessage(msg) {
       reconnectDelay = RECONNECT_MIN_MS;
       break;
     case "ack":
-      if (awaitingAck.delete(msg.url)) captured.set(msg.id, msg.url);
+      if (awaitingAck.has(msg.url)) {
+        captured.set(msg.id, { url: msg.url, post: awaitingAck.get(msg.url) });
+        awaitingAck.delete(msg.url);
+      }
       break;
     case "downloads":
       downloads.clear();
@@ -161,11 +194,24 @@ function onHostMessage(msg) {
 // A download UIDM took but could not even start (the server refused it, say)
 // goes back to the browser so the user does not lose it.
 function handBackIfNeverStarted(id) {
-  const url = captured.get(id);
-  if (!url) return;
+  const taken = captured.get(id);
+  if (!taken) return;
   captured.delete(id);
   send({ op: "remove", id });
-  chrome.downloads.download({ url }).catch(() => {});
+  giveBack(taken.url, taken.post);
+}
+
+// Let the browser download it after all, the way it was first requested.
+function giveBack(url, post) {
+  if (!post) {
+    chrome.downloads.download({ url }).catch(() => {});
+    return;
+  }
+  // The browser can only resend a text body.
+  if (post.text === undefined) return;
+  const options = { url, method: "POST", body: post.text };
+  if (post.contentType) options.headers = [{ name: "Content-Type", value: post.contentType }];
+  chrome.downloads.download(options).catch(() => {});
 }
 
 function updateBadge() {
@@ -193,9 +239,14 @@ function baseName(path) {
   return name || undefined;
 }
 
-async function handOff(url, referrer, filename, later = false) {
+async function handOff(url, referrer, filename, later = false, post = null) {
   const cookies = await cookieHeader(url);
   const msg = { op: "add", url, user_agent: navigator.userAgent };
+  if (post) {
+    msg.method = "POST";
+    msg.body = post.body;
+    if (post.contentType) msg.headers = { "Content-Type": post.contentType };
+  }
   // "Download later": UIDM adds it to its main queue without starting it.
   if (later) msg.start = false;
   if (referrer) msg.referrer = referrer;
@@ -225,6 +276,17 @@ chrome.downloads.onCreated.addListener(async (item) => {
   });
   if (!decision.capture) return;
 
+  // A form's download is sent as the same POST; one whose request cannot be
+  // rebuilt stays in the browser.
+  let post = null;
+  let requestUrl = url;
+  const record = findPost(posts, item.url, Date.now()) || findPost(posts, url, Date.now());
+  if (record) {
+    post = rebuildPost(record);
+    if (post.leave) return;
+    requestUrl = record.url;
+  }
+
   // Take it from the browser before it writes much, then hand it over.
   try {
     await chrome.downloads.cancel(item.id);
@@ -233,12 +295,12 @@ chrome.downloads.onCreated.addListener(async (item) => {
     // Already finished or gone; nothing to take.
     return;
   }
-  awaitingAck.set(url, true);
-  const sent = await handOff(url, item.referrer, baseName(item.filename));
+  awaitingAck.set(requestUrl, post);
+  const sent = await handOff(requestUrl, item.referrer, baseName(item.filename), false, post);
   if (!sent) {
     // The port dropped between the check and the send: give it back.
-    awaitingAck.delete(url);
-    chrome.downloads.download({ url }).catch(() => {});
+    awaitingAck.delete(requestUrl);
+    giveBack(requestUrl, post);
   }
 });
 
