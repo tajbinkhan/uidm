@@ -122,8 +122,10 @@ fn serve(mut stream: TcpStream, body: &[u8], served: &AtomicU64, behavior: &Beha
         slice.len()
     )?;
     for chunk in slice.chunks(16 * 1024) {
-        stream.write_all(chunk)?;
+        // Count before sending: once the client has the bytes, a test may
+        // read the count right away.
         served.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        stream.write_all(chunk)?;
         if slow {
             let rate = behavior.slow_bytes_per_sec.max(1);
             thread::sleep(Duration::from_secs_f64(chunk.len() as f64 / rate as f64));
