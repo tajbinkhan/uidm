@@ -119,12 +119,18 @@ pub fn read_message<R: Read>(reader: &mut R, max_bytes: u32) -> io::Result<Optio
 /// Serialize `message` to JSON and write it with the 4-byte length prefix.
 pub fn write_message<W: Write>(writer: &mut W, message: &Outgoing) -> io::Result<()> {
     let json = serde_json::to_vec(message)?;
-    let len: u32 = json
+    write_frame(writer, &json)
+}
+
+/// Write an already-encoded payload with the 4-byte length prefix. The host
+/// uses this to relay frames between browser and daemon without re-parsing.
+pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
+    let len: u32 = payload
         .len()
         .try_into()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "reply exceeds u32 length"))?;
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame exceeds u32 length"))?;
     writer.write_all(&len.to_le_bytes())?;
-    writer.write_all(&json)?;
+    writer.write_all(payload)?;
     Ok(())
 }
 

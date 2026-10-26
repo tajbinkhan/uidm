@@ -189,6 +189,12 @@ impl Engine {
         id
     }
 
+    /// Downloads queued or running. Each leaves the registry when it finishes,
+    /// fails or is canceled.
+    pub fn active_count(&self) -> usize {
+        self.registry.lock().unwrap().len()
+    }
+
     /// Signal a download to stop. Unknown ids are ignored.
     pub fn cancel(&self, id: u64) {
         if let Some(token) = self.registry.lock().unwrap().get(&id) {
