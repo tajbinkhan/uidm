@@ -54,12 +54,33 @@ Downloaded files are left alone.
   names inside the download folder, and everything else (**General**) goes
   into the download folder itself. The window's sidebar filters the list by
   category. Options edits the categories, their file types and folders.
-- **Options** (top right of the window) has three tabs. **General**: the
+- **The tray icon** keeps UIDM at hand. Closing the window hides it there;
+  click the icon to bring it back. Its tooltip shows how many downloads run
+  and how fast, and its menu has **Open UIDM**, **Add URL from clipboard**,
+  **Pause all**, **Resume all**, **Speed limit** and **Exit**. Exit closes the
+  window; downloads keep going and the daemon stops on its own once idle.
+  **Pause all** stops every queued and running download, keeping its partial
+  file; **Resume all** starts them again, along with any interrupted ones.
+- **Start with Windows** (in Options) starts UIDM hidden in the tray when you
+  sign in, ready for the browser.
+- **When a download ends**, UIDM shows a Windows notification: **Open** and
+  **Show in folder** for a finished file, **Retry** for a failed one. Options
+  can show an IDM-style dialog in the window instead (a notification still
+  appears if the window is not running), or nothing, and can play a sound for
+  each. Canceled downloads are never announced.
+- **Virus scan** (off by default) checks each finished file with Microsoft
+  Defender or a scanner command you set, with `{path}` where the file goes.
+  The list shows **No threat found**, **Threat found** or **Scan failed**,
+  and opening a file with a threat asks first. With scanning on, the
+  notification waits for the scan and says what it found.
+- **Options** (top right of the window) has four tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
   10), a total speed limit, what to do when a file name is taken, the save-as
-  dialog, and whether to resume unfinished downloads when UIDM starts.
-  **Categories**: as above. **Browser capture**: the rules below. The status
-  bar shows the speed limit and toggles it.
+  dialog, whether to resume unfinished downloads when UIDM starts, Start with
+  Windows, and whether closing the window keeps UIDM in the tray.
+  **Categories**: as above. **Browser capture**: the rules below. **When
+  done**: notifications, sounds and the virus scan. The status bar shows the
+  speed limit and toggles it.
 
 Files are saved to your Downloads folder, sorted by category, unless Options
 says otherwise.
@@ -80,7 +101,9 @@ desktop window (uidm-gui) ---------------+   (authenticated)   (owns downloads)
   its single-instance lock. Replies to a request go to the client that asked;
   download events go to every client, so the window, the popup and any open
   browser all stay in step. It exits by itself after 60 seconds with no
-  clients and no queued or running downloads. Its log is
+  clients and no queued or running downloads. It also shows the
+  notifications, plays the sounds and runs the virus scans, since it is the
+  one process running whenever a download ends. Its log is
   `%TEMP%\uidm-daemon.log`. It keeps its files in:
   - `%APPDATA%\UIDM\settings.json`: the settings. A missing file or field
     means the default.
@@ -232,13 +255,18 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "remove", "id": 1 }
 { "op": "confirm", "id": 1, "filename": "f.zip", "folder": "D:\\Downloads", "start": true }
 { "op": "list" }
+{ "op": "pause_all" }
+{ "op": "resume_all" }
 { "op": "get_settings" }
 { "op": "set_settings", "settings": { "download_dir": null, "connections": 8, "max_concurrent": 3,
   "speed_limit_enabled": false, "speed_limit_kbps": 1024, "resume_at_startup": false,
   "file_exists": "rename", "ask_where_to_save": true,
   "categories": [ { "name": "Compressed", "extensions": ["zip", "rar"], "folder": null } ],
   "capture_types": ["zip", "pdf"], "capture_min_size_kb": 0,
-  "capture_excluded_sites": ["*.example.com"] } }
+  "capture_excluded_sites": ["*.example.com"], "close_to_tray": true,
+  "start_with_windows": false, "notify": "toast", "sound_on_done": false,
+  "sound_on_failed": false, "scan_after_download": false, "scanner": "defender",
+  "scanner_command": "" } }
 ```
 
 Daemon to clients:
@@ -259,6 +287,7 @@ Daemon to clients:
 { "op": "downloads", "items": [ { "id": 1, "url": "...", "path": "...", "total": 12345,
   "done": 12345, "status": "done", "error": null, "resumable": true, "connections": 8 } ] }
 { "op": "settings", "settings": { ... } }
+{ "op": "show" }
 { "op": "error", "message": "..." }
 ```
 
@@ -283,7 +312,38 @@ Downloads folder, and `file_exists` is `rename` or `overwrite`. A category
 needs a unique name other than `General`, at least one file type, and a full
 path or `null` for its folder (`null` means a folder named after it inside the
 download folder). File types are lowercase letters and digits without the
-dot.
+dot. `notify` is `toast`, `dialog` or `off`; `scanner` is `defender` or
+`custom`, and a custom `scanner_command` must name a program and contain
+`{path}`. Turning `start_with_windows` on or off adds or removes the `UIDM`
+value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which
+runs `uidm-gui.exe --minimized`.
+
+A finished download's entry carries `"scan": { "result": "scanning" }`, then
+`clean`, `threat` or `failed` (the last two with a `detail`, the end of the
+scanner's output) when scanning is on. `pause_all` cancels every queued and
+running download; `resume_all` retries those and every interrupted one. `show`
+asks the window to come forward, after a click on a notification.
+
+## Notifications and virus scans
+
+Windows only shows notifications from an app it knows, so at start the daemon
+registers the app id `UIDM.DownloadManager` under
+`HKCU\Software\Classes\AppUserModelId` with UIDM's name and an icon it writes
+to `%LOCALAPPDATA%\UIDM\uidm.png`. Each button carries an argument such as
+`open:12`, which the daemon acts on while it runs. A failure is announced one
+second late, and only if the download is still failed then, so a download the
+extension hands back to the browser is not announced. A file with a threat
+is never opened from a notification; its Open button brings up the window,
+which asks first.
+
+The scanner runs as a program with separate arguments, never through a shell.
+A custom command line is split into arguments first (double quotes group;
+backslashes are literal) and `{path}` is replaced afterwards inside each
+argument, so a file name cannot add arguments or run anything, whatever it
+contains. Defender runs as `MpCmdRun.exe -Scan -ScanType 3 -File <path>
+-DisableRemediation` and reports a threat with exit code 2. A custom scanner
+reports a threat with exit code 1 (ClamAV's convention). Any other exit code
+is a failed scan, as is one that runs over 10 minutes.
 
 ## Layout
 
@@ -296,6 +356,10 @@ dot.
 | `src/settings.rs` | Settings, their defaults, validation and file |
 | `src/history.rs` | Download history and saved requests on disk |
 | `src/dpapi.rs` | DPAPI encryption for saved requests |
+| `src/registry.rs` | Start with Windows and the notification app id |
+| `src/notify.rs` | Windows notifications and sounds |
+| `src/scan.rs` | Virus scans of finished downloads |
+| `src/bin/gui/` | The window's tray icon and Win32 helpers |
 | `src/ipc.rs` | Daemon address, start-up, token file, HMAC handshake |
 | `src/app.rs` | Request building and event mapping |
 | `src/protocol.rs` | Framing and message types |
@@ -336,7 +400,7 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 ## Verified
 
-- 65 unit tests: segment splitting, the resume sidecar, framing,
+- 75 unit tests: segment splitting, the resume sidecar, framing,
   `Content-Disposition`, backoff, HMAC proofs, the download table's
   lifecycle and ordering cases, settings loading, defaults and validation,
   history loading (running downloads become interrupted, ids never go
@@ -360,6 +424,20 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   refused. With a display, the daemon opened the window itself and it showed
   the dialog; **Download later**, the category sidebar, and adding a category
   in Options (`JPG, .png webp` saved as `jpg`, `png`, `webp`) were checked.
+- Tray, notifications and scans. Unit tests cover the registry (read, write,
+  delete, a quoted Run command), the notification XML (escaping, buttons),
+  scanner command lines (quoting, a file name with quotes and `&` staying one
+  argument, a command without `{path}` refused) and real scanner runs with
+  exit codes 0, 1 and 7. Under Wine against the real daemon: Start with
+  Windows writes `"...\uidm-gui.exe" --minimized` to the Run key and removes
+  it again; the app id is registered; a scanner reporting a threat and one
+  reporting clean show as such; **Pause all** stops a running and a queued
+  download and **Resume all** finishes both, the running one in its own
+  partial file. Under a virtual display, `--minimized` starts with no visible
+  window; in dialog mode a finished download brought the hidden window
+  forward with its completion dialog and scan result; **Open** on a file with
+  a threat asked first; closing the window hid it while the process kept
+  running, and the next finished download brought it back.
 - Settings and history, run under Wine against the real host and daemon:
   `set_settings` with 99 connections is refused with a message; a saved folder
   and a 2 MiB/s limit take effect (4 MiB in 1.96 s) and survive a restart; a
@@ -393,7 +471,13 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   for a relative folder, saving, and the status bar's speed limit toggle were
   checked under Wine.
 
-Not verified here: Chrome itself loading the extension and launching the host.
+Not verified here: Windows notifications (Wine has no WinRT notifications;
+the daemon reached the call at the right moments and logged its failure) and
+the tray icon's menu (the virtual display had no tray to click). In the first
+of four runs of the minimized-window test the window did not come forward;
+the three runs after it did, and the cause was not found.
+
+Also not verified: Chrome itself loading the extension and launching the host.
 Current Chrome builds ignore the `--load-extension` flag, so that last step was
 not automated. The pieces on either side of it are tested above.
 

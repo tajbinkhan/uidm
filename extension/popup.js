@@ -68,6 +68,9 @@ function row(e, connected) {
   const meta = el("div", { className: "meta" });
   const status = el("span", { className: e.status, title: e.error || "" }, STATUS_TEXT[e.status] || e.status);
   meta.append(status);
+  if (e.scan && e.scan.result === "threat") {
+    meta.append(el("span", { className: "failed", title: e.scan.detail || "" }, "Threat found"));
+  }
   meta.append(el("span", { className: "grow" }, e.total ? `${human(e.done)} / ${human(e.total)}` : human(e.done)));
 
   if (e.status === "confirming") {

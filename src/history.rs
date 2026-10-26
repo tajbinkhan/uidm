@@ -120,6 +120,7 @@ mod tests {
             error: None,
             resumable: true,
             connections: 4,
+            scan: None,
         }
     }
 

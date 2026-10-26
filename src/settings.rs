@@ -30,6 +30,30 @@ pub const CAPTURE_MIN_SIZE_MAX_KB: u64 = 10 * 1024 * 1024;
 /// list; its files go straight into the download folder.
 pub const GENERAL: &str = "General";
 
+/// How UIDM tells you a download finished or failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Notify {
+    Off,
+    /// A Windows notification.
+    #[default]
+    Toast,
+    /// A dialog in the UIDM window, as IDM does; a notification when no
+    /// window is open.
+    Dialog,
+}
+
+/// Which virus scanner checks finished downloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scanner {
+    /// Microsoft Defender's command-line scanner.
+    #[default]
+    Defender,
+    /// `scanner_command`, with `{path}` replaced by the file.
+    Custom,
+}
+
 /// A kind of file with its own folder, chosen by file extension.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Category {
@@ -165,6 +189,21 @@ pub struct Settings {
     pub capture_min_size_kb: u64,
     /// Sites whose downloads stay in the browser, such as `*.example.com`.
     pub capture_excluded_sites: Vec<String>,
+    /// Closing the window hides it in the tray instead of quitting.
+    pub close_to_tray: bool,
+    /// Start the window, hidden in the tray, when you sign in to Windows.
+    pub start_with_windows: bool,
+    pub notify: Notify,
+    /// Play a sound when a download finishes.
+    pub sound_on_done: bool,
+    /// Play a sound when a download fails.
+    pub sound_on_failed: bool,
+    /// Scan each finished download for viruses.
+    pub scan_after_download: bool,
+    pub scanner: Scanner,
+    /// The custom scanner's command line, such as
+    /// `"C:\ClamAV\clamscan.exe" --no-summary {path}`.
+    pub scanner_command: String,
 }
 
 impl Default for Settings {
@@ -182,6 +221,14 @@ impl Default for Settings {
             capture_types: default_capture_types(),
             capture_min_size_kb: 0,
             capture_excluded_sites: Vec::new(),
+            close_to_tray: true,
+            start_with_windows: false,
+            notify: Notify::Toast,
+            sound_on_done: false,
+            sound_on_failed: false,
+            scan_after_download: false,
+            scanner: Scanner::Defender,
+            scanner_command: String::new(),
         }
     }
 }
@@ -241,6 +288,9 @@ impl Settings {
                     "\"{site}\" is not a site. Use a host name such as example.com or *.example.com."
                 ));
             }
+        }
+        if self.scan_after_download && self.scanner == Scanner::Custom {
+            crate::scan::parse_command(&self.scanner_command)?;
         }
         Ok(())
     }
@@ -420,6 +470,14 @@ mod tests {
             capture_types: vec!["zip".into()],
             capture_min_size_kb: 100,
             capture_excluded_sites: vec!["*.example.com".into()],
+            close_to_tray: false,
+            start_with_windows: true,
+            notify: Notify::Dialog,
+            sound_on_done: true,
+            sound_on_failed: true,
+            scan_after_download: true,
+            scanner: Scanner::Custom,
+            scanner_command: "C:\\scan.exe {path}".into(),
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
@@ -540,5 +598,24 @@ mod tests {
         assert!(with(&|s| s.capture_excluded_sites = vec!["*.example.com".into()]).is_ok());
         assert!(with(&|s| s.capture_excluded_sites = vec!["http://x/".into()]).is_err());
         assert!(with(&|s| s.categories.clear()).is_ok());
+    }
+
+    #[test]
+    fn custom_scanner_needs_a_command_with_the_path() {
+        let custom = |cmd: &str| Settings {
+            scan_after_download: true,
+            scanner: Scanner::Custom,
+            scanner_command: cmd.into(),
+            ..Settings::default()
+        };
+        assert!(custom("").validate().is_err());
+        assert!(custom("scan.exe").validate().is_err());
+        assert!(custom("\"C:\\Program Files\\AV\\scan.exe\" /file {path}").validate().is_ok());
+        // Not checked while scanning is off or Defender is used.
+        let off = Settings {
+            scan_after_download: false,
+            ..custom("")
+        };
+        assert!(off.validate().is_ok());
     }
 }

@@ -25,10 +25,16 @@
 //! `confirming` until a window answers with `confirm`. If no window is open
 //! the daemon starts one; if none connects within `CONFIRM_FALLBACK`, the
 //! download starts with the proposed name and folder.
+//!
+//! When a download finishes or fails, the daemon scans it for viruses if
+//! asked, plays the chosen sound, and shows a Windows notification, whose
+//! buttons it handles itself (open, show in folder, retry). In dialog mode an
+//! open window shows a dialog instead.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{TcpListener, TcpStream};
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,6 +49,11 @@ use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
 use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Status};
 use uidm::settings::{self, Folders, Settings};
+use uidm::notify::{self, Sound, Toast};
+use uidm::protocol::Scan;
+use uidm::registry;
+use uidm::scan;
+use uidm::settings::Notify;
 use uidm::state::DownloadTable;
 
 /// Exit after this long with no clients and no queued or running downloads.
@@ -53,6 +64,14 @@ const HISTORY_DEBOUNCE: Duration = Duration::from_secs(1);
 /// How long a download waits for a window to show its save-as dialog before
 /// it starts with the proposed name and folder.
 const CONFIRM_FALLBACK: Duration = Duration::from_secs(20);
+/// A failure is announced after this long, so a download the browser
+/// extension takes back (and removes) right away is not announced at all.
+const FAILED_GRACE: Duration = Duration::from_secs(1);
+/// Notifications kept alive so their buttons keep working.
+const KEEP_TOASTS: usize = 32;
+/// The icon Windows shows on UIDM's notifications, written next to the
+/// history so the registry can point at it.
+const ICON_PNG: &[u8] = include_bytes!("../../extension/icons/128.png");
 /// The `client` a desktop window names in its `hello`.
 const WINDOW_CLIENT: &str = "window";
 
@@ -73,6 +92,16 @@ struct Hub {
     dirty: Sender<()>,
     /// Clients that said they are a desktop window.
     windows: Mutex<HashSet<u64>>,
+    /// Finished and failed downloads, for the notification thread.
+    notes: Sender<Note>,
+}
+
+/// Work for the notification thread.
+enum Note {
+    Finished(u64),
+    Failed(u64),
+    /// A finished download's virus scan is done.
+    Scanned(u64),
 }
 
 impl Hub {
@@ -82,8 +111,15 @@ impl Hub {
     fn publish(&self, msg: &Outgoing) {
         let mut table = self.table.lock().unwrap();
         table.apply(msg);
-        if let Outgoing::Done { id, .. } = msg {
-            self.requests.lock().unwrap().remove(id);
+        match msg {
+            Outgoing::Done { id, .. } => {
+                self.requests.lock().unwrap().remove(id);
+                let _ = self.notes.send(Note::Finished(*id));
+            }
+            Outgoing::Failed { id, .. } => {
+                let _ = self.notes.send(Note::Failed(*id));
+            }
+            _ => {}
         }
         let _ = self.dirty.send(());
         self.broadcast(msg);
@@ -155,12 +191,17 @@ struct Daemon {
     paths: Paths,
     /// Keeps the history writer and the exit flush from writing at once.
     save_lock: Mutex<()>,
+    /// Downloads stopped by `pause_all`, for `resume_all`.
+    paused: Mutex<HashSet<u64>>,
+    /// Recent notifications; dropping one can stop its buttons working.
+    toasts: Mutex<VecDeque<windows::UI::Notifications::ToastNotification>>,
 }
 
 impl Daemon {
     /// Load settings, history and saved requests, and start the engine with
-    /// them. Returns the receiver the history writer waits on.
-    fn new(paths: Paths) -> (Self, Receiver<()>) {
+    /// them. Returns the receivers the history writer and the notification
+    /// thread wait on.
+    fn new(paths: Paths) -> (Self, Receiver<()>, Receiver<Note>) {
         let settings = match &paths.settings {
             Some(path) => Settings::load(path).unwrap_or_else(|e| {
                 eprintln!("[uidm-daemon] ignoring {}: {e}", path.display());
@@ -198,12 +239,14 @@ impl Daemon {
         requests.retain(|id, _| table.get(*id).is_some_and(|e| e.status.is_retryable()));
 
         let (dirty, dirty_rx) = channel();
+        let (notes, notes_rx) = channel();
         let hub = Arc::new(Hub {
             clients: Mutex::new(HashMap::new()),
             table: Mutex::new(table),
             requests: Mutex::new(requests),
             dirty,
             windows: Mutex::new(HashSet::new()),
+            notes,
         });
         let events = Arc::clone(&hub);
         let engine = Engine::new(
@@ -220,8 +263,163 @@ impl Daemon {
             settings: Mutex::new(settings),
             paths,
             save_lock: Mutex::new(()),
+            paused: Mutex::new(HashSet::new()),
+            toasts: Mutex::new(VecDeque::new()),
         };
-        (daemon, dirty_rx)
+        (daemon, dirty_rx, notes_rx)
+    }
+
+    fn entry(&self, id: u64) -> Option<DownloadEntry> {
+        self.hub.table.lock().unwrap().get(id).cloned()
+    }
+
+    /// Bring the window forward: ask an open one to show itself, or start one.
+    fn show_window(&self) {
+        if self.hub.window_open() {
+            self.hub.broadcast(&Outgoing::Show);
+        } else if let Err(e) = open_window() {
+            eprintln!("[uidm-daemon] could not open the window: {e}");
+        }
+    }
+
+    /// Stop every queued or running download, remembering them for
+    /// `resume_all`.
+    fn pause_all(&self) {
+        let ids: Vec<u64> = self
+            .hub
+            .table
+            .lock()
+            .unwrap()
+            .entries()
+            .filter(|e| matches!(e.status, Status::Queued | Status::Downloading))
+            .map(|e| e.id)
+            .collect();
+        self.paused.lock().unwrap().extend(ids.iter().copied());
+        for id in ids {
+            self.engine.cancel(id);
+        }
+    }
+
+    /// Start again what `pause_all` stopped, and every interrupted download.
+    fn resume_all(&self) {
+        let paused: HashSet<u64> = std::mem::take(&mut *self.paused.lock().unwrap());
+        let ids: Vec<u64> = self
+            .hub
+            .table
+            .lock()
+            .unwrap()
+            .entries()
+            .filter(|e| {
+                e.status == Status::Interrupted || (e.status == Status::Canceled && paused.contains(&e.id))
+            })
+            .map(|e| e.id)
+            .collect();
+        for id in ids {
+            if let Err(e) = self.retry(id) {
+                eprintln!("[uidm-daemon] could not resume #{id}: {e}");
+            }
+        }
+    }
+
+    /// Handle one note: scan a finished download first when asked, then play
+    /// the sound and notify.
+    fn on_note(self: &Arc<Self>, note: Note) {
+        let settings = self.settings.lock().unwrap().clone();
+        match note {
+            Note::Finished(id) if settings.scan_after_download => {
+                let scanning = self.hub.update(id, |e| {
+                    if e.status != Status::Done || e.path.is_none() {
+                        return Err("not a finished file".into());
+                    }
+                    e.scan = Some(Scan::Scanning);
+                    Ok(())
+                });
+                let Ok(entry) = scanning else {
+                    return;
+                };
+                let daemon = Arc::clone(self);
+                thread::spawn(move || {
+                    let path = PathBuf::from(entry.path.unwrap_or_default());
+                    let result = scan::scan(settings.scanner, &settings.scanner_command, &path);
+                    eprintln!("[uidm-daemon] scan #{id}: {result:?}");
+                    let _ = daemon.hub.update(id, |e| {
+                        e.scan = Some(result);
+                        Ok(())
+                    });
+                    let _ = daemon.hub.notes.send(Note::Scanned(id));
+                });
+            }
+            Note::Finished(id) | Note::Scanned(id) => self.notify(id, false, &settings),
+            Note::Failed(id) => {
+                thread::sleep(FAILED_GRACE);
+                if self.entry(id).is_some_and(|e| e.status == Status::Failed) {
+                    self.notify(id, true, &settings);
+                }
+            }
+        }
+    }
+
+    fn notify(self: &Arc<Self>, id: u64, failed: bool, settings: &Settings) {
+        let Some(entry) = self.entry(id) else {
+            return;
+        };
+        if failed && settings.sound_on_failed {
+            notify::play(Sound::Failed);
+        }
+        if !failed && settings.sound_on_done {
+            notify::play(Sound::Done);
+        }
+        let toast = match settings.notify {
+            Notify::Off => false,
+            Notify::Toast => true,
+            // An open window shows its own dialog.
+            Notify::Dialog => !self.hub.window_open(),
+        };
+        if !toast {
+            return;
+        }
+        let daemon = Arc::clone(self);
+        match notify::show(&toast_for(&entry, failed), move |arg| daemon.on_toast(&arg)) {
+            Ok(t) => {
+                let mut toasts = self.toasts.lock().unwrap();
+                toasts.push_back(t);
+                while toasts.len() > KEEP_TOASTS {
+                    toasts.pop_front();
+                }
+            }
+            Err(e) => eprintln!("[uidm-daemon] could not show a notification: {e}"),
+        }
+    }
+
+    /// Act on a click on a notification or one of its buttons.
+    fn on_toast(&self, arg: &str) {
+        let (action, id) = match arg.split_once(':') {
+            Some((a, id)) => (a, id.parse::<u64>().ok()),
+            None => (arg, None),
+        };
+        let entry = id.and_then(|id| self.entry(id));
+        let path = entry.as_ref().and_then(|e| e.path.clone());
+        match (action, path) {
+            // A file with a threat is opened only from the window, which asks.
+            ("open", Some(_)) if matches!(entry.as_ref().and_then(|e| e.scan.as_ref()), Some(Scan::Threat { .. })) => {
+                self.show_window()
+            }
+            ("open", Some(path)) => {
+                let _ = Command::new("explorer").arg(path).spawn();
+            }
+            ("show", Some(path)) => {
+                // Explorer parses /select itself; Windows paths hold no quotes.
+                let _ = Command::new("explorer").raw_arg(format!("/select,\"{path}\"")).spawn();
+            }
+            ("retry", _) => {
+                if let Some(id) = id {
+                    if let Err(e) = self.retry(id) {
+                        eprintln!("[uidm-daemon] retry from a notification: {e}");
+                    }
+                }
+            }
+            _ => self.show_window(),
+        }
     }
 
     /// Take a new download: ask where to save it when the settings say so,
@@ -432,6 +630,14 @@ impl Daemon {
     /// downloads keep going; new ones use the new values.
     fn set_settings(&self, new: Settings) -> Result<(), String> {
         new.validate()?;
+        let old_autostart = self.settings.lock().unwrap().start_with_windows;
+        if new.start_with_windows != old_autostart {
+            let gui = std::env::current_exe()
+                .map_err(|e| e.to_string())?
+                .with_file_name("uidm-gui.exe");
+            registry::set_autostart(new.start_with_windows, &gui)
+                .map_err(|e| format!("could not change Start with Windows: {e}"))?;
+        }
         if let Some(path) = &self.paths.settings {
             new.save(path)
                 .map_err(|e| format!("could not save settings to {}: {e}", path.display()))?;
@@ -536,9 +742,13 @@ fn run() -> io::Result<()> {
     ipc::write_token(&token)?;
     let token: Arc<str> = token.into();
 
-    let (daemon, dirty) = Daemon::new(Paths::from_env());
+    let (daemon, dirty, notes) = Daemon::new(Paths::from_env());
     let daemon = Arc::new(daemon);
     spawn_history_writer(Arc::clone(&daemon), dirty);
+    spawn_notifier(Arc::clone(&daemon), notes);
+    if let Err(e) = register_notifications() {
+        eprintln!("[uidm-daemon] could not register for notifications: {e}");
+    }
     if daemon.settings.lock().unwrap().resume_at_startup {
         daemon.resume_interrupted();
     }
@@ -713,6 +923,14 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::List => daemon.send_list(reply),
+        Incoming::PauseAll => {
+            eprintln!("[uidm-daemon] pause all");
+            daemon.pause_all();
+        }
+        Incoming::ResumeAll => {
+            eprintln!("[uidm-daemon] resume all");
+            daemon.resume_all();
+        }
         Incoming::GetSettings => send(&Outgoing::Settings {
             settings: daemon.settings.lock().unwrap().clone(),
         }),
@@ -720,6 +938,83 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             Ok(()) => eprintln!("[uidm-daemon] settings changed"),
             Err(message) => send(&Outgoing::Error { message }),
         },
+    }
+}
+
+/// Run notifications on their own thread, so a slow toast or a scan never
+/// holds up downloads.
+fn spawn_notifier(daemon: Arc<Daemon>, notes: Receiver<Note>) {
+    thread::spawn(move || {
+        while let Ok(note) = notes.recv() {
+            daemon.on_note(note);
+        }
+    });
+}
+
+/// Give UIDM's notifications a name and icon. Unpackaged apps need this
+/// registration before Windows shows their notifications.
+fn register_notifications() -> io::Result<()> {
+    let icon = history::history_path()?.with_file_name("uidm.png");
+    if std::fs::read(&icon).ok().as_deref() != Some(ICON_PNG) {
+        settings::write_atomic(&icon, ICON_PNG)?;
+    }
+    registry::register_app_id(&icon)
+}
+
+/// What a notification says about `e`.
+fn toast_for(e: &DownloadEntry, failed: bool) -> Toast {
+    let path = e.path.as_deref().map(Path::new);
+    let name = path
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| e.url.clone());
+    let id = e.id;
+    if failed {
+        return Toast {
+            title: "Download failed".into(),
+            lines: vec![name, e.error.clone().unwrap_or_default()],
+            buttons: vec![("Retry".into(), format!("retry:{id}"))],
+            launch: format!("window:{id}"),
+        };
+    }
+    let folder = path
+        .and_then(|p| p.parent())
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let size = e.total.map(human_bytes).unwrap_or_default();
+    let detail = [size, folder].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" in ");
+    let show = ("Show in folder".to_string(), format!("show:{id}"));
+    match &e.scan {
+        Some(Scan::Threat { .. }) => Toast {
+            title: "Threat found in a download".into(),
+            lines: vec![name, "The virus scan found a threat. Open UIDM to decide what to do.".into()],
+            buttons: vec![show],
+            launch: format!("window:{id}"),
+        },
+        scan => Toast {
+            title: match scan {
+                Some(Scan::Failed { .. }) => "Download complete (virus scan failed)".into(),
+                _ => "Download complete".into(),
+            },
+            lines: vec![name, detail],
+            buttons: vec![("Open".into(), format!("open:{id}")), show],
+            launch: format!("window:{id}"),
+        },
+    }
+}
+
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 

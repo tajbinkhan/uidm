@@ -9,7 +9,8 @@
 #
 # The extension's manifest carries a fixed public key, so its ID is always
 # epmjakacaejhdhldkpbjnakhfmjjbhfm and you do not need to pass one.
-# Run .\install-host.ps1 -Uninstall to remove the registration and shortcut.
+# Run .\install-host.ps1 -Uninstall to remove the registration and shortcut,
+# the "Start with Windows" entry and the notification registration.
 
 param(
     [string]$ExtensionId = "epmjakacaejhdhldkpbjnakhfmjjbhfm",
@@ -27,12 +28,21 @@ $manifestPath = Join-Path $env:LOCALAPPDATA "UIDM\com.uidm.host.json"
 $shortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "UIDM.lnk"
 $registryKeys = @(
     "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName",
-    "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$hostName"
+    "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$hostName",
+    # Written by the daemon so Windows shows UIDM's notifications.
+    "HKCU:\Software\Classes\AppUserModelId\UIDM.DownloadManager"
 )
+# Written by the daemon when "Start with Windows" is on.
+$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$runValue = "UIDM"
 
 if ($Uninstall) {
     foreach ($key in $registryKeys) {
         if (Test-Path $key) { Remove-Item $key -Force; Write-Host "Removed $key" }
+    }
+    if (Get-ItemProperty -Path $runKey -Name $runValue -ErrorAction SilentlyContinue) {
+        Remove-ItemProperty -Path $runKey -Name $runValue
+        Write-Host "Removed the Start with Windows entry"
     }
     if (Test-Path $shortcut) { Remove-Item $shortcut -Force; Write-Host "Removed $shortcut" }
     if (Test-Path $manifestPath) { Remove-Item $manifestPath -Force; Write-Host "Removed $manifestPath" }

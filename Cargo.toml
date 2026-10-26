@@ -44,6 +44,17 @@ eframe = "0.31.1"
 # Native folder picker for the Options dialog (IFileOpenDialog on Windows,
 # through windows-sys, so it builds on windows-gnu).
 rfd = { version = "0.15.4", default-features = false }
+# System tray icon and its menu (Win32 underneath, builds on windows-gnu).
+tray-icon = "0.21"
+# The window's HWND, to show and hide it from the tray while egui is idle.
+raw-window-handle = "0.6"
+# WinRT toast notifications from the daemon.
+windows = { version = "0.61", features = [
+    "Data_Xml_Dom",
+    "Foundation",
+    "UI_Notifications",
+    "Win32_System_WinRT",
+] }
 
 [profile.release]
 strip = true

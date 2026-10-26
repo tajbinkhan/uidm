@@ -6,10 +6,21 @@
 //! The window draws from a copy of that table each frame and sends `add`,
 //! `cancel`, `retry`, `remove` and `set_settings` requests over the same
 //! connection.
+//!
+//! It also puts an icon in the tray. Closing the window hides it there (unless
+//! Options says to quit), and `--minimized` starts it hidden, which is how
+//! "Start with Windows" runs it. A hidden window gets no frames, so anything
+//! that must bring it back (the tray, a save-as or completion dialog, a click
+//! on a notification) shows it through Win32 directly.
 
 #![windows_subsystem = "windows"]
 
-use std::collections::HashMap;
+#[path = "gui/tray.rs"]
+mod tray;
+#[path = "gui/win.rs"]
+mod win;
+
+use std::collections::{HashMap, VecDeque};
 use std::net::TcpStream;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -19,12 +30,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
-use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Status};
+use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Scan, Status};
 use uidm::settings::{
-    parse_extensions, Category, FileExists, Settings, CAPTURE_MIN_SIZE_MAX_KB, CONNECTIONS_RANGE,
-    GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS,
+    parse_extensions, Category, FileExists, Notify, Scanner, Settings, CAPTURE_MIN_SIZE_MAX_KB,
+    CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS,
 };
 use uidm::state::DownloadTable;
 
@@ -39,10 +51,17 @@ const ICON_SIZE: u32 = 64;
 /// Width of the file-name column; long names are truncated with a tooltip.
 const NAME_WIDTH: f32 = 200.0;
 
+/// A failure gets its dialog after this long, so a download the browser
+/// extension takes back (and removes) right away gets none. The daemon waits
+/// the same for its notifications.
+const FAILED_GRACE: Duration = Duration::from_secs(1);
+
 fn main() -> eframe::Result {
+    let minimized = std::env::args().any(|a| a == "--minimized");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("UIDM")
+            .with_visible(!minimized)
             .with_icon(egui::IconData {
                 rgba: ICON_RGBA.to_vec(),
                 width: ICON_SIZE,
@@ -52,7 +71,24 @@ fn main() -> eframe::Result {
             .with_min_inner_size([860.0, 320.0]),
         ..Default::default()
     };
-    eframe::run_native("UIDM", options, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
+    eframe::run_native(
+        "UIDM",
+        options,
+        Box::new(move |cc| {
+            if let Ok(handle) = cc.window_handle() {
+                if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                    win::set_window(h.hwnd.get());
+                }
+            }
+            let app = App::new(&cc.egui_ctx);
+            // Without a tray icon there would be no way back to a hidden
+            // window.
+            if !tray::installed() {
+                win::show();
+            }
+            Ok(Box::new(app))
+        }),
+    )
 }
 
 #[derive(Clone)]
@@ -83,9 +119,35 @@ struct Shared {
     saving: bool,
     /// That answer, for the Options dialog to pick up.
     save_result: Option<Result<(), String>>,
+    /// Downloads to show a completion dialog for, and whether each failed.
+    completed: VecDeque<(u64, bool)>,
 }
 
 impl Shared {
+    fn dialog_mode(&self) -> bool {
+        self.settings.as_ref().is_some_and(|s| s.notify == Notify::Dialog)
+    }
+
+    /// The tray icon's tooltip: how many downloads run, and how fast.
+    fn tooltip(&self) -> String {
+        let active = self.table.entries().filter(|e| e.status == Status::Downloading).count();
+        let queued = self.table.entries().filter(|e| e.status == Status::Queued).count();
+        let speed: f64 = self
+            .speeds
+            .iter()
+            .filter(|(id, _)| self.table.get(**id).is_some_and(|e| e.status == Status::Downloading))
+            .map(|(_, s)| s.bytes_per_sec)
+            .sum();
+        match (active, queued) {
+            (0, 0) => "UIDM: no active downloads".to_string(),
+            (0, q) => format!("UIDM: {q} queued"),
+            (a, _) => format!(
+                "UIDM: {a} downloading at {}/s",
+                human_bytes(speed as u64)
+            ),
+        }
+    }
+
     fn apply(&mut self, msg: &Outgoing) {
         self.table.apply(msg);
         match msg {
@@ -141,7 +203,12 @@ enum Action {
     Retry(u64),
     Remove(u64),
     ClearFinished,
-    Open(String),
+    /// Open a finished download; asks first if its scan found a threat.
+    Open(u64),
+    /// Open a file without asking (after the threat warning).
+    OpenAnyway(String),
+    /// Close the completion dialog on top.
+    DismissCompleted,
     ShowInFolder(String),
     Reconnect,
     OpenOptions,
@@ -167,8 +234,11 @@ struct App {
     options: Option<OptionsDraft>,
     /// The save-as dialog for the oldest `confirming` download.
     confirm: Option<ConfirmDraft>,
-    /// The last download whose dialog brought the window forward.
-    raised_for: Option<u64>,
+    /// A file whose scan found a threat, waiting for "Open anyway": its path,
+    /// name and the scanner's words.
+    threat_prompt: Option<(String, String, String)>,
+    /// The tray tooltip last set, so it is only updated when it changes.
+    tooltip: String,
     /// Show only this category; `None` shows every download.
     category_filter: Option<String>,
 }
@@ -239,6 +309,7 @@ enum OptionsTab {
     General,
     Categories,
     Capture,
+    Notifications,
 }
 
 /// One category being edited.
@@ -253,6 +324,14 @@ struct CategoryDraft {
 /// The Options dialog's fields, edited freely and checked on Save.
 struct OptionsDraft {
     tab: OptionsTab,
+    close_to_tray: bool,
+    start_with_windows: bool,
+    notify: Notify,
+    sound_on_done: bool,
+    sound_on_failed: bool,
+    scan_after_download: bool,
+    scanner: Scanner,
+    scanner_command: String,
     /// Empty means the Downloads folder.
     folder: String,
     connections: usize,
@@ -282,6 +361,14 @@ impl OptionsDraft {
         };
         OptionsDraft {
             tab: OptionsTab::General,
+            close_to_tray: s.close_to_tray,
+            start_with_windows: s.start_with_windows,
+            notify: s.notify,
+            sound_on_done: s.sound_on_done,
+            sound_on_failed: s.sound_on_failed,
+            scan_after_download: s.scan_after_download,
+            scanner: s.scanner,
+            scanner_command: s.scanner_command.clone(),
             folder: s.download_dir.clone().unwrap_or_default(),
             connections: s.connections,
             max_concurrent: s.max_concurrent,
@@ -323,6 +410,14 @@ impl OptionsDraft {
             speed_limit_enabled: self.limit_enabled,
             speed_limit_kbps: (self.limit_value * self.limit_unit.kb()).round() as u64,
             resume_at_startup: self.resume_at_startup,
+            close_to_tray: self.close_to_tray,
+            start_with_windows: self.start_with_windows,
+            notify: self.notify,
+            sound_on_done: self.sound_on_done,
+            sound_on_failed: self.sound_on_failed,
+            scan_after_download: self.scan_after_download,
+            scanner: self.scanner,
+            scanner_command: self.scanner_command.trim().to_string(),
             file_exists: self.file_exists,
             ask_where_to_save: self.ask_where_to_save,
             categories: self
@@ -359,17 +454,80 @@ impl App {
                 settings: None,
                 saving: false,
                 save_result: None,
+                completed: VecDeque::new(),
             })),
             writer: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
             url_input: String::new(),
             options: None,
             confirm: None,
-            raised_for: None,
+            threat_prompt: None,
+            tooltip: String::new(),
             category_filter: None,
         };
         app.connect();
+        app.install_tray();
         app
+    }
+
+    /// Put UIDM in the tray. Its menu acts at once, without waiting for a
+    /// frame, since the window may be hidden.
+    fn install_tray(&self) {
+        let shared = Arc::clone(&self.shared);
+        let writer = Arc::clone(&self.writer);
+        let ctx = self.ctx.clone();
+        let on_command = Arc::new(move |command: tray::Command| {
+            match command {
+                tray::Command::Open => win::show(),
+                tray::Command::AddFromClipboard => {
+                    let text = win::clipboard_text().unwrap_or_default();
+                    let url = text.trim();
+                    if is_web_url(url) {
+                        send(
+                            &writer,
+                            &Incoming::Add(Download {
+                                url: url.to_string(),
+                                ..Download::default()
+                            }),
+                        );
+                    } else {
+                        shared.lock().unwrap().last_error =
+                            Some("The clipboard holds no http or https link.".into());
+                        win::show();
+                    }
+                }
+                tray::Command::PauseAll => {
+                    send(&writer, &Incoming::PauseAll);
+                }
+                tray::Command::ResumeAll => {
+                    send(&writer, &Incoming::ResumeAll);
+                }
+                tray::Command::ToggleSpeedLimit => {
+                    let settings = shared.lock().unwrap().settings.clone();
+                    if let Some(s) = settings {
+                        let on = !s.speed_limit_enabled;
+                        tray::set_speed_limit_checked(on);
+                        send(
+                            &writer,
+                            &Incoming::SetSettings {
+                                settings: Settings {
+                                    speed_limit_enabled: on,
+                                    ..s
+                                },
+                            },
+                        );
+                    }
+                }
+                // The daemon keeps downloading and exits on its own once idle.
+                tray::Command::Exit => std::process::exit(0),
+            }
+            ctx.request_repaint();
+        });
+        let shared = Arc::clone(&self.shared);
+        let tooltip = Arc::new(move || shared.lock().unwrap().tooltip());
+        if let Err(e) = tray::install(ICON_RGBA.to_vec(), ICON_SIZE, on_command, tooltip) {
+            self.shared.lock().unwrap().last_error = Some(format!("No tray icon: {e}"));
+        }
     }
 
     /// Connect on a background thread, then read events until the daemon goes.
@@ -408,8 +566,7 @@ impl App {
                 match read_message(&mut reader, MAX_MESSAGE_BYTES) {
                     Ok(Some(raw)) => {
                         if let Ok(msg) = serde_json::from_slice::<Outgoing>(&raw) {
-                            shared.lock().unwrap().apply(&msg);
-                            ctx.request_repaint();
+                            on_message(&shared, &ctx, &msg);
                         }
                     }
                     Ok(None) => break,
@@ -454,9 +611,25 @@ impl App {
                     send(&self.writer, &Incoming::Remove { id });
                 }
             }
-            Action::Open(path) => {
-                // Explorer opens a file with its associated program.
-                let _ = Command::new("explorer").arg(&path).spawn();
+            Action::Open(id) => {
+                let entry = self.shared.lock().unwrap().table.get(id).cloned();
+                if let Some(e) = entry {
+                    if let Some(path) = e.path.clone() {
+                        match &e.scan {
+                            Some(Scan::Threat { detail }) => {
+                                self.threat_prompt = Some((path, display_name(&e), detail.clone()));
+                            }
+                            _ => open_file(&path),
+                        }
+                    }
+                }
+            }
+            Action::OpenAnyway(path) => {
+                self.threat_prompt = None;
+                open_file(&path);
+            }
+            Action::DismissCompleted => {
+                self.shared.lock().unwrap().completed.pop_front();
             }
             Action::ShowInFolder(path) => {
                 // Explorer parses /select itself, so pass the argument raw with
@@ -532,12 +705,6 @@ impl App {
                     .unwrap_or_default(),
                 picked: Picked::default(),
             });
-        }
-        if self.raised_for != Some(entry.id) {
-            self.raised_for = Some(entry.id);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         let Some(draft) = self.confirm.as_mut() else {
             return;
@@ -635,12 +802,14 @@ impl App {
                     ui.selectable_value(&mut draft.tab, OptionsTab::General, "General");
                     ui.selectable_value(&mut draft.tab, OptionsTab::Categories, "Categories");
                     ui.selectable_value(&mut draft.tab, OptionsTab::Capture, "Browser capture");
+                    ui.selectable_value(&mut draft.tab, OptionsTab::Notifications, "When done");
                 });
                 ui.separator();
                 match draft.tab {
                     OptionsTab::General => general_tab(ui, draft),
                     OptionsTab::Categories => categories_tab(ui, draft),
                     OptionsTab::Capture => capture_tab(ui, draft),
+                    OptionsTab::Notifications => notifications_tab(ui, draft),
                 }
 
                 if let Some(err) = &draft.error {
@@ -744,6 +913,50 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.label("");
         ui.checkbox(&mut draft.resume_at_startup, "Resume unfinished downloads at startup");
         ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut draft.start_with_windows, "Start with Windows, in the tray");
+        ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut draft.close_to_tray, "Closing the window keeps UIDM in the tray");
+        ui.end_row();
+    });
+}
+
+fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+    egui::Grid::new("notifications").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+        ui.label("When a download ends");
+        ui.vertical(|ui| {
+            ui.radio_value(&mut draft.notify, Notify::Toast, "Show a Windows notification");
+            ui.radio_value(&mut draft.notify, Notify::Dialog, "Show a dialog in UIDM");
+            ui.radio_value(&mut draft.notify, Notify::Off, "Show nothing");
+        });
+        ui.end_row();
+
+        ui.label("Sounds");
+        ui.vertical(|ui| {
+            ui.checkbox(&mut draft.sound_on_done, "When a download finishes");
+            ui.checkbox(&mut draft.sound_on_failed, "When a download fails");
+        });
+        ui.end_row();
+
+        ui.label("Virus scan");
+        ui.vertical(|ui| {
+            ui.checkbox(&mut draft.scan_after_download, "Scan each finished download");
+            ui.add_enabled_ui(draft.scan_after_download, |ui| {
+                ui.radio_value(&mut draft.scanner, Scanner::Defender, "Microsoft Defender");
+                ui.radio_value(&mut draft.scanner, Scanner::Custom, "This scanner:");
+                ui.add_enabled(
+                    draft.scanner == Scanner::Custom,
+                    egui::TextEdit::singleline(&mut draft.scanner_command)
+                        .hint_text(r#""C:\Program Files\ClamAV\clamscan.exe" {path}"#)
+                        .desired_width(380.0),
+                );
+                ui.weak("{path} is replaced by the file. Exit code 0 means clean, 1 a threat.");
+            });
+        });
+        ui.end_row();
     });
 }
 
@@ -846,6 +1059,185 @@ fn send(writer: &Arc<Mutex<Option<TcpStream>>>, msg: &Incoming) -> bool {
     }
 }
 
+/// Apply one daemon message, and bring the window forward when it needs the
+/// user: a save-as dialog, a completion dialog, or a notification click.
+fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) {
+    let show = {
+        let mut s = shared.lock().unwrap();
+        s.apply(msg);
+        match msg {
+            Outgoing::Show => true,
+            Outgoing::Updated { item } => item.status == Status::Confirming,
+            Outgoing::Done { id, .. } if s.dialog_mode() => {
+                s.completed.push_back((*id, false));
+                true
+            }
+            Outgoing::Failed { id, .. } if s.dialog_mode() => {
+                let (shared, ctx, id) = (Arc::clone(shared), ctx.clone(), *id);
+                thread::spawn(move || {
+                    thread::sleep(FAILED_GRACE);
+                    let mut s = shared.lock().unwrap();
+                    if s.table.get(id).is_some_and(|e| e.status == Status::Failed) {
+                        s.completed.push_back((id, true));
+                        drop(s);
+                        win::show();
+                        ctx.request_repaint();
+                    }
+                });
+                false
+            }
+            _ => false,
+        }
+    };
+    if show {
+        win::show();
+    }
+    ctx.request_repaint();
+}
+
+/// Open a file with its program, as Explorer does.
+fn open_file(path: &str) {
+    let _ = Command::new("explorer").arg(path).spawn();
+}
+
+fn is_web_url(url: &str) -> bool {
+    (url.starts_with("http://") || url.starts_with("https://")) && !url.contains(char::is_whitespace)
+}
+
+impl App {
+    /// The completion dialog for the oldest finished or failed download.
+    fn completed_window(&mut self, ctx: &egui::Context, connected: bool, actions: &mut Vec<Action>) {
+        let next = {
+            let mut s = self.shared.lock().unwrap();
+            loop {
+                match s.completed.front().copied() {
+                    // Removed since: skip it.
+                    Some((id, _)) if s.table.get(id).is_none() => {
+                        s.completed.pop_front();
+                    }
+                    Some((id, failed)) => break s.table.get(id).cloned().map(|e| (e, failed, s.completed.len())),
+                    None => break None,
+                }
+            }
+        };
+        let Some((e, failed, waiting)) = next else {
+            return;
+        };
+        let title = if failed { "Download failed" } else { "Download complete" };
+        egui::Window::new(title)
+            .id(egui::Id::new("completed"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let path = e.path.as_deref().map(Path::new);
+                egui::Grid::new("completed_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    ui.label("File");
+                    ui.strong(display_name(&e));
+                    ui.end_row();
+                    ui.label("Address");
+                    ui.add(egui::Label::new(&e.url).truncate()).on_hover_text(&e.url);
+                    ui.end_row();
+                    if let Some(t) = e.total {
+                        ui.label("Size");
+                        ui.label(human_bytes(t));
+                        ui.end_row();
+                    }
+                    if let Some(folder) = path.and_then(|p| p.parent()) {
+                        ui.label("Saved in");
+                        ui.label(folder.display().to_string());
+                        ui.end_row();
+                    }
+                    if failed {
+                        ui.label("Error");
+                        ui.colored_label(ui.visuals().error_fg_color, e.error.clone().unwrap_or_default());
+                        ui.end_row();
+                    }
+                    if let Some(scan) = &e.scan {
+                        ui.label("Virus scan");
+                        scan_label(ui, scan);
+                        ui.end_row();
+                    }
+                });
+                if waiting > 1 {
+                    ui.weak(format!("{} more after this one.", waiting - 1));
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if failed {
+                        if ui.add_enabled(connected, egui::Button::new("Retry")).clicked() {
+                            actions.push(Action::Retry(e.id));
+                            actions.push(Action::DismissCompleted);
+                        }
+                    } else if let Some(p) = &e.path {
+                        if ui.button("Open").clicked() {
+                            actions.push(Action::Open(e.id));
+                            actions.push(Action::DismissCompleted);
+                        }
+                        if ui.button("Show in folder").clicked() {
+                            actions.push(Action::ShowInFolder(p.clone()));
+                            actions.push(Action::DismissCompleted);
+                        }
+                    }
+                    if ui.button("Close").clicked() {
+                        actions.push(Action::DismissCompleted);
+                    }
+                });
+            });
+    }
+
+    /// "Open anyway?" for a file whose scan found a threat.
+    fn threat_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some((path, name, detail)) = self.threat_prompt.clone() else {
+            return;
+        };
+        let mut cancel = false;
+        egui::Window::new("Threat found")
+            .id(egui::Id::new("threat"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("The virus scan found a threat in {name}."));
+                if !detail.is_empty() {
+                    ui.weak(&detail);
+                }
+                ui.label("Opening it could harm your computer. Open it anyway?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    let open = egui::Button::new(egui::RichText::new("Open anyway").color(ui.visuals().error_fg_color));
+                    if ui.add(open).clicked() {
+                        actions.push(Action::OpenAnyway(path.clone()));
+                    }
+                });
+            });
+        if cancel {
+            self.threat_prompt = None;
+        }
+    }
+}
+
+fn scan_label(ui: &mut egui::Ui, scan: &Scan) {
+    let v = ui.visuals().clone();
+    match scan {
+        Scan::Scanning => {
+            ui.weak("Scanning...");
+        }
+        Scan::Clean => {
+            ui.label("No threat found");
+        }
+        Scan::Threat { detail } => {
+            ui.colored_label(v.error_fg_color, "Threat found").on_hover_text(detail);
+        }
+        Scan::Failed { detail } => {
+            ui.colored_label(v.warn_fg_color, "Scan failed").on_hover_text(detail);
+        }
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Copy what this frame needs, then draw without holding the lock.
@@ -863,6 +1255,23 @@ impl eframe::App for App {
         };
         let connected = matches!(link, Link::Connected);
         let mut actions = Vec::new();
+
+        // Close keeps UIDM in the tray unless Options says to quit.
+        if ctx.input(|i| i.viewport().close_requested())
+            && tray::installed()
+            && settings.as_ref().is_none_or(|s| s.close_to_tray)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            win::hide();
+        }
+        let tooltip = self.shared.lock().unwrap().tooltip();
+        if tooltip != self.tooltip {
+            tray::set_tooltip(&tooltip);
+            self.tooltip = tooltip;
+        }
+        if let Some(s) = &settings {
+            tray::set_speed_limit_checked(s.speed_limit_enabled);
+        }
 
         egui::TopBottomPanel::top("add").show(ctx, |ui| {
             ui.add_space(6.0);
@@ -1017,6 +1426,8 @@ impl eframe::App for App {
         });
 
         self.confirm_window(ctx, &rows, connected, &mut actions);
+        self.completed_window(ctx, connected, &mut actions);
+        self.threat_window(ctx, &mut actions);
         self.options_window(ctx, connected, &mut actions);
 
         for action in actions {
@@ -1086,10 +1497,15 @@ fn draw_row(
         Status::Confirming => ("Confirm", visuals.weak_text_color()),
         Status::Waiting => ("Waiting", visuals.weak_text_color()),
     };
-    let status = ui.colored_label(color, text);
-    if let Some(err) = &e.error {
-        status.on_hover_text(err);
-    }
+    ui.horizontal(|ui| {
+        let status = ui.colored_label(color, text);
+        if let Some(err) = &e.error {
+            status.on_hover_text(err);
+        }
+        if let Some(scan) = &e.scan {
+            scan_label(ui, scan);
+        }
+    });
 
     ui.horizontal(|ui| {
         ui.add_enabled_ui(connected, |ui| match e.status {
@@ -1122,7 +1538,7 @@ fn draw_row(
             Status::Done => {
                 if let Some(path) = &e.path {
                     if ui.small_button("Open").clicked() {
-                        actions.push(Action::Open(path.clone()));
+                        actions.push(Action::Open(e.id));
                     }
                     if ui.small_button("Show in folder").clicked() {
                         actions.push(Action::ShowInFolder(path.clone()));

@@ -44,6 +44,7 @@ impl DownloadTable {
                 e.resumable = *resumable;
                 e.connections = *connections;
                 e.error = None;
+                e.scan = None;
             }
             Outgoing::Progress {
                 id,
@@ -91,7 +92,8 @@ impl DownloadTable {
             | Outgoing::Pong
             | Outgoing::Ack { .. }
             | Outgoing::Error { .. }
-            | Outgoing::Settings { .. } => {}
+            | Outgoing::Settings { .. }
+            | Outgoing::Show => {}
         }
     }
 
@@ -140,6 +142,7 @@ fn blank(id: u64, url: &str, status: Status) -> DownloadEntry {
         error: None,
         resumable: false,
         connections: 0,
+        scan: None,
     }
 }
 

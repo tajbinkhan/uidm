@@ -41,6 +41,10 @@ pub enum Incoming {
     Remove { id: u64 },
     /// Ask for every download the daemon knows about.
     List,
+    /// Stop every queued or running download, keeping its partial file.
+    PauseAll,
+    /// Start again what `pause_all` stopped, and any interrupted download.
+    ResumeAll,
     /// Answer the save-as dialog for a `confirming` download, or start a
     /// `waiting` one. `filename` and `folder` replace the proposed ones when
     /// given. With `start` false the download waits until started.
@@ -126,6 +130,18 @@ impl Status {
     }
 }
 
+/// The virus scan of a finished download.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum Scan {
+    Scanning,
+    Clean,
+    /// The scanner reported a threat; `detail` is the end of its output.
+    Threat { detail: String },
+    /// The scanner could not run or did not finish.
+    Failed { detail: String },
+}
+
 /// One download as the daemon tracks it, sent in a `downloads` snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DownloadEntry {
@@ -139,6 +155,9 @@ pub struct DownloadEntry {
     pub error: Option<String>,
     pub resumable: bool,
     pub connections: usize,
+    /// The virus scan of the finished file, when scanning is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan: Option<Scan>,
 }
 
 /// A message from the daemon to a client.
@@ -188,6 +207,9 @@ pub enum Outgoing {
     /// The current settings: a reply to `get_settings`, and sent to every
     /// client when they change.
     Settings { settings: Settings },
+    /// Ask the desktop window to come to the front (from a notification).
+    /// Other clients ignore it.
+    Show,
     /// Any failure the client should hear about.
     Error { message: String },
 }

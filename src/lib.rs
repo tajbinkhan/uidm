@@ -9,12 +9,18 @@
 //! - `settings`: user settings and their file.
 //! - `history`: the daemon's download list and saved requests on disk.
 //! - `dpapi`: Windows DPAPI encryption for saved requests.
+//! - `registry`: per-user registry values (start with Windows, toast app id).
+//! - `notify`: completion notifications and sounds.
+//! - `scan`: virus scans of finished downloads.
 
 pub mod app;
 pub mod dpapi;
 pub mod engine;
 pub mod history;
 pub mod ipc;
+pub mod notify;
 pub mod protocol;
+pub mod registry;
+pub mod scan;
 pub mod settings;
 pub mod state;
