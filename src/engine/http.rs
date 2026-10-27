@@ -38,6 +38,8 @@ pub struct Client {
     /// redirects itself too (`agent` does not), so the header never rides a
     /// redirect to another server.
     proxy_basic: Option<String>,
+    /// How to reach an `ftp://` address, which goes to the FTP module.
+    ftp: super::ftp::FtpOptions,
 }
 
 /// Most redirects followed by hand.
@@ -53,7 +55,8 @@ impl Client {
             .timeout_read(Duration::from_secs(60))
             .tls_connector(Arc::new(connector));
         let mut proxy_basic = None;
-        if let Some(rules) = &net.proxy {
+        let ftp = super::ftp::is_ftp(url);
+        if let Some(rules) = net.proxy.as_ref().filter(|_| !ftp) {
             if let Some(proxy) = rules.proxy_for(url) {
                 if proxy.starts_with("http://") && !rules.username.is_empty() {
                     use base64::Engine as _;
@@ -69,6 +72,11 @@ impl Client {
             agent: builder.build(),
             logins: Arc::new(net.logins.clone()),
             proxy_basic,
+            ftp: super::ftp::FtpOptions {
+                active: net.ftp_active,
+                logins: net.logins.clone(),
+                proxy: net.ftp_proxy.clone(),
+            },
         })
     }
 
@@ -177,6 +185,9 @@ fn apply_headers(mut req: ureq::Request, headers: &[(String, String)]) -> ureq::
 /// carries the total size in `Content-Range`. A 200 reply means no range
 /// support; we drop the body unread rather than download the whole file here.
 pub fn probe(client: &Client, url: &str, headers: &[(String, String)]) -> Result<Probe, EngineError> {
+    if super::ftp::is_ftp(url) {
+        return super::ftp::probe(url, &client.ftp);
+    }
     let resp = client.send("GET", url, headers, Some("bytes=0-0"), None)?;
 
     let final_url = resp.get_url().to_string();
@@ -211,6 +222,9 @@ pub fn fetch_range(
     start: u64,
     end: u64,
 ) -> Result<Box<dyn Read + Send>, EngineError> {
+    if super::ftp::is_ftp(url) {
+        return super::ftp::fetch(url, &client.ftp, start, Some(end));
+    }
     let range = format!("bytes={start}-{end}");
     let resp = client.send("GET", url, headers, Some(&range), None)?;
     if resp.status() != 206 {
@@ -259,6 +273,9 @@ pub fn get(client: &Client, url: &str, headers: &[(String, String)]) -> Result<G
 
 /// Fetch the whole body in one stream, for servers without range support.
 pub fn fetch_whole(client: &Client, url: &str, headers: &[(String, String)]) -> Result<Box<dyn Read + Send>, EngineError> {
+    if super::ftp::is_ftp(url) {
+        return super::ftp::fetch(url, &client.ftp, 0, None);
+    }
     let resp = client.send("GET", url, headers, None, None)?;
     Ok(Box::new(resp.into_reader()))
 }

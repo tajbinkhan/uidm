@@ -355,6 +355,8 @@ pub struct Settings {
     pub proxy_http: String,
     /// `host:port` of the manual proxy for https URLs; empty uses the http one.
     pub proxy_https: String,
+    /// `host:port` of a manual FTP proxy for ftp:// downloads.
+    pub proxy_ftp: String,
     /// `host:port` of a manual SOCKS proxy for everything; wins when set.
     /// (The name is from when only SOCKS5 was offered.)
     pub proxy_socks5: String,
@@ -367,6 +369,9 @@ pub struct Settings {
     pub proxy_bypass: String,
     /// The proxy auto-config (PAC) script for `ProxyMode::Script`.
     pub proxy_pac_url: String,
+    /// FTP data connections come from the server (active mode, PORT)
+    /// instead of going to it (passive mode).
+    pub ftp_active: bool,
     /// User name for the manual proxy, if it needs one.
     pub proxy_username: String,
     /// A new proxy password to store (empty clears it); `None` keeps the
@@ -451,11 +456,13 @@ impl Default for Settings {
             proxy_mode: ProxyMode::None,
             proxy_http: String::new(),
             proxy_https: String::new(),
+            proxy_ftp: String::new(),
             proxy_socks5: String::new(),
             proxy_socks_version: SocksVersion::V5,
             proxy_remote_dns: true,
             proxy_bypass: "<local>".into(),
             proxy_pac_url: String::new(),
+            ftp_active: false,
             proxy_username: String::new(),
             proxy_password: None,
             use_browser_proxy: false,
@@ -889,11 +896,13 @@ mod tests {
             proxy_mode: ProxyMode::Manual,
             proxy_http: "proxy:3128".into(),
             proxy_https: String::new(),
+            proxy_ftp: "ftpproxy:21".into(),
             proxy_socks5: String::new(),
             proxy_socks_version: SocksVersion::V4,
             proxy_remote_dns: false,
             proxy_bypass: "<local> *.corp.net".into(),
             proxy_pac_url: "http://wpad.corp.net/proxy.pac".into(),
+            ftp_active: true,
             proxy_username: "me".into(),
             proxy_password: None,
             use_browser_proxy: true,

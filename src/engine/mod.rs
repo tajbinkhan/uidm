@@ -9,6 +9,7 @@
 //! through one shared `RateLimiter`, so a speed limit covers all downloads.
 //! Progress is reported through a cloneable `Reporter`.
 
+mod ftp;
 mod http;
 mod limit;
 mod resume;
@@ -2011,6 +2012,28 @@ mod tests {
         }
 
         #[test]
+        fn ftp_downloads_in_parallel_ranges() {
+            let data = body(LEN);
+            let server = crate::engine::ftp::server::start(data.clone(), None);
+            let dir = temp_dir("ftp");
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.filename = None;
+            let path = download(|_| {}, req);
+            assert_eq!(path, dir.join("file.bin"));
+            assert_eq!(fs::read(&path).unwrap(), data);
+            assert!(server.transfers.load(Ordering::Relaxed) >= 2, "more than one connection");
+            assert!(!Manifest::sidecar_path(&path).exists());
+            // The server's MDTM date is the file's date.
+            let mut req = request(&server.url, &dir, FileExists::Overwrite);
+            req.filename = None;
+            req.server_date = true;
+            let path = download(|_| {}, req);
+            let modified = fs::metadata(&path).unwrap().modified().unwrap();
+            assert_eq!(modified, http_date("Wed, 21 Oct 2015 07:28:00 GMT").unwrap());
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
         fn a_host_gate_hands_out_at_most_its_limit() {
             let shared = Shared {
                 limiter: RateLimiter::default(),
@@ -2241,6 +2264,8 @@ mod tests {
             // The wrong password is refused.
             let mut req = request(&server.url, &dir, FileExists::Rename);
             req.net = Arc::new(NetConfig {
+                ftp_active: false,
+                ftp_proxy: None,
                 proxy: None,
                 logins: vec![login("127.0.0.1", "ann", "wrong")],
             });
@@ -2249,6 +2274,8 @@ mod tests {
             // The right one downloads every range, each answering its own 401.
             let mut req = request(&server.url, &dir, FileExists::Rename);
             req.net = Arc::new(NetConfig {
+                ftp_active: false,
+                ftp_proxy: None,
                 proxy: None,
                 logins: vec![login("example.com", "x", "y"), login("127.0.0.1", "ann", "pa ss")],
             });
@@ -2274,6 +2301,8 @@ mod tests {
             let dir = temp_dir("redirect");
             let mut req = request(&a.url, &dir, FileExists::Rename);
             req.net = Arc::new(NetConfig {
+                ftp_active: false,
+                ftp_proxy: None,
                 proxy: None,
                 logins: vec![login("127.0.0.1", "ann", "pw")],
             });
@@ -2328,6 +2357,8 @@ mod tests {
             let dir = temp_dir("proxy");
             let mut req = request(&origin.url, &dir, FileExists::Rename);
             req.net = Arc::new(NetConfig {
+                ftp_active: false,
+                ftp_proxy: None,
                 proxy: Some(crate::net::ProxyRules {
                     http: Some(proxy_addr),
                     username: "pu".into(),

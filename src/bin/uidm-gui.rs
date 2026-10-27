@@ -609,6 +609,8 @@ struct OptionsDraft {
     proxy_mode: ProxyMode,
     proxy_http: String,
     proxy_https: String,
+    proxy_ftp: String,
+    ftp_active: bool,
     proxy_socks5: String,
     proxy_socks_version: SocksVersion,
     proxy_remote_dns: bool,
@@ -696,6 +698,8 @@ impl OptionsDraft {
             proxy_mode: s.proxy_mode,
             proxy_http: s.proxy_http.clone(),
             proxy_https: s.proxy_https.clone(),
+            proxy_ftp: s.proxy_ftp.clone(),
+            ftp_active: s.ftp_active,
             proxy_socks5: s.proxy_socks5.clone(),
             proxy_socks_version: s.proxy_socks_version,
             proxy_remote_dns: s.proxy_remote_dns,
@@ -792,6 +796,8 @@ impl OptionsDraft {
             proxy_mode: self.proxy_mode,
             proxy_http: self.proxy_http.trim().to_string(),
             proxy_https: self.proxy_https.trim().to_string(),
+            proxy_ftp: self.proxy_ftp.trim().to_string(),
+            ftp_active: self.ftp_active,
             proxy_socks5: self.proxy_socks5.trim().to_string(),
             proxy_socks_version: self.proxy_socks_version,
             proxy_remote_dns: self.proxy_remote_dns,
@@ -974,7 +980,7 @@ impl App {
                 tray::Command::AddFromClipboard => {
                     let text = win::clipboard_text().unwrap_or_default();
                     let url = text.trim();
-                    if is_web_url(url) {
+                    if is_download_url(url) {
                         send(
                             &writer,
                             &Incoming::Add(Download {
@@ -1909,6 +1915,7 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         for (label, field, hint) in [
             ("HTTP proxy", &mut draft.proxy_http, "proxy.example.com:8080"),
             ("HTTPS proxy", &mut draft.proxy_https, "Same as HTTP when empty"),
+            ("FTP proxy", &mut draft.proxy_ftp, "For ftp:// downloads; logs in as user@host"),
             ("SOCKS proxy", &mut draft.proxy_socks5, "Used for everything when set"),
         ] {
             ui.label(label);
@@ -1954,6 +1961,10 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.end_row();
         ui.label("");
         ui.checkbox(&mut draft.use_browser_proxy, "For downloads from the browser, use the browser's proxy");
+        ui.end_row();
+        ui.label("FTP");
+        ui.checkbox(&mut draft.ftp_active, "Active mode: the server connects back to UIDM for data")
+            .on_hover_text("Passive mode, the default, works through most firewalls and routers");
         ui.end_row();
     });
 
@@ -2310,8 +2321,9 @@ fn open_file(path: &str) {
     let _ = Command::new("explorer").arg(path).spawn();
 }
 
-fn is_web_url(url: &str) -> bool {
-    (url.starts_with("http://") || url.starts_with("https://")) && !url.contains(char::is_whitespace)
+/// An http, https or ftp address with no spaces.
+fn is_download_url(url: &str) -> bool {
+    uidm::batch::is_download_url(url) && !url.contains(char::is_whitespace)
 }
 
 impl App {
@@ -2495,7 +2507,7 @@ impl eframe::App for App {
                 );
                 let entered = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let url = self.url_input.trim().to_string();
-                let can_add = connected && (url.starts_with("http://") || url.starts_with("https://"));
+                let can_add = connected && is_download_url(&url);
                 let clicked = ui.add_enabled(can_add, egui::Button::new("Download")).clicked();
                 if can_add && (clicked || entered) {
                     actions.push(Action::Add(url.clone()));
@@ -3100,7 +3112,7 @@ impl App {
                 }
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(url).hint_text("Paste the new address").desired_width(360.0));
-                    let ok = connected && is_web_url(url.trim());
+                    let ok = connected && is_download_url(url.trim());
                     if ui.add_enabled(ok, egui::Button::new("Use this link")).clicked() {
                         actions.push(Action::RefreshWith {
                             id,

@@ -267,6 +267,11 @@ pub fn find_login<'a>(logins: &'a [Login], host: &str) -> Option<&'a Login> {
 pub struct NetConfig {
     pub proxy: Option<ProxyRules>,
     pub logins: Vec<Login>,
+    /// FTP data connections come from the server (active mode) instead of
+    /// going to it (passive mode, the default).
+    pub ftp_active: bool,
+    /// `host:port` of an FTP proxy for `ftp://` downloads.
+    pub ftp_proxy: Option<String>,
 }
 
 /// Split a `WWW-Authenticate` header into its scheme and parameters.

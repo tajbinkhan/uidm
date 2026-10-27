@@ -131,8 +131,8 @@ pub fn count(pattern: &str) -> Result<u64, String> {
 /// web address or produces more than `MAX_BATCH`.
 pub fn expand(pattern: &str) -> Result<Vec<String>, String> {
     let pattern = pattern.trim();
-    if !is_web_url(pattern) {
-        return Err("The pattern must start with http:// or https://.".into());
+    if !is_download_url(pattern) {
+        return Err("The pattern must start with http://, https:// or ftp://.".into());
     }
     let parts = parse(pattern)?;
     let total = parts.iter().fold(1u64, |n, p| n.saturating_mul(p.count()));
@@ -167,7 +167,7 @@ pub fn parse_list(text: &str) -> Result<(Vec<String>, usize), String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if !is_web_url(line) || line.contains(char::is_whitespace) {
+        if !is_download_url(line) || line.contains(char::is_whitespace) {
             rejected += 1;
             continue;
         }
@@ -184,12 +184,12 @@ pub fn parse_list(text: &str) -> Result<(Vec<String>, usize), String> {
     Ok((urls, rejected))
 }
 
-/// The download link in copied `text` worth offering: one http(s) address,
+/// The download link in copied `text` worth offering: one http(s) or ftp address,
 /// alone on the clipboard, whose file type is one of `types` (any file type
 /// when `types` is empty).
 pub fn clipboard_link(text: &str, types: &[String]) -> Option<String> {
     let url = text.trim();
-    if !is_web_url(url) || url.contains(char::is_whitespace) || url.len() > 4096 {
+    if !is_download_url(url) || url.contains(char::is_whitespace) || url.len() > 4096 {
         return None;
     }
     let parsed = url::Url::parse(url).ok()?;
@@ -198,6 +198,11 @@ pub fn clipboard_link(text: &str, types: &[String]) -> Option<String> {
     let ext = ext.to_ascii_lowercase();
     let wanted = !ext.is_empty() && (types.is_empty() || types.contains(&ext));
     wanted.then(|| url.to_string())
+}
+
+/// Whether `s` starts like an address UIDM can download: http, https or ftp.
+pub fn is_download_url(s: &str) -> bool {
+    is_web_url(s) || s.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("ftp://"))
 }
 
 /// Whether `s` starts like an http or https address.
@@ -269,7 +274,8 @@ mod tests {
         assert!(err.contains("10100"), "{err}");
         assert!(expand("http://x/[1-99999999999999999999]").is_err());
         assert!(count("http://x/[0-18446744073709551615]/[1-9]").unwrap() == u64::MAX);
-        assert!(expand("ftp://x/[1-2]").is_err());
+        assert_eq!(expand("ftp://x/[1-2]").unwrap(), ["ftp://x/1", "ftp://x/2"]);
+        assert!(expand("file://x/[1-2]").is_err());
     }
 
     #[test]
@@ -283,7 +289,8 @@ mod tests {
         assert_eq!(clipboard_link("https://x.com/", &types), None);
         assert_eq!(clipboard_link("see https://x.com/a.zip", &types), None);
         assert_eq!(clipboard_link("https://x.com/a.zip https://x.com/b.zip", &types), None);
-        assert_eq!(clipboard_link("ftp://x.com/a.zip", &types), None);
+        assert_eq!(clipboard_link("ftp://x.com/a.zip", &types).as_deref(), Some("ftp://x.com/a.zip"));
+        assert_eq!(clipboard_link("file://x.com/a.zip", &types), None);
         assert_eq!(clipboard_link("https://x.com/a.html", &[]).as_deref(), Some("https://x.com/a.html"));
         assert_eq!(clipboard_link("https://x.com/download", &[]), None);
     }

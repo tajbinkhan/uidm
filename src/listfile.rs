@@ -107,7 +107,7 @@ pub fn import(text: &str) -> Result<(Vec<Download>, usize), String> {
     let mut rejected = 0;
     for item in list.items {
         let url = item.url.trim().to_string();
-        if !batch::is_web_url(&url) || url.contains(char::is_whitespace) {
+        if !batch::is_download_url(&url) || url.contains(char::is_whitespace) {
             rejected += 1;
             continue;
         }

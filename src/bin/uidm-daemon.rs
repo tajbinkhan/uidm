@@ -1289,7 +1289,7 @@ impl Daemon {
         let mut ids = Vec::new();
         let mut skipped = 0;
         for mut d in items {
-            if !uidm::batch::is_web_url(&d.url) || check_body(&d).is_err() {
+            if !uidm::batch::is_download_url(&d.url) || check_body(&d).is_err() {
                 continue;
             }
             if let Some(old) = self.duplicate_of(&d) {
@@ -1738,8 +1738,8 @@ impl Daemon {
             self.set_refresh_waiting(Some(id));
             return Ok(None);
         };
-        if !download.url.starts_with("http://") && !download.url.starts_with("https://") {
-            return Err(format!("{} is not an http or https link", download.url));
+        if !uidm::batch::is_download_url(&download.url) {
+            return Err(format!("{} is not an http, https or ftp link", download.url));
         }
         if self.refresh_waiting.lock().unwrap().is_some_and(|w| w == id) {
             self.set_refresh_waiting(None);
@@ -1780,8 +1780,8 @@ impl Daemon {
         }
         let trimmed = |s: Option<String>| s.map(|s| s.trim().to_string());
         let url = trimmed(p.url).filter(|u| *u != entry.url);
-        if let Some(u) = url.as_deref().filter(|u| !uidm::batch::is_web_url(u)) {
-            return Err(format!("{u} is not an http or https link"));
+        if let Some(u) = url.as_deref().filter(|u| !uidm::batch::is_download_url(u)) {
+            return Err(format!("{u} is not an http, https or ftp link"));
         }
         let referrer = trimmed(p.referrer);
         if let Some(r) = referrer.as_deref().filter(|r| !r.is_empty() && !uidm::batch::is_web_url(r)) {
@@ -1947,7 +1947,12 @@ impl Daemon {
                 password: l.password.clone().unwrap_or_default(),
             });
         }
-        NetConfig { proxy, logins }
+        NetConfig {
+            proxy,
+            logins,
+            ftp_active: s.ftp_active,
+            ftp_proxy: (s.proxy_mode == ProxyMode::Manual && !s.proxy_ftp.trim().is_empty()).then(|| s.proxy_ftp.trim().to_string()),
+        }
     }
 
     /// Store the passwords a settings change carries (proxy: DPAPI; site
@@ -2996,7 +3001,7 @@ mod tests {
         assert!(t.daemon.set_properties(running, describe).is_err());
         let failed = t.failed("https://x/b");
         let bad = Properties {
-            url: Some("ftp://x/b".into()),
+            url: Some("file://x/b".into()),
             ..Properties::default()
         };
         assert!(t.daemon.set_properties(failed, bad).is_err());
