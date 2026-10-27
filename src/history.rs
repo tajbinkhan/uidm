@@ -172,6 +172,8 @@ mod tests {
             duplicate_of: None,
             referrer: None,
             last_try: None,
+            description: None,
+            login_user: None,
         }
     }
 

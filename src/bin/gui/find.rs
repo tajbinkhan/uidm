@@ -10,8 +10,10 @@ use super::display_name;
 /// What the text is looked for in.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Scope {
+    /// The file name and description.
     Name,
-    /// The file name, the download link and the page it came from.
+    /// The file name and description, the download link and the page it
+    /// came from.
     NameAndAddress,
 }
 
@@ -53,7 +55,7 @@ impl FindBar {
             return true;
         }
         let hit = |field: &str| field_matches(field, text, self.match_case, self.whole);
-        if hit(&display_name(e)) {
+        if hit(&display_name(e)) || e.description.as_deref().is_some_and(hit) {
             return true;
         }
         self.scope == Scope::NameAndAddress && (hit(&e.url) || e.referrer.as_deref().is_some_and(hit))
@@ -174,8 +176,8 @@ pub fn show(ui: &mut egui::Ui, bar: &mut FindBar, ids: &[u64]) -> bool {
 
 fn scope_label(s: Scope) -> &'static str {
     match s {
-        Scope::Name => "In file names",
-        Scope::NameAndAddress => "In names and links",
+        Scope::Name => "In names and descriptions",
+        Scope::NameAndAddress => "In names, descriptions and links",
     }
 }
 
@@ -201,6 +203,8 @@ mod tests {
             duplicate_of: None,
             referrer: referrer.map(str::to_string),
             last_try: None,
+            description: None,
+            login_user: None,
         }
     }
 

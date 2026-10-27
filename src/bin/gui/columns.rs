@@ -26,10 +26,11 @@ pub enum Column {
     LastTry,
     SaveTo,
     Referrer,
+    Description,
 }
 
 impl Column {
-    pub const ALL: [Column; 9] = [
+    pub const ALL: [Column; 10] = [
         Column::Name,
         Column::Size,
         Column::Progress,
@@ -39,6 +40,7 @@ impl Column {
         Column::LastTry,
         Column::SaveTo,
         Column::Referrer,
+        Column::Description,
     ];
 
     const DEFAULT: [Column; 6] = [
@@ -61,6 +63,7 @@ impl Column {
             Column::LastTry => "Last try",
             Column::SaveTo => "Save to",
             Column::Referrer => "Referrer",
+            Column::Description => "Description",
         }
     }
 }
@@ -185,6 +188,7 @@ fn compare(sort: Sort, a: &DownloadEntry, b: &DownloadEntry, speed: &impl Fn(u64
         Column::LastTry => known(a.last_try, b.last_try, down),
         Column::SaveTo => known(lower(a.path.as_deref()), lower(b.path.as_deref()), down),
         Column::Referrer => known(a.referrer.as_deref(), b.referrer.as_deref(), down),
+        Column::Description => known(lower(a.description.as_deref()), lower(b.description.as_deref()), down),
     }
 }
 
@@ -329,6 +333,8 @@ mod tests {
             duplicate_of: None,
             referrer: None,
             last_try: None,
+            description: None,
+            login_user: None,
         }
     }
 

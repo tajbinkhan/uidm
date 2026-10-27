@@ -19,6 +19,8 @@
 mod columns;
 #[path = "gui/find.rs"]
 mod find;
+#[path = "gui/properties.rs"]
+mod properties;
 #[path = "gui/queues.rs"]
 mod queues;
 #[path = "gui/tools.rs"]
@@ -42,7 +44,7 @@ use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
-use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Scan, Status};
+use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Properties, Scan, Status};
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
@@ -339,6 +341,11 @@ enum Action {
     CancelGrab,
     /// Tick or untick a download, for exporting.
     Select(u64, bool),
+    OpenProperties(u64),
+    SetProperties {
+        id: u64,
+        changes: Properties,
+    },
 }
 
 /// Which downloads the list shows.
@@ -385,6 +392,8 @@ struct App {
     layout: columns::Layout,
     /// The Columns dialog is open.
     columns_dialog: bool,
+    /// Open Properties dialogs, one per download.
+    properties: Vec<properties::PropertiesDialog>,
 }
 
 /// A folder chosen in the picker, delivered by its thread.
@@ -710,6 +719,7 @@ impl App {
             find: None,
             layout: columns::Layout::load(),
             columns_dialog: false,
+            properties: Vec::new(),
         };
         app.connect();
         app.install_tray();
@@ -1006,6 +1016,15 @@ impl App {
             }
             Action::SetQueueOnce(id, when_done) => {
                 send(&self.writer, &Incoming::SetQueueOnce { id, when_done });
+            }
+            Action::OpenProperties(id) => {
+                let entry = self.shared.lock().unwrap().table.get(id).cloned();
+                if let Some(e) = entry.filter(|_| !self.properties.iter().any(|d| d.id == id)) {
+                    self.properties.push(properties::PropertiesDialog::new(&e));
+                }
+            }
+            Action::SetProperties { id, changes } => {
+                send(&self.writer, &Incoming::SetProperties { id, changes });
             }
             Action::OpenRefresh(id) => {
                 self.shared.lock().unwrap().refresh_mismatch = None;
@@ -2306,6 +2325,10 @@ impl eframe::App for App {
         if self.columns_dialog {
             self.columns_dialog = columns::dialog(ctx, &mut self.layout);
         }
+        self.properties.retain_mut(|d| {
+            let entry = rows.iter().find(|e| e.id == d.id);
+            properties::dialog(ctx, d, entry, connected, &mut actions)
+        });
         if self.layout != layout_before {
             self.layout.save();
         }
@@ -2525,6 +2548,9 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 }
             }
         });
+        if ui.small_button("Properties").on_hover_text("Its details, link, description and login").clicked() {
+            actions.push(Action::OpenProperties(e.id));
+        }
     });
 }
 
@@ -2615,6 +2641,9 @@ fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row) {
         }
         Column::Referrer => {
             text_cell(ui, e.referrer.as_deref().unwrap_or(""));
+        }
+        Column::Description => {
+            text_cell(ui, e.description.as_deref().unwrap_or(""));
         }
     }
 }

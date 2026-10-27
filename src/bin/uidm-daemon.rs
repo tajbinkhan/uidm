@@ -59,7 +59,9 @@ use uidm::settings::ProxyMode;
 use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
-use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Status};
+use uidm::protocol::{
+    read_message, write_frame, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Status,
+};
 use uidm::settings::{self, Duplicate, FileExists, Folders, Settings};
 use uidm::notify::{self, Sound, Toast};
 use uidm::power;
@@ -186,16 +188,20 @@ impl Hub {
         }
         let _ = self.dirty.send(());
         self.broadcast(msg);
-        // The list keeps the page a new download came from, to find it by.
+        // The list shows a new download's page, description and login name
+        // from its request.
         if let Outgoing::Added { id, .. } = msg {
             drop(table);
-            let referrer = self.requests.lock().unwrap().get(id).and_then(|d| d.referrer.clone());
-            if referrer.is_some() {
+            let request = self.requests.lock().unwrap().get(id).cloned();
+            if let Some(d) = request {
                 let _ = self.update(*id, |e| {
-                    if e.referrer.is_some() {
-                        return Err("already known".into());
+                    let before = (e.referrer.clone(), e.description.clone(), e.login_user.clone());
+                    e.referrer = e.referrer.take().or(d.referrer);
+                    e.description = e.description.take().or(d.description);
+                    e.login_user = e.login_user.take().or(d.login.map(|l| l.username));
+                    if before == (e.referrer.clone(), e.description.clone(), e.login_user.clone()) {
+                        return Err("nothing new".into());
                     }
-                    e.referrer = referrer;
                     Ok(())
                 });
             }
@@ -1481,8 +1487,14 @@ impl Daemon {
             .remove(&id)
             .unwrap_or_else(|| Download {
                 url: entry.url.clone(),
+                referrer: entry.referrer.clone(),
                 ..Download::default()
             });
+        // The new entry keeps the old one's description.
+        let download = Download {
+            description: entry.description.clone(),
+            ..download
+        };
         // A retried download keeps its place in its queue.
         let queue = self.hub.queue_of(id);
         self.hub.leave_queues(id);
@@ -1544,6 +1556,103 @@ impl Daemon {
         Ok(None)
     }
 
+    /// Change a stopped or finished download's details. The link, referrer
+    /// and login go into the request a retry starts from; a finished
+    /// download's file is renamed or moved on disk first.
+    fn set_properties(&self, id: u64, p: Properties) -> Result<(), String> {
+        let entry = self.entry(id).ok_or_else(|| format!("no download with id {id}"))?;
+        let done = entry.status == Status::Done;
+        let stopped = |s: Status| s == Status::Done || s.is_retryable();
+        if !stopped(entry.status) {
+            return Err("Stop the download before changing its properties.".into());
+        }
+        let trimmed = |s: Option<String>| s.map(|s| s.trim().to_string());
+        let url = trimmed(p.url).filter(|u| *u != entry.url);
+        if let Some(u) = url.as_deref().filter(|u| !uidm::batch::is_web_url(u)) {
+            return Err(format!("{u} is not an http or https link"));
+        }
+        let referrer = trimmed(p.referrer);
+        if let Some(r) = referrer.as_deref().filter(|r| !r.is_empty() && !uidm::batch::is_web_url(r)) {
+            return Err(format!("{r} is not an http or https address"));
+        }
+        let description = trimmed(p.description);
+        if p.login.is_some() && done {
+            return Err("A finished download keeps no login. Download it again to use one.".into());
+        }
+        let moved = match (p.filename, p.folder) {
+            (None, None) => None,
+            _ if !done => return Err("Only a finished download's file can be renamed or moved.".into()),
+            (filename, folder) => {
+                let from = entry.path.as_deref().map(PathBuf::from).ok_or("The download has no file.")?;
+                let name = filename
+                    .as_deref()
+                    .map(engine::clean_filename)
+                    .filter(|n| !n.is_empty())
+                    .or_else(|| from.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .ok_or("The download has no file name.")?;
+                let dir = match folder.as_deref().map(str::trim) {
+                    Some(f) if !f.is_empty() => PathBuf::from(f),
+                    _ => from.parent().map(Path::to_path_buf).ok_or("The download has no folder.")?,
+                };
+                if !dir.is_absolute() {
+                    return Err(format!("The folder must be a full path: {}", dir.display()));
+                }
+                let to = dir.join(name);
+                (to != from).then_some((from, to))
+            }
+        };
+        if let Some((from, to)) = &moved {
+            move_file(from, to)?;
+            eprintln!("[uidm-daemon] moved #{id} to {}", to.display());
+        }
+        let mut login_user = entry.login_user.clone();
+        if !done {
+            let mut requests = self.hub.requests.lock().unwrap();
+            let req = requests.entry(id).or_insert_with(|| Download {
+                url: entry.url.clone(),
+                referrer: entry.referrer.clone(),
+                ..Download::default()
+            });
+            if let Some(u) = &url {
+                req.url = u.clone();
+            }
+            if let Some(r) = &referrer {
+                req.referrer = Some(r.clone()).filter(|r| !r.is_empty());
+            }
+            if let Some(d) = &description {
+                req.description = Some(d.clone()).filter(|d| !d.is_empty());
+            }
+            if let Some(l) = p.login {
+                let username = l.username.trim().to_string();
+                req.login = (!username.is_empty()).then(|| DownloadLogin {
+                    password: l.password.or_else(|| req.login.as_ref().and_then(|o| o.password.clone())),
+                    username,
+                });
+            }
+            login_user = req.login.as_ref().map(|l| l.username.clone());
+        }
+        self.hub.update(id, |e| {
+            if !stopped(e.status) {
+                return Err("The download started while its properties were being saved.".into());
+            }
+            if let Some(u) = &url {
+                e.url = u.clone();
+            }
+            if let Some(r) = &referrer {
+                e.referrer = Some(r.clone()).filter(|r| !r.is_empty());
+            }
+            if let Some(d) = &description {
+                e.description = Some(d.clone()).filter(|d| !d.is_empty());
+            }
+            if let Some((_, to)) = &moved {
+                e.path = Some(to.display().to_string());
+            }
+            e.login_user = login_user;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     /// Change which download waits for a link from the browser, and tell
     /// every client.
     fn set_refresh_waiting(&self, id: Option<u64>) {
@@ -1597,7 +1706,7 @@ impl Daemon {
                 })
             }
         });
-        let logins = s
+        let mut logins: Vec<Login> = s
             .site_logins
             .iter()
             .filter_map(|l| {
@@ -1608,6 +1717,16 @@ impl Daemon {
                 })
             })
             .collect();
+        // The download's own login goes last, so it wins over a site login
+        // for the same host.
+        let host = url::Url::parse(&download.url).ok().and_then(|u| u.host_str().map(str::to_string));
+        if let (Some(l), Some(host)) = (&download.login, host) {
+            logins.push(Login {
+                site: host,
+                username: l.username.clone(),
+                password: l.password.clone().unwrap_or_default(),
+            });
+        }
         NetConfig { proxy, logins }
     }
 
@@ -2026,6 +2145,11 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::CancelRefresh => daemon.set_refresh_waiting(None),
+        Incoming::SetProperties { id, changes } => {
+            if let Err(message) = daemon.set_properties(id, changes) {
+                send(&Outgoing::Error { message });
+            }
+        }
         Incoming::PauseAll => {
             eprintln!("[uidm-daemon] pause all");
             daemon.pause_all();
@@ -2145,6 +2269,25 @@ fn check_body(d: &Download) -> Result<(), String> {
         }
         _ => Ok(()),
     }
+}
+
+/// Move a finished file to `to`, which must not exist yet. Across drives
+/// this copies the file, then deletes the original.
+fn move_file(from: &Path, to: &Path) -> Result<(), String> {
+    if !from.is_file() {
+        return Err(format!("The file is no longer at {}.", from.display()));
+    }
+    if to.exists() {
+        return Err(format!("{} already exists.", to.display()));
+    }
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    }
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to).map_err(|e| format!("Could not move the file to {}: {e}", to.display()))?;
+    std::fs::remove_file(from).map_err(|e| format!("Copied the file, but could not delete {}: {e}", from.display()))
 }
 
 /// Start the desktop window from this daemon's folder.
@@ -2473,5 +2616,105 @@ mod tests {
             ..get
         };
         assert!(t.daemon.duplicate_of(&post).is_none());
+    }
+
+    #[test]
+    fn properties_rename_and_move_a_finished_file() {
+        let t = setup("props_move", Duplicate::NewName);
+        let id = t.finished("https://x/f.bin", &t.dir.join("f.bin"));
+        let changes = Properties {
+            filename: Some("renamed.bin".into()),
+            folder: Some(t.dir.join("sub").display().to_string()),
+            description: Some("  kept for later ".into()),
+            ..Properties::default()
+        };
+        t.daemon.set_properties(id, changes).unwrap();
+        let e = t.daemon.entry(id).unwrap();
+        let moved = t.dir.join("sub").join("renamed.bin");
+        assert_eq!(e.path.map(PathBuf::from), Some(moved.clone()));
+        assert_eq!(std::fs::read(&moved).unwrap(), b"old");
+        assert!(!t.dir.join("f.bin").exists());
+        assert_eq!(e.description.as_deref(), Some("kept for later"));
+
+        // Never over another file.
+        std::fs::write(t.dir.join("taken.bin"), b"x").unwrap();
+        let onto = Properties {
+            filename: Some("taken.bin".into()),
+            folder: Some(t.dir.display().to_string()),
+            ..Properties::default()
+        };
+        assert!(t.daemon.set_properties(id, onto).is_err());
+        assert!(moved.exists());
+    }
+
+    #[test]
+    fn properties_change_what_a_retry_sends() {
+        let t = setup("props_retry", Duplicate::NewName);
+        let id = t.failed("https://x/old.bin");
+        let changes = Properties {
+            url: Some("https://y/new.bin".into()),
+            referrer: Some("https://y/page".into()),
+            login: Some(DownloadLogin {
+                username: "me".into(),
+                password: Some("pw".into()),
+            }),
+            ..Properties::default()
+        };
+        t.daemon.set_properties(id, changes).unwrap();
+        let e = t.daemon.entry(id).unwrap();
+        assert_eq!(e.url, "https://y/new.bin");
+        assert_eq!(e.referrer.as_deref(), Some("https://y/page"));
+        assert_eq!(e.login_user.as_deref(), Some("me"));
+        let req = t.daemon.hub.requests.lock().unwrap().get(&id).cloned().unwrap();
+        assert_eq!(req.url, "https://y/new.bin");
+        assert_eq!(req.referrer.as_deref(), Some("https://y/page"));
+
+        // A new user name without a password keeps the old password.
+        let rename = Properties {
+            login: Some(DownloadLogin {
+                username: "other".into(),
+                password: None,
+            }),
+            ..Properties::default()
+        };
+        t.daemon.set_properties(id, rename).unwrap();
+        let req = t.daemon.hub.requests.lock().unwrap().get(&id).cloned().unwrap();
+        let login = req.login.clone().unwrap();
+        assert_eq!((login.username.as_str(), login.password.as_deref()), ("other", Some("pw")));
+        let net = t.daemon.net_for(&req, &Settings::default());
+        let found = net::find_login(&net.logins, "y").unwrap();
+        assert_eq!(found.username, "other");
+
+        // An empty user name removes the login.
+        let clear = Properties {
+            login: Some(DownloadLogin::default()),
+            ..Properties::default()
+        };
+        t.daemon.set_properties(id, clear).unwrap();
+        assert_eq!(t.daemon.entry(id).unwrap().login_user, None);
+        assert!(t.daemon.hub.requests.lock().unwrap()[&id].login.is_none());
+    }
+
+    #[test]
+    fn properties_refuse_running_downloads_and_bad_links() {
+        let t = setup("props_refuse", Duplicate::NewName);
+        let running = t.daemon.engine.reserve_id();
+        t.daemon.hub.publish(&Outgoing::Added { id: running, url: "https://x/a".into() });
+        let describe = Properties {
+            description: Some("x".into()),
+            ..Properties::default()
+        };
+        assert!(t.daemon.set_properties(running, describe).is_err());
+        let failed = t.failed("https://x/b");
+        let bad = Properties {
+            url: Some("ftp://x/b".into()),
+            ..Properties::default()
+        };
+        assert!(t.daemon.set_properties(failed, bad).is_err());
+        let rename = Properties {
+            filename: Some("c".into()),
+            ..Properties::default()
+        };
+        assert!(t.daemon.set_properties(failed, rename).is_err(), "only finished files move");
     }
 }

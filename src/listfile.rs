@@ -5,7 +5,7 @@
 //!
 //! - text: one URL per line;
 //! - JSON: `{"uidm_list": 1, "items": [...]}`, each item with its URL, file
-//!   name, folder, size and status.
+//!   name, folder, size, status, referrer and description.
 //!
 //! Neither ever holds cookies, request headers or passwords: they are built
 //! from the list entries, which have none.
@@ -38,6 +38,11 @@ pub struct ListItem {
     pub size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<Status>,
+    /// The page the download came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referrer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 impl ListItem {
@@ -54,6 +59,8 @@ impl ListItem {
                 .filter(|p| !p.is_empty()),
             size: e.total,
             status: Some(e.status),
+            referrer: e.referrer.clone(),
+            description: e.description.clone(),
         }
     }
 }
@@ -111,6 +118,8 @@ pub fn import(text: &str) -> Result<(Vec<Download>, usize), String> {
             url,
             filename: item.filename.filter(|n| !n.trim().is_empty()),
             folder: item.folder.filter(|f| Path::new(f).is_absolute()),
+            referrer: item.referrer.filter(|r| batch::is_web_url(r)),
+            description: item.description.filter(|d| !d.trim().is_empty()),
             start: Some(false),
             ..Download::default()
         });
@@ -146,6 +155,8 @@ mod tests {
             duplicate_of: None,
             referrer: None,
             last_try: None,
+            description: None,
+            login_user: None,
         }
     }
 
@@ -164,6 +175,20 @@ mod tests {
         assert_eq!(items[0].start, Some(false), "nothing starts on import");
         assert_eq!(items[1].filename, None);
         assert_eq!(items[1].start, Some(false));
+    }
+
+    #[test]
+    fn descriptions_and_referrers_survive_a_round_trip() {
+        let mut a = entry(1, "https://x/a.zip", None, Status::Done);
+        a.description = Some("The March build".into());
+        a.referrer = Some("https://x/downloads".into());
+        a.login_user = Some("me".into());
+        let json = export_json(&[&a]);
+        assert!(!json.contains("\"me\""), "no login in exports");
+        let (items, _) = import(&json).unwrap();
+        assert_eq!(items[0].description.as_deref(), Some("The March build"));
+        assert_eq!(items[0].referrer.as_deref(), Some("https://x/downloads"));
+        assert!(items[0].login.is_none());
     }
 
     #[test]

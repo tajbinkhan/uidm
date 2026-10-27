@@ -128,6 +128,9 @@ pub enum Incoming {
     },
     /// Stop waiting for a new link from the browser.
     CancelRefresh,
+    /// Change a stopped or finished download's link, referrer, description,
+    /// login, or (when finished) its file's name and folder.
+    SetProperties { id: u64, changes: Properties },
     /// Ask for the current settings; answered with `settings`.
     GetSettings,
     /// Replace the settings. Invalid values are refused with `error`; valid
@@ -187,6 +190,55 @@ pub struct Download {
     /// the setting decides when missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_exists: Option<FileExists>,
+    /// A note about the download, shown in the list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// A login for this download alone. It is tried on the download's own
+    /// site before any login saved in Options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<DownloadLogin>,
+}
+
+/// A download's own login.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DownloadLogin {
+    pub username: String,
+    /// Missing in a `set_properties` change keeps the password it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+/// Leaves the password out of logs.
+impl std::fmt::Debug for DownloadLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DownloadLogin")
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "***"))
+            .finish()
+    }
+}
+
+/// Changes to a stopped or finished download's details. A missing field is
+/// left as it is; an empty referrer or description clears it, and a login
+/// with an empty user name removes the download's login.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Properties {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referrer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Not for a finished download, which keeps no request to log in with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<DownloadLogin>,
+    /// A new name for a finished download's file, which is renamed on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// A new folder (a full path) for a finished download's file, which is
+    /// moved there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 /// Where a download is in its life.
@@ -275,6 +327,13 @@ pub struct DownloadEntry {
     /// When it last started, in seconds since 1970.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_try: Option<u64>,
+    /// The user's note about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The user name of the download's own login, if it has one. The
+    /// password stays in the daemon's encrypted request store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_user: Option<String>,
 }
 
 /// A message from the daemon to a client.
