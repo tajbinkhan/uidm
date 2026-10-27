@@ -1511,6 +1511,56 @@ impl Daemon {
         Ok((new_id, url))
     }
 
+    /// Start download `id` again from the first byte, under the same id, so
+    /// it keeps its place and description. It goes to the same name and
+    /// folder; a file still there is handled by the file-exists setting, as
+    /// anybody else's file would be.
+    fn redownload(&self, id: u64) -> Result<(), String> {
+        let again = |s: Status| matches!(s, Status::Done | Status::Failed | Status::Canceled | Status::Interrupted);
+        let entry = self.entry(id).ok_or_else(|| format!("no download with id {id}"))?;
+        if !again(entry.status) {
+            return Err("Only a finished or stopped download can be downloaded again.".into());
+        }
+        let stored = self.hub.requests.lock().unwrap().get(&id).cloned();
+        if stored.is_none() && entry.parts.is_some() {
+            return Err("This stream's playlist is no longer known. Play it in the browser again to download it.".into());
+        }
+        let mut download = stored.unwrap_or_else(|| Download {
+            url: entry.url.clone(),
+            referrer: entry.referrer.clone(),
+            ..Download::default()
+        });
+        download.description = entry.description.clone();
+        // Only a download that started has a file of its own; a proposed
+        // path may be somebody else's.
+        let wrote = entry.status == Status::Done || entry.connections > 0;
+        if let Some(path) = entry.path.as_deref().filter(|_| wrote).map(Path::new) {
+            download.filename = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            download.folder = path.parent().map(|d| d.display().to_string());
+        }
+        // No reuse_path: the old file is not resumed.
+        let req = self.request_for(download.clone());
+        self.hub.update(id, |e| {
+            if !again(e.status) {
+                return Err("The download started again in the meantime.".into());
+            }
+            e.status = Status::Queued;
+            e.done = 0;
+            e.total = None;
+            e.parts = None;
+            e.error = None;
+            e.scan = None;
+            e.note = None;
+            e.resumable = false;
+            e.connections = 0;
+            Ok(())
+        })?;
+        self.hub.requests.lock().unwrap().insert(id, download);
+        eprintln!("[uidm-daemon] downloading #{id} again: {}", entry.url);
+        self.engine.enqueue_as(id, req);
+        Ok(())
+    }
+
     /// Give download `id` a new link. Without `download`, wait for the next one
     /// the browser hands over. With it, check the new link against the
     /// partial file: on a mismatch (and no `restart`) return why, changing
@@ -2159,6 +2209,11 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::CancelRefresh => daemon.set_refresh_waiting(None),
+        Incoming::Redownload { id } => {
+            if let Err(message) = daemon.redownload(id) {
+                send(&Outgoing::Error { message });
+            }
+        }
         Incoming::SetProperties { id, changes } => {
             if let Err(message) = daemon.set_properties(id, changes) {
                 send(&Outgoing::Error { message });
@@ -2758,5 +2813,46 @@ mod tests {
         }).unwrap();
         t.daemon.remove(id, true).unwrap();
         assert!(other.exists());
+    }
+
+    #[test]
+    fn downloading_again_keeps_the_row_and_follows_the_file_setting() {
+        let t = setup("again_rename", Duplicate::NewName);
+        let url = serve();
+        let path = t.dir.join("kept").join("f.bin");
+        let id = t.finished(&url, &path);
+        t.daemon
+            .set_properties(
+                id,
+                Properties {
+                    description: Some("monthly".into()),
+                    ..Properties::default()
+                },
+            )
+            .unwrap();
+        t.daemon.redownload(id).unwrap();
+        let done = t.wait(id, Status::Done);
+        assert_eq!(done.description.as_deref(), Some("monthly"));
+        assert_eq!(done.path.map(PathBuf::from), Some(t.dir.join("kept").join("f (1).bin")));
+        assert_eq!(std::fs::read(&path).unwrap(), b"old", "the old file is a taken name");
+        assert_eq!(t.len(), 1, "still one row");
+
+        let t = setup("again_overwrite", Duplicate::NewName);
+        t.daemon.settings.lock().unwrap().file_exists = FileExists::Overwrite;
+        let path = t.dir.join("f.bin");
+        let id = t.finished(&url, &path);
+        t.daemon.redownload(id).unwrap();
+        let done = t.wait(id, Status::Done);
+        assert_eq!(done.path.map(PathBuf::from), Some(path.clone()));
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+    }
+
+    #[test]
+    fn only_stopped_downloads_go_again() {
+        let t = setup("again_refuse", Duplicate::NewName);
+        let id = t.daemon.engine.reserve_id();
+        t.daemon.hub.publish(&Outgoing::Added { id, url: "https://x/a".into() });
+        assert!(t.daemon.redownload(id).is_err());
+        assert!(t.daemon.redownload(999).is_err());
     }
 }

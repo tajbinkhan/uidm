@@ -268,6 +268,8 @@ enum Action {
     Add(String),
     Cancel(u64),
     Retry(u64),
+    /// Start a finished or stopped download over from the first byte.
+    Redownload(u64),
     /// Remove downloads, asking first if Options says so.
     Remove(Vec<u64>),
     /// Remove downloads now, and maybe their files.
@@ -908,6 +910,9 @@ impl App {
             }
             Action::Retry(id) => {
                 send(&self.writer, &Incoming::Retry { id });
+            }
+            Action::Redownload(id) => {
+                send(&self.writer, &Incoming::Redownload { id });
             }
             Action::Remove(ids) => self.ask_remove(ids),
             Action::RemoveNow {
@@ -2675,8 +2680,11 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 if ui.small_button("New link").on_hover_text("Give it a fresh download link").clicked() {
                     actions.push(Action::OpenRefresh(e.id));
                 }
-                if ui.small_button("Retry").clicked() {
+                if ui.small_button("Retry").on_hover_text("Go on from where it stopped").clicked() {
                     actions.push(Action::Retry(e.id));
+                }
+                if ui.small_button("Download again").on_hover_text("Start over from the beginning").clicked() {
+                    actions.push(Action::Redownload(e.id));
                 }
                 queue_menu(ui, e, row.queues, actions);
                 if ui.small_button("Remove").clicked() {
@@ -2691,6 +2699,13 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                     if ui.small_button("Show in folder").clicked() {
                         actions.push(Action::ShowInFolder(path.clone()));
                     }
+                }
+                if ui
+                    .small_button("Download again")
+                    .on_hover_text("Fetch it again; if the file is still there, the file-exists option decides")
+                    .clicked()
+                {
+                    actions.push(Action::Redownload(e.id));
                 }
                 if ui.small_button("Remove").clicked() {
                     actions.push(Action::Remove(vec![e.id]));

@@ -56,6 +56,10 @@ pub enum Incoming {
     /// Start a failed or canceled download again; it resumes from its partial
     /// file. The old entry is removed and the retry gets a new id.
     Retry { id: u64 },
+    /// Download a finished, failed or canceled download again from the
+    /// start, keeping its id, link, request, name and folder. A file still
+    /// there is handled by the file-exists setting.
+    Redownload { id: u64 },
     /// Forget a finished, failed or canceled download. Its files stay unless
     /// `delete_files`, which sends the finished or partial file, its resume
     /// sidecar and a stream's segments to the Recycle Bin.
