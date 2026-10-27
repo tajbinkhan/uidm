@@ -269,6 +269,9 @@ pub struct DownloadEntry {
     /// address, and the save-as dialog asks what to do about it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_of: Option<u64>,
+    /// The page the download came from, for finding it in the list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referrer: Option<String>,
 }
 
 /// A message from the daemon to a client.

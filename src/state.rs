@@ -173,6 +173,7 @@ fn blank(id: u64, url: &str, status: Status) -> DownloadEntry {
         parts: None,
         note: None,
         duplicate_of: None,
+        referrer: None,
     }
 }
 

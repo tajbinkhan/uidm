@@ -15,6 +15,8 @@
 
 #![windows_subsystem = "windows"]
 
+#[path = "gui/find.rs"]
+mod find;
 #[path = "gui/queues.rs"]
 mod queues;
 #[path = "gui/tools.rs"]
@@ -374,6 +376,8 @@ struct App {
     import: tools::Loaded,
     /// Downloads ticked in the list.
     selected: HashSet<u64>,
+    /// The find bar above the list, while it is open.
+    find: Option<find::FindBar>,
 }
 
 /// A folder chosen in the picker, delivered by its thread.
@@ -696,6 +700,7 @@ impl App {
             grabber: None,
             import: tools::Loaded::default(),
             selected: HashSet::new(),
+            find: None,
         };
         app.connect();
         app.install_tray();
@@ -2006,6 +2011,11 @@ impl eframe::App for App {
                             actions.push(Action::OpenExport);
                             ui.close_menu();
                         }
+                        ui.separator();
+                        if ui.button("Find in the list...").on_hover_text("Ctrl+F").clicked() {
+                            self.find.get_or_insert_with(find::FindBar::new);
+                            ui.close_menu();
+                        }
                     });
                 });
                 let can_open = connected && settings.is_some();
@@ -2153,16 +2163,48 @@ impl eframe::App for App {
             _ => rows.iter().collect(),
         };
 
+        find::shortcuts(ctx, &mut self.find);
+        let mut shown = shown;
+        if let Some(bar) = &self.find {
+            shown.retain(|e| bar.matches(e));
+        }
+        let finding = self.find.as_ref().is_some_and(|b| b.active());
+        if let Some(bar) = self.find.as_mut() {
+            let ids: Vec<u64> = shown.iter().map(|e| e.id).collect();
+            find::step_keys(ctx, bar, &ids);
+            let open = egui::TopBottomPanel::top("find")
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    let open = find::show(ui, bar, &ids);
+                    ui.add_space(4.0);
+                    open
+                })
+                .inner;
+            if !open {
+                self.find = None;
+            }
+        }
+        let (current, scroll) = match self.find.as_mut() {
+            Some(bar) => (bar.current, std::mem::take(&mut bar.scroll)),
+            None => (None, false),
+        };
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(q) = &current_queue {
                 queues::header(ui, q, connected, &mut actions);
                 ui.separator();
-                if shown.is_empty() {
+                if shown.is_empty() && !finding {
                     ui.centered_and_justified(|ui| {
                         ui.weak("This queue is empty. Use Later, or a download's Queue menu, to add one.");
                     });
                     return;
                 }
+            }
+            if shown.is_empty() && finding {
+                ui.centered_and_justified(|ui| {
+                    ui.weak("No downloads here match. Press Escape to see them all.");
+                });
+                return;
             }
             if shown.is_empty() && !rows.is_empty() {
                 ui.centered_and_justified(|ui| {
@@ -2195,6 +2237,8 @@ impl eframe::App for App {
                                 queues: &queue_list,
                                 place,
                                 selected: self.selected.contains(&entry.id),
+                                found: current == Some(entry.id),
+                                scroll: scroll && current == Some(entry.id),
                             };
                             draw_row(ui, entry, &row, &mut actions);
                             ui.end_row();
@@ -2325,6 +2369,10 @@ struct Row<'a> {
     place: Option<(u64, usize, usize)>,
     /// Ticked for exporting.
     selected: bool,
+    /// The match the find bar moved to.
+    found: bool,
+    /// Scroll the list to this row.
+    scroll: bool,
 }
 
 /// A "Queue" menu that puts the download in a queue.
@@ -2356,8 +2404,17 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.set_width(NAME_WIDTH);
-            ui.add(egui::Label::new(display_name(e)).truncate())
+            let mut name = egui::RichText::new(display_name(e));
+            if row.found {
+                let selection = ui.visuals().selection;
+                name = name.background_color(selection.bg_fill).color(selection.stroke.color);
+            }
+            let label = ui
+                .add(egui::Label::new(name).truncate())
                 .on_hover_text(e.path.as_deref().unwrap_or(&e.url));
+            if row.scroll {
+                label.scroll_to_me(Some(egui::Align::Center));
+            }
         },
     );
 

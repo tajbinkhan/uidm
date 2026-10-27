@@ -186,6 +186,20 @@ impl Hub {
         }
         let _ = self.dirty.send(());
         self.broadcast(msg);
+        // The list keeps the page a new download came from, to find it by.
+        if let Outgoing::Added { id, .. } = msg {
+            drop(table);
+            let referrer = self.requests.lock().unwrap().get(id).and_then(|d| d.referrer.clone());
+            if referrer.is_some() {
+                let _ = self.update(*id, |e| {
+                    if e.referrer.is_some() {
+                        return Err("already known".into());
+                    }
+                    e.referrer = referrer;
+                    Ok(())
+                });
+            }
+        }
     }
 
     /// Change download `id` with `f` and announce the new entry, all under the

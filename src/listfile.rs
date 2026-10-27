@@ -144,6 +144,7 @@ mod tests {
             parts: None,
             note: None,
             duplicate_of: None,
+            referrer: None,
         }
     }
 
