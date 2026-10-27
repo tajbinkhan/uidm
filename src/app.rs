@@ -37,6 +37,7 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         media: d.media,
         ffmpeg: settings.ffmpeg(),
         speed_limit: d.speed_limit,
+        server_date: settings.server_file_date,
     }
 }
 

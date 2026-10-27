@@ -287,6 +287,9 @@ pub struct Settings {
     /// confirmation's box starts with this, and it applies on its own once
     /// the confirmation is turned off.
     pub remove_deletes_files: bool,
+    /// Give a finished file the modified date the server reports for it
+    /// (`Last-Modified`) instead of the time it was written.
+    pub server_file_date: bool,
 }
 
 impl Default for Settings {
@@ -327,6 +330,7 @@ impl Default for Settings {
             ffmpeg_path: String::new(),
             confirm_remove: true,
             remove_deletes_files: false,
+            server_file_date: true,
         }
     }
 }
@@ -664,6 +668,7 @@ mod tests {
             ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".into(),
             confirm_remove: false,
             remove_deletes_files: true,
+            server_file_date: false,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

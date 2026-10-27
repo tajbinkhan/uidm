@@ -27,6 +27,8 @@ pub struct Behavior {
     /// Serve these files by path (such as `/v/1.ts`) instead of one body
     /// everywhere; other paths get 404.
     pub files: Option<Arc<HashMap<String, Vec<u8>>>>,
+    /// Send this `Last-Modified` header with the file.
+    pub last_modified: Option<String>,
 }
 
 pub struct TestServer {
@@ -191,7 +193,7 @@ fn serve(
 
     let total = body.len() as u64;
     let slow = range.is_some_and(|(start, _)| Some(start) == behavior.slow_range_start);
-    let (status, slice, extra) = match range {
+    let (status, slice, mut extra) = match range {
         Some((start, end)) => (
             "206 Partial Content",
             &body[start as usize..=end as usize],
@@ -199,6 +201,9 @@ fn serve(
         ),
         None => ("200 OK", body, String::new()),
     };
+    if let Some(date) = &behavior.last_modified {
+        extra.push_str(&format!("Last-Modified: {date}\r\n"));
+    }
     write!(
         stream,
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nETag: \"v1\"\r\nAccept-Ranges: bytes\r\n{extra}Connection: close\r\n\r\n",

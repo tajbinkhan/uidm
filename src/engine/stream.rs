@@ -613,6 +613,7 @@ mod tests {
                 media: Some(choice),
                 ffmpeg: None,
                 speed_limit: None,
+                server_date: false,
             }
         }
 

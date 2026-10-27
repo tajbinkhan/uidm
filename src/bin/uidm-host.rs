@@ -122,6 +122,7 @@ fn run_cli(args: &[String]) -> i32 {
             media: None,
             ffmpeg: None,
             speed_limit: None,
+            server_date: true,
         },
         Arc::new(move |p: Progress| print_progress(p, &ok_cb)),
     );

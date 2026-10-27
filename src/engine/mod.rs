@@ -91,6 +91,8 @@ pub struct DownloadRequest {
     /// This download's own speed limit in bytes per second, on top of the
     /// total one.
     pub speed_limit: Option<u64>,
+    /// Give the finished file the server's `Last-Modified` date.
+    pub server_date: bool,
 }
 
 /// Progress events over the course of a download. `id` matches the `Ack`.
@@ -513,7 +515,48 @@ fn run_inner(
         run_single(id, token, &agent, req, output, &probe, reporter, limiter)
     };
     drop(claim);
+    // A canceled download also returns its path; only a finished one gets
+    // the server's date.
+    if let Ok(path) = &result {
+        if req.server_date && !token.load(Ordering::Relaxed) {
+            if let Some(date) = probe.last_modified.as_deref().and_then(http_date) {
+                let _ = OpenOptions::new().write(true).open(path).and_then(|f| f.set_modified(date));
+            }
+        }
+    }
     result.map(Saved::from)
+}
+
+/// An HTTP date (`Sun, 06 Nov 1994 08:49:37 GMT`, or the older
+/// `Sunday, 06-Nov-94 08:49:37 GMT` and `Sun Nov  6 08:49:37 1994`) as a
+/// time. `None` for anything else.
+pub fn http_date(s: &str) -> Option<std::time::SystemTime> {
+    const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    let month = |m: &str| MONTHS.iter().position(|x| m.eq_ignore_ascii_case(x)).map(|i| i as u32 + 1);
+    let words: Vec<&str> = s.split_whitespace().collect();
+    let (day, mon, year, time) = match words.as_slice() {
+        // IMF-fixdate: the weekday ends in a comma.
+        [_, d, m, y, t, "GMT"] => (d.parse::<u32>().ok()?, month(m)?, y.parse::<i64>().ok()?, *t),
+        // RFC 850: 06-Nov-94.
+        [_, dmy, t, "GMT"] => {
+            let mut parts = dmy.split('-');
+            let d = parts.next()?.parse::<u32>().ok()?;
+            let m = month(parts.next()?)?;
+            let y = parts.next()?.parse::<i64>().ok()?;
+            (d, m, if y < 70 { 2000 + y } else if y < 100 { 1900 + y } else { y }, *t)
+        }
+        // asctime: Sun Nov  6 08:49:37 1994.
+        [_, m, d, t, y] => (d.parse::<u32>().ok()?, month(m)?, y.parse::<i64>().ok()?, *t),
+        _ => return None,
+    };
+    let mut hms = time.split(':').map(|x| x.parse::<u64>().ok());
+    let (h, mi, sec) = (hms.next()??, hms.next()??, hms.next()??);
+    if !(1..=31).contains(&day) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    let days = crate::queue::days_from_civil(year, mon, day);
+    let secs = u64::try_from(days).ok()? * 86_400 + h * 3600 + mi * 60 + sec;
+    Some(std::time::UNIX_EPOCH + Duration::from_secs(secs))
 }
 
 /// A download sent as a POST: one request, its response saved as one stream.
@@ -1423,6 +1466,7 @@ mod tests {
                 media: None,
                 ffmpeg: None,
                 speed_limit: None,
+                server_date: false,
             }
         }
 
@@ -1750,6 +1794,42 @@ mod tests {
             assert!(last.len() >= 4, "one range per connection at least");
             assert_eq!(last.iter().map(|s| s.done).sum::<u64>(), LEN as u64);
             assert!(states.contains(&SegmentState::Connecting) && states.contains(&SegmentState::Receiving));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn http_dates_in_all_three_forms() {
+            let want = std::time::UNIX_EPOCH + Duration::from_secs(784_111_777);
+            assert_eq!(http_date("Sun, 06 Nov 1994 08:49:37 GMT"), Some(want));
+            assert_eq!(http_date("Sunday, 06-Nov-94 08:49:37 GMT"), Some(want));
+            assert_eq!(http_date("Sun Nov  6 08:49:37 1994"), Some(want));
+            assert_eq!(http_date("yesterday"), None);
+            assert_eq!(http_date("Sun, 06 Nov 1994 25:49:37 GMT"), None);
+        }
+
+        #[test]
+        fn the_file_gets_the_servers_date() {
+            let date = "Wed, 21 Oct 2015 07:28:00 GMT";
+            let behavior = Behavior {
+                last_modified: Some(date.into()),
+                ..Behavior::default()
+            };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("server_date");
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.server_date = true;
+            let path = download(|_| {}, req);
+            let modified = fs::metadata(&path).unwrap().modified().unwrap();
+            assert_eq!(modified, http_date(date).unwrap());
+
+            // Without the header (or with the option off) it keeps the time
+            // it was written.
+            let plain = TestServer::start(body(LEN));
+            let mut req = request(&plain.url, &dir, FileExists::Rename);
+            req.server_date = true;
+            let path = download(|_| {}, req);
+            let age = fs::metadata(&path).unwrap().modified().unwrap().elapsed().unwrap();
+            assert!(age < Duration::from_secs(60));
             fs::remove_dir_all(&dir).ok();
         }
 

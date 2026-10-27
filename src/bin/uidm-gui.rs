@@ -589,6 +589,7 @@ struct OptionsDraft {
     ffmpeg_picked: Picked,
     confirm_remove: bool,
     remove_deletes_files: bool,
+    server_file_date: bool,
     error: Option<String>,
     picked: Picked,
 }
@@ -667,6 +668,7 @@ impl OptionsDraft {
             ffmpeg_picked: Picked::default(),
             confirm_remove: s.confirm_remove,
             remove_deletes_files: s.remove_deletes_files,
+            server_file_date: s.server_file_date,
             error: None,
             picked: Picked::default(),
         }
@@ -731,6 +733,7 @@ impl OptionsDraft {
             ffmpeg_path: self.ffmpeg_path.trim().to_string(),
             confirm_remove: self.confirm_remove,
             remove_deletes_files: self.remove_deletes_files,
+            server_file_date: self.server_file_date,
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -1591,6 +1594,11 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 
         ui.label("");
         ui.checkbox(&mut draft.resume_at_startup, "Resume unfinished downloads at startup");
+        ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut draft.server_file_date, "Give finished files the date the server reports")
+            .on_hover_text("Uses the server's Last-Modified date. Streams and form downloads keep the time they were written.");
         ui.end_row();
 
         ui.label("");
