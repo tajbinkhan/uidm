@@ -613,6 +613,7 @@ struct OptionsDraft {
     proxy_socks_version: SocksVersion,
     proxy_remote_dns: bool,
     proxy_bypass: String,
+    proxy_pac_url: String,
     proxy_username: String,
     /// A new proxy password, when `proxy_password_changed`.
     proxy_password: String,
@@ -699,6 +700,7 @@ impl OptionsDraft {
             proxy_socks_version: s.proxy_socks_version,
             proxy_remote_dns: s.proxy_remote_dns,
             proxy_bypass: s.proxy_bypass.clone(),
+            proxy_pac_url: s.proxy_pac_url.clone(),
             proxy_username: s.proxy_username.clone(),
             proxy_password: String::new(),
             proxy_password_changed: false,
@@ -794,6 +796,7 @@ impl OptionsDraft {
             proxy_socks_version: self.proxy_socks_version,
             proxy_remote_dns: self.proxy_remote_dns,
             proxy_bypass: self.proxy_bypass.trim().to_string(),
+            proxy_pac_url: self.proxy_pac_url.trim().to_string(),
             proxy_username: self.proxy_username.trim().to_string(),
             proxy_password: self.proxy_password_changed.then(|| self.proxy_password.clone()),
             use_browser_proxy: self.use_browser_proxy,
@@ -1888,7 +1891,17 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.label("Proxy");
         ui.vertical(|ui| {
             ui.radio_value(&mut draft.proxy_mode, ProxyMode::None, "No proxy");
-            ui.radio_value(&mut draft.proxy_mode, ProxyMode::System, "Use the Windows proxy setting");
+            ui.radio_value(&mut draft.proxy_mode, ProxyMode::System, "Use the Windows proxy setting")
+                .on_hover_text("Including its configuration script or automatic detection");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut draft.proxy_mode, ProxyMode::Script, "Use the configuration script at");
+                ui.add_enabled(
+                    draft.proxy_mode == ProxyMode::Script,
+                    egui::TextEdit::singleline(&mut draft.proxy_pac_url)
+                        .hint_text("http://wpad.example.com/proxy.pac")
+                        .desired_width(240.0),
+                );
+            });
             ui.radio_value(&mut draft.proxy_mode, ProxyMode::Manual, "Use these proxies:");
         });
         ui.end_row();

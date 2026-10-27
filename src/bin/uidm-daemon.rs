@@ -1904,6 +1904,10 @@ impl Daemon {
         let proxy = browser.or_else(|| match s.proxy_mode {
             ProxyMode::None => None,
             ProxyMode::System => net::system_proxy(),
+            ProxyMode::Script => Some(net::ProxyRules {
+                pac: Some(uidm::pac::PacSource::Url(s.proxy_pac_url.trim().to_string())),
+                ..net::ProxyRules::default()
+            }),
             ProxyMode::Manual => {
                 let addr = |a: &str| (!a.trim().is_empty()).then(|| a.trim().to_string());
                 Some(net::ProxyRules {
@@ -1918,6 +1922,7 @@ impl Daemon {
                     password: net::proxy_password_path()
                         .map(|p| net::load_proxy_password(&p))
                         .unwrap_or_default(),
+                    pac: None,
                 })
             }
         });

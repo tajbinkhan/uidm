@@ -1,7 +1,8 @@
 //! How downloads reach servers: through which proxy, and with which login.
 //!
 //! - Proxies come from the settings: none, the system proxy (the Windows
-//!   Internet settings, with their bypass list), or ones set by hand. A
+//!   Internet settings, with their bypass list and any configuration script
+//!   or automatic detection), a configuration script, or ones set by hand. A
 //!   captured download can also use the proxy the browser reported.
 //! - Site logins pair a site pattern with a username; the password lives in
 //!   Windows Credential Manager. When a server answers 401, the engine sends
@@ -108,6 +109,9 @@ pub struct ProxyRules {
     pub bypass: Vec<String>,
     pub username: String,
     pub password: String,
+    /// A proxy auto-config script that picks the proxy per URL. When it
+    /// cannot be found or run, the proxies above apply.
+    pub pac: Option<crate::pac::PacSource>,
 }
 
 fn encode_userinfo(s: &str) -> String {
@@ -148,6 +152,9 @@ impl ProxyRules {
         let host = host_of(url);
         if self.bypassed(&host) {
             return None;
+        }
+        if let Some(Ok(answer)) = self.pac.as_ref().map(|source| crate::pac::proxy_for(source, url)) {
+            return answer;
         }
         let creds = if self.username.is_empty() {
             String::new()
@@ -226,8 +233,17 @@ pub fn system_proxy_at(key: &str) -> Option<ProxyRules> {
     (rules.http.is_some() || rules.https.is_some() || rules.socks.is_some()).then_some(rules)
 }
 
+/// The Windows proxy setting: its fixed proxies, and its configuration
+/// script or automatic detection, which comes first.
 pub fn system_proxy() -> Option<ProxyRules> {
-    system_proxy_at(INTERNET_SETTINGS)
+    let fixed = system_proxy_at(INTERNET_SETTINGS);
+    match crate::pac::windows_source() {
+        Some(source) => Some(ProxyRules {
+            pac: Some(source),
+            ..fixed.unwrap_or_default()
+        }),
+        None => fixed,
+    }
 }
 
 /// A login for the sites matching `site`.
@@ -498,6 +514,16 @@ mod tests {
     }
 
     #[test]
+    fn a_script_that_cannot_be_run_falls_back_to_the_fixed_proxy() {
+        let rules = ProxyRules {
+            http: Some("fixed:8080".into()),
+            pac: Some(crate::pac::PacSource::Url("http://127.0.0.1:1/missing.pac".into())),
+            ..ProxyRules::default()
+        };
+        assert_eq!(rules.proxy_for("http://a.com/f").as_deref(), Some("http://fixed:8080"));
+    }
+
+    #[test]
     fn bypass_lists_and_socks_versions() {
         assert_eq!(parse_bypass("<local>; *.corp.net 10.0.0.1,intranet"), ["<local>", "*.corp.net", "10.0.0.1", "intranet"]);
         assert!(parse_bypass("  ").is_empty());
@@ -521,6 +547,7 @@ mod tests {
             bypass: vec!["<local>".into(), "*.corp.net".into(), "10.0.0.1".into()],
             username: "me@corp".into(),
             password: "p:w/d".into(),
+            pac: None,
         };
         assert_eq!(rules.proxy_for("http://a.com/f").as_deref(), Some("http://me%40corp:p%3Aw%2Fd@proxy:3128"));
         assert_eq!(rules.proxy_for("HTTPS://a.com/f").as_deref(), Some("http://me%40corp:p%3Aw%2Fd@secure:3129"));

@@ -15,6 +15,7 @@
 //! - `queue`: download queues, their schedules and calendar arithmetic.
 //! - `power`: sleep, hibernate and shut down when a queue is done.
 //! - `net`: proxies and site logins.
+//! - `pac`: proxy auto-config scripts, run by WinHTTP.
 //! - `media`: HLS playlists and DASH manifests.
 //! - `batch`: many URLs from a pattern or a list.
 //! - `listfile`: exporting and importing the download list.
@@ -33,6 +34,7 @@ pub mod listfile;
 pub mod media;
 pub mod net;
 pub mod notify;
+pub mod pac;
 pub mod power;
 pub mod protocol;
 pub mod queue;

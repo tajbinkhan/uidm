@@ -101,6 +101,8 @@ pub enum ProxyMode {
     System,
     /// The proxies set in UIDM's options.
     Manual,
+    /// The proxy auto-config script at `proxy_pac_url`.
+    Script,
 }
 
 /// A login for the sites matching `site`. The password lives in Windows
@@ -363,6 +365,8 @@ pub struct Settings {
     /// Hosts the manual proxy is not used for, separated by spaces or
     /// semicolons: `*` wildcards, and `<local>` for names without a dot.
     pub proxy_bypass: String,
+    /// The proxy auto-config (PAC) script for `ProxyMode::Script`.
+    pub proxy_pac_url: String,
     /// User name for the manual proxy, if it needs one.
     pub proxy_username: String,
     /// A new proxy password to store (empty clears it); `None` keeps the
@@ -451,6 +455,7 @@ impl Default for Settings {
             proxy_socks_version: SocksVersion::V5,
             proxy_remote_dns: true,
             proxy_bypass: "<local>".into(),
+            proxy_pac_url: String::new(),
             proxy_username: String::new(),
             proxy_password: None,
             use_browser_proxy: false,
@@ -498,6 +503,9 @@ pub const USER_AGENT_PRESETS: [(&str, &str); 3] = [
 impl Settings {
     /// Check every value, returning a message fit to show the user.
     pub fn validate(&self) -> Result<(), String> {
+        if self.proxy_mode == ProxyMode::Script && !crate::batch::is_web_url(self.proxy_pac_url.trim()) {
+            return Err("The configuration script must be an http or https address.".into());
+        }
         let (lo, hi) = QUOTA_HOURS_RANGE;
         if !(lo..=hi).contains(&self.quota_hours) {
             return Err(format!("The quota's window must be between {lo} and {hi} hours."));
@@ -885,6 +893,7 @@ mod tests {
             proxy_socks_version: SocksVersion::V4,
             proxy_remote_dns: false,
             proxy_bypass: "<local> *.corp.net".into(),
+            proxy_pac_url: "http://wpad.corp.net/proxy.pac".into(),
             proxy_username: "me".into(),
             proxy_password: None,
             use_browser_proxy: true,
