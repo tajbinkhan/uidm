@@ -55,7 +55,7 @@ use std::time::{Duration, Instant};
 use uidm::app::{progress_to_outgoing, to_request, MAX_MESSAGE_BYTES};
 use uidm::engine::DownloadRequest;
 use uidm::net::{self, Login, NetConfig};
-use uidm::settings::ProxyMode;
+use uidm::settings::{ProxyMode, SocksVersion};
 use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
@@ -1909,8 +1909,11 @@ impl Daemon {
                 Some(net::ProxyRules {
                     http: addr(&s.proxy_http),
                     https: addr(&s.proxy_https),
-                    socks: addr(&s.proxy_socks5).map(|a| format!("socks5://{a}")),
-                    bypass: vec!["<local>".to_string()],
+                    socks: addr(&s.proxy_socks5).map(|a| {
+                        let scheme = net::socks_scheme(s.proxy_socks_version == SocksVersion::V5, s.proxy_remote_dns);
+                        format!("{scheme}://{a}")
+                    }),
+                    bypass: net::parse_bypass(&s.proxy_bypass),
                     username: s.proxy_username.trim().to_string(),
                     password: net::proxy_password_path()
                         .map(|p| net::load_proxy_password(&p))

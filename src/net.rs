@@ -122,6 +122,25 @@ fn encode_userinfo(s: &str) -> String {
     out
 }
 
+/// A bypass list as typed: entries separated by semicolons, commas or
+/// spaces.
+pub fn parse_bypass(text: &str) -> Vec<String> {
+    text.split([';', ',', ' ', '\t', '\n', '\r'])
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// The ureq scheme for a SOCKS proxy: SOCKS5 always lets the proxy look up
+/// names; SOCKS4 does only as SOCKS4a.
+pub fn socks_scheme(v5: bool, remote_dns: bool) -> &'static str {
+    match (v5, remote_dns) {
+        (true, _) => "socks5",
+        (false, true) => "socks4a",
+        (false, false) => "socks4",
+    }
+}
+
 impl ProxyRules {
     /// The proxy for `url`, as a URL ureq understands, or `None` to connect
     /// directly.
@@ -476,6 +495,21 @@ mod tests {
         assert_eq!(host_of("http://[::1]:8080/"), "::1");
         assert_eq!(request_uri("https://x.com/dir/f.zip?a=1#frag"), "/dir/f.zip?a=1");
         assert_eq!(request_uri("https://x.com"), "/");
+    }
+
+    #[test]
+    fn bypass_lists_and_socks_versions() {
+        assert_eq!(parse_bypass("<local>; *.corp.net 10.0.0.1,intranet"), ["<local>", "*.corp.net", "10.0.0.1", "intranet"]);
+        assert!(parse_bypass("  ").is_empty());
+        let rules = ProxyRules {
+            socks: Some(format!("{}://s:1080", socks_scheme(false, true))),
+            bypass: parse_bypass("*.corp.net"),
+            ..ProxyRules::default()
+        };
+        assert_eq!(rules.proxy_for("https://a.com/").as_deref(), Some("socks4a://s:1080"));
+        assert_eq!(rules.proxy_for("https://x.corp.net/"), None);
+        assert_eq!(socks_scheme(false, false), "socks4");
+        assert_eq!(socks_scheme(true, false), "socks5");
     }
 
     #[test]

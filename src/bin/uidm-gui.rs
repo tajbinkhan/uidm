@@ -54,7 +54,7 @@ use uidm::protocol::{
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
-    parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, ServerLimit, QUOTA_HOURS_RANGE, SERVER_CONNECTIONS_RANGE, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
+    parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, SocksVersion, ServerLimit, QUOTA_HOURS_RANGE, SERVER_CONNECTIONS_RANGE, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, USER_AGENT_PRESETS,
 };
 use uidm::state::DownloadTable;
@@ -610,6 +610,9 @@ struct OptionsDraft {
     proxy_http: String,
     proxy_https: String,
     proxy_socks5: String,
+    proxy_socks_version: SocksVersion,
+    proxy_remote_dns: bool,
+    proxy_bypass: String,
     proxy_username: String,
     /// A new proxy password, when `proxy_password_changed`.
     proxy_password: String,
@@ -693,6 +696,9 @@ impl OptionsDraft {
             proxy_http: s.proxy_http.clone(),
             proxy_https: s.proxy_https.clone(),
             proxy_socks5: s.proxy_socks5.clone(),
+            proxy_socks_version: s.proxy_socks_version,
+            proxy_remote_dns: s.proxy_remote_dns,
+            proxy_bypass: s.proxy_bypass.clone(),
             proxy_username: s.proxy_username.clone(),
             proxy_password: String::new(),
             proxy_password_changed: false,
@@ -785,6 +791,9 @@ impl OptionsDraft {
             proxy_http: self.proxy_http.trim().to_string(),
             proxy_https: self.proxy_https.trim().to_string(),
             proxy_socks5: self.proxy_socks5.trim().to_string(),
+            proxy_socks_version: self.proxy_socks_version,
+            proxy_remote_dns: self.proxy_remote_dns,
+            proxy_bypass: self.proxy_bypass.trim().to_string(),
             proxy_username: self.proxy_username.trim().to_string(),
             proxy_password: self.proxy_password_changed.then(|| self.proxy_password.clone()),
             use_browser_proxy: self.use_browser_proxy,
@@ -1887,12 +1896,32 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         for (label, field, hint) in [
             ("HTTP proxy", &mut draft.proxy_http, "proxy.example.com:8080"),
             ("HTTPS proxy", &mut draft.proxy_https, "Same as HTTP when empty"),
-            ("SOCKS5 proxy", &mut draft.proxy_socks5, "Used for everything when set"),
+            ("SOCKS proxy", &mut draft.proxy_socks5, "Used for everything when set"),
         ] {
             ui.label(label);
             ui.add_enabled(manual, egui::TextEdit::singleline(field).hint_text(hint).desired_width(260.0));
             ui.end_row();
         }
+        ui.label("SOCKS version");
+        ui.add_enabled_ui(manual, |ui| {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut draft.proxy_socks_version, SocksVersion::V4, "SOCKS4");
+                ui.radio_value(&mut draft.proxy_socks_version, SocksVersion::V5, "SOCKS5");
+                let v5 = draft.proxy_socks_version == SocksVersion::V5;
+                ui.add_enabled(!v5, egui::Checkbox::new(&mut draft.proxy_remote_dns, "The proxy looks up host names (SOCKS4a)"))
+                    .on_disabled_hover_text("A SOCKS5 proxy always looks up host names");
+            });
+        });
+        ui.end_row();
+        ui.label("Not for");
+        ui.add_enabled(
+            manual,
+            egui::TextEdit::singleline(&mut draft.proxy_bypass)
+                .hint_text("<local> *.corp.example 10.0.0.1")
+                .desired_width(260.0),
+        )
+        .on_hover_text("Hosts reached directly, separated by spaces or semicolons. * matches anything; <local> is any name without a dot.");
+        ui.end_row();
         ui.label("Proxy login");
         ui.add_enabled_ui(manual, |ui| {
             ui.horizontal(|ui| {

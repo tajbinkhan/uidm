@@ -124,6 +124,15 @@ pub struct ServerLimit {
     pub max: usize,
 }
 
+/// The SOCKS version of a manual SOCKS proxy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SocksVersion {
+    V4,
+    #[default]
+    V5,
+}
+
 /// Allowed lengths of the quota's window, in hours (up to a week).
 pub const QUOTA_HOURS_RANGE: (u64, u64) = (1, 168);
 
@@ -344,8 +353,16 @@ pub struct Settings {
     pub proxy_http: String,
     /// `host:port` of the manual proxy for https URLs; empty uses the http one.
     pub proxy_https: String,
-    /// `host:port` of a manual SOCKS5 proxy for everything; wins when set.
+    /// `host:port` of a manual SOCKS proxy for everything; wins when set.
+    /// (The name is from when only SOCKS5 was offered.)
     pub proxy_socks5: String,
+    pub proxy_socks_version: SocksVersion,
+    /// Let the SOCKS proxy look up host names (SOCKS4a, and always for
+    /// SOCKS5) instead of looking them up here (SOCKS4).
+    pub proxy_remote_dns: bool,
+    /// Hosts the manual proxy is not used for, separated by spaces or
+    /// semicolons: `*` wildcards, and `<local>` for names without a dot.
+    pub proxy_bypass: String,
     /// User name for the manual proxy, if it needs one.
     pub proxy_username: String,
     /// A new proxy password to store (empty clears it); `None` keeps the
@@ -431,6 +448,9 @@ impl Default for Settings {
             proxy_http: String::new(),
             proxy_https: String::new(),
             proxy_socks5: String::new(),
+            proxy_socks_version: SocksVersion::V5,
+            proxy_remote_dns: true,
+            proxy_bypass: "<local>".into(),
             proxy_username: String::new(),
             proxy_password: None,
             use_browser_proxy: false,
@@ -862,6 +882,9 @@ mod tests {
             proxy_http: "proxy:3128".into(),
             proxy_https: String::new(),
             proxy_socks5: String::new(),
+            proxy_socks_version: SocksVersion::V4,
+            proxy_remote_dns: false,
+            proxy_bypass: "<local> *.corp.net".into(),
             proxy_username: "me".into(),
             proxy_password: None,
             use_browser_proxy: true,
