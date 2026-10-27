@@ -200,6 +200,7 @@ mod tests {
             note: None,
             duplicate_of: None,
             referrer: referrer.map(str::to_string),
+            last_try: None,
         }
     }
 

@@ -272,6 +272,9 @@ pub struct DownloadEntry {
     /// The page the download came from, for finding it in the list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub referrer: Option<String>,
+    /// When it last started, in seconds since 1970.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_try: Option<u64>,
 }
 
 /// A message from the daemon to a client.

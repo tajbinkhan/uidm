@@ -46,6 +46,7 @@ impl DownloadTable {
                 e.error = None;
                 e.scan = None;
                 e.note = None;
+                e.last_try = Some(unix_now());
             }
             Outgoing::Progress {
                 id,
@@ -174,7 +175,15 @@ fn blank(id: u64, url: &str, status: Status) -> DownloadEntry {
         note: None,
         duplicate_of: None,
         referrer: None,
+        last_try: None,
     }
+}
+
+/// Seconds since 1970, by this computer's clock.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]

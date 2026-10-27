@@ -15,6 +15,8 @@
 
 #![windows_subsystem = "windows"]
 
+#[path = "gui/columns.rs"]
+mod columns;
 #[path = "gui/find.rs"]
 mod find;
 #[path = "gui/queues.rs"]
@@ -35,6 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use columns::Column;
 use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
@@ -378,6 +381,10 @@ struct App {
     selected: HashSet<u64>,
     /// The find bar above the list, while it is open.
     find: Option<find::FindBar>,
+    /// The list's columns and sort order, saved when they change.
+    layout: columns::Layout,
+    /// The Columns dialog is open.
+    columns_dialog: bool,
 }
 
 /// A folder chosen in the picker, delivered by its thread.
@@ -701,6 +708,8 @@ impl App {
             import: tools::Loaded::default(),
             selected: HashSet::new(),
             find: None,
+            layout: columns::Layout::load(),
+            columns_dialog: false,
         };
         app.connect();
         app.install_tray();
@@ -2016,6 +2025,10 @@ impl eframe::App for App {
                             self.find.get_or_insert_with(find::FindBar::new);
                             ui.close_menu();
                         }
+                        if ui.button("Columns...").on_hover_text("Show, hide and order the list's columns").clicked() {
+                            self.columns_dialog = true;
+                            ui.close_menu();
+                        }
                     });
                 });
                 let can_open = connected && settings.is_some();
@@ -2168,6 +2181,11 @@ impl eframe::App for App {
         if let Some(bar) = &self.find {
             shown.retain(|e| bar.matches(e));
         }
+        // A queue's view shows its run order.
+        if current_queue.is_none() {
+            self.layout.sort(&mut shown, |id| speeds.get(&id).copied());
+        }
+        let layout_before = self.layout.clone();
         let finding = self.find.as_ref().is_some_and(|b| b.active());
         if let Some(bar) = self.find.as_mut() {
             let ids: Vec<u64> = shown.iter().map(|e| e.id).collect();
@@ -2219,14 +2237,32 @@ impl eframe::App for App {
                 return;
             }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let columns = self.layout.columns.clone();
                 egui::Grid::new("downloads")
                     .striped(true)
-                    .num_columns(7)
+                    .num_columns(columns.len() + 2)
                     .spacing([14.0, 8.0])
                     .show(ui, |ui| {
-                        for title in ["", "File", "Size", "Progress", "Speed", "Status", ""] {
-                            ui.strong(title);
+                        ui.label("");
+                        for &column in &columns {
+                            let title = egui::RichText::new(format!("{}{}", column.title(), self.layout.arrow(column))).strong();
+                            let header = ui.add(egui::Button::new(title).frame(false));
+                            let header = if current_queue.is_some() {
+                                header.on_hover_text("A queue's downloads stay in its run order")
+                            } else {
+                                header.on_hover_text("Sort by this column; click again to reverse, a third time for the order added")
+                            };
+                            if header.clicked() && current_queue.is_none() {
+                                self.layout.click(column);
+                            }
+                            header.context_menu(|ui| {
+                                if ui.button("Columns...").clicked() {
+                                    self.columns_dialog = true;
+                                    ui.close_menu();
+                                }
+                            });
                         }
+                        ui.label("");
                         ui.end_row();
                         let len = shown.len();
                         for (i, entry) in shown.iter().copied().enumerate() {
@@ -2237,6 +2273,7 @@ impl eframe::App for App {
                                 queues: &queue_list,
                                 place,
                                 selected: self.selected.contains(&entry.id),
+                                columns: &columns,
                                 found: current == Some(entry.id),
                                 scroll: scroll && current == Some(entry.id),
                             };
@@ -2266,6 +2303,12 @@ impl eframe::App for App {
             }
         }
         self.options_window(ctx, connected, &mut actions);
+        if self.columns_dialog {
+            self.columns_dialog = columns::dialog(ctx, &mut self.layout);
+        }
+        if self.layout != layout_before {
+            self.layout.save();
+        }
 
         for action in actions {
             self.perform(action);
@@ -2369,6 +2412,8 @@ struct Row<'a> {
     place: Option<(u64, usize, usize)>,
     /// Ticked for exporting.
     selected: bool,
+    /// The columns to draw, left to right.
+    columns: &'a [Column],
     /// The match the find bar moved to.
     found: bool,
     /// Scroll the list to this row.
@@ -2392,100 +2437,14 @@ fn queue_menu(ui: &mut egui::Ui, e: &DownloadEntry, queues: &[Queue], actions: &
 }
 
 fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<Action>) {
-    let (speed, connected) = (row.speed, row.connected);
+    let connected = row.connected;
     let mut ticked = row.selected;
     if ui.checkbox(&mut ticked, "").on_hover_text("Tick to export it").changed() {
         actions.push(Action::Select(e.id, ticked));
     }
-    // A fixed-width, left-aligned cell so long names truncate instead of
-    // pushing the action buttons off the window.
-    ui.allocate_ui_with_layout(
-        egui::vec2(NAME_WIDTH, 18.0),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_width(NAME_WIDTH);
-            let mut name = egui::RichText::new(display_name(e));
-            if row.found {
-                let selection = ui.visuals().selection;
-                name = name.background_color(selection.bg_fill).color(selection.stroke.color);
-            }
-            let label = ui
-                .add(egui::Label::new(name).truncate())
-                .on_hover_text(e.path.as_deref().unwrap_or(&e.url));
-            if row.scroll {
-                label.scroll_to_me(Some(egui::Align::Center));
-            }
-        },
-    );
-
-    // A stream counts segments; its size is only known once fetched.
-    let parts = e.parts.filter(|[_, all]| *all > 0);
-    let size = ui.label(match e.total {
-        Some(t) => format!("{} / {}", human_bytes(e.done), human_bytes(t)),
-        None => human_bytes(e.done),
-    });
-    if let Some([done, all]) = parts {
-        size.on_hover_text(format!("{done} of {all} segments"));
+    for column in row.columns {
+        draw_cell(ui, *column, e, row);
     }
-
-    let fraction = match (e.total, parts) {
-        (Some(t), _) if t > 0 => (e.done as f32 / t as f32).clamp(0.0, 1.0),
-        (_, Some([done, all])) => (done as f32 / all as f32).clamp(0.0, 1.0),
-        _ if e.status == Status::Done => 1.0,
-        _ => 0.0,
-    };
-    let bar = egui::ProgressBar::new(fraction).desired_width(130.0);
-    ui.add(if e.total.is_some() || e.status == Status::Done {
-        bar.show_percentage()
-    } else if let Some([done, all]) = parts {
-        bar.text(format!("{done}/{all} segments"))
-    } else {
-        bar.text(human_bytes(e.done))
-    });
-
-    // What is left, in bytes: from the total, or for a stream from the
-    // average segment so far.
-    let estimate = e.total.or_else(|| match parts {
-        Some([done, all]) if done > 0 => Some(e.done / done * all),
-        _ => None,
-    });
-    match (e.status, speed) {
-        (Status::Downloading, Some(bps)) if bps > 0.0 => {
-            let eta = estimate
-                .filter(|t| *t > e.done)
-                .map(|t| format!(", {} left", human_duration((t - e.done) as f64 / bps)))
-                .unwrap_or_default();
-            ui.label(format!("{}/s{eta}", human_bytes(bps as u64)));
-        }
-        _ => {
-            ui.label("");
-        }
-    }
-
-    let visuals = ui.visuals().clone();
-    let (text, color) = match e.status {
-        Status::Queued => ("Queued", visuals.weak_text_color()),
-        Status::Downloading => ("Downloading", visuals.text_color()),
-        Status::Done => ("Done", visuals.text_color()),
-        Status::Failed => ("Failed", visuals.error_fg_color),
-        Status::Canceled => ("Canceled", visuals.warn_fg_color),
-        Status::Interrupted => ("Interrupted", visuals.warn_fg_color),
-        Status::Confirming => ("Confirm", visuals.weak_text_color()),
-        Status::Waiting => ("Waiting", visuals.weak_text_color()),
-    };
-    ui.horizontal(|ui| {
-        let status = ui.colored_label(color, text);
-        if let Some(err) = &e.error {
-            status.on_hover_text(err);
-        }
-        if let Some(scan) = &e.scan {
-            scan_label(ui, scan);
-        }
-        if let Some(note) = &e.note {
-            ui.weak("(note)").on_hover_text(note);
-        }
-    });
-
     ui.horizontal(|ui| {
         if let Some((queue, i, len)) = row.place {
             ui.add_enabled_ui(connected, |ui| {
@@ -2567,6 +2526,112 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
             }
         });
     });
+}
+
+/// One cell of a download's row.
+fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row) {
+    // A stream counts segments; its size is only known once fetched.
+    let parts = e.parts.filter(|[_, all]| *all > 0);
+    let running = row.speed.filter(|s| *s > 0.0 && e.status == Status::Downloading);
+    match column {
+        Column::Name => {
+            // A fixed-width, left-aligned cell so long names truncate instead
+            // of pushing the action buttons off the window.
+            ui.allocate_ui_with_layout(
+                egui::vec2(NAME_WIDTH, 18.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_width(NAME_WIDTH);
+                    let mut name = egui::RichText::new(display_name(e));
+                    if row.found {
+                        let selection = ui.visuals().selection;
+                        name = name.background_color(selection.bg_fill).color(selection.stroke.color);
+                    }
+                    let label = ui
+                        .add(egui::Label::new(name).truncate())
+                        .on_hover_text(e.path.as_deref().unwrap_or(&e.url));
+                    if row.scroll {
+                        label.scroll_to_me(Some(egui::Align::Center));
+                    }
+                },
+            );
+        }
+        Column::Size => {
+            let size = ui.label(match e.total {
+                Some(t) => format!("{} / {}", human_bytes(e.done), human_bytes(t)),
+                None => human_bytes(e.done),
+            });
+            if let Some([done, all]) = parts {
+                size.on_hover_text(format!("{done} of {all} segments"));
+            }
+        }
+        Column::Progress => {
+            let bar = egui::ProgressBar::new(columns::fraction(e).unwrap_or(0.0)).desired_width(130.0);
+            ui.add(if e.total.is_some() || e.status == Status::Done {
+                bar.show_percentage()
+            } else if let Some([done, all]) = parts {
+                bar.text(format!("{done}/{all} segments"))
+            } else {
+                bar.text(human_bytes(e.done))
+            });
+        }
+        Column::Speed => {
+            ui.label(running.map(|bps| format!("{}/s", human_bytes(bps as u64))).unwrap_or_default());
+        }
+        Column::TimeLeft => {
+            ui.label(columns::time_left(e, running).map(human_duration).unwrap_or_default());
+        }
+        Column::Status => {
+            let visuals = ui.visuals().clone();
+            let (text, color) = match e.status {
+                Status::Queued => ("Queued", visuals.weak_text_color()),
+                Status::Downloading => ("Downloading", visuals.text_color()),
+                Status::Done => ("Done", visuals.text_color()),
+                Status::Failed => ("Failed", visuals.error_fg_color),
+                Status::Canceled => ("Canceled", visuals.warn_fg_color),
+                Status::Interrupted => ("Interrupted", visuals.warn_fg_color),
+                Status::Confirming => ("Confirm", visuals.weak_text_color()),
+                Status::Waiting => ("Waiting", visuals.weak_text_color()),
+            };
+            ui.horizontal(|ui| {
+                let status = ui.colored_label(color, text);
+                if let Some(err) = &e.error {
+                    status.on_hover_text(err);
+                }
+                if let Some(scan) = &e.scan {
+                    scan_label(ui, scan);
+                }
+                if let Some(note) = &e.note {
+                    ui.weak("(note)").on_hover_text(note);
+                }
+            });
+        }
+        Column::LastTry => {
+            ui.label(e.last_try.map(columns::local_date).unwrap_or_default());
+        }
+        Column::SaveTo => {
+            let folder = e.path.as_deref().and_then(|p| Path::new(p).parent()).map(|d| d.display().to_string());
+            text_cell(ui, folder.as_deref().unwrap_or(""));
+        }
+        Column::Referrer => {
+            text_cell(ui, e.referrer.as_deref().unwrap_or(""));
+        }
+    }
+}
+
+/// A long text, cut to the name column's width with the rest in a tooltip.
+fn text_cell(ui: &mut egui::Ui, text: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(NAME_WIDTH, 18.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_width(NAME_WIDTH);
+            let label = ui.add(egui::Label::new(text).truncate());
+            if !text.is_empty() {
+                label.on_hover_text(text);
+            }
+        },
+    );
 }
 
 /// The saved file's name, or the last part of the URL before it is known.
