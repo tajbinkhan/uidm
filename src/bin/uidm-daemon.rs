@@ -130,6 +130,9 @@ struct Hub {
     quota: Mutex<Usage>,
 }
 
+/// A page the browser rendered for a crawl: its HTML and its address then.
+type Rendered = Option<(String, String)>;
+
 /// Work for the notification thread.
 enum Note {
     Finished(u64),
@@ -372,7 +375,7 @@ struct Daemon {
     /// Crawls waiting for the browser's cookies, by request.
     cookie_waits: Mutex<HashMap<u64, Sender<Option<String>>>>,
     /// Crawls waiting for a page the browser renders: its HTML and address.
-    render_waits: Mutex<HashMap<u64, Sender<Option<(String, String)>>>>,
+    render_waits: Mutex<HashMap<u64, Sender<Rendered>>>,
     /// Grabber projects whose scheduled run is going on, by name.
     grab_runs: Mutex<HashSet<String>>,
     /// When the projects' schedules were last looked at.

@@ -345,6 +345,8 @@ enum Action {
     /// Close the completion dialog on top.
     DismissCompleted,
     ShowInFolder(String),
+    /// Show Windows' Open with picker for a file.
+    OpenWith(String),
     Reconnect,
     OpenOptions,
     /// Open Options at the Connection tab with a new login for this host.
@@ -1180,6 +1182,7 @@ impl App {
             Action::DismissCompleted => {
                 self.shared.lock().unwrap().completed.pop_front();
             }
+            Action::OpenWith(path) => win::open_with(&path),
             Action::ShowInFolder(path) => {
                 // Explorer parses /select itself, so pass the argument raw with
                 // the path quoted. Windows paths cannot contain a double quote.
@@ -2396,6 +2399,10 @@ impl App {
                             actions.push(Action::Open(e.id));
                             actions.push(Action::DismissCompleted);
                         }
+                        if ui.button("Open with...").on_hover_text("Choose the program to open it with").clicked() {
+                            actions.push(Action::OpenWith(p.clone()));
+                            actions.push(Action::DismissCompleted);
+                        }
                         if ui.button("Show in folder").clicked() {
                             actions.push(Action::ShowInFolder(p.clone()));
                             actions.push(Action::DismissCompleted);
@@ -3285,6 +3292,12 @@ fn row_menu(ui: &mut egui::Ui, e: &DownloadEntry, connected: bool, actions: &mut
         if ui.button("Properties...").on_hover_text("Its details, link, description and login").clicked() {
             actions.push(Action::OpenProperties(e.id));
             ui.close_menu();
+        }
+        if let Some(path) = e.path.as_ref().filter(|_| e.status == Status::Done) {
+            if ui.button("Open with...").on_hover_text("Choose the program to open it with").clicked() {
+                actions.push(Action::OpenWith(path.clone()));
+                ui.close_menu();
+            }
         }
         if ui.button("Connections...").on_hover_text("Each connection's range and progress").clicked() {
             actions.push(Action::OpenConnections(e.id));

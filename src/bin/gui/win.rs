@@ -1,6 +1,7 @@
 //! Win32 calls the window needs outside egui: showing and hiding it while egui
 //! is idle (a hidden window gets no frames, so viewport commands would wait),
-//! and reading the clipboard for the tray menu and the clipboard offer.
+//! reading the clipboard for the tray menu and the clipboard offer, and the
+//! Windows `Open with` picker.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -22,6 +23,23 @@ extern "system" {
     fn CloseClipboard() -> i32;
     fn GetClipboardData(format: u32) -> *mut c_void;
     fn GetClipboardSequenceNumber() -> u32;
+}
+
+/// `OPENASINFO`.
+#[repr(C)]
+struct OpenAsInfo {
+    file: *const u16,
+    class: *const u16,
+    flags: u32,
+}
+
+const OAIF_ALLOW_REGISTRATION: u32 = 0x1;
+const OAIF_REGISTER_EXT: u32 = 0x2;
+const OAIF_EXEC: u32 = 0x4;
+
+#[link(name = "shell32")]
+extern "system" {
+    fn SHOpenWithDialog(parent: isize, info: *const OpenAsInfo) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -60,6 +78,23 @@ pub fn hide() {
             ShowWindow(hwnd, SW_HIDE);
         }
     }
+}
+
+/// Show Windows' "Open with" picker for `path` on its own thread (it waits
+/// for the user), and open the file with the program chosen.
+pub fn open_with(path: &str) {
+    let file: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let parent = WINDOW.load(Ordering::Relaxed);
+    std::thread::spawn(move || {
+        let info = OpenAsInfo {
+            file: file.as_ptr(),
+            class: std::ptr::null(),
+            flags: OAIF_ALLOW_REGISTRATION | OAIF_REGISTER_EXT | OAIF_EXEC,
+        };
+        // SAFETY: `info` and the path it points to live until the call
+        // returns.
+        unsafe { SHOpenWithDialog(parent, &info) };
+    });
 }
 
 /// A number that changes whenever the clipboard does.
