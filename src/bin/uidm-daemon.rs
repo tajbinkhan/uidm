@@ -200,6 +200,7 @@ impl Hub {
                     e.description = e.description.take().or(d.description);
                     e.login_user = e.login_user.take().or(d.login.map(|l| l.username));
                     e.speed_limit = e.speed_limit.or(d.speed_limit);
+                    e.from_browser = e.from_browser || d.user_agent.is_some();
                     if *e == before {
                         return Err("nothing new".into());
                     }

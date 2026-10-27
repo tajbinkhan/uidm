@@ -385,6 +385,9 @@ pub struct DownloadEntry {
     /// Where its unfinished data is, when not at `path`: a temporary folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial: Option<String>,
+    /// The browser extension took it from the browser.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_browser: bool,
 }
 
 /// A message from the daemon to a client.

@@ -325,6 +325,12 @@ pub struct Settings {
     pub capture_skip_key: CaptureKey,
     /// Held while clicking a link, sends it to UIDM whatever its type.
     pub capture_force_key: CaptureKey,
+    /// Addresses whose downloads stay in the browser, with `*` matching any
+    /// run of characters, such as `https://example.com/files/*.zip`.
+    pub capture_excluded_urls: Vec<String>,
+    /// After the save-as dialog of the same captured address is canceled
+    /// twice, offer to stop capturing it.
+    pub offer_exceptions: bool,
 }
 
 impl Default for Settings {
@@ -370,6 +376,8 @@ impl Default for Settings {
             temp_dir: None,
             capture_skip_key: CaptureKey::Alt,
             capture_force_key: CaptureKey::Ctrl,
+            capture_excluded_urls: Vec::new(),
+            offer_exceptions: true,
         }
     }
 }
@@ -738,6 +746,8 @@ mod tests {
             temp_dir: Some("D:\\UIDM temp".into()),
             capture_skip_key: CaptureKey::Shift,
             capture_force_key: CaptureKey::None,
+            capture_excluded_urls: vec!["https://example.com/files/*".into()],
+            offer_exceptions: false,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

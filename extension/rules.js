@@ -1,7 +1,7 @@
 // Capture rules: which downloads the browser starts are taken by UIDM.
 //
-// The rules come from UIDM's settings (`capture_types`, `capture_min_size_kb`
-// and `capture_excluded_sites`), so they are edited in one place, the
+// The rules come from UIDM's settings (`capture_types`, `capture_min_size_kb`,
+// `capture_excluded_sites` and `capture_excluded_urls`), so they are edited in one place, the
 // window's Options. These are plain functions: the service worker loads them
 // with importScripts, and the tests load them with require.
 
@@ -95,6 +95,17 @@ function siteMatches(pattern, host) {
   return host === p || host.endsWith("." + p);
 }
 
+// Whether `url` is the address `pattern`, where `*` matches any run of
+// characters. Case does not matter, and a pattern without a scheme matches
+// either scheme.
+function urlMatches(pattern, url) {
+  const p = String(pattern || "").trim().toLowerCase();
+  const u = String(url || "").trim().toLowerCase();
+  if (!p || !u) return false;
+  const re = new RegExp("^" + p.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\/-]/g, "\\$&")).join(".*") + "$");
+  return re.test(u) || (!/^[a-z]+:\/\//.test(p) && re.test(u.replace(/^[a-z]+:\/\//, "")));
+}
+
 // The file type of a download: from its name, else its MIME type, else its
 // URL path. "" when none says.
 function downloadType(item) {
@@ -137,6 +148,9 @@ function captureDecision(rules, item) {
       return { capture: false, reason: `excluded site ${site}` };
     }
   }
+  for (const address of rules.capture_excluded_urls || []) {
+    if (urlMatches(address, item.url)) return { capture: false, reason: `excluded address ${address}` };
+  }
 
   const minBytes = (rules.capture_min_size_kb || 0) * 1024;
   if (minBytes > 0 && item.size > 0 && item.size < minBytes) {
@@ -158,5 +172,5 @@ function captureDecision(rules, item) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies };
+  module.exports = { extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies, urlMatches };
 }

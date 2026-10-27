@@ -284,6 +284,16 @@ impl Shared {
 enum Action {
     Add(String),
     Cancel(u64),
+    /// Cancel a download from its save-as dialog; the second time for the
+    /// same captured address, offer an exception.
+    CancelSaveAs(u64),
+    /// Keep a site (or with `site` false, one address) in the browser from
+    /// now on, or only stop the offer, as the exception offer's buttons ask.
+    Exception {
+        url: String,
+        add: Option<bool>,
+        stop_offering: bool,
+    },
     Retry(u64),
     /// Start a finished or stopped download over from the first byte.
     Redownload(u64),
@@ -432,6 +442,10 @@ struct App {
     limit_dialog: Option<LimitDialog>,
     /// Downloads whose Connections dialog is open.
     connection_dialogs: Vec<u64>,
+    /// Captured addresses whose save-as dialog was canceled once.
+    canceled_once: HashSet<String>,
+    /// The offer to stop capturing an address, and its "Don't show again" box.
+    exception_offer: Option<(String, bool)>,
 }
 
 /// A download's own speed limit being edited.
@@ -596,6 +610,9 @@ struct OptionsDraft {
     temp_picked: Picked,
     capture_skip_key: CaptureKey,
     capture_force_key: CaptureKey,
+    /// One address per line.
+    capture_excluded_urls: String,
+    offer_exceptions: bool,
     error: Option<String>,
     picked: Picked,
 }
@@ -680,6 +697,8 @@ impl OptionsDraft {
             temp_picked: Picked::default(),
             capture_skip_key: s.capture_skip_key,
             capture_force_key: s.capture_force_key,
+            capture_excluded_urls: s.capture_excluded_urls.join("\n"),
+            offer_exceptions: s.offer_exceptions,
             error: None,
             picked: Picked::default(),
         }
@@ -749,6 +768,14 @@ impl OptionsDraft {
             temp_dir: optional(&self.temp_dir),
             capture_skip_key: self.capture_skip_key,
             capture_force_key: self.capture_force_key,
+            capture_excluded_urls: self
+                .capture_excluded_urls
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect(),
+            offer_exceptions: self.offer_exceptions,
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -801,6 +828,8 @@ impl App {
             remove_prompt: None,
             limit_dialog: None,
             connection_dialogs: Vec::new(),
+            canceled_once: HashSet::new(),
+            exception_offer: None,
         };
         app.connect();
         app.install_tray();
@@ -959,6 +988,40 @@ impl App {
                         ..Download::default()
                     }),
                 );
+            }
+            Action::CancelSaveAs(id) => {
+                send(&self.writer, &Incoming::Cancel { id });
+                let (entry, settings) = {
+                    let s = self.shared.lock().unwrap();
+                    (s.table.get(id).cloned(), s.settings.clone())
+                };
+                let offer = settings.is_some_and(|s| s.offer_exceptions);
+                if let Some(e) = entry.filter(|e| e.from_browser && offer) {
+                    if !self.canceled_once.insert(e.url.clone()) {
+                        self.canceled_once.remove(&e.url);
+                        self.exception_offer = Some((e.url, false));
+                    }
+                }
+            }
+            Action::Exception { url, add, stop_offering } => {
+                let settings = self.shared.lock().unwrap().settings.clone();
+                let Some(mut s) = settings else {
+                    return;
+                };
+                match add {
+                    Some(true) => {
+                        let host = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+                        if let Some(host) = host.filter(|h| !s.capture_excluded_sites.contains(h)) {
+                            s.capture_excluded_sites.push(host);
+                        }
+                    }
+                    Some(false) if !s.capture_excluded_urls.contains(&url) => s.capture_excluded_urls.push(url),
+                    _ => {}
+                }
+                if stop_offering {
+                    s.offer_exceptions = false;
+                }
+                self.perform(Action::QuickSettings(s));
             }
             Action::Cancel(id) => {
                 send(&self.writer, &Incoming::Cancel { id });
@@ -1445,7 +1508,7 @@ impl App {
                             }
                         }
                         if ui.button("Cancel").clicked() {
-                            actions.push(Action::Cancel(draft.id));
+                            actions.push(Action::CancelSaveAs(draft.id));
                         }
                     });
                 });
@@ -1898,6 +1961,21 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
                 .desired_rows(4)
                 .desired_width(360.0),
         );
+        ui.end_row();
+
+        ui.label("Never these addresses");
+        ui.vertical(|ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut draft.capture_excluded_urls)
+                    .hint_text("One address per line; * matches anything, as in https://example.com/files/*")
+                    .desired_rows(3)
+                    .desired_width(360.0),
+            );
+            ui.checkbox(
+                &mut draft.offer_exceptions,
+                "When I cancel the same download twice, offer to stop taking it",
+            );
+        });
         ui.end_row();
 
         ui.label("Special keys");
@@ -2526,6 +2604,7 @@ impl eframe::App for App {
         self.threat_window(ctx, &mut actions);
         self.remove_window(ctx, &rows, connected, &mut actions);
         self.limit_window(ctx, &rows, connected, &mut actions);
+        self.exception_window(ctx, connected, &mut actions);
         let segments = self.shared.lock().unwrap().segments.clone();
         self.connection_dialogs.retain(|id| {
             let entry = rows.iter().find(|e| e.id == *id);
@@ -2565,6 +2644,51 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// After the save-as dialog of one captured address is canceled twice:
+    /// offer to keep its site, or the address, in the browser from now on.
+    fn exception_window(&mut self, ctx: &egui::Context, connected: bool, actions: &mut Vec<Action>) {
+        let Some((url, dont_show)) = self.exception_offer.as_mut() else {
+            return;
+        };
+        let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+        let mut chosen = None;
+        egui::Window::new("Keep it in the browser?")
+            .id(egui::Id::new("exception_offer"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("You canceled this download twice. UIDM can leave it to the browser next time.");
+                ui.add(egui::Label::new(egui::RichText::new(url.as_str()).weak()).truncate());
+                ui.add_space(6.0);
+                ui.checkbox(dont_show, "Don't show this again");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(connected, |ui| {
+                        if !host.is_empty() && ui.button(format!("Don't capture {host}")).clicked() {
+                            chosen = Some(Some(true));
+                        }
+                        if ui.button("Don't capture this address").clicked() {
+                            chosen = Some(Some(false));
+                        }
+                    });
+                    if ui.button("Keep capturing").clicked() {
+                        chosen = Some(None);
+                    }
+                });
+            });
+        if let Some(add) = chosen {
+            if add.is_some() || *dont_show {
+                actions.push(Action::Exception {
+                    url: url.clone(),
+                    add,
+                    stop_offering: *dont_show,
+                });
+            }
+            self.exception_offer = None;
+        }
+    }
+
     /// The speed limit dialog for one download.
     fn limit_window(&mut self, ctx: &egui::Context, rows: &[DownloadEntry], connected: bool, actions: &mut Vec<Action>) {
         let Some(d) = self.limit_dialog.as_mut() else {

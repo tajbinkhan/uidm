@@ -245,6 +245,7 @@ mod tests {
             login_user: Some("me".into()),
             speed_limit: None,
             partial: None,
+            from_browser: false,
         }
     }
 

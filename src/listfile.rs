@@ -159,6 +159,7 @@ mod tests {
             login_user: None,
             speed_limit: None,
             partial: None,
+            from_browser: false,
         }
     }
 

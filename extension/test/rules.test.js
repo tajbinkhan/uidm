@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies } = require("../rules.js");
+const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies, urlMatches } = require("../rules.js");
 
 const RULES = {
   capture_types: ["zip", "pdf", "exe", "mp4"],
@@ -196,4 +196,20 @@ test("the worker keeps a skip-key download and sends a force-key link", async ()
   const add = w.sent.filter((m) => m.op === "add").at(-1);
   assert.equal(add.url, "https://dl.net/page.html");
   assert.equal(add.referrer, "https://dl.net/");
+});
+
+test("address exceptions with wildcards", () => {
+  assert.ok(urlMatches("https://example.com/files/*", "https://example.com/files/a.zip"));
+  assert.ok(urlMatches("https://example.com/files/*", "HTTPS://Example.com/files/sub/b.iso?x=1"));
+  assert.ok(!urlMatches("https://example.com/files/*", "https://example.com/other/a.zip"));
+  assert.ok(urlMatches("*.example.com/*.pdf", "https://cdn.example.com/docs/report.pdf"));
+  assert.ok(!urlMatches("*.example.com/*.pdf", "https://cdn.example.com/docs/report.zip"));
+  assert.ok(urlMatches("example.com/a.zip", "http://example.com/a.zip"), "no scheme matches either");
+  assert.ok(!urlMatches("https://example.com/a.zip", "http://example.com/a.zip"));
+  assert.ok(urlMatches("https://x.net/a(1).zip", "https://x.net/a(1).zip"), "other characters are literal");
+  assert.ok(!urlMatches("", "https://x.net/a.zip"));
+
+  const rules = { ...RULES, capture_excluded_urls: ["https://dl.net/keep/*"] };
+  assert.equal(captureDecision(rules, { url: "https://dl.net/keep/a.zip" }).capture, false);
+  assert.equal(captureDecision(rules, { url: "https://dl.net/take/a.zip" }).capture, true);
 });
