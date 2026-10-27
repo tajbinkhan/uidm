@@ -563,6 +563,11 @@ struct CategoryDraft {
     extensions: String,
     /// Empty means a folder named after the category.
     folder: String,
+    /// Sites it is limited to, comma-separated; empty means every site.
+    sites: String,
+    remember_folder: bool,
+    /// Kept as it is; only the save-as dialog changes it.
+    last_folder: Option<String>,
     picked: Picked,
 }
 
@@ -690,6 +695,9 @@ impl OptionsDraft {
                     name: c.name.clone(),
                     extensions: c.extensions.join(", "),
                     folder: c.folder.clone().unwrap_or_default(),
+                    sites: c.sites.join(", "),
+                    remember_folder: c.remember_folder,
+                    last_folder: c.last_folder.clone(),
                     picked: Picked::default(),
                 })
                 .collect(),
@@ -766,6 +774,14 @@ impl OptionsDraft {
                     name: c.name.trim().to_string(),
                     extensions: parse_extensions(&c.extensions),
                     folder: optional(&c.folder),
+                    sites: c
+                        .sites
+                        .split([',', ' ', ';'])
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                    remember_folder: c.remember_folder,
+                    last_folder: c.last_folder.clone().filter(|_| c.remember_folder),
                 })
                 .collect(),
             capture_types: parse_extensions(&self.capture_types),
@@ -1905,32 +1921,41 @@ fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 
 fn categories_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     ui.weak(format!(
-        "Each download goes to its category's folder, chosen by its file type. \
-         Other files are \"{GENERAL}\" and go to the download folder."
+        "Each download goes to its category's folder, chosen by its file type and, if the category lists \
+         sites, by the site it comes from. Other files are \"{GENERAL}\" and go to the download folder."
     ));
     ui.add_space(6.0);
     let mut remove = None;
     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-        egui::Grid::new("categories").num_columns(4).spacing([8.0, 8.0]).show(ui, |ui| {
+        egui::Grid::new("categories").num_columns(6).spacing([8.0, 8.0]).show(ui, |ui| {
             ui.strong("Name");
             ui.strong("File types");
             ui.strong("Folder");
+            ui.strong("Only from sites");
+            ui.strong("");
             ui.label("");
             ui.end_row();
             for (i, c) in draft.categories.iter_mut().enumerate() {
                 ui.add_sized([110.0, 20.0], egui::TextEdit::singleline(&mut c.name));
                 ui.add_sized(
-                    [210.0, 20.0],
+                    [160.0, 20.0],
                     egui::TextEdit::singleline(&mut c.extensions).hint_text("zip, rar"),
                 );
                 ui.horizontal(|ui| {
                     let hint = format!("Download folder\\{}", c.name.trim());
                     ui.add_sized(
-                        [210.0, 20.0],
+                        [180.0, 20.0],
                         egui::TextEdit::singleline(&mut c.folder).hint_text(hint),
                     );
                     browse_button(ui, "Category folder", &c.folder, &c.picked);
                 });
+                ui.add_sized(
+                    [150.0, 20.0],
+                    egui::TextEdit::singleline(&mut c.sites).hint_text("Every site"),
+                )
+                .on_hover_text("Such as *.example.com, separated by commas");
+                ui.checkbox(&mut c.remember_folder, "Last folder")
+                    .on_hover_text("Save new files to the folder last chosen for this category in the save-as dialog");
                 if ui.small_button("Remove").clicked() {
                     remove = Some(i);
                 }
@@ -1947,6 +1972,9 @@ fn categories_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
             name: String::new(),
             extensions: String::new(),
             folder: String::new(),
+            sites: String::new(),
+            remember_folder: false,
+            last_folder: None,
             picked: Picked::default(),
         });
     }
@@ -2482,7 +2510,7 @@ impl eframe::App for App {
         let category = |e: &DownloadEntry| -> String {
             settings
                 .as_ref()
-                .map_or(GENERAL, |s| s.category_name(&display_name(e)))
+                .map_or(GENERAL, |s| s.category_name(&display_name(e), &e.url))
                 .to_string()
         };
         let queue_list = self.shared.lock().unwrap().queues.clone();

@@ -116,7 +116,8 @@ pub struct SiteLogin {
     pub password: Option<String>,
 }
 
-/// A kind of file with its own folder, chosen by file extension.
+/// A kind of file with its own folder, chosen by file extension and,
+/// optionally, the site it comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Category {
     pub name: String,
@@ -126,16 +127,44 @@ pub struct Category {
     /// inside the download folder.
     #[serde(default)]
     pub folder: Option<String>,
+    /// Only files from these sites (such as `*.example.com`) belong to it.
+    /// Empty takes its types from every site.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<String>,
+    /// New files go to the folder last chosen for this category in the
+    /// save-as dialog.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remember_folder: bool,
+    /// That folder, once one was chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_folder: Option<String>,
 }
 
 impl Category {
-    fn new(name: &str, extensions: &[&str]) -> Self {
+    pub fn new(name: &str, extensions: &[&str]) -> Self {
         Category {
             name: name.to_string(),
             extensions: extensions.iter().map(|e| e.to_string()).collect(),
             folder: None,
+            sites: Vec::new(),
+            remember_folder: false,
+            last_folder: None,
         }
     }
+
+    /// Whether a file with extension `ext` from `host` belongs here.
+    fn takes(&self, ext: &str, host: &str) -> bool {
+        self.extensions.iter().any(|e| e == ext)
+            && (self.sites.is_empty() || self.sites.iter().any(|s| crate::net::site_matches(s, host)))
+    }
+}
+
+/// The host of `url`, in lower case, or "" if it has none.
+fn host_of(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default()
 }
 
 /// The categories a new settings file starts with.
@@ -187,7 +216,10 @@ pub fn parse_extensions(text: &str) -> Vec<String> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Folders {
     default: PathBuf,
-    categories: Vec<(Vec<String>, PathBuf)>,
+    /// Each category's rules and folder, in order.
+    categories: Vec<(Category, PathBuf)>,
+    /// The download's host, for categories limited to some sites.
+    host: String,
 }
 
 impl Folders {
@@ -196,6 +228,7 @@ impl Folders {
         Folders {
             default: dir,
             categories: Vec::new(),
+            host: String::new(),
         }
     }
 
@@ -204,7 +237,7 @@ impl Folders {
         let ext = extension_of(filename);
         self.categories
             .iter()
-            .find(|(exts, _)| ext.as_ref().is_some_and(|e| exts.contains(e)))
+            .find(|(c, _)| ext.as_ref().is_some_and(|e| c.takes(e, &self.host)))
             .map(|(_, dir)| dir.clone())
             .unwrap_or_else(|| self.default.clone())
     }
@@ -532,34 +565,62 @@ impl Settings {
         }
     }
 
-    /// The category a file named `filename` belongs to, or `None` for
-    /// `General`.
-    pub fn category_of(&self, filename: &str) -> Option<&Category> {
+    /// The category a file named `filename` from `url` belongs to, or `None`
+    /// for `General`. A category limited to some sites only takes files from
+    /// them.
+    pub fn category_of(&self, filename: &str, url: &str) -> Option<&Category> {
         let ext = extension_of(filename)?;
-        self.categories.iter().find(|c| c.extensions.contains(&ext))
+        let host = host_of(url);
+        self.categories.iter().find(|c| c.takes(&ext, &host))
     }
 
-    /// The name of `filename`'s category, `General` when none claims it.
-    pub fn category_name(&self, filename: &str) -> &str {
-        self.category_of(filename).map_or(GENERAL, |c| c.name.as_str())
+    /// The name of the category of `filename` from `url`, `General` when
+    /// none claims it.
+    pub fn category_name(&self, filename: &str, url: &str) -> &str {
+        self.category_of(filename, url).map_or(GENERAL, |c| c.name.as_str())
     }
 
-    /// Where new downloads go, by category.
+    /// Where new downloads go, by category, for files from any site.
     pub fn folders(&self) -> Folders {
+        self.folders_for("")
+    }
+
+    /// Where new downloads from `url` go, by category.
+    pub fn folders_for(&self, url: &str) -> Folders {
         let base = self.download_dir();
         Folders {
             categories: self
                 .categories
                 .iter()
                 .map(|c| {
-                    let dir = match &c.folder {
-                        Some(f) => PathBuf::from(f),
-                        None => base.join(c.name.trim()),
+                    let dir = match (&c.last_folder, &c.folder) {
+                        (Some(last), _) if c.remember_folder => PathBuf::from(last),
+                        (_, Some(f)) => PathBuf::from(f),
+                        _ => base.join(c.name.trim()),
                     };
-                    (c.extensions.clone(), dir)
+                    (c.clone(), dir)
                 })
                 .collect(),
             default: base,
+            host: host_of(url),
+        }
+    }
+
+    /// Remember `folder` as the last one chosen for the category of
+    /// `filename` from `url`, if that category remembers its folder.
+    /// Returns whether anything changed.
+    pub fn remember_folder(&mut self, filename: &str, url: &str, folder: &Path) -> bool {
+        let Some(ext) = extension_of(filename) else {
+            return false;
+        };
+        let host = host_of(url);
+        let folder = folder.display().to_string();
+        match self.categories.iter_mut().find(|c| c.takes(&ext, &host)) {
+            Some(c) if c.remember_folder && c.last_folder.as_deref() != Some(folder.as_str()) => {
+                c.last_folder = Some(folder);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -835,14 +896,14 @@ mod tests {
     #[test]
     fn category_matching() {
         let s = Settings::default();
-        assert_eq!(s.category_name("setup.EXE"), "Programs");
-        assert_eq!(s.category_name("Report.Final.PDF"), "Documents");
-        assert_eq!(s.category_name("archive.tar.gz"), "Compressed");
-        assert_eq!(s.category_name("movie.mkv"), "Video");
-        assert_eq!(s.category_name("README"), GENERAL);
-        assert_eq!(s.category_name(".bashrc"), GENERAL);
-        assert_eq!(s.category_name("photo.jpg"), GENERAL);
-        assert_eq!(s.category_name("trailing."), GENERAL);
+        assert_eq!(s.category_name("setup.EXE", ""), "Programs");
+        assert_eq!(s.category_name("Report.Final.PDF", ""), "Documents");
+        assert_eq!(s.category_name("archive.tar.gz", ""), "Compressed");
+        assert_eq!(s.category_name("movie.mkv", ""), "Video");
+        assert_eq!(s.category_name("README", ""), GENERAL);
+        assert_eq!(s.category_name(".bashrc", ""), GENERAL);
+        assert_eq!(s.category_name("photo.jpg", ""), GENERAL);
+        assert_eq!(s.category_name("trailing.", ""), GENERAL);
     }
 
     #[test]
@@ -862,6 +923,39 @@ mod tests {
 
         let fixed = Folders::fixed(base.join("picked"));
         assert_eq!(fixed.for_name("a.zip"), base.join("picked"));
+    }
+
+    #[test]
+    fn a_category_can_be_limited_to_some_sites() {
+        let base = std::env::temp_dir().join("uidm-dl");
+        let mut s = Settings {
+            download_dir: Some(base.display().to_string()),
+            ..Settings::default()
+        };
+        let mut work = Category::new("Work", &["pdf"]);
+        work.sites = vec!["*.corp.example".into()];
+        s.categories.insert(0, work);
+        assert_eq!(s.category_name("a.pdf", "https://files.corp.example/a.pdf"), "Work");
+        assert_eq!(s.category_name("a.pdf", "https://elsewhere.net/a.pdf"), "Documents");
+        assert_eq!(s.folders_for("https://corp.example/x").for_name("a.pdf"), base.join("Work"));
+        assert_eq!(s.folders_for("https://elsewhere.net/x").for_name("a.pdf"), base.join("Documents"));
+    }
+
+    #[test]
+    fn a_category_remembers_the_last_folder_chosen() {
+        let mut s = Settings::default();
+        let chosen = std::env::temp_dir().join("uidm-chosen");
+        assert!(!s.remember_folder("a.zip", "https://x/a.zip", &chosen), "off by default");
+        s.categories[0].remember_folder = true;
+        assert!(s.remember_folder("a.zip", "https://x/a.zip", &chosen));
+        assert_eq!(s.folders().for_name("b.zip"), chosen);
+        assert!(!s.remember_folder("b.zip", "https://x/b.zip", &chosen), "unchanged");
+    }
+
+    #[test]
+    fn old_categories_load_without_the_new_fields() {
+        let c: Category = serde_json::from_str(r#"{"name":"Books","extensions":["epub"],"folder":null}"#).unwrap();
+        assert_eq!(c, Category::new("Books", &["epub"]));
     }
 
     #[test]

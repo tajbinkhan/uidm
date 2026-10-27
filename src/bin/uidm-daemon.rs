@@ -1413,6 +1413,19 @@ impl Daemon {
             e.status = Status::Waiting;
             Ok(())
         })?;
+        // A category that remembers its folder keeps the one chosen here.
+        if let (Some(_), Some(path)) = (folder.as_deref().map(str::trim).filter(|f| !f.is_empty()), item.path.as_deref()) {
+            let path = Path::new(path);
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut settings = self.settings.lock().unwrap().clone();
+            if let Some(dir) = path.parent() {
+                if settings.remember_folder(&name, &item.url, dir) {
+                    if let Err(e) = self.set_settings(settings) {
+                        eprintln!("[uidm-daemon] could not remember the folder: {e}");
+                    }
+                }
+            }
+        }
         if file_exists.is_some() {
             self.hub
                 .requests
@@ -2941,5 +2954,22 @@ mod tests {
         t.daemon.cancel(new_id);
         t.daemon.set_download_limit(new_id, None).unwrap();
         assert_eq!(t.daemon.entry(new_id).unwrap().speed_limit, None);
+    }
+
+    #[test]
+    fn the_save_as_folder_is_remembered_for_its_category() {
+        let t = setup("remember_folder", Duplicate::NewName);
+        t.daemon.settings.lock().unwrap().categories[0].remember_folder = true;
+        let (id, _) = t.daemon.add_later(Download {
+            url: "https://x/a.zip".into(),
+            ..Download::default()
+        });
+        let chosen = t.dir.join("chosen");
+        t.daemon
+            .confirm(id, Some("a.zip".into()), Some(chosen.display().to_string()), false, None, None, None)
+            .unwrap();
+        let s = t.daemon.settings.lock().unwrap().clone();
+        assert_eq!(s.categories[0].last_folder.as_deref(), Some(chosen.display().to_string().as_str()));
+        assert_eq!(s.folders().for_name("b.zip"), chosen);
     }
 }

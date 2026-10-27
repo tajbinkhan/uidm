@@ -32,9 +32,10 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
     if let Some(referrer) = d.referrer {
         headers.push(("Referer".to_string(), referrer));
     }
+    let folders = settings.folders_for(&d.url);
     DownloadRequest {
         url: d.url,
-        folders: settings.folders(),
+        folders,
         filename: d.filename,
         headers,
         connections: settings.connections,
