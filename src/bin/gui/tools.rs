@@ -41,7 +41,7 @@ pub fn pick_text_file(ctx: &egui::Context, title: &'static str, slot: &Loaded) {
 }
 
 /// A queue picker.
-fn queue_combo(ui: &mut egui::Ui, id: &str, queue: &mut u64, queues: &[Queue]) {
+pub fn queue_combo(ui: &mut egui::Ui, id: &str, queue: &mut u64, queues: &[Queue]) {
     let name = queues
         .iter()
         .find(|q| q.id == *queue)

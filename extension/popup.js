@@ -125,6 +125,7 @@ function render(state) {
   if (waitingFor) {
     $("refresh-text").textContent = `Your next download gives ${nameOf(waitingFor)} a new link.`;
   }
+  $("all-links").disabled = !state.connected;
   const skip = $("skip");
   skip.disabled = !state.connected || !state.capture;
   skip.textContent = state.skipNext ? "Don't skip" : "Skip next download";
@@ -156,6 +157,7 @@ function render(state) {
 
 $("capture").addEventListener("change", (ev) => ask({ type: "setCapture", value: ev.target.checked }));
 $("skip").addEventListener("click", () => ask({ type: "setSkipNext", value: !skipNext }));
+$("all-links").addEventListener("click", () => ask({ type: "allLinks" }).then(() => window.close()));
 $("refresh-cancel").addEventListener("click", () => ask({ type: "cancelRefresh" }));
 $("video").addEventListener("change", (ev) => ask({ type: "setVideoButton", on: ev.target.checked }));
 $("video-site").addEventListener("change", (ev) =>

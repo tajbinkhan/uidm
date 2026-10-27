@@ -213,3 +213,22 @@ test("address exceptions with wildcards", () => {
   assert.equal(captureDecision(rules, { url: "https://dl.net/keep/a.zip" }).capture, false);
   assert.equal(captureDecision(rules, { url: "https://dl.net/take/a.zip" }).capture, true);
 });
+
+test("all links on a page go to the window's picker with cookies", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.chrome.cookies.getAll = async ({ url }) => (url.startsWith("https://dl.net") ? [{ name: "s", value: "1" }] : []);
+  w.chrome.scripting = {
+    executeScript: async ({ target }) => {
+      assert.equal(target.allFrames, true);
+      return [
+        { result: [{ url: "https://dl.net/a.zip", text: "A" }, { url: "javascript:void(0)", text: "x" }] },
+        { result: [{ url: "https://cdn.org/b.png", text: "", image: true }] },
+      ];
+    },
+  };
+  await w.chrome.contextMenus.onClicked.fire({ menuItemId: "uidm-all-links", pageUrl: "https://dl.net/list" }, { id: 4 });
+  const msg = w.sent.find((m) => m.op === "pick_links");
+  assert.equal(msg.page, "https://dl.net/list");
+  assert.equal(JSON.stringify(msg.links.map((l) => [l.url, l.cookies ?? null])), JSON.stringify([["https://dl.net/a.zip", "s=1"], ["https://cdn.org/b.png", null]]));
+});

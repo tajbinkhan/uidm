@@ -124,6 +124,7 @@ impl DownloadTable {
             | Outgoing::RefreshMismatch { .. }
             | Outgoing::AddedMany { .. }
             | Outgoing::MediaInfo { .. }
+            | Outgoing::PickLinks { .. }
             | Outgoing::GrabProgress { .. }
             | Outgoing::GrabDone { .. } => {}
         }

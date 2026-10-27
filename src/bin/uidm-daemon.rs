@@ -337,6 +337,8 @@ struct Daemon {
     refresh_waiting: Mutex<Option<u64>>,
     /// Each client's running site crawl, by its stop flag.
     grabs: Mutex<HashMap<u64, Arc<AtomicBool>>>,
+    /// Links from a page, held for the window that is being opened.
+    picked_links: Mutex<Option<Outgoing>>,
 }
 
 /// A countdown before sleeping, hibernating or shutting down.
@@ -430,6 +432,7 @@ impl Daemon {
             tick_lock: Mutex::new(()),
             refresh_waiting: Mutex::new(None),
             grabs: Mutex::new(HashMap::new()),
+            picked_links: Mutex::new(None),
         };
         (daemon, dirty_rx, notes_rx, wake_rx)
     }
@@ -2133,6 +2136,10 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
                 if let Some(countdown) = daemon.countdown_message() {
                     send(&countdown);
                 }
+                // Links picked from a page while no window was open.
+                if let Some(links) = daemon.picked_links.lock().unwrap().take() {
+                    send(&links);
+                }
             }
             send(&Outgoing::Hello {
                 name: "uidm-daemon".to_string(),
@@ -2253,6 +2260,19 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::CancelRefresh => daemon.set_refresh_waiting(None),
+        Incoming::PickLinks { page, mut links, user_agent } => {
+            links.retain(|l| uidm::batch::is_web_url(&l.url));
+            links.truncate(uidm::batch::MAX_BATCH);
+            eprintln!("[uidm-daemon] {} links from {page} to pick from", links.len());
+            let msg = Outgoing::PickLinks { page, links, user_agent };
+            if daemon.hub.window_open() {
+                daemon.hub.broadcast(&msg);
+                daemon.hub.broadcast(&Outgoing::Show);
+            } else {
+                *daemon.picked_links.lock().unwrap() = Some(msg);
+                daemon.show_window();
+            }
+        }
         Incoming::SetSpeedLimit { id, bytes_per_sec } => {
             if let Err(message) = daemon.set_download_limit(id, bytes_per_sec) {
                 send(&Outgoing::Error { message });

@@ -138,6 +138,15 @@ pub enum Incoming {
     },
     /// Stop waiting for a new link from the browser.
     CancelRefresh,
+    /// Links found on a page (or in a selection on it) for the window to
+    /// list, so the user can tick the ones to download. The window opens
+    /// if it is not open; answered with nothing.
+    PickLinks {
+        page: String,
+        links: Vec<PageLink>,
+        #[serde(default)]
+        user_agent: Option<String>,
+    },
     /// Change a stopped or finished download's link, referrer, description,
     /// login, or (when finished) its file's name and folder.
     SetProperties { id: u64, changes: Properties },
@@ -217,6 +226,21 @@ pub struct Download {
     /// This download's own speed limit in bytes per second.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed_limit: Option<u64>,
+}
+
+/// A link on a web page, offered in the window's link picker.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PageLink {
+    pub url: String,
+    /// The link's text, or an image's alt text.
+    #[serde(default)]
+    pub text: String,
+    /// An image shown on the page rather than a link.
+    #[serde(default)]
+    pub image: bool,
+    /// The browser's cookies for the link's site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookies: Option<String>,
 }
 
 /// A download's own login.
@@ -501,6 +525,14 @@ pub enum Outgoing {
     },
     /// Reply to `probe_media`.
     MediaInfo { request: u64, info: MediaInfo },
+    /// Links from a page for the window's link picker, as `pick_links` sent
+    /// them. Sent to windows only.
+    PickLinks {
+        page: String,
+        links: Vec<PageLink>,
+        #[serde(default)]
+        user_agent: Option<String>,
+    },
     /// A crawl's progress: pages read, bytes read and files found so far.
     GrabProgress { pages: u64, bytes: u64, found: usize },
     /// A crawl ended: what it found, and why it stopped early, if it did.

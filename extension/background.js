@@ -10,7 +10,8 @@
 // download it took, it is handed back to the browser.
 //
 // It also notes the videos each tab loads (see media.js) for the video
-// button that content.js shows over playing videos.
+// button that content.js shows over playing videos, and collects a page's
+// links for the window's link picker.
 
 importScripts("rules.js", "post.js", "media.js");
 
@@ -504,6 +505,72 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
 });
 
+// --- All links on a page ----------------------------------------------------
+
+// The most links one page sends to the picker.
+const MAX_PAGE_LINKS = 5000;
+
+// Runs in each frame of the page (so it cannot use anything outside itself):
+// the frame's links and images as { url, text, image }. With `selection`,
+// only the links in the selected text, and any bare addresses in it.
+function collectLinks(selection) {
+  const out = [];
+  const sel = getSelection();
+  if (selection && (!sel || sel.isCollapsed)) return out;
+  const ranges = selection ? Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i)) : [];
+  const chosen = (node) => !selection || ranges.some((r) => r.intersectsNode(node));
+  const text = (s) => String(s || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  for (const a of document.querySelectorAll("a[href], area[href]")) {
+    if (chosen(a)) out.push({ url: a.href, text: text(a.textContent || a.getAttribute("alt")) });
+  }
+  if (selection) {
+    for (const m of String(sel).matchAll(/https?:\/\/[^\s<>"'`]+/g)) {
+      out.push({ url: m[0].replace(/[).,;:!?\]]+$/, ""), text: "" });
+    }
+  } else {
+    for (const img of document.images) {
+      const src = img.currentSrc || img.src;
+      if (src) out.push({ url: src, text: text(img.alt), image: true });
+    }
+  }
+  return out;
+}
+
+// Collect the links of tab `tabId` (in every frame) and send them to the
+// window's picker, with the cookies of each site they point to.
+async function pickLinks(tabId, pageUrl, selection = false) {
+  if (!connected || !chrome.scripting || tabId == null || tabId < 0) return false;
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: collectLinks,
+      args: [selection],
+    });
+  } catch (_) {
+    return false; // a page extensions may not script, such as the web store
+  }
+  const links = [];
+  for (const r of results || []) {
+    for (const l of r.result || []) {
+      if (links.length < MAX_PAGE_LINKS && isWeb(l.url)) links.push(l);
+    }
+  }
+  if (links.length === 0) return false;
+  const cookies = new Map();
+  for (const l of links) {
+    let origin;
+    try {
+      origin = new URL(l.url).origin;
+    } catch (_) {
+      continue;
+    }
+    if (!cookies.has(origin)) cookies.set(origin, await cookieHeader(l.url));
+    if (cookies.get(origin)) l.cookies = cookies.get(origin);
+  }
+  return send({ op: "pick_links", page: pageUrl, links, user_agent: navigator.userAgent });
+}
+
 // --- Context menu -----------------------------------------------------------
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -520,10 +587,15 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "Download later with UIDM",
       contexts: ["image", "video", "audio"],
     });
+    chrome.contextMenus.create({ id: "uidm-all-links", title: "Download all links with UIDM", contexts: ["page", "frame"] });
   });
 });
 
-chrome.contextMenus.onClicked.addListener(async (info) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === "uidm-all-links") {
+    await pickLinks(tab && tab.id, info.pageUrl || (tab && tab.url) || "");
+    return;
+  }
   const isLink = info.menuItemId === "uidm-link" || info.menuItemId === "uidm-later-link";
   const later = info.menuItemId === "uidm-later-link" || info.menuItemId === "uidm-later-media";
   const url = isLink ? info.linkUrl : info.srcUrl;
@@ -589,6 +661,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     case "add":
       if (isWeb(msg.url)) send({ op: "add", url: msg.url });
+      break;
+    case "allLinks":
+      // The picker opens in the window; the popup only starts it.
+      chrome.tabs
+        .query({ active: true, currentWindow: true })
+        .then(([tab]) => tab && pickLinks(tab.id, tab.url || ""))
+        .catch(() => {});
       break;
     case "start":
       if (Number.isInteger(msg.id)) {

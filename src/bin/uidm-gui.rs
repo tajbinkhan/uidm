@@ -21,6 +21,8 @@ mod columns;
 mod connections;
 #[path = "gui/find.rs"]
 mod find;
+#[path = "gui/links.rs"]
+mod links;
 #[path = "gui/properties.rs"]
 mod properties;
 #[path = "gui/queues.rs"]
@@ -160,6 +162,8 @@ struct Shared {
     clipboard: Option<String>,
     /// Each download's connections, from its latest progress.
     segments: HashMap<u64, Vec<SegmentInfo>>,
+    /// Links from a page for the link picker, until the window opens it.
+    picked_links: Option<links::LinksDialog>,
 }
 
 /// News of a site crawl.
@@ -225,6 +229,9 @@ impl Shared {
             }
             Outgoing::Started { id, .. } => {
                 self.segments.remove(id);
+            }
+            Outgoing::PickLinks { page, links, user_agent } => {
+                self.picked_links = Some(links::LinksDialog::new(page.clone(), links.clone(), user_agent.clone()));
             }
             Outgoing::AddedMany { count, skipped } => {
                 let mut notice = match count {
@@ -442,6 +449,8 @@ struct App {
     limit_dialog: Option<LimitDialog>,
     /// Downloads whose Connections dialog is open.
     connection_dialogs: Vec<u64>,
+    /// The link picker, while it is open.
+    links: Option<links::LinksDialog>,
     /// Captured addresses whose save-as dialog was canceled once.
     canceled_once: HashSet<String>,
     /// The offer to stop capturing an address, and its "Don't show again" box.
@@ -805,6 +814,7 @@ impl App {
                 grab_events: VecDeque::new(),
                 clipboard: None,
                 segments: HashMap::new(),
+                picked_links: None,
             })),
             writer: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
@@ -828,6 +838,7 @@ impl App {
             remove_prompt: None,
             limit_dialog: None,
             connection_dialogs: Vec::new(),
+            links: None,
             canceled_once: HashSet::new(),
             exception_offer: None,
         };
@@ -2605,6 +2616,14 @@ impl eframe::App for App {
         self.remove_window(ctx, &rows, connected, &mut actions);
         self.limit_window(ctx, &rows, connected, &mut actions);
         self.exception_window(ctx, connected, &mut actions);
+        if let Some(d) = self.shared.lock().unwrap().picked_links.take() {
+            self.links = Some(d);
+        }
+        if let Some(d) = self.links.as_mut() {
+            if !links::dialog(ctx, d, &queue_list, connected, &mut actions) {
+                self.links = None;
+            }
+        }
         let segments = self.shared.lock().unwrap().segments.clone();
         self.connection_dialogs.retain(|id| {
             let entry = rows.iter().find(|e| e.id == *id);
