@@ -3,57 +3,77 @@
   <head>
     <meta charset="utf-8" />
     <style>
+      /* shadcn/ui's neutral tokens (Tailwind's zinc scale), light and dark. */
       :root {
         --bg: #ffffff;
-        --fg: #1f2328;
-        --muted: #656d76;
-        --line: #d0d7de;
-        --track: #eaeef2;
-        --accent: #2563eb;
-        --ok: #1a7f37;
-        --bad: #cf222e;
-        --warn: #9a6700;
+        --fg: #09090b;
+        --muted: #71717a;
+        --line: #e4e4e7;
+        --input: #e4e4e7;
+        --track: #f4f4f5;
+        --hover: #f4f4f5;
+        --primary: #18181b;
+        --primary-fg: #fafafa;
+        --primary-hover: #27272a;
+        --ring: #a1a1aa;
+        --ring-soft: rgba(161, 161, 170, 0.5);
+        --ok: #16a34a;
+        --bad: #dc2626;
+        --warn: #b45309;
       }
       @media (prefers-color-scheme: dark) {
         :root {
-          --bg: #1f2328;
-          --fg: #e6edf3;
-          --muted: #9198a1;
-          --line: #3d444d;
-          --track: #30363d;
-          --accent: #4f8cff;
-          --ok: #3fb950;
-          --bad: #f85149;
-          --warn: #d29922;
+          --bg: #09090b;
+          --fg: #fafafa;
+          --muted: #a1a1aa;
+          --line: #27272a;
+          --input: #3f3f46;
+          --track: #27272a;
+          --hover: #27272a;
+          --primary: #fafafa;
+          --primary-fg: #18181b;
+          --primary-hover: #e4e4e7;
+          --ring: #71717a;
+          --ring-soft: rgba(113, 113, 122, 0.5);
+          --ok: #4ade80;
+          --bad: #f87171;
+          --warn: #fbbf24;
         }
       }
-      body { margin: 0; width: 380px; background: var(--bg); color: var(--fg); font: 13px system-ui, sans-serif; }
-      header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-      header h1 { font-size: 15px; margin: 0; flex: 1; }
+      body { margin: 0; width: 380px; background: var(--bg); color: var(--fg); font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+      header { display: flex; align-items: center; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
+      header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; margin: 0; flex: 1; }
       .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
       .dot.on { background: var(--ok); }
       .row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
       .status { color: var(--muted); padding: 0 12px 8px; }
       .status.error { color: var(--bad); }
-      input[type="url"] { flex: 1; min-width: 0; padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--fg); }
-      button { padding: 4px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--fg); cursor: pointer; }
+      input[type="url"] { flex: 1; min-width: 0; height: 32px; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--input); border-radius: 6px; background: transparent; color: var(--fg); font: inherit; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }
+      input[type="url"]::placeholder { color: var(--muted); }
+      input[type="checkbox"] { margin: 0; width: 15px; height: 15px; accent-color: var(--primary); }
+      input:focus-visible, button:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px var(--ring-soft); }
+      button { height: 32px; padding: 0 12px; border: 1px solid var(--input); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; font-weight: 500; white-space: nowrap; cursor: pointer; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }
+      button:hover:not(:disabled) { background: var(--hover); }
       button:disabled { opacity: 0.5; cursor: default; }
-      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-      ul { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; border-top: 1px solid var(--line); }
-      li { padding: 8px 12px; border-bottom: 1px solid var(--line); }
-      .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
-      .bar { height: 5px; margin: 6px 0; border-radius: 3px; background: var(--track); overflow: hidden; }
-      .bar > div { height: 100%; background: var(--accent); }
+      button.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-fg); }
+      button.primary:hover:not(:disabled) { background: var(--primary-hover); }
+      ul { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; border-top: 1px solid var(--line); scrollbar-width: thin; scrollbar-color: var(--input) transparent; }
+      li { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+      li:last-child { border-bottom: 0; }
+      .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+      .bar { height: 6px; margin: 8px 0; border-radius: 9999px; background: var(--track); overflow: hidden; }
+      .bar > div { height: 100%; border-radius: 9999px; background: var(--primary); }
       .meta { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
       .meta .grow { flex: 1; }
+      .meta button { height: 26px; padding: 0 8px; font-size: 12px; }
       .failed { color: var(--bad); }
       .canceled, .interrupted { color: var(--warn); }
-      .confirming { color: var(--accent); }
+      .confirming { color: var(--fg); font-weight: 500; }
       .skiprow { padding-top: 0; }
       .grow { flex: 1; }
       .done { color: var(--ok); }
-      .empty { color: var(--muted); padding: 16px 12px; text-align: center; }
-      label.toggle { display: flex; align-items: center; gap: 6px; }
+      .empty { color: var(--muted); padding: 24px 12px; text-align: center; }
+      label.toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
       /* The rules above set display, which would otherwise show hidden rows. */
       [hidden] { display: none !important; }
     </style>

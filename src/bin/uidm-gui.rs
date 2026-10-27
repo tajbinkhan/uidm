@@ -29,6 +29,8 @@ mod links;
 mod properties;
 #[path = "gui/queues.rs"]
 mod queues;
+#[path = "gui/theme.rs"]
+mod theme;
 #[path = "gui/tools.rs"]
 mod tools;
 #[path = "gui/tray.rs"]
@@ -104,6 +106,7 @@ fn main() -> eframe::Result {
                     win::set_window(h.hwnd.get());
                 }
             }
+            theme::apply(&cc.egui_ctx);
             let app = App::new(&cc.egui_ctx);
             // Without a tray icon there would be no way back to a hidden
             // window.
@@ -3689,7 +3692,7 @@ fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row) {
         }
         Column::Progress => {
             let bar = egui::ProgressBar::new(columns::fraction(e).unwrap_or(0.0)).desired_width(130.0);
-            ui.add(if e.total.is_some() || e.status == Status::Done {
+            theme::progress_bar(ui, if e.total.is_some() || e.status == Status::Done {
                 bar.show_percentage()
             } else if let Some([done, all]) = parts {
                 bar.text(format!("{done}/{all} segments"))

@@ -1,7 +1,8 @@
 # Builds UIDM for Windows and runs its tests on every push and pull request.
 # The three programs (uidm-host, uidm-daemon, uidm-gui) are uploaded as an
 # artifact together with the browser extension and the install script, laid
-# out the way install-host.ps1 expects.
+# out the way install-host.ps1 expects. The installer, UIDM-Setup-<version>.exe,
+# is uploaded as a second artifact.
 
 name: Build
 
@@ -55,4 +56,23 @@ jobs:
         with:
           name: uidm-windows
           path: dist/uidm
+          if-no-files-found: error
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "could not install Inno Setup" }
+          }
+
+      - name: Build the installer
+        shell: pwsh
+        run: .\installer\build.ps1 -SkipBuild
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v5
+        with:
+          name: uidm-windows-setup
+          path: dist/UIDM-Setup-*.exe
           if-no-files-found: error

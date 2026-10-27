@@ -32,18 +32,18 @@ $manifestPath = Join-Path $env:LOCALAPPDATA "UIDM\com.uidm.host.json"
 $firefoxManifestPath = Join-Path $env:LOCALAPPDATA "UIDM\com.uidm.host.firefox.json"
 $firefoxKey = "HKCU:\Software\Mozilla\NativeMessagingHosts\$hostName"
 $shortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "UIDM.lnk"
-$registryKeys = @(
+$browserKeys = @(
     "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName",
-    "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$hostName",
-    # Written by the daemon so Windows shows UIDM's notifications.
-    "HKCU:\Software\Classes\AppUserModelId\UIDM.DownloadManager"
+    "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$hostName"
 )
+# Written by the daemon so Windows shows UIDM's notifications; only removed.
+$registryKeys = $browserKeys + $firefoxKey + "HKCU:\Software\Classes\AppUserModelId\UIDM.DownloadManager"
 # Written by the daemon when "Start with Windows" is on.
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $runValue = "UIDM"
 
 if ($Uninstall) {
-    foreach ($key in $registryKeys + $firefoxKey) {
+    foreach ($key in $registryKeys) {
         if (Test-Path $key) { Remove-Item $key -Force; Write-Host "Removed $key" }
     }
     if (Get-ItemProperty -Path $runKey -Name $runValue -ErrorAction SilentlyContinue) {
@@ -83,7 +83,7 @@ New-Item -ItemType Directory -Force (Split-Path $manifestPath) | Out-Null
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -Path $manifestPath -Encoding utf8
 Write-Host "Wrote $manifestPath"
 
-foreach ($key in $registryKeys) {
+foreach ($key in $browserKeys) {
     New-Item -Path $key -Force | Out-Null
     Set-ItemProperty -Path $key -Name "(default)" -Value $manifestPath
     Write-Host "Registered $key"

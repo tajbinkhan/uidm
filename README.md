@@ -9,19 +9,31 @@ pattern, a list or a site crawl, and watches the clipboard for links.
 
 ## Install
 
-You need the build toolchain described under [Build](#build). Then, from this
-folder:
+Run `UIDM-Setup-<version>.exe`. GitHub Actions builds it on every push, in
+the `uidm-windows-setup` artifact, and [Build](#build) says how to make it
+yourself. It installs for your user only, without administrator rights, into
+`%LOCALAPPDATA%\Programs\UIDM`. It registers UIDM with Chrome and Edge, adds
+**UIDM** to the Start menu (and, if you tick it, the desktop), and lists UIDM
+under **Installed apps**. Setup is not code-signed, so Windows SmartScreen
+may warn before it runs.
+
+To install from a source checkout instead, with the build toolchain described
+under [Build](#build), run this from this folder:
 
 ```powershell
 .\install-host.ps1
 ```
 
 That builds the three programs if needed, registers UIDM with Chrome and Edge,
-and adds **UIDM** to the Start menu. Then load the extension once:
+and adds **UIDM** to the Start menu.
+
+Either way, load the extension once:
 
 1. Open `chrome://extensions` (or `edge://extensions`) and turn on
    **Developer mode**.
-2. Click **Load unpacked** and choose the `extension` folder.
+2. Click **Load unpacked** and choose the `extension` folder: the one inside
+   the install folder (Setup's last page shows it and can open it), or the
+   one in this checkout.
 3. Check that its ID reads `epmjakacaejhdhldkpbjnakhfmjjbhfm`. The manifest
    carries a fixed public key, so the ID is the same on every machine.
 
@@ -37,8 +49,13 @@ For streamed videos to end up as one `.mp4`, install
 **Options > General**. Without it UIDM still downloads streams, as `.ts`
 files or as separate video and audio files.
 
-To remove everything the script added: `.\install-host.ps1 -Uninstall`.
-Downloaded files are left alone.
+To remove UIDM, uninstall it from **Installed apps**. That closes UIDM if it
+is running, removes the program, its browser registration, shortcuts, the
+**Start with Windows** entry and the notification registration, and asks
+whether to remove your settings and download list too. Installing a newer
+setup over an older one closes UIDM first and keeps your settings. With the
+script, `.\install-host.ps1 -Uninstall` removes what it added. Downloaded
+files are left alone either way.
 
 ### Firefox
 
@@ -781,6 +798,9 @@ is a failed scan, as is one that runs over 10 minutes.
 | `assets/icon-64.rgba` | Window icon, raw RGBA made from `extension/icons/128.png` |
 | `host/com.uidm.host.json` | Template of the native-messaging manifest |
 | `install-host.ps1` | Builds, registers with Chrome and Edge, adds the Start menu entry |
+| `installer/uidm.iss` | Inno Setup script for `UIDM-Setup-<version>.exe` |
+| `installer/build.ps1` | Builds the programs and the installer into `dist\` |
+| `installer/uidm.ico` | Setup and shortcut icon, packed from `extension/icons` by `make-icon.js` |
 
 ## Build
 
@@ -797,7 +817,19 @@ GitHub Actions builds the Windows programs on every push and pull request
 (`.github/workflows/build.yml`): it runs `cargo build --release` and
 `cargo test` with the stable MSVC toolchain on `windows-latest`, then uploads
 `uidm-windows`, an artifact with the three programs under `target\release`,
-the extension and `install-host.ps1`, ready for `.\install-host.ps1`.
+the extension and `install-host.ps1`, ready for `.\install-host.ps1`, and
+`uidm-windows-setup`, with the installer.
+
+To build the installer, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+(`winget install JRSoftware.InnoSetup`), then run:
+
+```powershell
+.\installer\build.ps1
+```
+
+It builds the release programs and writes `dist\UIDM-Setup-<version>.exe`,
+with the version from `Cargo.toml`. Pass `-SkipBuild` when `target\release`
+is already current.
 
 The Rust tests also run on Linux under Wine, cross-compiled with
 `cargo test --target x86_64-pc-windows-gnu` and
@@ -831,6 +863,19 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
   choice were built but not tried on screen, and nothing ran through the
   host or the browser.
 
+- The installer. Built with Inno Setup 6.7.3, then installed and uninstalled
+  silently on Windows 11. The install put the three programs, the extension
+  (without its tests) and the icon in `%LOCALAPPDATA%\Programs\UIDM`. It
+  wrote a host manifest pointing at the installed `uidm-host.exe`, pointed
+  the Chrome and Edge keys at it, and added the Start menu shortcut and the
+  Installed apps entry. Started the way Chrome starts it (the manifest's
+  path, the extension origin as argument), the installed host started the
+  installed daemon, which downloaded a file intact. Uninstalling while that
+  daemon ran closed it, then removed the folder, both keys, the shortcut, the
+  Installed apps entry and the notification registration, leaving
+  `%LOCALAPPDATA%\UIDM` alone. Installing over a running daemon closed it
+  and replaced the files without a restart. The wizard pages and their
+  prompts were not tried on screen.
 - Asking about taken file names (#8). Engine tests against a local server:
   under ask, an existing file and one with a stale sidecar both stop with
   `name_taken` before anything is written, then rename and overwrite answers
