@@ -201,17 +201,26 @@ pub(super) fn run(
     reporter: &Reporter,
     shared: &Shared,
 ) -> Result<Saved, EngineError> {
+    if choice.audio_only.is_some() && req.ffmpeg.is_none() {
+        return Err(refused("Saving only the sound needs ffmpeg. Install it, or choose it in Options > General.".into()));
+    }
     let (main, extra) = load_tracks(agent, req, choice)?;
+    // For the sound alone, a separate audio track is all that is fetched.
+    let (main, extra) = match (choice.audio_only, extra) {
+        (Some(_), Some(audio)) => (audio, None),
+        (_, extra) => (main, extra),
+    };
     let stem = stem(req);
-    let ext = match (&req.ffmpeg, main.ext) {
-        (Some(_), "webm") => "webm",
-        (Some(_), _) => "mp4",
-        (None, ext) => ext,
+    let ext = match (choice.audio_only, &req.ffmpeg, main.ext) {
+        (Some(target), _, _) => target.extension(),
+        (None, Some(_), "webm") => "webm",
+        (None, Some(_), _) => "mp4",
+        (None, None, ext) => ext,
     };
     let filename = format!("{stem}.{ext}");
     // The folder is the one for videos (or music, for audio alone), even
     // when the file stays a .ts.
-    let kind = if matches!(main.ext, "m4a" | "aac") { "m4a" } else { "mp4" };
+    let kind = if choice.audio_only.is_some() || matches!(main.ext, "m4a" | "aac") { "m4a" } else { "mp4" };
     let dir = req.folders.for_name(&format!("{stem}.{kind}"));
     fs::create_dir_all(&dir)?;
     let probe = http::Probe {
@@ -270,7 +279,14 @@ pub(super) fn run(
     for (joined, range, _) in &tracks {
         join(&jobs[range.clone()], joined)?;
     }
-    let note = finish(req, &tracks, &output, &stem)?;
+    let note = match (choice.audio_only, &req.ffmpeg) {
+        (Some(target), Some(ffmpeg)) => {
+            crate::media::convert::convert(ffmpeg, &tracks[0].0, &output, target, token, |_| {})
+                .map_err(EngineError::Io)?;
+            None
+        }
+        _ => finish(req, &tracks, &output, &stem)?,
+    };
     let _ = fs::remove_dir_all(&parts);
     drop(claim);
     Ok(Saved { path: output, note })
@@ -711,6 +727,7 @@ mod tests {
                 kind: Some(MediaKind::Hls),
                 video: Some(low),
                 audio: None,
+                audio_only: None,
             };
             let (result, _) = run(request(format!("{}/v/master.m3u8", server.url), &dir, choice));
             let (path, _) = result.unwrap();
@@ -719,6 +736,21 @@ mod tests {
             fs::remove_dir_all(&dir).ok();
         }
 
+        #[test]
+        fn the_sound_alone_needs_ffmpeg() {
+            let dir = temp_dir("sound_only");
+            let choice = MediaChoice {
+                kind: Some(MediaKind::Hls),
+                video: None,
+                audio: None,
+                audio_only: Some(crate::media::convert::Target::Mp3),
+            };
+            // Refused before anything is fetched, so no server is needed.
+            let (result, _) = run(request("http://127.0.0.1:1/master.m3u8".into(), &dir, choice));
+            let err = result.unwrap_err();
+            assert!(err.contains("ffmpeg"), "{err}");
+            fs::remove_dir_all(&dir).ok();
+        }
         #[test]
         fn a_taken_name_under_ask_stops_before_any_segment() {
             let (files, _) = hls_site();

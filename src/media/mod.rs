@@ -8,7 +8,11 @@
 //!
 //! Streams protected by DRM, and live streams, are refused: UIDM does not get
 //! around DRM, and a live stream has no end to download to.
+//!
+//! `convert` turns a finished video into an MP4, or its sound into an MP3
+//! or M4A, with ffmpeg.
 
+pub mod convert;
 pub mod dash;
 pub mod hls;
 
@@ -36,6 +40,10 @@ pub struct MediaChoice {
     /// default, or the best.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<String>,
+    /// Keep only the sound, as this (`mp3` or `m4a`). Needs ffmpeg; only
+    /// the audio track is fetched when the stream has one of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_only: Option<convert::Target>,
 }
 
 /// One quality or audio track a stream offers.

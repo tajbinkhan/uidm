@@ -274,6 +274,7 @@
               entry: item.entry,
               video: o.video,
               audio: o.audio,
+              audioOnly: o.audioOnly,
               title: document.title,
             });
             menu.replaceChildren(el("div", "head", sent && sent.ok ? "Sent to UIDM." : "Could not reach UIDM."));

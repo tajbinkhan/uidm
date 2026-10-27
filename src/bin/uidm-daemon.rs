@@ -128,6 +128,9 @@ struct Hub {
     wake: Sender<()>,
     /// Bytes received lately, for the download quota.
     quota: Mutex<Usage>,
+    /// Rows that are conversions, not downloads: their progress is not
+    /// received bytes.
+    uncounted: Mutex<HashSet<u64>>,
 }
 
 /// A page the browser rendered for a crawl: its HTML and its address then.
@@ -168,7 +171,7 @@ impl Hub {
                 let done = table.get(*id).map_or(0, |e| e.done);
                 self.quota.lock().unwrap().started(*id, done);
             }
-            Outgoing::Progress { id, done, .. } => {
+            Outgoing::Progress { id, done, .. } if !self.uncounted.lock().unwrap().contains(id) => {
                 self.quota.lock().unwrap().progress(*id, *done, uidm::quota::now_minute());
             }
             Outgoing::Done { id, .. } | Outgoing::Failed { id, .. } | Outgoing::Canceled { id, .. } => {
@@ -378,6 +381,8 @@ struct Daemon {
     render_waits: Mutex<HashMap<u64, Sender<Rendered>>>,
     /// Grabber projects whose scheduled run is going on, by name.
     grab_runs: Mutex<HashSet<String>>,
+    /// Running conversions, by their row's id, with a flag to stop them.
+    conversions: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     /// When the projects' schedules were last looked at.
     grab_checked: Mutex<Option<Instant>>,
 }
@@ -448,6 +453,7 @@ impl Daemon {
             queues: Mutex::new(queues),
             held: Mutex::new(HashSet::new()),
             quota: Mutex::new(paths.quota.as_deref().map(Usage::load).unwrap_or_default()),
+            uncounted: Mutex::new(HashSet::new()),
             wake,
         });
         let events = Arc::clone(&hub);
@@ -480,6 +486,7 @@ impl Daemon {
             cookie_waits: Mutex::new(HashMap::new()),
             render_waits: Mutex::new(HashMap::new()),
             grab_runs: Mutex::new(HashSet::new()),
+            conversions: Mutex::new(HashMap::new()),
             grab_checked: Mutex::new(None),
         };
         (daemon, dirty_rx, notes_rx, wake_rx)
@@ -1532,6 +1539,88 @@ impl Daemon {
             eprintln!("[uidm-daemon] could not save grabber project {}: {e}", project.name);
         }
     }
+    /// Convert finished download `id` on another thread. The new file is a
+    /// row of its own: added and started now, with ffmpeg's progress, done
+    /// with a note, or failed with ffmpeg's complaint.
+    fn convert(self: &Arc<Self>, id: u64, to: uidm::media::convert::Target, delete_original: bool) -> Result<(), String> {
+        let entry = self.entry(id).ok_or_else(|| format!("no download with id {id}"))?;
+        let input = entry
+            .path
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|p| entry.status == Status::Done && p.is_file())
+            .ok_or("Only a finished download whose file is still there can be converted.")?;
+        let ffmpeg = self
+            .settings
+            .lock()
+            .unwrap()
+            .ffmpeg()
+            .ok_or("Converting needs ffmpeg. Install it, or choose it in Options > General.")?;
+        let stem = input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "converted".into());
+        let ext = to.extension();
+        let same = input.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext));
+        let name = if same { format!("{stem} (converted).{ext}") } else { format!("{stem}.{ext}") };
+        let dir = input.parent().map(Path::to_path_buf).unwrap_or_default();
+        let output = (0..)
+            .map(|n| dir.join(engine::numbered_name(&name, n)))
+            .find(|p| !p.exists())
+            .expect("some name is free");
+        let size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
+        let new_id = self.engine.reserve_id();
+        self.hub.uncounted.lock().unwrap().insert(new_id);
+        let url = entry.url.clone();
+        self.hub.publish(&Outgoing::Added { id: new_id, url: url.clone() });
+        self.hub.publish(&Outgoing::Started {
+            id: new_id,
+            url: url.clone(),
+            path: output.display().to_string(),
+            total: Some(size),
+            resumable: false,
+            connections: 1,
+            partial: None,
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        self.conversions.lock().unwrap().insert(new_id, Arc::clone(&stop));
+        eprintln!("[uidm-daemon] converting #{id} to {}", output.display());
+        let daemon = Arc::clone(self);
+        thread::spawn(move || {
+            let mut last = Instant::now() - Duration::from_secs(1);
+            let result = uidm::media::convert::convert(&ffmpeg, &input, &output, to, &stop, |f| {
+                if last.elapsed() >= Duration::from_millis(500) {
+                    last = Instant::now();
+                    daemon.hub.publish(&Outgoing::Progress {
+                        id: new_id,
+                        url: url.clone(),
+                        done: (f * size as f64) as u64,
+                        total: Some(size),
+                        parts: None,
+                        segments: None,
+                    });
+                }
+            });
+            daemon.conversions.lock().unwrap().remove(&new_id);
+            let from = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            match result {
+                Ok(()) => {
+                    if delete_original {
+                        if let Err(e) = daemon.remove(id, true) {
+                            eprintln!("[uidm-daemon] kept the original of #{id}: {e}");
+                        }
+                    }
+                    daemon.hub.publish(&Outgoing::Done {
+                        id: new_id,
+                        url,
+                        path: output.display().to_string(),
+                        note: Some(format!("Converted from {from}")),
+                    });
+                }
+                Err(e) if e == "canceled" => daemon.hub.publish(&Outgoing::Canceled { id: new_id, url }),
+                Err(error) => daemon.hub.publish(&Outgoing::Failed { id: new_id, url, error }),
+            }
+        });
+        Ok(())
+    }
+
     /// Ask GitHub (at `url`) for the latest release, through the settings'
     /// proxy, and note when that happened.
     fn check_update(&self, url: &str) -> Outgoing {
@@ -1829,6 +1918,10 @@ impl Daemon {
 
     /// Cancel a download, whether it waits for its dialog or is in the engine.
     fn cancel(&self, id: u64) {
+        if let Some(stop) = self.conversions.lock().unwrap().get(&id) {
+            stop.store(true, Ordering::Relaxed);
+            return;
+        }
         if matches!(self.status(id), Some(Status::Confirming | Status::Waiting)) {
             let url = self.hub.table.lock().unwrap().get(id).map(|e| e.url.clone());
             if let Some(url) = url {
@@ -2698,6 +2791,11 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::PreviewZip { id } => daemon.preview_zip(id, reply.clone()),
+        Incoming::Convert { id, to, delete_original } => {
+            if let Err(message) = daemon.convert(id, to, delete_original) {
+                send(&Outgoing::Error { message });
+            }
+        }
         Incoming::CheckUpdate => {
             let (daemon, reply) = (Arc::clone(daemon), reply.clone());
             thread::spawn(move || {
@@ -3627,5 +3725,33 @@ mod tests {
             ..Download::default()
         });
         t.wait(id, Status::Confirming);
+    }
+
+    #[test]
+    fn a_finished_video_converts_into_a_row_of_its_own() {
+        let Some(ffmpeg) = Settings::default().ffmpeg() else {
+            eprintln!("no ffmpeg; skipped");
+            return;
+        };
+        let t = setup("convert", Duplicate::NewName);
+        let clip = t.dir.join("talk.mkv");
+        let id = t.finished("https://x/talk.mkv", &clip);
+        let made = Command::new(&ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=160x120:rate=10"])
+            .args(["-f", "lavfi", "-i", "sine=duration=1", "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+            .arg(&clip)
+            .creation_flags(0x0800_0000)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        t.daemon.convert(id, uidm::media::convert::Target::M4a, true).unwrap();
+        let new = t.daemon.hub.table.lock().unwrap().max_id();
+        let done = t.wait(new, Status::Done);
+        let out = PathBuf::from(done.path.unwrap());
+        assert_eq!(out, t.dir.join("talk.m4a"));
+        assert!(std::fs::metadata(&out).unwrap().len() > 0);
+        assert_eq!(done.note.as_deref(), Some("Converted from talk.mkv"));
+        assert!(t.daemon.entry(id).is_none() && !clip.exists(), "the original went, as asked");
+        assert!(t.daemon.convert(new + 100, uidm::media::convert::Target::Mp3, false).is_err());
     }
 }

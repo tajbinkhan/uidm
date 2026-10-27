@@ -375,6 +375,9 @@ enum Action {
     OpenWith(String),
     /// List the files inside a waiting zip download.
     PreviewZip(u64),
+    OpenConvert(u64),
+    /// Convert a finished video, and maybe delete the original.
+    Convert(u64, uidm::media::convert::Target, bool),
     OpenAbout,
     /// Look for a newer release now.
     CheckUpdate,
@@ -510,6 +513,9 @@ struct App {
     links: Option<links::LinksDialog>,
     /// A zip download's preview, asked for or shown.
     zip_preview: Option<ZipPreview>,
+    /// The Convert dialog: the video, what it becomes, and whether the
+    /// original goes.
+    convert: Option<(u64, uidm::media::convert::Target, bool)>,
     /// This window opened the drop target, so finding it closed means the
     /// user closed it.
     drop_shown: bool,
@@ -987,6 +993,7 @@ impl App {
             zip_preview: None,
             about: None,
             drop_shown: false,
+            convert: None,
             canceled_once: HashSet::new(),
             exception_offer: None,
         };
@@ -1257,6 +1264,10 @@ impl App {
             }
             Action::OpenWith(path) => win::open_with(&path),
             Action::OpenAbout => self.about = Some(false),
+            Action::OpenConvert(id) => self.convert = Some((id, uidm::media::convert::Target::Mp3, false)),
+            Action::Convert(id, to, delete_original) => {
+                send(&self.writer, &Incoming::Convert { id, to, delete_original });
+            }
             Action::CheckUpdate => {
                 self.shared.lock().unwrap().update = None;
                 self.about = Some(true);
@@ -2957,6 +2968,7 @@ impl eframe::App for App {
         self.exception_window(ctx, connected, &mut actions);
         self.zip_window(ctx, &rows);
         self.about_window(ctx, connected, &mut actions);
+        self.convert_window(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.shared.lock().unwrap().picked_links.take() {
             self.links = Some(d);
         }
@@ -3004,6 +3016,53 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// The Convert dialog: an MP4, or the sound alone as an MP3 or M4A.
+    fn convert_window(&mut self, ctx: &egui::Context, rows: &[DownloadEntry], connected: bool, actions: &mut Vec<Action>) {
+        use uidm::media::convert::Target;
+        let Some((id, to, delete)) = self.convert.as_mut() else {
+            return;
+        };
+        let Some(e) = rows.iter().find(|e| e.id == *id && e.status == Status::Done) else {
+            self.convert = None;
+            return;
+        };
+        let name = display_name(e);
+        let is_mp4 = name.to_ascii_lowercase().ends_with(".mp4");
+        let mut close = false;
+        egui::Window::new("Convert")
+            .id(egui::Id::new("convert"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("Make a new file from {name} with ffmpeg."));
+                if ui.add_enabled(!is_mp4, egui::RadioButton::new(*to == Target::Mp4, "An MP4 video")).clicked() {
+                    *to = Target::Mp4;
+                }
+                if ui.radio(*to == Target::Mp3, "Its sound as an MP3").clicked() {
+                    *to = Target::Mp3;
+                }
+                if ui.radio(*to == Target::M4a, "Its sound as an M4A").clicked() {
+                    *to = Target::M4a;
+                }
+                ui.checkbox(delete, "Then send the original to the Recycle Bin");
+                ui.weak("It shows in the list with its progress. Streams are copied when they fit, else encoded.");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(connected, egui::Button::new("Convert")).clicked() {
+                        actions.push(Action::Convert(*id, *to, *delete));
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            self.convert = None;
+        }
+    }
+
     /// Open or close the drop target to match the setting. Closing it with
     /// a right-click turns the setting off.
     fn sync_drop_target(&mut self, s: &Settings, actions: &mut Vec<Action>) {
@@ -3558,6 +3617,15 @@ fn row_menu(ui: &mut egui::Ui, e: &DownloadEntry, connected: bool, actions: &mut
             if ui.button("Open with...").on_hover_text("Choose the program to open it with").clicked() {
                 actions.push(Action::OpenWith(path.clone()));
                 ui.close_menu();
+            }
+            if uidm::media::convert::is_video(path) {
+                let convert = ui
+                    .add_enabled(connected, egui::Button::new("Convert..."))
+                    .on_hover_text("To an MP4, or its sound to an MP3 or M4A (needs ffmpeg)");
+                if convert.clicked() {
+                    actions.push(Action::OpenConvert(e.id));
+                    ui.close_menu();
+                }
             }
         }
         if ui.button("Connections...").on_hover_text("Each connection's range and progress").clicked() {

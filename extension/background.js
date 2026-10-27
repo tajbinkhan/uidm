@@ -150,10 +150,12 @@ async function downloadMedia(tabId, msg, referrer) {
     const ext = extensionOf(urlPath(entry.url)) || (entry.mime.startsWith("audio/") ? "mp3" : "mp4");
     download.filename = titleFileName(msg.title, ext);
   } else {
-    download.filename = titleFileName(msg.title, "mp4");
+    const soundOnly = ["m4a", "mp3"].includes(msg.audioOnly) ? msg.audioOnly : null;
+    download.filename = titleFileName(msg.title, soundOnly || "mp4");
     download.media = { kind: entry.kind };
     if (typeof msg.video === "string") download.media.video = msg.video;
     if (typeof msg.audio === "string") download.media.audio = msg.audio;
+    if (soundOnly) download.media.audio_only = soundOnly;
   }
   if (!download.filename) delete download.filename;
   return send(download);

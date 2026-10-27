@@ -1025,7 +1025,7 @@ fn pick_free_path(
 }
 
 /// `report.pdf` for 0, then `report (1).pdf`, `report (2).pdf`, ...
-fn numbered_name(filename: &str, n: u32) -> String {
+pub fn numbered_name(filename: &str, n: u32) -> String {
     if n == 0 {
         return filename.to_string();
     }

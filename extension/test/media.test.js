@@ -88,7 +88,7 @@ test("the menu lists qualities and hides a master's own playlists", () => {
   );
   same(menu[0].options, [{ label: "Download", size: 3000000 }]);
   same(
-    menu[1].options.map((o) => [o.label, o.video]),
+    menu[1].options.filter((o) => !o.audioOnly).map((o) => [o.label, o.video]),
     [
       ["720p, 3.0 Mbps", "https://v.net/720/index.m3u8"],
       ["360p, 900 kbps", "https://v.net/360/index.m3u8"],
@@ -191,4 +191,44 @@ test("the button follows the settings, and the popup changes them", async () => 
   await w.popup({ type: "setVideoButton", on: false });
   set = w.sent.filter((m) => m.op === "set_settings").at(-1);
   assert.equal(set.settings.video_button, false);
+});
+
+test("a stream offers its sound alone, from its audio track or its smallest video", () => {
+  const entries = [
+    { id: 1, url: "https://v.net/a.mpd", kind: "dash", time: 2 },
+    { id: 2, url: "https://v.net/b.m3u8", kind: "hls", time: 1 },
+  ];
+  const infos = new Map([
+    ["https://v.net/a.mpd", { video: [{ id: "v1", label: "1080p" }], audio: [{ id: "a1", label: "English", size: 900 }] }],
+    ["https://v.net/b.m3u8", { video: [{ id: "big", label: "720p" }, { id: "small", label: "240p" }], audio: [] }],
+  ]);
+  const menu = mediaMenu(entries, infos);
+  const sound = (item) => item.options.filter((o) => o.audioOnly);
+  same(sound(menu[0]).map((o) => [o.label, o.audio, o.video, o.size]), [["Sound only (M4A)", "a1", undefined, 900], ["Sound only (MP3)", "a1", undefined, 900]]);
+  same(sound(menu[1]).map((o) => [o.audioOnly, o.video]), [["m4a", "small"], ["mp3", "small"]]);
+});
+
+test("choosing the sound alone sends an audio_only stream", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.chrome.webRequest.onHeadersReceived.fire({
+    tabId: 7,
+    url: "https://v.net/master.m3u8",
+    type: "xmlhttprequest",
+    responseHeaders: [{ name: "Content-Type", value: "application/vnd.apple.mpegurl" }],
+  });
+  const menu = await new Promise((resolve) => {
+    const asked = w.content({ type: "video:menu" }, 7);
+    setTimeout(() => {
+      const probe = w.sent.find((m) => m.op === "probe_media");
+      w.port.onMessage.fire({ op: "media_info", request: probe.request, info: { kind: "hls", video: [{ id: "v", label: "720p" }], audio: [] } });
+    }, 0);
+    asked.then(resolve);
+  });
+  const item = menu.items[0];
+  const mp3 = item.options.find((o) => o.audioOnly === "mp3");
+  await w.content({ type: "video:download", entry: item.entry, video: mp3.video, audioOnly: "mp3", title: "Talk" }, 7);
+  const add = w.sent.find((m) => m.op === "add");
+  assert.equal(add.filename, "Talk.mp3");
+  assert.equal(add.media.audio_only, "mp3");
 });

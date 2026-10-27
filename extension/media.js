@@ -144,6 +144,21 @@ function mediaMenu(entries, infos) {
     if (options.length === 0 && (info.audio || []).length > 0) {
       options.push({ label: info.audio[0].label, size: info.audio[0].size || null, audio: info.audio[0].id });
     }
+    // The sound alone (UIDM needs ffmpeg for it): from the stream's audio
+    // track when it has one, else from its smallest video.
+    const sound = (info.audio || [])[0];
+    const smallest = (info.video || []).at(-1);
+    if (sound || smallest) {
+      for (const format of ["m4a", "mp3"]) {
+        options.push({
+          label: `Sound only (${format.toUpperCase()})`,
+          size: sound ? sound.size || null : null,
+          video: sound ? undefined : (smallest && smallest.id) || undefined,
+          audio: sound ? sound.id : undefined,
+          audioOnly: format,
+        });
+      }
+    }
     items.push({ entry: e.id, label, options });
   }
   return items;

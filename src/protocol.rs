@@ -149,6 +149,15 @@ pub enum Incoming {
     },
     /// Look for a newer UIDM release now; answered with `update`.
     CheckUpdate,
+    /// Convert a finished video with ffmpeg: to an MP4, or its sound to an
+    /// MP3 or M4A. The new file shows as a download of its own, with
+    /// progress; the original stays unless `delete_original`.
+    Convert {
+        id: u64,
+        to: crate::media::convert::Target,
+        #[serde(default)]
+        delete_original: bool,
+    },
     /// List the files inside a waiting zip download, reading only the end
     /// of the archive; answered with `zip_preview`.
     PreviewZip { id: u64 },
