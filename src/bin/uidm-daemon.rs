@@ -1532,6 +1532,58 @@ impl Daemon {
             eprintln!("[uidm-daemon] could not save grabber project {}: {e}", project.name);
         }
     }
+    /// Ask GitHub (at `url`) for the latest release, through the settings'
+    /// proxy, and note when that happened.
+    fn check_update(&self, url: &str) -> Outgoing {
+        let settings = self.settings.lock().unwrap().clone();
+        let start = Download {
+            url: url.to_string(),
+            ..Download::default()
+        };
+        let net = self.net_for(&start, &settings);
+        let headers = [
+            ("User-Agent".to_string(), format!("UIDM/{}", env!("CARGO_PKG_VERSION"))),
+            ("Accept".to_string(), "application/vnd.github+json".to_string()),
+        ];
+        let found = engine::fetch(url, &headers, &net, 1024 * 1024)
+            .map_err(|e| format!("Could not reach GitHub: {e}"))
+            .and_then(|page| uidm::update::parse_release(&page.body));
+        {
+            let mut s = self.settings.lock().unwrap();
+            s.last_update_check = uidm::state::unix_now();
+            if let Some(path) = &self.paths.settings {
+                let _ = s.save(path);
+            }
+        }
+        match found {
+            Ok(release) => Outgoing::Update {
+                newer: uidm::update::is_newer(&release.version, env!("CARGO_PKG_VERSION")).then_some(release),
+                error: None,
+            },
+            Err(e) => Outgoing::Update { newer: None, error: Some(e) },
+        }
+    }
+
+    /// Once a week, when a window connects, look for a newer release on
+    /// another thread and tell the windows if there is one.
+    fn weekly_update_check(self: &Arc<Self>) {
+        let (on, last) = {
+            let s = self.settings.lock().unwrap();
+            (s.check_updates, s.last_update_check)
+        };
+        if !on || uidm::state::unix_now().saturating_sub(last) < uidm::update::CHECK_EVERY_SECS {
+            return;
+        }
+        // Noted at once, so two windows do not both check.
+        self.settings.lock().unwrap().last_update_check = uidm::state::unix_now();
+        let daemon = Arc::clone(self);
+        thread::spawn(move || {
+            if let msg @ Outgoing::Update { newer: Some(_), .. } = daemon.check_update(uidm::update::LATEST_RELEASE) {
+                daemon.hub.broadcast(&msg);
+            }
+        });
+    }
+
     /// List the files inside zip download `id` on another thread, reading
     /// the end of the archive with its own request (cookies and all), and
     /// answer `reply` with `zip_preview`.
@@ -2201,8 +2253,10 @@ impl Daemon {
         Ok(new)
     }
 
-    fn set_settings(&self, new: Settings) -> Result<(), String> {
+    fn set_settings(&self, mut new: Settings) -> Result<(), String> {
         new.validate()?;
+        // Only the daemon notes update checks; a window's copy may be older.
+        new.last_update_check = new.last_update_check.max(self.settings.lock().unwrap().last_update_check);
         let new = self.store_secrets(new)?;
         let old_autostart = self.settings.lock().unwrap().start_with_windows;
         if new.start_with_windows != old_autostart {
@@ -2505,6 +2559,7 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
                 if let Some(quota) = daemon.quota_message() {
                     send(&quota);
                 }
+                daemon.weekly_update_check();
                 // Links picked from a page while no window was open.
                 if let Some(links) = daemon.picked_links.lock().unwrap().take() {
                     send(&links);
@@ -2643,6 +2698,15 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::PreviewZip { id } => daemon.preview_zip(id, reply.clone()),
+        Incoming::CheckUpdate => {
+            let (daemon, reply) = (Arc::clone(daemon), reply.clone());
+            thread::spawn(move || {
+                let msg = daemon.check_update(uidm::update::LATEST_RELEASE);
+                if let Ok(frame) = serde_json::to_vec(&msg) {
+                    let _ = reply.send(frame);
+                }
+            });
+        }
         Incoming::Rendered { request, html, url } => {
             if let Some(tx) = daemon.render_waits.lock().unwrap().remove(&request) {
                 let _ = tx.send(html.zip(url));
@@ -3522,5 +3586,34 @@ mod tests {
         tx.send(Some(("<a href=x.pdf>".into(), "https://site.net/app/".into()))).unwrap();
         let (html, url) = asking.join().unwrap().unwrap();
         assert_eq!((html.as_str(), url.as_str()), ("<a href=x.pdf>", "https://site.net/app/"));
+    }
+
+    #[test]
+    fn the_update_check_reports_only_newer_releases() {
+        let t = setup("update_check", Duplicate::NewName);
+        let serve_tag = |tag: &'static str| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            thread::spawn(move || {
+                for mut s in listener.incoming().flatten() {
+                    let mut buf = [0u8; 2048];
+                    let _ = s.read(&mut buf);
+                    let body = format!(r#"{{"tag_name":"{tag}","html_url":"https://github.com/tajbinkhan/uidm/releases/tag/{tag}"}}"#);
+                    let _ = write!(
+                        s,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                }
+            });
+            format!("http://{addr}/releases/latest")
+        };
+        match t.daemon.check_update(&serve_tag("v99.0.0")) {
+            Outgoing::Update { newer: Some(r), error: None } => assert_eq!(r.version, "99.0.0"),
+            other => panic!("expected a newer release: {other:?}"),
+        }
+        assert!(matches!(t.daemon.check_update(&serve_tag("v0.0.1")), Outgoing::Update { newer: None, error: None }));
+        assert!(matches!(t.daemon.check_update("http://127.0.0.1:1/none"), Outgoing::Update { error: Some(_), .. }));
+        assert!(t.daemon.settings.lock().unwrap().last_update_check > 0, "the check was noted");
     }
 }

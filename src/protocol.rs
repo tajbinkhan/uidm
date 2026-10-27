@@ -147,6 +147,8 @@ pub enum Incoming {
         #[serde(default)]
         user_agent: Option<String>,
     },
+    /// Look for a newer UIDM release now; answered with `update`.
+    CheckUpdate,
     /// List the files inside a waiting zip download, reading only the end
     /// of the archive; answered with `zip_preview`.
     PreviewZip { id: u64 },
@@ -565,6 +567,15 @@ pub enum Outgoing {
     /// Asks the browser extension for its cookies for `url` (for a site
     /// crawl that signs in with them); it answers with `cookies`.
     CookiesWanted { request: u64, url: String },
+    /// What the update check found: a newer release, none (`latest` is
+    /// this version or older), or why it could not look. Sent to the window
+    /// that asked, and to every window when the weekly check finds one.
+    Update {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        newer: Option<crate::update::Release>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// The files inside a zip download, answering `preview_zip`, or why
     /// they could not be listed.
     ZipPreview {

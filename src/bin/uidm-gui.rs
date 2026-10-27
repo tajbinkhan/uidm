@@ -166,6 +166,11 @@ struct Shared {
     picked_links: Option<links::LinksDialog>,
     /// The quota's warning for the status bar, while it matters.
     quota: Option<String>,
+    /// The last update check's answer, for the About box: a newer release,
+    /// none, or why it could not look.
+    update: Option<Result<Option<uidm::update::Release>, String>>,
+    /// A newer release, for the status bar.
+    newer_release: Option<uidm::update::Release>,
     /// A zip preview the daemon sent: the download and its files, or why
     /// not.
     zip_listed: Option<(u64, Result<Vec<uidm::zip::ZipEntry>, String>)>,
@@ -256,6 +261,15 @@ impl Shared {
                 } else {
                     None
                 };
+            }
+            Outgoing::Update { newer, error } => {
+                self.update = Some(match error {
+                    Some(e) => Err(e.clone()),
+                    None => Ok(newer.clone()),
+                });
+                if newer.is_some() {
+                    self.newer_release = newer.clone();
+                }
             }
             Outgoing::ZipPreview { id, entries, error } => {
                 let result = match error {
@@ -359,6 +373,9 @@ enum Action {
     OpenWith(String),
     /// List the files inside a waiting zip download.
     PreviewZip(u64),
+    OpenAbout,
+    /// Look for a newer release now.
+    CheckUpdate,
     Reconnect,
     OpenOptions,
     /// Open Options at the Connection tab with a new login for this host.
@@ -491,6 +508,9 @@ struct App {
     links: Option<links::LinksDialog>,
     /// A zip download's preview, asked for or shown.
     zip_preview: Option<ZipPreview>,
+    /// The About box is open; `true` in the second place while a check
+    /// it started waits for its answer.
+    about: Option<bool>,
     /// Captured addresses whose save-as dialog was canceled once.
     canceled_once: HashSet<String>,
     /// The offer to stop capturing an address, and its "Don't show again" box.
@@ -687,6 +707,7 @@ struct OptionsDraft {
     quota_enabled: bool,
     quota_mb: u64,
     quota_hours: u64,
+    check_updates: bool,
     error: Option<String>,
     picked: Picked,
 }
@@ -788,6 +809,7 @@ impl OptionsDraft {
             quota_enabled: s.quota_enabled,
             quota_mb: s.quota_mb,
             quota_hours: s.quota_hours,
+            check_updates: s.check_updates,
             error: None,
             picked: Picked::default(),
         }
@@ -892,6 +914,9 @@ impl OptionsDraft {
             quota_enabled: self.quota_enabled,
             quota_mb: self.quota_mb,
             quota_hours: self.quota_hours,
+            check_updates: self.check_updates,
+            // The daemon keeps its own.
+            last_update_check: 0,
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -924,6 +949,8 @@ impl App {
                 picked_links: None,
                 quota: None,
                 zip_listed: None,
+                update: None,
+                newer_release: None,
                 quota_paused: false,
             })),
             writer: Arc::new(Mutex::new(None)),
@@ -950,6 +977,7 @@ impl App {
             connection_dialogs: Vec::new(),
             links: None,
             zip_preview: None,
+            about: None,
             canceled_once: HashSet::new(),
             exception_offer: None,
         };
@@ -1205,6 +1233,12 @@ impl App {
                 self.shared.lock().unwrap().completed.pop_front();
             }
             Action::OpenWith(path) => win::open_with(&path),
+            Action::OpenAbout => self.about = Some(false),
+            Action::CheckUpdate => {
+                self.shared.lock().unwrap().update = None;
+                self.about = Some(true);
+                send(&self.writer, &Incoming::CheckUpdate);
+            }
             Action::PreviewZip(id) => {
                 self.zip_preview = Some(ZipPreview { id, result: None });
                 send(&self.writer, &Incoming::PreviewZip { id });
@@ -1862,6 +1896,11 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 
         ui.label("");
         ui.checkbox(&mut draft.close_to_tray, "Closing the window keeps UIDM in the tray");
+        ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut draft.check_updates, "Look for a newer UIDM on GitHub once a week")
+            .on_hover_text("Only a notice with a link; nothing is downloaded or installed");
         ui.end_row();
 
         ui.label("Removing downloads");
@@ -2598,6 +2637,11 @@ impl eframe::App for App {
                             self.columns_dialog = true;
                             ui.close_menu();
                         }
+                        ui.separator();
+                        if ui.button("About UIDM...").clicked() {
+                            actions.push(Action::OpenAbout);
+                            ui.close_menu();
+                        }
                     });
                 });
                 let can_open = connected && settings.is_some();
@@ -2640,6 +2684,11 @@ impl eframe::App for App {
                 if let Some(err) = &last_error {
                     ui.separator();
                     ui.colored_label(ui.visuals().warn_fg_color, err);
+                }
+                let newer = self.shared.lock().unwrap().newer_release.clone();
+                if let Some(r) = newer {
+                    ui.separator();
+                    ui.hyperlink_to(format!("UIDM {} is available", r.version), &r.url);
                 }
                 let quota = self.shared.lock().unwrap().quota.clone();
                 if let Some(q) = quota {
@@ -2878,6 +2927,7 @@ impl eframe::App for App {
         self.limit_window(ctx, &rows, connected, &mut actions);
         self.exception_window(ctx, connected, &mut actions);
         self.zip_window(ctx, &rows);
+        self.about_window(ctx, connected, &mut actions);
         if let Some(d) = self.shared.lock().unwrap().picked_links.take() {
             self.links = Some(d);
         }
@@ -2925,6 +2975,55 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// The About box: the version, the project's page, and a check for a
+    /// newer release.
+    fn about_window(&mut self, ctx: &egui::Context, connected: bool, actions: &mut Vec<Action>) {
+        let Some(checking) = self.about else {
+            return;
+        };
+        let answer = self.shared.lock().unwrap().update.clone();
+        let mut open = true;
+        egui::Window::new("About UIDM")
+            .id(egui::Id::new("about"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.heading("UIDM");
+                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.hyperlink_to("github.com/tajbinkhan/uidm", "https://github.com/tajbinkhan/uidm");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let busy = checking && answer.is_none();
+                    if ui.add_enabled(connected && !busy, egui::Button::new("Check for updates")).clicked() {
+                        actions.push(Action::CheckUpdate);
+                    }
+                    if busy {
+                        ui.spinner();
+                    }
+                });
+                if checking {
+                    match &answer {
+                        Some(Ok(Some(r))) => {
+                            ui.label(format!("UIDM {} is available.", r.version));
+                            ui.hyperlink_to("Open the release page", &r.url);
+                        }
+                        Some(Ok(None)) => {
+                            ui.label("This is the newest version.");
+                        }
+                        Some(Err(e)) => {
+                            ui.colored_label(ui.visuals().warn_fg_color, e);
+                        }
+                        None => {}
+                    }
+                }
+            });
+        if !open {
+            self.about = None;
+        }
+    }
+
     /// The files inside a zip download, once listed.
     fn zip_window(&mut self, ctx: &egui::Context, rows: &[DownloadEntry]) {
         if let Some((id, result)) = self.shared.lock().unwrap().zip_listed.take() {

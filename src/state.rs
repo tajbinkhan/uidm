@@ -129,6 +129,7 @@ impl DownloadTable {
             | Outgoing::CookiesWanted { .. }
             | Outgoing::RenderPage { .. }
             | Outgoing::ZipPreview { .. }
+            | Outgoing::Update { .. }
             | Outgoing::GrabProgress { .. }
             | Outgoing::GrabDone { .. } => {}
         }
