@@ -59,7 +59,7 @@ use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
     parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, SocksVersion, ServerLimit, QUOTA_HOURS_RANGE, SERVER_CONNECTIONS_RANGE, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
-    CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, USER_AGENT_PRESETS,
+    CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, TEXT_SIZE_RANGE, USER_AGENT_PRESETS,
 };
 use uidm::state::DownloadTable;
 
@@ -484,6 +484,9 @@ struct App {
     threat_prompt: Option<(String, String, String)>,
     /// The tray tooltip last set, so it is only updated when it changes.
     tooltip: String,
+    /// The theme and text size last applied, so they are only set when the
+    /// settings change them (Ctrl+Plus and Ctrl+Minus zoom in between).
+    appearance: Option<(uidm::settings::Theme, u32)>,
     /// Which downloads the list shows.
     filter: Filter,
     /// The Queues dialog, while it is open.
@@ -723,6 +726,8 @@ struct OptionsDraft {
     quota_hours: u64,
     check_updates: bool,
     drop_target: bool,
+    theme: uidm::settings::Theme,
+    text_size: u32,
     error: Option<String>,
     picked: Picked,
 }
@@ -826,6 +831,8 @@ impl OptionsDraft {
             quota_hours: s.quota_hours,
             check_updates: s.check_updates,
             drop_target: s.drop_target,
+            theme: s.theme,
+            text_size: s.text_size,
             error: None,
             picked: Picked::default(),
         }
@@ -932,6 +939,8 @@ impl OptionsDraft {
             quota_hours: self.quota_hours,
             check_updates: self.check_updates,
             drop_target: self.drop_target,
+            theme: self.theme,
+            text_size: self.text_size,
             // The daemon keeps its own.
             last_update_check: 0,
         };
@@ -977,6 +986,7 @@ impl App {
             confirm: None,
             threat_prompt: None,
             tooltip: String::new(),
+            appearance: None,
             filter: Filter::All,
             queues_dialog: None,
             refresh: None,
@@ -1808,6 +1818,14 @@ impl App {
     }
 }
 
+fn theme_label(t: uidm::settings::Theme) -> &'static str {
+    match t {
+        uidm::settings::Theme::System => "Follow Windows",
+        uidm::settings::Theme::Light => "Light",
+        uidm::settings::Theme::Dark => "Dark",
+    }
+}
+
 fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     egui::Grid::new("options").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label("Download folder");
@@ -1943,6 +1961,22 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.label("");
         ui.checkbox(&mut draft.check_updates, "Look for a newer UIDM on GitHub once a week")
             .on_hover_text("Only a notice with a link; nothing is downloaded or installed");
+        ui.end_row();
+
+        ui.label("Theme");
+        egui::ComboBox::from_id_salt("theme")
+            .selected_text(theme_label(draft.theme))
+            .show_ui(ui, |ui| {
+                for t in uidm::settings::Theme::ALL {
+                    ui.selectable_value(&mut draft.theme, t, theme_label(t));
+                }
+            });
+        ui.end_row();
+
+        ui.label("Text size");
+        let (lo, hi) = TEXT_SIZE_RANGE;
+        ui.add(egui::Slider::new(&mut draft.text_size, lo..=hi).step_by(10.0).suffix("%"))
+            .on_hover_text("Scales everything in the window");
         ui.end_row();
 
         ui.label("Removing downloads");
@@ -2623,6 +2657,10 @@ impl eframe::App for App {
             self.tooltip = tooltip;
         }
         if let Some(s) = &settings {
+            if self.appearance != Some((s.theme, s.text_size)) {
+                theme::set_appearance(ctx, s.theme, s.text_size);
+                self.appearance = Some((s.theme, s.text_size));
+            }
             tray::set_speed_limit_checked(s.speed_limit_enabled);
             self.sync_drop_target(s, &mut actions);
         }

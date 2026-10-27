@@ -135,6 +135,24 @@ pub enum SocksVersion {
     V5,
 }
 
+/// The window's colors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    /// Light or dark, as Windows' app mode is.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::System, Theme::Light, Theme::Dark];
+}
+
+/// The window's text size, in percent of the normal size.
+pub const TEXT_SIZE_RANGE: (u32, u32) = (80, 150);
+
 /// Allowed lengths of the quota's window, in hours (up to a week).
 pub const QUOTA_HOURS_RANGE: (u64, u64) = (1, 168);
 
@@ -433,6 +451,9 @@ pub struct Settings {
     pub last_update_check: u64,
     /// Show the drop target, a small window that takes dragged links.
     pub drop_target: bool,
+    pub theme: Theme,
+    /// The window's text size, in percent; everything in it scales along.
+    pub text_size: u32,
 }
 
 impl Default for Settings {
@@ -495,6 +516,8 @@ impl Default for Settings {
             check_updates: true,
             last_update_check: 0,
             drop_target: false,
+            theme: Theme::System,
+            text_size: 100,
         }
     }
 }
@@ -521,6 +544,10 @@ impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         if self.proxy_mode == ProxyMode::Script && !crate::batch::is_web_url(self.proxy_pac_url.trim()) {
             return Err("The configuration script must be an http or https address.".into());
+        }
+        let (lo, hi) = TEXT_SIZE_RANGE;
+        if !(lo..=hi).contains(&self.text_size) {
+            return Err(format!("The text size must be between {lo}% and {hi}%."));
         }
         let (lo, hi) = QUOTA_HOURS_RANGE;
         if !(lo..=hi).contains(&self.quota_hours) {
@@ -945,6 +972,8 @@ mod tests {
             check_updates: false,
             last_update_check: 1_700_000_000,
             drop_target: true,
+            theme: Theme::Dark,
+            text_size: 125,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
@@ -977,6 +1006,10 @@ mod tests {
         }
         let s = Settings { speed_limit_kbps: 0, ..Settings::default() };
         assert!(s.validate().is_err());
+        for (text_size, valid) in [(79, false), (80, true), (150, true), (151, false)] {
+            let s = Settings { text_size, ..Settings::default() };
+            assert_eq!(s.validate().is_ok(), valid, "text_size {text_size}");
+        }
     }
 
     #[test]

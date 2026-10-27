@@ -231,8 +231,10 @@ tests, not in a running Firefox.
   10), a total speed limit, what to do when a file name is taken or an
   address is already in the list, the save-as
   dialog, whether to resume unfinished downloads when UIDM starts, Start with
-  Windows, whether closing the window keeps UIDM in the tray, and where
-  ffmpeg is. **Categories**: as above. **Browser capture**: the rules below,
+  Windows, whether closing the window keeps UIDM in the tray, where ffmpeg
+  is, the **Theme** (follow Windows, light or dark) and the **Text size**
+  (80% to 150%, scaling the whole window). Theme and text size change as soon
+  as you save. **Categories**: as above. **Browser capture**: the rules below,
   the video button and the clipboard prompt. **When
   done**: notifications, sounds and the virus scan. **Connection**: proxies
   and site logins. The status bar shows the speed limit and toggles it.

@@ -1,7 +1,7 @@
 //! The window's look, after shadcn/ui: the zinc palette, 1px borders, rounded
 //! corners, flat fills and Segoe UI (what shadcn's system font stack picks on
 //! Windows). There is a light and a dark set; egui picks one to follow the
-//! Windows theme.
+//! Windows theme, unless Options picks one.
 
 use std::sync::Arc;
 
@@ -108,6 +108,17 @@ pub fn apply(ctx: &egui::Context) {
             spacing.menu_margin = Margin::same(4);
         });
     }
+}
+
+/// Follows the Theme and Text size options. Changing the zoom factor scales
+/// every size above, the drop target's window included.
+pub fn set_appearance(ctx: &egui::Context, theme: uidm::settings::Theme, text_size: u32) {
+    ctx.set_theme(match theme {
+        uidm::settings::Theme::System => egui::ThemePreference::System,
+        uidm::settings::Theme::Light => egui::ThemePreference::Light,
+        uidm::settings::Theme::Dark => egui::ThemePreference::Dark,
+    });
+    ctx.set_zoom_factor(text_size as f32 / 100.0);
 }
 
 /// Draws a progress bar on shadcn's muted track instead of the input
