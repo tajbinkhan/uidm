@@ -12,6 +12,18 @@ if (typeof module !== "undefined") {
   var { extensionOf, urlPath, hostOf, siteMatches } = require("./rules.js");
 }
 
+// The menu's text in the browser's language. The tests load this file with
+// no browser around it, and get the English from _locales instead: each
+// $NAME$ is its placeholder's $1..$9 from `subs`.
+function uiText(name, subs) {
+  if (typeof chrome !== "undefined" && chrome.i18n) return chrome.i18n.getMessage(name, subs);
+  const m = require("./_locales/en/messages.json")[name];
+  if (!m) return "";
+  const args = [].concat(subs ?? []);
+  const fill = (p) => m.placeholders[p.toLowerCase()].content.replace(/\$(\d)/g, (_, i) => args[i - 1]);
+  return m.message.replace(/\$(\w+)\$/g, (_, p) => fill(p));
+}
+
 // Most media kept per tab; the oldest go first.
 const MEDIA_PER_TAB = 50;
 // Smaller direct files are sounds and adverts' beacons, not videos.
@@ -102,8 +114,9 @@ function recordMedia(store, tabId, url, found, now) {
 // A file's type for people: "MP4 video".
 function fileLabel(entry) {
   const ext = extensionOf(urlPath(entry.url)) || (entry.mime.split("/")[1] || "").replace(/^x-/, "");
-  const what = entry.mime.startsWith("audio/") || MEDIA_FILE_EXTENSIONS[ext] === "audio" ? "audio" : "video";
-  return ext ? `${ext.toUpperCase()} ${what}` : what[0].toUpperCase() + what.slice(1);
+  const audio = entry.mime.startsWith("audio/") || MEDIA_FILE_EXTENSIONS[ext] === "audio";
+  if (!ext) return audio ? uiText("audioFile") : uiText("videoFile");
+  return audio ? uiText("audioFileType", ext.toUpperCase()) : uiText("videoFileType", ext.toUpperCase());
 }
 
 // The video button's menu for a tab's `entries`, newest first. `infos` maps a
@@ -119,14 +132,14 @@ function mediaMenu(entries, infos) {
   const items = [];
   for (const e of [...entries].sort((a, b) => b.time - a.time || b.id - a.id)) {
     if (e.kind === "file") {
-      items.push({ entry: e.id, label: fileLabel(e), options: [{ label: "Download", size: e.size || null }] });
+      items.push({ entry: e.id, label: fileLabel(e), options: [{ label: uiText("download"), size: e.size || null }] });
       continue;
     }
     if (parts.has(e.url)) continue;
     const info = infos.get(e.url);
-    const label = e.kind === "hls" ? "HLS stream" : "DASH stream";
+    const label = e.kind === "hls" ? uiText("hlsStream") : uiText("dashStream");
     if (!info) {
-      items.push({ entry: e.id, label, options: [], error: "UIDM did not answer." });
+      items.push({ entry: e.id, label, options: [], error: uiText("mediaNoAnswer") });
       continue;
     }
     if (info.drm || info.error) {
@@ -151,7 +164,7 @@ function mediaMenu(entries, infos) {
     if (sound || smallest) {
       for (const format of ["m4a", "mp3"]) {
         options.push({
-          label: `Sound only (${format.toUpperCase()})`,
+          label: uiText("soundOnly", format.toUpperCase()),
           size: sound ? sound.size || null : null,
           video: sound ? undefined : (smallest && smallest.id) || undefined,
           audio: sound ? sound.id : undefined,
@@ -185,5 +198,5 @@ function titleFileName(title, ext) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { classifyMedia, recordMedia, mediaMenu, videoButtonAllowed, titleFileName, responseSize, MEDIA_PER_TAB };
+  module.exports = { classifyMedia, recordMedia, mediaMenu, videoButtonAllowed, titleFileName, responseSize, uiText, MEDIA_PER_TAB };
 }

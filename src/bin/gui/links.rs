@@ -11,6 +11,7 @@ use uidm::protocol::{Download, PageLink};
 use uidm::queue::{Queue, MAIN_QUEUE};
 
 use super::{browse_button, take_picked, Action, Picked};
+use crate::i18n::{tr, trf};
 
 /// Extensions of links that lead to another web page rather than a file.
 const PAGE_TYPES: [&str; 9] = ["", "htm", "html", "php", "asp", "aspx", "jsp", "shtml", "cgi"];
@@ -130,7 +131,7 @@ pub fn dialog(ctx: &egui::Context, d: &mut LinksDialog, queues: &[Queue], connec
     take_picked(&d.picked, &mut d.folder);
     let mut open = true;
     let mut close = false;
-    egui::Window::new("Download links from the page")
+    egui::Window::new(tr("Download links from the page"))
         .id(egui::Id::new("links_picker"))
         .open(&mut open)
         .collapsible(false)
@@ -140,19 +141,19 @@ pub fn dialog(ctx: &egui::Context, d: &mut LinksDialog, queues: &[Queue], connec
         .show(ctx, |ui| {
             ui.add(egui::Label::new(egui::RichText::new(&d.page).weak()).truncate());
             ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut d.hide_pages, "Hide web pages");
-                ui.checkbox(&mut d.hide_images, "Hide images on the page");
-                ui.checkbox(&mut d.hide_repeated, "Hide repeated links");
-                ui.label("Types");
-                ui.add(egui::TextEdit::singleline(&mut d.types).hint_text("all, or zip, pdf").desired_width(120.0));
+                ui.checkbox(&mut d.hide_pages, tr("Hide web pages"));
+                ui.checkbox(&mut d.hide_images, tr("Hide images on the page"));
+                ui.checkbox(&mut d.hide_repeated, tr("Hide repeated links"));
+                ui.label(tr("Types"));
+                ui.add(egui::TextEdit::singleline(&mut d.types).hint_text(tr("all, or zip, pdf")).desired_width(120.0));
             });
             let visible = d.visible();
             ui.horizontal(|ui| {
-                ui.label(format!("{} of {} links shown", visible.len(), d.links.len()));
-                if ui.small_button("Check all").clicked() {
+                ui.label(trf!("{shown} of {total} links shown", shown = visible.len(), total = d.links.len()));
+                if ui.small_button(tr("Check all")).clicked() {
                     visible.iter().for_each(|&i| d.checked[i] = true);
                 }
-                if ui.small_button("Uncheck all").clicked() {
+                if ui.small_button(tr("Uncheck all")).clicked() {
                     visible.iter().for_each(|&i| d.checked[i] = false);
                 }
             });
@@ -164,8 +165,8 @@ pub fn dialog(ctx: &egui::Context, d: &mut LinksDialog, queues: &[Queue], connec
                         ui.add_sized([220.0, 18.0], egui::Label::new(link_name(l)).truncate())
                             .on_hover_text(if l.text.is_empty() { l.url.as_str() } else { l.text.as_str() });
                         let kind = match (l.image, link_type(l)) {
-                            (true, _) => "image".to_string(),
-                            (_, t) if PAGE_TYPES.contains(&t.as_str()) => "page".to_string(),
+                            (true, _) => tr("image").to_string(),
+                            (_, t) if PAGE_TYPES.contains(&t.as_str()) => tr("page").to_string(),
                             (_, t) => t,
                         };
                         ui.weak(kind);
@@ -176,24 +177,24 @@ pub fn dialog(ctx: &egui::Context, d: &mut LinksDialog, queues: &[Queue], connec
             });
             ui.add_space(6.0);
             egui::Grid::new("links_target").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                ui.label("Queue");
+                ui.label(tr("Queue"));
                 ui.horizontal(|ui| {
                     super::tools::queue_combo(ui, "links_queue", &mut d.queue, queues);
-                    ui.checkbox(&mut d.start_queue, "Start the queue now");
+                    ui.checkbox(&mut d.start_queue, tr("Start the queue now"));
                 });
                 ui.end_row();
-                ui.label("Save to");
+                ui.label(tr("Save to"));
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut d.folder)
-                            .hint_text("The folder of each file's category")
+                            .hint_text(tr("The folder of each file's category"))
                             .desired_width(340.0),
                     );
-                    browse_button(ui, "Save the files to", &d.folder, &d.picked);
+                    browse_button(ui, tr("Save the files to"), &d.folder, &d.picked);
                 });
                 ui.end_row();
                 ui.label("");
-                ui.checkbox(&mut d.text_as_description, "Use each link's text as its description");
+                ui.checkbox(&mut d.text_as_description, tr("Use each link's text as its description"));
                 ui.end_row();
             });
             if let Some(e) = &d.error {
@@ -202,10 +203,10 @@ pub fn dialog(ctx: &egui::Context, d: &mut LinksDialog, queues: &[Queue], connec
             let n = visible.iter().filter(|&&i| d.checked[i]).count();
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(connected && n > 0, egui::Button::new(format!("Add {n}"))).clicked() {
+                if ui.add_enabled(connected && n > 0, egui::Button::new(trf!("Add {count}", count = n))).clicked() {
                     let folder = d.folder.trim().to_string();
                     if !folder.is_empty() && !std::path::Path::new(&folder).is_absolute() {
-                        d.error = Some(format!("The folder must be a full path: {folder}"));
+                        d.error = Some(trf!("The folder must be a full path: {folder}", folder = folder));
                         return;
                     }
                     actions.push(Action::AddMany {
@@ -215,7 +216,7 @@ pub fn dialog(ctx: &egui::Context, d: &mut LinksDialog, queues: &[Queue], connec
                     });
                     close = true;
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr("Cancel")).clicked() {
                     close = true;
                 }
             });

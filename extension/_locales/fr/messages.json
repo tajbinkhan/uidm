@@ -1,0 +1,222 @@
+{
+  "extDescription": {
+    "message": "Envoie les téléchargements du navigateur au gestionnaire de téléchargements UIDM."
+  },
+  "downloadWithUidm": {
+    "message": "Télécharger avec UIDM"
+  },
+  "downloadLaterWithUidm": {
+    "message": "Télécharger plus tard avec UIDM"
+  },
+  "downloadAllLinksWithUidm": {
+    "message": "Télécharger tous les liens avec UIDM"
+  },
+  "downloadSelectedLinksWithUidm": {
+    "message": "Télécharger les liens sélectionnés avec UIDM"
+  },
+  "uidmDisconnected": {
+    "message": "UIDM s’est déconnecté"
+  },
+  "captureDownloads": {
+    "message": "Intercepter les téléchargements"
+  },
+  "captureDownloadsTitle": {
+    "message": "Envoyer à UIDM les téléchargements lancés par le navigateur"
+  },
+  "statusConnected": {
+    "message": "Connecté. Les téléchargements que vous lancez dans le navigateur vont à UIDM."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Connecté. L’interception est désactivée, le navigateur garde donc ses propres téléchargements."
+  },
+  "statusNotConnected": {
+    "message": "Non connecté à UIDM. Les téléchargements restent dans le navigateur."
+  },
+  "statusNotConnectedReason": {
+    "message": "Non connecté à UIDM\u00a0: $REASON$. Les téléchargements restent dans le navigateur.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Votre prochain téléchargement sera le nouveau lien de $NAME$.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Ne plus attendre"
+  },
+  "skipNextDownload": {
+    "message": "Ignorer le prochain téléchargement"
+  },
+  "skipNextDownloadTitle": {
+    "message": "Laisser le prochain téléchargement dans le navigateur"
+  },
+  "dontSkip": {
+    "message": "Ne pas ignorer"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "Le prochain téléchargement reste dans le navigateur"
+  },
+  "allLinks": {
+    "message": "Tous les liens de la page"
+  },
+  "allLinksTitle": {
+    "message": "Lister les liens de cette page dans UIDM pour choisir ceux à télécharger"
+  },
+  "videoButton": {
+    "message": "Bouton vidéo"
+  },
+  "videoButtonTitle": {
+    "message": "Un bouton de téléchargement sur les vidéos lues dans le navigateur"
+  },
+  "videoButtonOnSite": {
+    "message": "sur $SITE$",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Collez une URL de téléchargement"
+  },
+  "download": {
+    "message": "Télécharger"
+  },
+  "noDownloads": {
+    "message": "Aucun téléchargement pour l’instant."
+  },
+  "stateQueued": {
+    "message": "En file d’attente"
+  },
+  "stateDownloading": {
+    "message": "Téléchargement en cours"
+  },
+  "stateDone": {
+    "message": "Terminé"
+  },
+  "stateFailed": {
+    "message": "Échec"
+  },
+  "stateCanceled": {
+    "message": "Annulé"
+  },
+  "stateInterrupted": {
+    "message": "Interrompu"
+  },
+  "stateConfirming": {
+    "message": "Vous attend dans UIDM"
+  },
+  "stateWaiting": {
+    "message": "En attente de démarrage"
+  },
+  "threatFound": {
+    "message": "Menace détectée"
+  },
+  "start": {
+    "message": "Démarrer"
+  },
+  "cancel": {
+    "message": "Annuler"
+  },
+  "retry": {
+    "message": "Réessayer"
+  },
+  "remove": {
+    "message": "Retirer"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$\u00a0o",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$\u00a0Ko",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$\u00a0Mo",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$\u00a0Go",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$\u00a0To",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "Télécharger la vidéo"
+  },
+  "lookingForVideo": {
+    "message": "Recherche de la vidéo..."
+  },
+  "videoProtected": {
+    "message": "Cette vidéo est protégée par DRM, UIDM ne la téléchargera donc pas."
+  },
+  "streamProtected": {
+    "message": "Protégé par DRM\u00a0; UIDM ne le téléchargera pas."
+  },
+  "uidmNotConnected": {
+    "message": "UIDM n’est pas lancé ou n’est pas connecté."
+  },
+  "noVideoFound": {
+    "message": "Aucune vidéo trouvée pour l’instant. Laissez-la jouer un moment, puis réessayez."
+  },
+  "sentToUidm": {
+    "message": "Envoyé à UIDM."
+  },
+  "couldNotReachUidm": {
+    "message": "Impossible de joindre UIDM."
+  },
+  "hlsStream": {
+    "message": "Flux HLS"
+  },
+  "dashStream": {
+    "message": "Flux DASH"
+  },
+  "mediaNoAnswer": {
+    "message": "UIDM n’a pas répondu."
+  },
+  "soundOnly": {
+    "message": "Audio seul ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "Vidéo $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "Audio $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "Vidéo"
+  },
+  "audioFile": {
+    "message": "Audio"
+  }
+}

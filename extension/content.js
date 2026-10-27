@@ -63,7 +63,7 @@
       button:hover { background: #1d4ed8; }
     `;
     button = document.createElement("button");
-    button.textContent = "Download with UIDM";
+    button.textContent = chrome.i18n.getMessage("downloadWithUidm");
     // Keep the selection: a press would otherwise clear it.
     button.addEventListener("mousedown", (ev) => ev.preventDefault());
     button.addEventListener("click", (ev) => {
@@ -102,7 +102,8 @@
     if (!host) build();
     const r = sel.getRangeAt(sel.rangeCount - 1).getBoundingClientRect();
     host.style.display = "block";
-    host.style.left = `${Math.max(0, Math.min(r.right, innerWidth - 150))}px`;
+    // The button's width depends on the language its label is in.
+    host.style.left = `${Math.max(0, Math.min(r.right, innerWidth - button.offsetWidth - 16))}px`;
     host.style.top = `${Math.max(0, Math.min(r.bottom + 6, innerHeight - 30))}px`;
   }
 
@@ -134,16 +135,23 @@
 
   const ask = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
 
+  // A size, with numbers written the way the browser's language writes them.
+  const SIZE_UNITS = ["sizeBytes", "sizeKB", "sizeMB", "sizeGB"];
   function human(n) {
     if (!n) return "";
-    const units = ["B", "KB", "MB", "GB"];
     let v = n;
     let u = 0;
-    while (v >= 1024 && u < units.length - 1) {
+    while (v >= 1024 && u < SIZE_UNITS.length - 1) {
       v /= 1024;
       u++;
     }
-    return `${v.toFixed(u ? 1 : 0)} ${units[u]}`;
+    const digits = u ? 1 : 0;
+    const number = v.toLocaleString(chrome.i18n.getUILanguage(), {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+      useGrouping: false,
+    });
+    return chrome.i18n.getMessage(SIZE_UNITS[u], number);
   }
 
   function el(tag, cls, text) {
@@ -170,7 +178,7 @@
       .opt .size { margin-left: auto; color: #9198a1; }
       .note { padding: 6px; color: #d29922; }
     `;
-    const button = el("button", "btn", "Download video");
+    const button = el("button", "btn", chrome.i18n.getMessage("downloadVideo"));
     const menu = el("div", "menu");
     menu.hidden = true;
     button.addEventListener("click", (ev) => {
@@ -193,7 +201,8 @@
       return;
     }
     host.style.display = "block";
-    host.style.left = `${Math.max(0, Math.min(r.right, innerWidth) - 136)}px`;
+    // The button's width depends on the language its label is in.
+    host.style.left = `${Math.max(0, Math.min(r.right, innerWidth) - ui.button.offsetWidth - 20)}px`;
     host.style.top = `${Math.max(0, r.top) + 8}px`;
   }
 
@@ -242,24 +251,24 @@
     clearTimeout(closeTimer);
     menu.hidden = false;
     if (protectedVideo()) {
-      menu.replaceChildren(el("div", "note", "This video is protected by DRM, so UIDM will not download it."));
+      menu.replaceChildren(el("div", "note", chrome.i18n.getMessage("videoProtected")));
       return;
     }
-    menu.replaceChildren(el("div", "head", "Looking for the video..."));
+    menu.replaceChildren(el("div", "head", chrome.i18n.getMessage("lookingForVideo")));
     const answer = await ask({ type: "video:menu" });
     menu.replaceChildren();
     if (!answer || !answer.connected) {
-      menu.append(el("div", "note", "UIDM is not running or not connected."));
+      menu.append(el("div", "note", chrome.i18n.getMessage("uidmNotConnected")));
       return;
     }
     if (answer.items.length === 0) {
-      menu.append(el("div", "note", "No video found yet. Let it play for a moment, then try again."));
+      menu.append(el("div", "note", chrome.i18n.getMessage("noVideoFound")));
       return;
     }
     for (const item of answer.items) {
       menu.append(el("div", "head", item.label));
       if (item.drm) {
-        menu.append(el("div", "note", "Protected by DRM; UIDM will not download it."));
+        menu.append(el("div", "note", chrome.i18n.getMessage("streamProtected")));
         continue;
       }
       if (item.error) {
@@ -277,7 +286,8 @@
               audioOnly: o.audioOnly,
               title: document.title,
             });
-            menu.replaceChildren(el("div", "head", sent && sent.ok ? "Sent to UIDM." : "Could not reach UIDM."));
+            const result = sent && sent.ok ? chrome.i18n.getMessage("sentToUidm") : chrome.i18n.getMessage("couldNotReachUidm");
+            menu.replaceChildren(el("div", "head", result));
             closeTimer = setTimeout(() => (menu.hidden = true), 1500);
           }),
         );

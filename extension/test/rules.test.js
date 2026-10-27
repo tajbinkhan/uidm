@@ -258,6 +258,24 @@ test("the selection button asks for the selection's links only", async () => {
   assert.equal(w.sent.at(-1).op, "pick_links");
 });
 
+test("each browser's manifest has only the keys it understands", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { firefoxManifest } = require("./harness.js");
+  const chrome = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
+  // Chrome warns about background scripts in Manifest V3, and about keys it
+  // does not know.
+  assert.deepEqual(Object.keys(chrome.background), ["service_worker"]);
+  assert.equal(chrome.browser_specific_settings, undefined);
+  // Firefox runs no service worker and has no use for Chrome's key.
+  const firefox = firefoxManifest();
+  assert.deepEqual(Object.keys(firefox.background), ["scripts"]);
+  assert.equal(firefox.background.scripts.at(-1), chrome.background.service_worker);
+  assert.equal(firefox.key, undefined);
+  assert.equal(firefox.browser_specific_settings.gecko.id, "uidm@uidm.local");
+  assert.equal(firefox.version, chrome.version);
+});
+
 test("the worker runs as a Firefox background script", async () => {
   const w = loadWorker({ firefox: true });
   w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });

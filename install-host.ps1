@@ -8,8 +8,10 @@
 #   .\install-host.ps1 -ExtensionId <id>   # only if you changed the manifest key
 #
 # The extension's manifest carries a fixed public key, so its ID is always
-# epmjakacaejhdhldkpbjnakhfmjjbhfm and you do not need to pass one. In Firefox
-# it is uidm@uidm.local, from browser_specific_settings in the manifest.
+# epmjakacaejhdhldkpbjnakhfmjjbhfm and you do not need to pass one. Firefox
+# loads a copy of the extension with its own manifest, which this script makes
+# in the firefox folder (with installer\make-firefox.ps1); its ID is
+# uidm@uidm.local.
 # Run .\install-host.ps1 -Uninstall to remove the registration and shortcut,
 # the "Start with Windows" entry and the notification registration.
 
@@ -31,6 +33,7 @@ $manifestPath = Join-Path $env:LOCALAPPDATA "UIDM\com.uidm.host.json"
 # own manifest.
 $firefoxManifestPath = Join-Path $env:LOCALAPPDATA "UIDM\com.uidm.host.firefox.json"
 $firefoxKey = "HKCU:\Software\Mozilla\NativeMessagingHosts\$hostName"
+$firefoxExtension = Join-Path $root "firefox"
 $shortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "UIDM.lnk"
 $browserKeys = @(
     "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName",
@@ -101,6 +104,8 @@ New-Item -Path $firefoxKey -Force | Out-Null
 Set-ItemProperty -Path $firefoxKey -Name "(default)" -Value $firefoxManifestPath
 Write-Host "Registered $firefoxKey"
 
+& (Join-Path $root "installer\make-firefox.ps1") -Out $firefoxExtension
+
 if (-not $NoShortcut) {
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($shortcut)
@@ -117,5 +122,5 @@ Write-Host "  1. Open chrome://extensions (or edge://extensions) and turn on Dev
 Write-Host "  2. Click 'Load unpacked' and choose $(Join-Path $root 'extension')."
 Write-Host "  3. Its ID should read $ExtensionId."
 Write-Host "In Firefox, open about:debugging, choose This Firefox, then Load Temporary Add-on,"
-Write-Host "pick $(Join-Path $root 'extension\manifest.json'), and allow it to access all websites."
+Write-Host "pick $(Join-Path $firefoxExtension 'manifest.json'), and allow it to access all websites."
 Write-Host "Then open UIDM from the Start menu, or just download something in the browser."

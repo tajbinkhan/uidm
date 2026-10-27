@@ -138,6 +138,24 @@ test("the browser's fixed proxy goes along with a download", async () => {
   setBrowserProxy({ mode: "system" });
 });
 
+test("Firefox's manual proxy goes along with a download", async () => {
+  const add = async (value) => {
+    setBrowserProxy(value);
+    const w = connected();
+    await w.chrome.downloads.onCreated.fire(download({ url: "https://site.net/a.zip" }));
+    return w.sent.find((m) => m.op === "add").proxy;
+  };
+  assert.equal(await add({ proxyType: "manual", http: "p.corp:3128", ssl: "s.corp:8443" }), "http://s.corp:8443");
+  assert.equal(await add({ proxyType: "manual", http: "p.corp:3128", ssl: "s.corp:8443", httpProxyAll: true }), "http://p.corp:3128");
+  assert.equal(await add({ proxyType: "manual", http: "p.corp", ssl: "" }), "http://p.corp:80");
+  assert.equal(await add({ proxyType: "manual", http: "", socks: "[::1]:9050", socksVersion: 5 }), "socks5://[::1]:9050");
+  assert.equal(await add({ proxyType: "manual", socks: "s:1080", socksVersion: 4 }), "socks4://s:1080");
+  assert.equal(await add({ proxyType: "manual", http: "", ssl: "", socks: "" }), undefined);
+  assert.equal(await add({ proxyType: "system", http: "p.corp:3128" }), undefined);
+  assert.equal(await add({ proxyType: "autoConfig", autoConfigUrl: "http://wpad/x.pac" }), undefined);
+  setBrowserProxy({ mode: "system" });
+});
+
 test("a download waiting for a new link takes the next browser download", async () => {
   const w = connected();
   // Even a type the rules would leave in the browser.

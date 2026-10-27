@@ -6,21 +6,39 @@
 
 const MAX_ROWS = 20;
 const $ = (id) => document.getElementById(id);
+const t = (name, subs) => chrome.i18n.getMessage(name, subs);
+
+// The page's own text in the browser's language: data-i18n names the message
+// for an element's text, data-i18n-title, -placeholder and -aria-label those
+// for its attributes. The HTML keeps the English for reading it as it is.
+for (const node of document.querySelectorAll("[data-i18n]")) node.textContent = t(node.dataset.i18n);
+for (const attr of ["title", "placeholder", "aria-label"]) {
+  for (const node of document.querySelectorAll(`[data-i18n-${attr}]`)) {
+    node.setAttribute(attr, t(node.getAttribute(`data-i18n-${attr}`)));
+  }
+}
 
 function ask(msg) {
   return chrome.runtime.sendMessage(msg).then(render).catch(() => {});
 }
 
+// Sizes are written the way the browser's language writes numbers.
+const SIZE_UNITS = ["sizeBytes", "sizeKB", "sizeMB", "sizeGB", "sizeTB"];
+const oneDecimal = new Intl.NumberFormat(chrome.i18n.getUILanguage(), {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+  useGrouping: false,
+});
+
 function human(n) {
   if (n == null) return "?";
-  const units = ["B", "KB", "MB", "GB", "TB"];
   let v = n;
   let u = 0;
-  while (v >= 1024 && u < units.length - 1) {
+  while (v >= 1024 && u < SIZE_UNITS.length - 1) {
     v /= 1024;
     u++;
   }
-  return u === 0 ? `${n} B` : `${v.toFixed(1)} ${units[u]}`;
+  return t(SIZE_UNITS[u], u === 0 ? String(n) : oneDecimal.format(v));
 }
 
 function nameOf(e) {
@@ -44,14 +62,14 @@ function button(label, onClick, disabled) {
 }
 
 const STATUS_TEXT = {
-  queued: "Queued",
-  downloading: "Downloading",
-  done: "Done",
-  failed: "Failed",
-  canceled: "Canceled",
-  interrupted: "Interrupted",
-  confirming: "Waiting for you in UIDM",
-  waiting: "Waiting to start",
+  queued: t("stateQueued"),
+  downloading: t("stateDownloading"),
+  done: t("stateDone"),
+  failed: t("stateFailed"),
+  canceled: t("stateCanceled"),
+  interrupted: t("stateInterrupted"),
+  confirming: t("stateConfirming"),
+  waiting: t("stateWaiting"),
 };
 
 function row(e, connected) {
@@ -69,23 +87,23 @@ function row(e, connected) {
   const status = el("span", { className: e.status, title: e.error || "" }, STATUS_TEXT[e.status] || e.status);
   meta.append(status);
   if (e.scan && e.scan.result === "threat") {
-    meta.append(el("span", { className: "failed", title: e.scan.detail || "" }, "Threat found"));
+    meta.append(el("span", { className: "failed", title: e.scan.detail || "" }, t("threatFound")));
   }
-  meta.append(el("span", { className: "grow" }, e.total ? `${human(e.done)} / ${human(e.total)}` : human(e.done)));
+  meta.append(el("span", { className: "grow" }, e.total ? t("sizeProgress", [human(e.done), human(e.total)]) : human(e.done)));
 
   if (e.status === "confirming") {
-    meta.append(button("Start", () => ask({ type: "start", id: e.id }), !connected));
-    meta.append(button("Cancel", () => ask({ type: "cancel", id: e.id }), !connected));
+    meta.append(button(t("start"), () => ask({ type: "start", id: e.id }), !connected));
+    meta.append(button(t("cancel"), () => ask({ type: "cancel", id: e.id }), !connected));
   } else if (e.status === "waiting") {
-    meta.append(button("Start", () => ask({ type: "start", id: e.id }), !connected));
-    meta.append(button("Remove", () => ask({ type: "remove", id: e.id }), !connected));
+    meta.append(button(t("start"), () => ask({ type: "start", id: e.id }), !connected));
+    meta.append(button(t("remove"), () => ask({ type: "remove", id: e.id }), !connected));
   } else if (e.status === "queued" || e.status === "downloading") {
-    meta.append(button("Cancel", () => ask({ type: "cancel", id: e.id }), !connected));
+    meta.append(button(t("cancel"), () => ask({ type: "cancel", id: e.id }), !connected));
   } else if (e.status === "failed" || e.status === "canceled" || e.status === "interrupted") {
-    meta.append(button("Retry", () => ask({ type: "retry", id: e.id }), !connected));
-    meta.append(button("Remove", () => ask({ type: "remove", id: e.id }), !connected));
+    meta.append(button(t("retry"), () => ask({ type: "retry", id: e.id }), !connected));
+    meta.append(button(t("remove"), () => ask({ type: "remove", id: e.id }), !connected));
   } else if (e.status === "done") {
-    meta.append(button("Remove", () => ask({ type: "remove", id: e.id }), !connected));
+    meta.append(button(t("remove"), () => ask({ type: "remove", id: e.id }), !connected));
   }
   li.append(meta);
   return li;
@@ -111,27 +129,23 @@ function render(state) {
   const status = $("status");
   if (state.connected) {
     status.className = "status";
-    status.textContent = state.capture
-      ? "Connected. Downloads you start in the browser go to UIDM."
-      : "Connected. Capture is off, so the browser keeps its own downloads.";
+    status.textContent = state.capture ? t("statusConnected") : t("statusConnectedCaptureOff");
   } else {
     status.className = "status error";
-    status.textContent = `Not connected to UIDM${state.lastError ? `: ${state.lastError}` : ""}. Downloads stay in the browser.`;
+    status.textContent = state.lastError ? t("statusNotConnectedReason", state.lastError) : t("statusNotConnected");
   }
   $("capture").checked = state.capture;
   const refresh = $("refresh");
   const waitingFor = state.items.find((e) => e.id === state.refreshWaiting);
   refresh.hidden = !waitingFor;
   if (waitingFor) {
-    $("refresh-text").textContent = `Your next download gives ${nameOf(waitingFor)} a new link.`;
+    $("refresh-text").textContent = t("refreshWaiting", nameOf(waitingFor));
   }
   $("all-links").disabled = !state.connected;
   const skip = $("skip");
   skip.disabled = !state.connected || !state.capture;
-  skip.textContent = state.skipNext ? "Don't skip" : "Skip next download";
-  skip.title = state.skipNext
-    ? "The next download stays in the browser"
-    : "Let the next download stay in the browser";
+  skip.textContent = state.skipNext ? t("dontSkip") : t("skipNextDownload");
+  skip.title = state.skipNext ? t("skippingNextDownloadTitle") : t("skipNextDownloadTitle");
   $("add").disabled = !state.connected;
 
   const video = $("video");
@@ -140,7 +154,7 @@ function render(state) {
   const siteLabel = $("video-site-label");
   siteLabel.hidden = !tabHost || !state.videoButton;
   if (tabHost) {
-    $("video-site-text").textContent = `on ${tabHost}`;
+    $("video-site-text").textContent = t("videoButtonOnSite", tabHost);
     $("video-site").checked = !state.videoExcluded.some((site) => siteMatches(site, tabHost));
     $("video-site").disabled = !state.connected;
   }
@@ -149,7 +163,7 @@ function render(state) {
   list.replaceChildren();
   const items = state.items.slice(0, MAX_ROWS);
   if (items.length === 0) {
-    list.append(el("li", { className: "empty" }, "No downloads yet."));
+    list.append(el("li", { className: "empty" }, t("noDownloads")));
   } else {
     for (const e of items) list.append(row(e, state.connected));
   }

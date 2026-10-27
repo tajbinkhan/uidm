@@ -13,6 +13,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::i18n::tr;
+
 type Hwnd = isize;
 
 const WS_POPUP: u32 = 0x8000_0000;
@@ -272,7 +274,7 @@ fn run() {
         RegisterClassW(&wc);
         // Bottom right of the screen the first time.
         let (x, y) = saved_place().unwrap_or_else(|| (GetSystemMetrics(0) - WIDTH - 40, GetSystemMetrics(1) - HEIGHT - 80));
-        let title = wide("UIDM drop target");
+        let title = wide(tr("UIDM drop target"));
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             class.as_ptr(),
@@ -359,7 +361,7 @@ extern "system" fn window_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isiz
                 DeleteObject(brush);
                 SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, 0x00FF_FFFF);
-                let text = wide("Drop links here\nfor UIDM");
+                let text = wide(tr("Drop links here\nfor UIDM"));
                 DrawTextW(hdc, text.as_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
                 EndPaint(hwnd, &ps);
                 0

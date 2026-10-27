@@ -45,7 +45,8 @@
       header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; margin: 0; flex: 1; }
       .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
       .dot.on { background: var(--ok); }
-      .row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+      /* Rows wrap: some languages' button labels are much longer. */
+      .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; }
       .status { color: var(--muted); padding: 0 12px 8px; }
       .status.error { color: var(--bad); }
       input[type="url"] { flex: 1; min-width: 0; height: 32px; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--input); border-radius: 6px; background: transparent; color: var(--fg); font: inherit; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }
@@ -82,30 +83,30 @@
     <header>
       <span id="dot" class="dot"></span>
       <h1>UIDM</h1>
-      <label class="toggle" title="Send downloads the browser starts to UIDM">
-        <input id="capture" type="checkbox" /> Capture downloads
+      <label class="toggle" title="Send downloads the browser starts to UIDM" data-i18n-title="captureDownloadsTitle">
+        <input id="capture" type="checkbox" /> <span data-i18n="captureDownloads">Capture downloads</span>
       </label>
     </header>
     <div id="status" class="status"></div>
     <div id="refresh" class="row skiprow" hidden>
       <span id="refresh-text" class="grow"></span>
-      <button id="refresh-cancel">Stop waiting</button>
+      <button id="refresh-cancel" data-i18n="stopWaiting">Stop waiting</button>
     </div>
     <div class="row skiprow">
-      <button id="skip">Skip next download</button>
-      <button id="all-links" title="List this page's links in UIDM to pick the ones to download">All links on this page</button>
+      <button id="skip" data-i18n="skipNextDownload">Skip next download</button>
+      <button id="all-links" title="List this page's links in UIDM to pick the ones to download" data-i18n-title="allLinksTitle" data-i18n="allLinks">All links on this page</button>
     </div>
     <div class="row skiprow">
-      <label class="toggle" title="A download button over videos playing in the browser">
-        <input id="video" type="checkbox" /> Video button
+      <label class="toggle" title="A download button over videos playing in the browser" data-i18n-title="videoButtonTitle">
+        <input id="video" type="checkbox" /> <span data-i18n="videoButton">Video button</span>
       </label>
       <label class="toggle" id="video-site-label" hidden>
         <input id="video-site" type="checkbox" /> <span id="video-site-text"></span>
       </label>
     </div>
     <div class="row">
-      <input id="url" type="url" placeholder="Paste a download URL" />
-      <button id="add" class="primary">Download</button>
+      <input id="url" type="url" placeholder="Paste a download URL" data-i18n-placeholder="urlPlaceholder" />
+      <button id="add" class="primary" data-i18n="download">Download</button>
     </div>
     <ul id="list"></ul>
     <script src="rules.js"></script>

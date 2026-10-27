@@ -6,6 +6,23 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
+const english = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "_locales", "en", "messages.json"), "utf8"));
+
+// chrome.i18n.getMessage as the browser does it, from the English messages:
+// each $NAME$ in a message is its placeholder's content, in which $1..$9 are
+// the substitutions (a string or an array of them), and $$ is a dollar sign.
+// An unknown name gives "".
+function getMessage(name, substitutions) {
+  const m = english[name];
+  if (!m) return "";
+  const subs = substitutions == null ? [] : [].concat(substitutions).map(String);
+  const placeholders = {};
+  for (const [key, p] of Object.entries(m.placeholders || {})) placeholders[key.toLowerCase()] = p.content;
+  const fill = (content) => content.replace(/\$(\d)/g, (_, i) => subs[i - 1] ?? "");
+  return m.message.replace(/\$([A-Za-z0-9_@]+)\$|\$\$/g, (_, key) =>
+    key === undefined ? "$" : fill(placeholders[key.toLowerCase()] ?? ""),
+  );
+}
 
 function event() {
   const listeners = [];
@@ -65,6 +82,7 @@ function loadWorker({ firefox = false } = {}) {
     cookies: { getAll: async () => [] },
     contextMenus: { removeAll: () => {}, create: () => {}, onClicked: event() },
     action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
+    i18n: { getMessage, getUILanguage: () => "en-US" },
   };
   const dir = path.join(__dirname, "..");
   const context = vm.createContext({
@@ -79,8 +97,7 @@ function loadWorker({ firefox = false } = {}) {
   });
   const run = (file) => vm.runInContext(fs.readFileSync(path.join(dir, file), "utf8"), context);
   if (firefox) {
-    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
-    manifest.background.scripts.forEach(run);
+    firefoxManifest().background.scripts.forEach(run);
   } else {
     context.importScripts = (...files) => files.forEach(run);
     run("background.js");
@@ -94,9 +111,22 @@ function loadWorker({ firefox = false } = {}) {
   return { port, sent, browserCalls, chrome, popup, content };
 }
 
+// manifest.json as installer\make-firefox.ps1 changes it for Firefox: each
+// key of firefox.json replaces the manifest's, and null removes it.
+function firefoxManifest() {
+  const dir = path.join(__dirname, "..");
+  const read = (file) => JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+  const manifest = read("manifest.json");
+  for (const [key, value] of Object.entries(read("firefox.json"))) {
+    if (value === null) delete manifest[key];
+    else manifest[key] = value;
+  }
+  return manifest;
+}
+
 let nextDownloadId = 1;
 function download(fields) {
   return { id: nextDownloadId++, url: "", referrer: "", filename: "", mime: "", totalBytes: 0, fileSize: 0, incognito: false, ...fields };
 }
 
-module.exports = { loadWorker, download, event, setBrowserProxy };
+module.exports = { loadWorker, download, event, setBrowserProxy, firefoxManifest, getMessage };

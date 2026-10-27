@@ -235,7 +235,7 @@ function connect() {
   }
   port.onMessage.addListener(onHostMessage);
   port.onDisconnect.addListener(() => {
-    onDisconnect(chrome.runtime.lastError?.message || "UIDM disconnected");
+    onDisconnect(chrome.runtime.lastError?.message || chrome.i18n.getMessage("uidmDisconnected"));
   });
   port.postMessage({ op: "hello", version: chrome.runtime.getManifest().version });
   port.postMessage({ op: "list" });
@@ -430,6 +430,7 @@ function baseName(path) {
 async function browserProxy() {
   try {
     const { value } = await chrome.proxy.settings.get({});
+    if (value && "proxyType" in value) return firefoxProxy(value);
     if (!value || value.mode !== "fixed_servers" || !value.rules) return undefined;
     const p = value.rules.singleProxy || value.rules.proxyForHttps || value.rules.proxyForHttp;
     if (!p || !p.host || !["http", "socks4", "socks5"].includes(p.scheme || "http")) return undefined;
@@ -439,6 +440,23 @@ async function browserProxy() {
   } catch (_) {
     return undefined;
   }
+}
+
+// Firefox reports its proxy as `{ proxyType, http, ssl, socks, ... }`, each
+// proxy a "host:port" string. The HTTPS one is preferred, as Chrome's is.
+function firefoxProxy(value) {
+  if (value.proxyType !== "manual") return undefined;
+  const http = value.httpProxyAll ? value.http : value.ssl || value.http;
+  if (http) return proxyAddress("http", http, 80);
+  if (value.socks) return proxyAddress(value.socksVersion === 4 ? "socks4" : "socks5", value.socks, 1080);
+  return undefined;
+}
+
+function proxyAddress(scheme, address, defaultPort) {
+  const hostPort = String(address).trim().replace(/^[a-z0-9+.-]+:\/\//i, "").replace(/\/.*$/, "");
+  const m = /^(\[[^\]]+\]|[^:\s]+)(?::(\d+))?$/.exec(hostPort);
+  if (!m) return undefined;
+  return `${scheme}://${m[1]}:${Number(m[2]) || defaultPort}`;
 }
 
 async function handOff(url, referrer, filename, later = false, post = null, refreshId = null) {
@@ -639,23 +657,21 @@ async function renderPage(url) {
 // --- Context menu -----------------------------------------------------------
 
 chrome.runtime.onInstalled.addListener(() => {
+  const download = chrome.i18n.getMessage("downloadWithUidm");
+  const later = chrome.i18n.getMessage("downloadLaterWithUidm");
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "uidm-link", title: "Download with UIDM", contexts: ["link"] });
+    chrome.contextMenus.create({ id: "uidm-link", title: download, contexts: ["link"] });
+    chrome.contextMenus.create({ id: "uidm-media", title: download, contexts: ["image", "video", "audio"] });
+    chrome.contextMenus.create({ id: "uidm-later-link", title: later, contexts: ["link"] });
+    chrome.contextMenus.create({ id: "uidm-later-media", title: later, contexts: ["image", "video", "audio"] });
     chrome.contextMenus.create({
-      id: "uidm-media",
-      title: "Download with UIDM",
-      contexts: ["image", "video", "audio"],
+      id: "uidm-all-links",
+      title: chrome.i18n.getMessage("downloadAllLinksWithUidm"),
+      contexts: ["page", "frame"],
     });
-    chrome.contextMenus.create({ id: "uidm-later-link", title: "Download later with UIDM", contexts: ["link"] });
-    chrome.contextMenus.create({
-      id: "uidm-later-media",
-      title: "Download later with UIDM",
-      contexts: ["image", "video", "audio"],
-    });
-    chrome.contextMenus.create({ id: "uidm-all-links", title: "Download all links with UIDM", contexts: ["page", "frame"] });
     chrome.contextMenus.create({
       id: "uidm-selection-links",
-      title: "Download the selected links with UIDM",
+      title: chrome.i18n.getMessage("downloadSelectedLinksWithUidm"),
       contexts: ["selection"],
     });
   });

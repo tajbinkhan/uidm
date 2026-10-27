@@ -13,6 +13,7 @@ use uidm::protocol::{DownloadEntry, Status};
 use uidm::queue;
 
 use super::display_name;
+use crate::i18n::tr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,16 +55,16 @@ impl Column {
 
     pub fn title(self) -> &'static str {
         match self {
-            Column::Name => "File",
-            Column::Size => "Size",
-            Column::Progress => "Progress",
-            Column::Speed => "Speed",
-            Column::TimeLeft => "Time left",
-            Column::Status => "Status",
-            Column::LastTry => "Last try",
-            Column::SaveTo => "Save to",
-            Column::Referrer => "Referrer",
-            Column::Description => "Description",
+            Column::Name => tr("File"),
+            Column::Size => tr("Size"),
+            Column::Progress => tr("Progress"),
+            Column::Speed => tr("Speed"),
+            Column::TimeLeft => tr("Time left"),
+            Column::Status => tr("Status"),
+            Column::LastTry => tr("Last try"),
+            Column::SaveTo => tr("Save to"),
+            Column::Referrer => tr("Referrer"),
+            Column::Description => tr("Description"),
         }
     }
 }
@@ -263,13 +264,13 @@ pub fn local_date(unix: u64) -> String {
 pub fn dialog(ctx: &egui::Context, layout: &mut Layout) -> bool {
     let mut open = true;
     let mut close = false;
-    egui::Window::new("Columns")
+    egui::Window::new(tr("Columns"))
         .id(egui::Id::new("columns"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            ui.label("Tick the columns to show. Up and Down move a column left and right.");
+            ui.label(tr("Tick the columns to show. Up and Down move a column left and right."));
             ui.add_space(6.0);
             // Shown columns in their order, then the hidden ones.
             let mut all: Vec<Column> = layout.columns.clone();
@@ -287,12 +288,12 @@ pub fn dialog(ctx: &egui::Context, layout: &mut Layout) -> bool {
                         }
                     }
                     let up = pos.is_some_and(|i| i > 0);
-                    if ui.add_enabled(up, egui::Button::new("Up").small()).clicked() {
+                    if ui.add_enabled(up, egui::Button::new(tr("Up")).small()).clicked() {
                         let i = pos.unwrap_or(0);
                         layout.columns.swap(i, i - 1);
                     }
                     let down = pos.is_some_and(|i| i + 1 < layout.columns.len());
-                    if ui.add_enabled(down, egui::Button::new("Down").small()).clicked() {
+                    if ui.add_enabled(down, egui::Button::new(tr("Down")).small()).clicked() {
                         let i = pos.unwrap_or(0);
                         layout.columns.swap(i, i + 1);
                     }
@@ -301,10 +302,10 @@ pub fn dialog(ctx: &egui::Context, layout: &mut Layout) -> bool {
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Reset").on_hover_text("The default columns, in the order added").clicked() {
+                if ui.button(tr("Reset")).on_hover_text(tr("The default columns, in the order added")).clicked() {
                     *layout = Layout::default();
                 }
-                if ui.button("Close").clicked() {
+                if ui.button(tr("Close")).clicked() {
                     close = true;
                 }
             });

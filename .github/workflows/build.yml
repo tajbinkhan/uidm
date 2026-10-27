@@ -1,8 +1,8 @@
 # Builds UIDM for Windows and runs its tests on every push and pull request.
 # The three programs (uidm-host, uidm-daemon, uidm-gui) are uploaded as an
-# artifact together with the browser extension and the install script, laid
-# out the way install-host.ps1 expects. The installer, UIDM-Setup-<version>.exe,
-# is uploaded as a second artifact.
+# artifact together with the browser extension, its Firefox copy and the
+# install script, laid out the way install-host.ps1 expects. The installer,
+# UIDM-Setup-<version>.exe, is uploaded as a second artifact.
 
 name: Build
 
@@ -41,6 +41,14 @@ jobs:
       - name: Test
         run: cargo test --release --locked
 
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test the extension
+        run: node --test extension/test/*.test.js
+
       - name: Collect the build
         shell: pwsh
         run: |
@@ -49,7 +57,10 @@ jobs:
           Copy-Item target\release\uidm-host.exe, target\release\uidm-daemon.exe, target\release\uidm-gui.exe "$out\target\release"
           Copy-Item -Recurse extension, host "$out"
           Copy-Item install-host.ps1, README.md "$out"
+          New-Item -ItemType Directory -Force "$out\installer" | Out-Null
+          Copy-Item installer\make-firefox.ps1 "$out\installer"
           Remove-Item -Recurse -Force "$out\extension\test"
+          .\installer\make-firefox.ps1 -Out "$out\firefox"
 
       - name: Upload
         uses: actions/upload-artifact@v5
