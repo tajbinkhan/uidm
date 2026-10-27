@@ -1,0 +1,287 @@
+{
+  "extDescription": {
+    "message": "Send browser downloads to the UIDM download manager.",
+    "description": "The extension's description in the browser's extension list and store. UIDM is the product name."
+  },
+
+  "downloadWithUidm": {
+    "message": "Download with UIDM",
+    "description": "Context menu item on a link, image, video or audio; also the button shown next to selected text that holds links."
+  },
+  "downloadLaterWithUidm": {
+    "message": "Download later with UIDM",
+    "description": "Context menu item on a link, image, video or audio: adds it to UIDM's queue without starting it."
+  },
+  "downloadAllLinksWithUidm": {
+    "message": "Download all links with UIDM",
+    "description": "Context menu item on a page: lists the page's links in UIDM to pick from."
+  },
+  "downloadSelectedLinksWithUidm": {
+    "message": "Download the selected links with UIDM",
+    "description": "Context menu item on selected text: lists the links in the selection in UIDM to pick from."
+  },
+  "uidmDisconnected": {
+    "message": "UIDM disconnected",
+    "description": "Why the extension is not connected, when the browser gives no reason. Shown as the REASON in statusNotConnectedReason."
+  },
+
+  "captureDownloads": {
+    "message": "Capture downloads",
+    "description": "Popup checkbox: whether downloads the browser starts go to UIDM instead."
+  },
+  "captureDownloadsTitle": {
+    "message": "Send downloads the browser starts to UIDM",
+    "description": "Tooltip of the captureDownloads checkbox."
+  },
+  "statusConnected": {
+    "message": "Connected. Downloads you start in the browser go to UIDM.",
+    "description": "Popup status line while connected to UIDM with capture on."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Connected. Capture is off, so the browser keeps its own downloads.",
+    "description": "Popup status line while connected to UIDM with capture off."
+  },
+  "statusNotConnected": {
+    "message": "Not connected to UIDM. Downloads stay in the browser.",
+    "description": "Popup status line while UIDM cannot be reached and no reason is known."
+  },
+  "statusNotConnectedReason": {
+    "message": "Not connected to UIDM: $REASON$. Downloads stay in the browser.",
+    "description": "Popup status line while UIDM cannot be reached. REASON is an error message, often from the browser or UIDM in English.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "Specified native messaging host not found" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Your next download gives $NAME$ a new link.",
+    "description": "Popup line while a download in UIDM waits for a new link: the next download the browser starts becomes that link.",
+    "placeholders": {
+      "name": { "content": "$1", "example": "setup.exe" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Stop waiting",
+    "description": "Popup button next to refreshWaiting: stop waiting for a new link."
+  },
+  "skipNextDownload": {
+    "message": "Skip next download",
+    "description": "Popup button: the next download the browser starts stays in the browser instead of going to UIDM."
+  },
+  "skipNextDownloadTitle": {
+    "message": "Let the next download stay in the browser",
+    "description": "Tooltip of the skipNextDownload button."
+  },
+  "dontSkip": {
+    "message": "Don't skip",
+    "description": "The skipNextDownload button once pressed: undoes it."
+  },
+  "skippingNextDownloadTitle": {
+    "message": "The next download stays in the browser",
+    "description": "Tooltip of the dontSkip button."
+  },
+  "allLinks": {
+    "message": "All links on this page",
+    "description": "Popup button: lists the current page's links in UIDM to pick from."
+  },
+  "allLinksTitle": {
+    "message": "List this page's links in UIDM to pick the ones to download",
+    "description": "Tooltip of the allLinks button."
+  },
+  "videoButton": {
+    "message": "Video button",
+    "description": "Popup checkbox: whether a download button shows over videos playing in web pages."
+  },
+  "videoButtonTitle": {
+    "message": "A download button over videos playing in the browser",
+    "description": "Tooltip of the videoButton checkbox."
+  },
+  "videoButtonOnSite": {
+    "message": "on $SITE$",
+    "description": "Popup checkbox next to videoButton: whether the video button shows on the current site.",
+    "placeholders": {
+      "site": { "content": "$1", "example": "www.example.com" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Paste a download URL",
+    "description": "Placeholder of the popup's address field."
+  },
+  "download": {
+    "message": "Download",
+    "description": "Popup button that sends the pasted address to UIDM; also the video button's menu item for a whole video or audio file."
+  },
+  "noDownloads": {
+    "message": "No downloads yet.",
+    "description": "Popup download list when it is empty."
+  },
+
+  "stateQueued": {
+    "message": "Queued",
+    "description": "State of a download in the popup list: waiting in UIDM's queue."
+  },
+  "stateDownloading": {
+    "message": "Downloading",
+    "description": "State of a download in the popup list."
+  },
+  "stateDone": {
+    "message": "Done",
+    "description": "State of a download in the popup list: finished."
+  },
+  "stateFailed": {
+    "message": "Failed",
+    "description": "State of a download in the popup list."
+  },
+  "stateCanceled": {
+    "message": "Canceled",
+    "description": "State of a download in the popup list."
+  },
+  "stateInterrupted": {
+    "message": "Interrupted",
+    "description": "State of a download in the popup list: stopped when UIDM closed; it can resume."
+  },
+  "stateConfirming": {
+    "message": "Waiting for you in UIDM",
+    "description": "State of a download in the popup list: UIDM's window asks the user something about it (the file name is taken)."
+  },
+  "stateWaiting": {
+    "message": "Waiting to start",
+    "description": "State of a download in the popup list: added to UIDM without starting it."
+  },
+  "threatFound": {
+    "message": "Threat found",
+    "description": "Popup list: the virus scan found a threat in the downloaded file."
+  },
+  "start": {
+    "message": "Start",
+    "description": "Popup button on a download."
+  },
+  "cancel": {
+    "message": "Cancel",
+    "description": "Popup button on a download."
+  },
+  "retry": {
+    "message": "Retry",
+    "description": "Popup button on a failed, canceled or interrupted download."
+  },
+  "remove": {
+    "message": "Remove",
+    "description": "Popup button on a download: removes it from UIDM's list."
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "description": "Popup list: how much of a download has arrived, out of its whole size. Both are sizes such as sizeMB.",
+    "placeholders": {
+      "done": { "content": "$1", "example": "1.5 MB" },
+      "total": { "content": "$2", "example": "10.0 MB" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "description": "A size in bytes.",
+    "placeholders": {
+      "size": { "content": "$1", "example": "512" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "description": "A size in kilobytes (1024 bytes).",
+    "placeholders": {
+      "size": { "content": "$1", "example": "1.5" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "description": "A size in megabytes.",
+    "placeholders": {
+      "size": { "content": "$1", "example": "1.5" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "description": "A size in gigabytes.",
+    "placeholders": {
+      "size": { "content": "$1", "example": "1.5" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "description": "A size in terabytes.",
+    "placeholders": {
+      "size": { "content": "$1", "example": "1.5" }
+    }
+  },
+
+  "downloadVideo": {
+    "message": "Download video",
+    "description": "The button the extension shows over a video playing in a web page; it opens a menu of what to download."
+  },
+  "lookingForVideo": {
+    "message": "Looking for the video...",
+    "description": "The video button's menu while it asks UIDM what the video offers."
+  },
+  "videoProtected": {
+    "message": "This video is protected by DRM, so UIDM will not download it.",
+    "description": "The video button's menu for a video with copy protection."
+  },
+  "streamProtected": {
+    "message": "Protected by DRM; UIDM will not download it.",
+    "description": "The video button's menu, under a stream with copy protection."
+  },
+  "uidmNotConnected": {
+    "message": "UIDM is not running or not connected.",
+    "description": "The video button's menu when UIDM cannot be reached."
+  },
+  "noVideoFound": {
+    "message": "No video found yet. Let it play for a moment, then try again.",
+    "description": "The video button's menu when the page has not loaded a video the extension recognizes."
+  },
+  "sentToUidm": {
+    "message": "Sent to UIDM.",
+    "description": "The video button's menu after a choice was sent to UIDM."
+  },
+  "couldNotReachUidm": {
+    "message": "Could not reach UIDM.",
+    "description": "The video button's menu when sending a choice to UIDM failed."
+  },
+  "hlsStream": {
+    "message": "HLS stream",
+    "description": "The video button's menu: heading for a video streamed with HLS (a technical name)."
+  },
+  "dashStream": {
+    "message": "DASH stream",
+    "description": "The video button's menu: heading for a video streamed with MPEG-DASH (a technical name)."
+  },
+  "mediaNoAnswer": {
+    "message": "UIDM did not answer.",
+    "description": "The video button's menu, under a stream UIDM gave no details for."
+  },
+  "soundOnly": {
+    "message": "Sound only ($FORMAT$)",
+    "description": "The video button's menu item for a stream's sound without the picture. FORMAT is a file format.",
+    "placeholders": {
+      "format": { "content": "$1", "example": "MP3" }
+    }
+  },
+  "videoFileType": {
+    "message": "$TYPE$ video",
+    "description": "The video button's menu: heading for a video file. TYPE is its file format.",
+    "placeholders": {
+      "type": { "content": "$1", "example": "MP4" }
+    }
+  },
+  "audioFileType": {
+    "message": "$TYPE$ audio",
+    "description": "The video button's menu: heading for an audio file. TYPE is its file format.",
+    "placeholders": {
+      "type": { "content": "$1", "example": "MP3" }
+    }
+  },
+  "videoFile": {
+    "message": "Video",
+    "description": "The video button's menu: heading for a video file of unknown format."
+  },
+  "audioFile": {
+    "message": "Audio",
+    "description": "The video button's menu: heading for an audio file of unknown format."
+  }
+}

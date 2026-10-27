@@ -235,7 +235,7 @@ function connect() {
   }
   port.onMessage.addListener(onHostMessage);
   port.onDisconnect.addListener(() => {
-    onDisconnect(chrome.runtime.lastError?.message || "UIDM disconnected");
+    onDisconnect(chrome.runtime.lastError?.message || chrome.i18n.getMessage("uidmDisconnected"));
   });
   port.postMessage({ op: "hello", version: chrome.runtime.getManifest().version });
   port.postMessage({ op: "list" });
@@ -657,23 +657,21 @@ async function renderPage(url) {
 // --- Context menu -----------------------------------------------------------
 
 chrome.runtime.onInstalled.addListener(() => {
+  const download = chrome.i18n.getMessage("downloadWithUidm");
+  const later = chrome.i18n.getMessage("downloadLaterWithUidm");
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "uidm-link", title: "Download with UIDM", contexts: ["link"] });
+    chrome.contextMenus.create({ id: "uidm-link", title: download, contexts: ["link"] });
+    chrome.contextMenus.create({ id: "uidm-media", title: download, contexts: ["image", "video", "audio"] });
+    chrome.contextMenus.create({ id: "uidm-later-link", title: later, contexts: ["link"] });
+    chrome.contextMenus.create({ id: "uidm-later-media", title: later, contexts: ["image", "video", "audio"] });
     chrome.contextMenus.create({
-      id: "uidm-media",
-      title: "Download with UIDM",
-      contexts: ["image", "video", "audio"],
+      id: "uidm-all-links",
+      title: chrome.i18n.getMessage("downloadAllLinksWithUidm"),
+      contexts: ["page", "frame"],
     });
-    chrome.contextMenus.create({ id: "uidm-later-link", title: "Download later with UIDM", contexts: ["link"] });
-    chrome.contextMenus.create({
-      id: "uidm-later-media",
-      title: "Download later with UIDM",
-      contexts: ["image", "video", "audio"],
-    });
-    chrome.contextMenus.create({ id: "uidm-all-links", title: "Download all links with UIDM", contexts: ["page", "frame"] });
     chrome.contextMenus.create({
       id: "uidm-selection-links",
-      title: "Download the selected links with UIDM",
+      title: chrome.i18n.getMessage("downloadSelectedLinksWithUidm"),
       contexts: ["selection"],
     });
   });

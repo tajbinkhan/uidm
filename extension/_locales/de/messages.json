@@ -1,0 +1,222 @@
+{
+  "extDescription": {
+    "message": "Browser-Downloads an den Download-Manager UIDM senden."
+  },
+  "downloadWithUidm": {
+    "message": "Mit UIDM herunterladen"
+  },
+  "downloadLaterWithUidm": {
+    "message": "Später mit UIDM herunterladen"
+  },
+  "downloadAllLinksWithUidm": {
+    "message": "Alle Links mit UIDM herunterladen"
+  },
+  "downloadSelectedLinksWithUidm": {
+    "message": "Ausgewählte Links mit UIDM herunterladen"
+  },
+  "uidmDisconnected": {
+    "message": "UIDM hat die Verbindung getrennt"
+  },
+  "captureDownloads": {
+    "message": "Downloads abfangen"
+  },
+  "captureDownloadsTitle": {
+    "message": "Downloads, die der Browser startet, an UIDM senden"
+  },
+  "statusConnected": {
+    "message": "Verbunden. Downloads, die Sie im Browser starten, gehen an UIDM."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Verbunden. Das Abfangen ist aus, daher behält der Browser seine Downloads selbst."
+  },
+  "statusNotConnected": {
+    "message": "Nicht mit UIDM verbunden. Downloads bleiben im Browser."
+  },
+  "statusNotConnectedReason": {
+    "message": "Nicht mit UIDM verbunden: $REASON$. Downloads bleiben im Browser.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Ihr nächster Download wird der neue Link für $NAME$.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Nicht mehr warten"
+  },
+  "skipNextDownload": {
+    "message": "Nächsten Download überspringen"
+  },
+  "skipNextDownloadTitle": {
+    "message": "Den nächsten Download im Browser lassen"
+  },
+  "dontSkip": {
+    "message": "Nicht überspringen"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "Der nächste Download bleibt im Browser"
+  },
+  "allLinks": {
+    "message": "Alle Links der Seite"
+  },
+  "allLinksTitle": {
+    "message": "Die Links dieser Seite in UIDM auflisten, um die gewünschten herunterzuladen"
+  },
+  "videoButton": {
+    "message": "Video-Schaltfläche"
+  },
+  "videoButtonTitle": {
+    "message": "Eine Download-Schaltfläche über Videos, die im Browser laufen"
+  },
+  "videoButtonOnSite": {
+    "message": "auf $SITE$",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Download-URL einfügen"
+  },
+  "download": {
+    "message": "Herunterladen"
+  },
+  "noDownloads": {
+    "message": "Noch keine Downloads."
+  },
+  "stateQueued": {
+    "message": "In der Warteschlange"
+  },
+  "stateDownloading": {
+    "message": "Wird heruntergeladen"
+  },
+  "stateDone": {
+    "message": "Fertig"
+  },
+  "stateFailed": {
+    "message": "Fehlgeschlagen"
+  },
+  "stateCanceled": {
+    "message": "Abgebrochen"
+  },
+  "stateInterrupted": {
+    "message": "Unterbrochen"
+  },
+  "stateConfirming": {
+    "message": "Wartet in UIDM auf Sie"
+  },
+  "stateWaiting": {
+    "message": "Wartet auf den Start"
+  },
+  "threatFound": {
+    "message": "Bedrohung gefunden"
+  },
+  "start": {
+    "message": "Starten"
+  },
+  "cancel": {
+    "message": "Abbrechen"
+  },
+  "retry": {
+    "message": "Wiederholen"
+  },
+  "remove": {
+    "message": "Entfernen"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "Video herunterladen"
+  },
+  "lookingForVideo": {
+    "message": "Video wird gesucht..."
+  },
+  "videoProtected": {
+    "message": "Dieses Video ist durch DRM geschützt, daher lädt UIDM es nicht herunter."
+  },
+  "streamProtected": {
+    "message": "Durch DRM geschützt; UIDM lädt es nicht herunter."
+  },
+  "uidmNotConnected": {
+    "message": "UIDM läuft nicht oder ist nicht verbunden."
+  },
+  "noVideoFound": {
+    "message": "Noch kein Video gefunden. Lassen Sie es kurz laufen und versuchen Sie es dann noch einmal."
+  },
+  "sentToUidm": {
+    "message": "An UIDM gesendet."
+  },
+  "couldNotReachUidm": {
+    "message": "UIDM ist nicht erreichbar."
+  },
+  "hlsStream": {
+    "message": "HLS-Stream"
+  },
+  "dashStream": {
+    "message": "DASH-Stream"
+  },
+  "mediaNoAnswer": {
+    "message": "UIDM hat nicht geantwortet."
+  },
+  "soundOnly": {
+    "message": "Nur Ton ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "$TYPE$-Video",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "$TYPE$-Audio",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "Video"
+  },
+  "audioFile": {
+    "message": "Audio"
+  }
+}
