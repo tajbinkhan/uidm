@@ -20,6 +20,7 @@
 //! - `listfile`: exporting and importing the download list.
 //! - `grab`: the site grabber's crawler.
 //! - `recycle`: sending files to the Recycle Bin.
+//! - `quota`: counting the bytes downloaded for the download quota.
 
 pub mod app;
 pub mod batch;
@@ -35,6 +36,7 @@ pub mod notify;
 pub mod power;
 pub mod protocol;
 pub mod queue;
+pub mod quota;
 pub mod recycle;
 pub mod registry;
 pub mod scan;

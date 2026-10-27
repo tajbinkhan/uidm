@@ -124,6 +124,9 @@ pub struct ServerLimit {
     pub max: usize,
 }
 
+/// Allowed lengths of the quota's window, in hours (up to a week).
+pub const QUOTA_HOURS_RANGE: (u64, u64) = (1, 168);
+
 /// Allowed values for a server's connection limit.
 pub const SERVER_CONNECTIONS_RANGE: (usize, usize) = (1, 16);
 
@@ -393,6 +396,11 @@ pub struct Settings {
     pub selection_button_sites: Vec<String>,
     /// Servers that get fewer connections, all downloads together.
     pub server_limits: Vec<ServerLimit>,
+    /// Download no more than `quota_mb` MB every `quota_hours` hours;
+    /// downloads pause when it is reached and resume when the window allows.
+    pub quota_enabled: bool,
+    pub quota_mb: u64,
+    pub quota_hours: u64,
 }
 
 impl Default for Settings {
@@ -443,6 +451,9 @@ impl Default for Settings {
             selection_button: SelectionButton::Everywhere,
             selection_button_sites: Vec::new(),
             server_limits: Vec::new(),
+            quota_enabled: false,
+            quota_mb: 1024,
+            quota_hours: 24,
         }
     }
 }
@@ -467,6 +478,13 @@ pub const USER_AGENT_PRESETS: [(&str, &str); 3] = [
 impl Settings {
     /// Check every value, returning a message fit to show the user.
     pub fn validate(&self) -> Result<(), String> {
+        let (lo, hi) = QUOTA_HOURS_RANGE;
+        if !(lo..=hi).contains(&self.quota_hours) {
+            return Err(format!("The quota's window must be between {lo} and {hi} hours."));
+        }
+        if self.quota_mb == 0 {
+            return Err("The quota must be at least 1 MB.".into());
+        }
         let (lo, hi) = SERVER_CONNECTIONS_RANGE;
         for l in &self.server_limits {
             if l.site.trim().is_empty() || l.site.contains(char::is_whitespace) {
@@ -611,6 +629,11 @@ impl Settings {
             .filter(|l| crate::net::site_matches(&l.site, host))
             .max_by_key(|l| l.site.trim_start_matches("*.").len())
             .map(|l| l.max)
+    }
+
+    /// The quota as bytes and a window in minutes, when it is on.
+    pub fn quota(&self) -> Option<(u64, u64)> {
+        self.quota_enabled.then(|| (self.quota_mb * 1024 * 1024, self.quota_hours * 60))
     }
 
     /// Where new downloads go, by category, for files from any site.
@@ -866,6 +889,9 @@ mod tests {
                 site: "*.mirror.net".into(),
                 max: 2,
             }],
+            quota_enabled: true,
+            quota_mb: 500,
+            quota_hours: 6,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

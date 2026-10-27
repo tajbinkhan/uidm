@@ -125,6 +125,7 @@ impl DownloadTable {
             | Outgoing::AddedMany { .. }
             | Outgoing::MediaInfo { .. }
             | Outgoing::PickLinks { .. }
+            | Outgoing::Quota { .. }
             | Outgoing::GrabProgress { .. }
             | Outgoing::GrabDone { .. } => {}
         }

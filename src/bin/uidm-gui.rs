@@ -54,7 +54,7 @@ use uidm::protocol::{
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
-    parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, ServerLimit, SERVER_CONNECTIONS_RANGE, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
+    parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, ServerLimit, QUOTA_HOURS_RANGE, SERVER_CONNECTIONS_RANGE, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, USER_AGENT_PRESETS,
 };
 use uidm::state::DownloadTable;
@@ -164,6 +164,10 @@ struct Shared {
     segments: HashMap<u64, Vec<SegmentInfo>>,
     /// Links from a page for the link picker, until the window opens it.
     picked_links: Option<links::LinksDialog>,
+    /// The quota's warning for the status bar, while it matters.
+    quota: Option<String>,
+    /// Downloads are paused for the quota.
+    quota_paused: bool,
 }
 
 /// News of a site crawl.
@@ -229,6 +233,26 @@ impl Shared {
             }
             Outgoing::Started { id, .. } => {
                 self.segments.remove(id);
+            }
+            Outgoing::Quota {
+                used,
+                limit,
+                paused,
+                resumes_at,
+            } => {
+                let amount = format!("{} of {}", human_bytes(*used), human_bytes(*limit));
+                let was_paused = std::mem::replace(&mut self.quota_paused, *paused);
+                self.quota = if *paused {
+                    let when = resumes_at.map(|t| format!(" They resume around {}.", columns::local_date(t))).unwrap_or_default();
+                    Some(format!("Download quota reached ({amount}); downloads are paused.{when}"))
+                } else if was_paused {
+                    self.notice = Some("The download quota allows downloads again; paused ones resumed.".into());
+                    None
+                } else if *used >= *limit / 10 * 9 {
+                    Some(format!("Download quota nearly used: {amount}. Downloads pause when it runs out."))
+                } else {
+                    None
+                };
             }
             Outgoing::PickLinks { page, links, user_agent } => {
                 self.picked_links = Some(links::LinksDialog::new(page.clone(), links.clone(), user_agent.clone()));
@@ -632,6 +656,9 @@ struct OptionsDraft {
     selection_button_sites: String,
     /// Each server and its most connections.
     server_limits: Vec<(String, usize)>,
+    quota_enabled: bool,
+    quota_mb: u64,
+    quota_hours: u64,
     error: Option<String>,
     picked: Picked,
 }
@@ -724,6 +751,9 @@ impl OptionsDraft {
             selection_button: s.selection_button,
             selection_button_sites: s.selection_button_sites.join("\n"),
             server_limits: s.server_limits.iter().map(|l| (l.site.clone(), l.max)).collect(),
+            quota_enabled: s.quota_enabled,
+            quota_mb: s.quota_mb,
+            quota_hours: s.quota_hours,
             error: None,
             picked: Picked::default(),
         }
@@ -819,6 +849,9 @@ impl OptionsDraft {
                     max: *max,
                 })
                 .collect(),
+            quota_enabled: self.quota_enabled,
+            quota_mb: self.quota_mb,
+            quota_hours: self.quota_hours,
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -849,6 +882,8 @@ impl App {
                 clipboard: None,
                 segments: HashMap::new(),
                 picked_links: None,
+                quota: None,
+                quota_paused: false,
             })),
             writer: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
@@ -1709,6 +1744,21 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         });
         ui.end_row();
 
+        ui.label("Download quota");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut draft.quota_enabled, "No more than");
+            ui.add_enabled_ui(draft.quota_enabled, |ui| {
+                ui.add(egui::DragValue::new(&mut draft.quota_mb).range(1..=10_000_000));
+                ui.label("MB every");
+                let (lo, hi) = QUOTA_HOURS_RANGE;
+                ui.add(egui::DragValue::new(&mut draft.quota_hours).range(lo..=hi));
+                ui.label("hours");
+            });
+        })
+        .response
+        .on_hover_text("Downloads pause when it is reached, keeping their progress, and resume when the window allows");
+        ui.end_row();
+
         ui.label("If the file exists");
         egui::ComboBox::from_id_salt("file_exists")
             .selected_text(file_exists_label(draft.file_exists))
@@ -2486,6 +2536,11 @@ impl eframe::App for App {
                 if let Some(err) = &last_error {
                     ui.separator();
                     ui.colored_label(ui.visuals().warn_fg_color, err);
+                }
+                let quota = self.shared.lock().unwrap().quota.clone();
+                if let Some(q) = quota {
+                    ui.separator();
+                    ui.colored_label(ui.visuals().warn_fg_color, q);
                 }
                 let notice = self.shared.lock().unwrap().notice.clone();
                 if let Some(n) = notice {

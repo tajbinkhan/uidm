@@ -71,6 +71,7 @@ use uidm::grab::{self, GrabRequest};
 use uidm::registry;
 use uidm::scan;
 use uidm::settings::Notify;
+use uidm::quota::Usage;
 use uidm::state::DownloadTable;
 
 /// Exit after this long with no clients and no queued or running downloads.
@@ -125,6 +126,8 @@ struct Hub {
     held: Mutex<HashSet<u64>>,
     /// Wakes the scheduler when a download ends or a queue changes.
     wake: Sender<()>,
+    /// Bytes received lately, for the download quota.
+    quota: Mutex<Usage>,
 }
 
 /// Work for the notification thread.
@@ -155,6 +158,20 @@ impl Hub {
                     return;
                 }
             }
+        }
+        match msg {
+            // Bytes a resumed download already had do not count again.
+            Outgoing::Started { id, .. } => {
+                let done = table.get(*id).map_or(0, |e| e.done);
+                self.quota.lock().unwrap().started(*id, done);
+            }
+            Outgoing::Progress { id, done, .. } => {
+                self.quota.lock().unwrap().progress(*id, *done, uidm::quota::now_minute());
+            }
+            Outgoing::Done { id, .. } | Outgoing::Failed { id, .. } | Outgoing::Canceled { id, .. } => {
+                self.quota.lock().unwrap().ended(*id);
+            }
+            _ => {}
         }
         table.apply(msg);
         if let Outgoing::Done { id, .. } | Outgoing::Failed { id, .. } = msg {
@@ -297,6 +314,7 @@ struct Paths {
     settings: Option<PathBuf>,
     history: Option<PathBuf>,
     requests: Option<PathBuf>,
+    quota: Option<PathBuf>,
 }
 
 impl Paths {
@@ -308,6 +326,7 @@ impl Paths {
             settings: warn("settings", settings::settings_path()),
             history: warn("history", history::history_path()),
             requests: warn("saved requests", history::requests_path()),
+            quota: warn("quota", uidm::quota::quota_path()),
         }
     }
 }
@@ -339,6 +358,10 @@ struct Daemon {
     grabs: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     /// Links from a page, held for the window that is being opened.
     picked_links: Mutex<Option<Outgoing>>,
+    /// What the quota stopped (queues and downloads), while it holds them.
+    quota_paused: Mutex<Option<(Vec<u64>, HashSet<u64>)>>,
+    /// The nearly-reached warning was sent for the current window.
+    quota_warned: AtomicBool,
 }
 
 /// A countdown before sleeping, hibernating or shutting down.
@@ -406,6 +429,7 @@ impl Daemon {
             notes,
             queues: Mutex::new(queues),
             held: Mutex::new(HashSet::new()),
+            quota: Mutex::new(paths.quota.as_deref().map(Usage::load).unwrap_or_default()),
             wake,
         });
         let events = Arc::clone(&hub);
@@ -433,6 +457,8 @@ impl Daemon {
             refresh_waiting: Mutex::new(None),
             grabs: Mutex::new(HashMap::new()),
             picked_links: Mutex::new(None),
+            quota_paused: Mutex::new(None),
+            quota_warned: AtomicBool::new(false),
         };
         (daemon, dirty_rx, notes_rx, wake_rx)
     }
@@ -610,6 +636,7 @@ impl Daemon {
     /// the runs that are done.
     fn tick(&self) {
         let _guard = self.tick_lock.lock().unwrap();
+        self.check_quota();
         let now = queue::local_now();
 
         let queues = self.hub.queues.lock().unwrap().clone();
@@ -834,11 +861,18 @@ impl Daemon {
     /// Stop every queued or running download, remembering them for
     /// `resume_all`.
     fn pause_all(&self) {
+        let (queues, ids) = self.stop_running();
+        self.paused_queues.lock().unwrap().extend(queues);
+        self.paused.lock().unwrap().extend(ids);
+    }
+
+    /// Stop every started queue and every queued or running download,
+    /// keeping their progress. Returns what was stopped.
+    fn stop_running(&self) -> (Vec<u64>, Vec<u64>) {
         let running: Vec<u64> = self.hub.queues.lock().unwrap().iter().filter(|q| q.running).map(|q| q.id).collect();
         for q in &running {
             let _ = self.stop_queue(*q);
         }
-        self.paused_queues.lock().unwrap().extend(running);
         let ids: Vec<u64> = self
             .hub
             .table
@@ -848,9 +882,75 @@ impl Daemon {
             .filter(|e| matches!(e.status, Status::Queued | Status::Downloading))
             .map(|e| e.id)
             .collect();
-        self.paused.lock().unwrap().extend(ids.iter().copied());
-        for id in ids {
-            self.engine.cancel(id);
+        for id in &ids {
+            self.engine.cancel(*id);
+        }
+        (running, ids)
+    }
+
+    /// The quota's state for a window that just connected, if downloads are
+    /// paused for it or it is nearly reached.
+    fn quota_message(&self) -> Option<Outgoing> {
+        let (limit, window) = self.settings.lock().unwrap().quota()?;
+        let now = uidm::quota::now_minute();
+        let mut usage = self.hub.quota.lock().unwrap();
+        let used = usage.used(now, window);
+        let paused = self.quota_paused.lock().unwrap().is_some();
+        (paused || used >= limit / 10 * 9).then(|| Outgoing::Quota {
+            used,
+            limit,
+            paused,
+            resumes_at: paused.then(|| usage.frees_at(now, window, limit) * 60),
+        })
+    }
+
+    /// Pause everything when the download quota is reached, warn shortly
+    /// before, and resume what it stopped once the window allows. Runs with
+    /// the scheduler.
+    fn check_quota(&self) {
+        let quota = self.settings.lock().unwrap().quota();
+        let now = uidm::quota::now_minute();
+        let (used, limit, window) = match quota {
+            Some((limit, window)) => (self.hub.quota.lock().unwrap().used(now, window), limit, window),
+            None => (0, u64::MAX, 0),
+        };
+        let paused = self.quota_paused.lock().unwrap().is_some();
+        let msg = |paused: bool, resumes_at: Option<u64>| Outgoing::Quota {
+            used,
+            limit,
+            paused,
+            resumes_at,
+        };
+        if paused && used < limit {
+            let (queues, ids) = self.quota_paused.lock().unwrap().take().unwrap_or_default();
+            eprintln!("[uidm-daemon] quota allows downloads again");
+            self.quota_warned.store(false, Ordering::Relaxed);
+            for q in queues {
+                let _ = self.start_queue(q, None);
+            }
+            for id in ids.into_iter().filter(|id| self.status(*id) == Some(Status::Canceled)) {
+                if let Err(e) = self.retry(id) {
+                    eprintln!("[uidm-daemon] could not resume #{id}: {e}");
+                }
+            }
+            self.hub.broadcast(&msg(false, None));
+        } else if used >= limit {
+            // Also stops what started since.
+            let (queues, ids) = self.stop_running();
+            let first = !paused;
+            {
+                let mut held = self.quota_paused.lock().unwrap();
+                let (q, i) = held.get_or_insert_with(Default::default);
+                q.extend(queues);
+                i.extend(ids);
+            }
+            if first {
+                let at = self.hub.quota.lock().unwrap().frees_at(now, window, limit) * 60;
+                eprintln!("[uidm-daemon] quota reached: {used} of {limit} bytes");
+                self.hub.broadcast(&msg(true, Some(at)));
+            }
+        } else if used >= limit / 10 * 9 && !self.quota_warned.swap(true, Ordering::Relaxed) {
+            self.hub.broadcast(&msg(false, None));
         }
     }
 
@@ -1911,6 +2011,11 @@ impl Daemon {
             queues: self.hub.queues.lock().unwrap().clone(),
         };
         let requests = self.hub.requests.lock().unwrap().clone();
+        if let Some(path) = &self.paths.quota {
+            if let Err(e) = self.hub.quota.lock().unwrap().save(path) {
+                eprintln!("[uidm-daemon] could not save {}: {e}", path.display());
+            }
+        }
         if let Some(path) = &self.paths.history {
             if let Err(e) = history.save(path) {
                 eprintln!("[uidm-daemon] could not save {}: {e}", path.display());
@@ -2148,6 +2253,9 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
                 // A window that opens during a countdown shows it too.
                 if let Some(countdown) = daemon.countdown_message() {
                     send(&countdown);
+                }
+                if let Some(quota) = daemon.quota_message() {
+                    send(&quota);
                 }
                 // Links picked from a page while no window was open.
                 if let Some(links) = daemon.picked_links.lock().unwrap().take() {
@@ -2541,6 +2649,7 @@ mod tests {
             settings: None,
             history: None,
             requests: None,
+            quota: None,
         });
         {
             let mut s = daemon.settings.lock().unwrap();
@@ -2971,5 +3080,37 @@ mod tests {
         let s = t.daemon.settings.lock().unwrap().clone();
         assert_eq!(s.categories[0].last_folder.as_deref(), Some(chosen.display().to_string().as_str()));
         assert_eq!(s.folders().for_name("b.zip"), chosen);
+    }
+
+    #[test]
+    fn the_quota_pauses_downloads_and_lets_them_go_again() {
+        let t = setup("quota", Duplicate::NewName);
+        {
+            let mut s = t.daemon.settings.lock().unwrap();
+            s.quota_enabled = true;
+            s.quota_mb = 1;
+            s.quota_hours = 1;
+        }
+        let url = serve();
+        let id = t.failed(&url);
+        // 2 MB came in this minute.
+        {
+            let mut q = t.daemon.hub.quota.lock().unwrap();
+            q.started(99, 0);
+            q.progress(99, 2 << 20, uidm::quota::now_minute());
+        }
+        t.daemon.check_quota();
+        assert!(t.window_got(|m| matches!(m, Outgoing::Quota { paused: true, resumes_at: Some(_), .. })));
+        assert!(t.daemon.quota_paused.lock().unwrap().is_some());
+        // A download started while paused is stopped on the next check.
+        t.daemon.retry(id).unwrap();
+        t.daemon.check_quota();
+        let held = t.daemon.quota_paused.lock().unwrap().clone().unwrap();
+        assert!(!held.1.is_empty(), "the new download is held too");
+
+        *t.daemon.hub.quota.lock().unwrap() = Usage::default();
+        t.daemon.check_quota();
+        assert!(t.daemon.quota_paused.lock().unwrap().is_none());
+        assert!(t.window_got(|m| matches!(m, Outgoing::Quota { paused: false, .. })));
     }
 }

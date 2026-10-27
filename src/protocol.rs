@@ -533,6 +533,17 @@ pub enum Outgoing {
         #[serde(default)]
         user_agent: Option<String>,
     },
+    /// Where the download quota stands: bytes used in the window and the
+    /// limit. Sent when it is nearly reached, when downloads pause for it
+    /// (`paused`, with when they resume, in seconds since 1970), when they
+    /// resume, and to a window that connects while it matters.
+    Quota {
+        used: u64,
+        limit: u64,
+        paused: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resumes_at: Option<u64>,
+    },
     /// A crawl's progress: pages read, bytes read and files found so far.
     GrabProgress { pages: u64, bytes: u64, found: usize },
     /// A crawl ended: what it found, and why it stopped early, if it did.
