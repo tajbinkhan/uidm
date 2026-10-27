@@ -18,6 +18,12 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
     if let Some(ua) = d.user_agent {
         headers.push(("User-Agent".to_string(), ua));
     }
+    // A download from the browser carries the browser's User-Agent; the
+    // others get the one set in Options, if any.
+    let manual = settings.manual_user_agent.trim();
+    if !manual.is_empty() && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent")) {
+        headers.push(("User-Agent".to_string(), manual.to_string()));
+    }
     if let Some(cookies) = d.cookies {
         headers.push(("Cookie".to_string(), cookies));
     }
@@ -127,5 +133,33 @@ mod tests {
         assert!(!same_address("https://example.com/a.zip", "https://example.com/a.zip?v=2"));
         assert!(!same_address("https://example.com/a.zip", "http://example.com/a.zip"));
         assert!(!same_address("https://example.com/A.zip", "https://example.com/a.zip"));
+    }
+
+    #[test]
+    fn only_downloads_without_a_browser_agent_get_the_manual_one() {
+        let settings = Settings {
+            manual_user_agent: "Manual/1.0".into(),
+            ..Settings::default()
+        };
+        let ua = |d: Download| {
+            to_request(d, &settings)
+                .headers
+                .into_iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
+                .map(|(_, v)| v)
+                .collect::<Vec<_>>()
+        };
+        let by_hand = Download {
+            url: "https://x/a".into(),
+            ..Download::default()
+        };
+        assert_eq!(ua(by_hand.clone()), ["Manual/1.0"]);
+        let browser = Download {
+            user_agent: Some("Browser/2.0".into()),
+            ..by_hand.clone()
+        };
+        assert_eq!(ua(browser), ["Browser/2.0"]);
+        let none = to_request(by_hand, &Settings::default());
+        assert!(!none.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent")));
     }
 }

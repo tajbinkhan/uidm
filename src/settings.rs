@@ -290,6 +290,10 @@ pub struct Settings {
     /// Give a finished file the modified date the server reports for it
     /// (`Last-Modified`) instead of the time it was written.
     pub server_file_date: bool,
+    /// The User-Agent sent for downloads not started from the browser (added
+    /// by hand, in a batch, from a list or by the grabber). Empty sends the
+    /// default.
+    pub manual_user_agent: String,
 }
 
 impl Default for Settings {
@@ -331,13 +335,34 @@ impl Default for Settings {
             confirm_remove: true,
             remove_deletes_files: false,
             server_file_date: true,
+            manual_user_agent: String::new(),
         }
     }
 }
 
+/// Browser User-Agents to offer for downloads added by hand. Servers mostly
+/// look at the browser's name, so these change little between versions.
+pub const USER_AGENT_PRESETS: [(&str, &str); 3] = [
+    (
+        "Chrome",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    ),
+    (
+        "Edge",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
+    ),
+    (
+        "Firefox",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0",
+    ),
+];
+
 impl Settings {
     /// Check every value, returning a message fit to show the user.
     pub fn validate(&self) -> Result<(), String> {
+        if self.manual_user_agent.chars().any(char::is_control) {
+            return Err("The User-Agent must be one line of text.".into());
+        }
         let (lo, hi) = CONNECTIONS_RANGE;
         if !(lo..=hi).contains(&self.connections) {
             return Err(format!("Connections per file must be between {lo} and {hi}."));
@@ -669,6 +694,7 @@ mod tests {
             confirm_remove: false,
             remove_deletes_files: true,
             server_file_date: false,
+            manual_user_agent: USER_AGENT_PRESETS[0].1.into(),
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

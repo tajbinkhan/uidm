@@ -53,7 +53,7 @@ use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
     parse_extensions, Category, Duplicate, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
-    CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS,
+    CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, USER_AGENT_PRESETS,
 };
 use uidm::state::DownloadTable;
 
@@ -590,6 +590,7 @@ struct OptionsDraft {
     confirm_remove: bool,
     remove_deletes_files: bool,
     server_file_date: bool,
+    manual_user_agent: String,
     error: Option<String>,
     picked: Picked,
 }
@@ -669,6 +670,7 @@ impl OptionsDraft {
             confirm_remove: s.confirm_remove,
             remove_deletes_files: s.remove_deletes_files,
             server_file_date: s.server_file_date,
+            manual_user_agent: s.manual_user_agent.clone(),
             error: None,
             picked: Picked::default(),
         }
@@ -734,6 +736,7 @@ impl OptionsDraft {
             confirm_remove: self.confirm_remove,
             remove_deletes_files: self.remove_deletes_files,
             server_file_date: self.server_file_date,
+            manual_user_agent: self.manual_user_agent.trim().to_string(),
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -1618,6 +1621,31 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
                 "Also send their files to the Recycle Bin"
             };
             ui.checkbox(&mut draft.remove_deletes_files, text);
+        });
+        ui.end_row();
+
+        ui.label("User-Agent").on_hover_text("For downloads not started from the browser");
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.manual_user_agent)
+                        .hint_text("UIDM's default")
+                        .desired_width(280.0),
+                );
+                ui.menu_button("Presets", |ui| {
+                    for (name, agent) in USER_AGENT_PRESETS {
+                        if ui.button(name).clicked() {
+                            draft.manual_user_agent = agent.to_string();
+                            ui.close_menu();
+                        }
+                    }
+                    if ui.button("Default").clicked() {
+                        draft.manual_user_agent.clear();
+                        ui.close_menu();
+                    }
+                });
+            });
+            ui.weak("Sent with links you add by hand, batches, imports and the site grabber's finds. Downloads from the browser send the browser's own.");
         });
         ui.end_row();
 
