@@ -100,6 +100,9 @@ pub struct DownloadRequest {
     /// segments), when not at `reuse_path`: in a temporary folder, which may
     /// have changed since.
     pub reuse_partial: Option<PathBuf>,
+    /// The most connections to this download's host, across every download
+    /// to it; `None` for no limit beyond `connections`.
+    pub host_limit: Option<usize>,
 }
 
 /// Progress events over the course of a download. `id` matches the `Ack`.
@@ -237,11 +240,90 @@ struct Shared {
     limiter: RateLimiter,
     /// Each running download's own limit, by id.
     own_limits: Mutex<HashMap<u64, Arc<RateLimiter>>>,
+    /// Connections in use to hosts with a limit.
+    host_slots: HostSlots,
     /// Whether a connection that finishes early takes over half of the
     /// largest remaining range. Only tests turn it off, to compare.
     resplit: AtomicBool,
     /// Output files in use, so two downloads never pick the same file.
     claimed: Mutex<HashSet<PathBuf>>,
+}
+
+/// How often a connection waiting for its host to have room looks again.
+const GATE_POLL: Duration = Duration::from_millis(200);
+
+/// Connections in use per host, for hosts with a limit.
+#[derive(Default)]
+struct HostSlots(Mutex<HashMap<String, usize>>);
+
+/// One connection to a host, given back when dropped.
+struct Slot<'a> {
+    gate: &'a Gate<'a>,
+    limited: bool,
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        if !self.limited {
+            return;
+        }
+        let mut used = self.gate.slots.0.lock().unwrap();
+        if let Some(n) = used.get_mut(&self.gate.host) {
+            *n -= 1;
+            if *n == 0 {
+                used.remove(&self.gate.host);
+            }
+        }
+    }
+}
+
+/// The connection limit of one download's host, shared with every other
+/// download to that host.
+struct Gate<'a> {
+    slots: &'a HostSlots,
+    host: String,
+    max: Option<usize>,
+}
+
+impl<'a> Gate<'a> {
+    fn new(shared: &'a Shared, req: &DownloadRequest) -> Self {
+        let host = url::Url::parse(&req.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+            .unwrap_or_default();
+        Gate {
+            slots: &shared.host_slots,
+            host,
+            max: req.host_limit.filter(|m| *m > 0),
+        }
+    }
+
+    /// A connection, if the host has room for one.
+    fn take(&self) -> Option<Slot<'_>> {
+        let Some(max) = self.max else {
+            return Some(Slot { gate: self, limited: false });
+        };
+        let mut used = self.slots.0.lock().unwrap();
+        let n = used.entry(self.host.clone()).or_insert(0);
+        if *n >= max {
+            return None;
+        }
+        *n += 1;
+        Some(Slot { gate: self, limited: true })
+    }
+
+    /// Wait for a connection; `None` if the download is canceled first.
+    fn wait(&self, token: &CancelToken) -> Option<Slot<'_>> {
+        loop {
+            if token.load(Ordering::Relaxed) {
+                return None;
+            }
+            if let Some(slot) = self.take() {
+                return Some(slot);
+            }
+            thread::sleep(GATE_POLL);
+        }
+    }
 }
 
 impl Shared {
@@ -280,6 +362,7 @@ impl Engine {
                 shared: Arc::new(Shared {
                     limiter: RateLimiter::default(),
                     own_limits: Mutex::new(HashMap::new()),
+                    host_slots: HostSlots::default(),
                     resplit: AtomicBool::new(true),
                     claimed: Mutex::new(HashSet::new()),
                 }),
@@ -415,6 +498,7 @@ pub fn run_blocking(req: DownloadRequest, cb: Arc<dyn Fn(Progress) + Send + Sync
     let shared = Shared {
         limiter: RateLimiter::default(),
         own_limits: Mutex::new(HashMap::new()),
+        host_slots: HostSlots::default(),
         resplit: AtomicBool::new(true),
         claimed: Mutex::new(HashSet::new()),
     };
@@ -519,14 +603,15 @@ fn run_inner(
     let own = shared.own_limiter(id);
     let limiter = &Throttle::new(&shared.limiter, &own);
     let resplit = shared.resplit.load(Ordering::Relaxed);
+    let gate = Gate::new(shared, req);
     let result = if segmented {
         let plan = Plan {
             connections,
             resplit,
         };
-        run_segmented(id, token, &agent, req, work.clone(), &probe, plan, reporter, limiter)
+        run_segmented(id, token, &agent, req, work.clone(), &probe, plan, reporter, limiter, &gate)
     } else {
-        run_single(id, token, &agent, req, work.clone(), &probe, reporter, limiter)
+        run_single(id, token, &agent, req, work.clone(), &probe, reporter, limiter, &gate)
     };
     // A finished file written in the temporary folder moves into place.
     let result = match result {
@@ -1035,6 +1120,7 @@ fn run_segmented(
     plan: Plan,
     reporter: &Reporter,
     limiter: &Throttle,
+    gate: &Gate,
 ) -> Result<PathBuf, EngineError> {
     let total = probe.total.expect("segmented path requires a known total");
     let url = probe.final_url.clone();
@@ -1112,10 +1198,24 @@ fn run_segmented(
                     if token.load(Ordering::Relaxed) || first_error.lock().unwrap().is_some() {
                         return;
                     }
+                    // A host at its limit: wait for a connection to free up,
+                    // as long as some range is waiting for one.
+                    let Some(slot) = gate.take() else {
+                        let waiting = {
+                            let w = shared.lock().unwrap();
+                            w.manifest.segments.iter().zip(&w.busy).any(|(s, b)| !*b && !s.is_complete())
+                        };
+                        if !waiting {
+                            return;
+                        }
+                        thread::sleep(GATE_POLL);
+                        continue;
+                    };
                     let Some(idx) = shared.lock().unwrap().next(plan.resplit) else {
                         return;
                     };
                     let result = download_segment(&ctx, idx);
+                    drop(slot);
                     {
                         let mut w = shared.lock().unwrap();
                         w.busy[idx] = false;
@@ -1326,7 +1426,11 @@ fn run_single(
     probe: &http::Probe,
     reporter: &Reporter,
     limiter: &Throttle,
+    gate: &Gate,
 ) -> Result<PathBuf, EngineError> {
+    let Some(_slot) = gate.wait(token) else {
+        return Ok(output);
+    };
     let mut attempt = 0u32;
     loop {
         if token.load(Ordering::Relaxed) {
@@ -1543,6 +1647,7 @@ mod tests {
                 server_date: false,
                 temp_dir: None,
                 reuse_partial: None,
+                host_limit: None,
             }
         }
 
@@ -1902,6 +2007,72 @@ mod tests {
             let again = server.served.load(Ordering::Relaxed) - served;
             assert!(again < LEN as u64, "only the rest was fetched: {again} bytes");
             assert!(!partial.unwrap().exists());
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_host_gate_hands_out_at_most_its_limit() {
+            let shared = Shared {
+                limiter: RateLimiter::default(),
+                own_limits: Mutex::new(HashMap::new()),
+                host_slots: HostSlots::default(),
+                resplit: AtomicBool::new(true),
+                claimed: Mutex::new(HashSet::new()),
+            };
+            let mut req = request("https://Files.Example.com/a", Path::new("."), FileExists::Rename);
+            req.host_limit = Some(2);
+            let a = Gate::new(&shared, &req);
+            let b = Gate::new(&shared, &req);
+            let one = a.take().unwrap();
+            let _two = b.take().unwrap();
+            assert!(a.take().is_none() && b.take().is_none(), "both downloads share the limit");
+            drop(one);
+            assert!(b.take().is_some());
+            req.host_limit = None;
+            let free = Gate::new(&shared, &req);
+            assert!((0..10).all(|_| free.take().is_some()), "no limit, no counting");
+        }
+
+        #[test]
+        fn downloads_to_one_host_share_its_connection_limit() {
+            const LEN: usize = 2 * 1024 * 1024;
+            let data = body(LEN);
+            let behavior = Behavior {
+                slow_range_start: Some(0),
+                slow_bytes_per_sec: 1024 * 1024,
+                ..Behavior::default()
+            };
+            let server = TestServer::start_with(data.clone(), behavior);
+            let dir = temp_dir("host_limit");
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(
+                Arc::new(move |p: Progress| {
+                    let _ = tx.lock().unwrap().send(p);
+                }),
+                2,
+            );
+            for name in ["a.bin", "b.bin"] {
+                let mut req = request(&server.url, &dir, FileExists::Rename);
+                req.filename = Some(name.into());
+                req.host_limit = Some(2);
+                engine.enqueue(req);
+            }
+            let (mut most, mut finished) = (0, Vec::new());
+            while finished.len() < 2 {
+                let used: usize = engine.inner.shared.host_slots.0.lock().unwrap().values().sum();
+                most = most.max(used);
+                match rx.recv_timeout(Duration::from_millis(5)) {
+                    Ok(Progress::Finished { path, .. }) => finished.push(path),
+                    Ok(Progress::Failed { error, .. }) => panic!("download failed: {error}"),
+                    _ => {}
+                }
+            }
+            assert!(most <= 2, "{most} connections at once");
+            for path in finished {
+                assert_eq!(fs::read(&path).unwrap(), data);
+            }
+            assert!(engine.inner.shared.host_slots.0.lock().unwrap().is_empty(), "all given back");
             fs::remove_dir_all(&dir).ok();
         }
 

@@ -116,6 +116,17 @@ pub struct SiteLogin {
     pub password: Option<String>,
 }
 
+/// The most connections UIDM opens to the hosts matching `site` (such as
+/// `*.example.com`), across every download at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerLimit {
+    pub site: String,
+    pub max: usize,
+}
+
+/// Allowed values for a server's connection limit.
+pub const SERVER_CONNECTIONS_RANGE: (usize, usize) = (1, 16);
+
 /// A kind of file with its own folder, chosen by file extension and,
 /// optionally, the site it comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,6 +391,8 @@ pub struct Settings {
     /// With `SelectionButton::Sites`, the sites that get the button, such
     /// as `*.example.com`.
     pub selection_button_sites: Vec<String>,
+    /// Servers that get fewer connections, all downloads together.
+    pub server_limits: Vec<ServerLimit>,
 }
 
 impl Default for Settings {
@@ -429,6 +442,7 @@ impl Default for Settings {
             offer_exceptions: true,
             selection_button: SelectionButton::Everywhere,
             selection_button_sites: Vec::new(),
+            server_limits: Vec::new(),
         }
     }
 }
@@ -453,6 +467,15 @@ pub const USER_AGENT_PRESETS: [(&str, &str); 3] = [
 impl Settings {
     /// Check every value, returning a message fit to show the user.
     pub fn validate(&self) -> Result<(), String> {
+        let (lo, hi) = SERVER_CONNECTIONS_RANGE;
+        for l in &self.server_limits {
+            if l.site.trim().is_empty() || l.site.contains(char::is_whitespace) {
+                return Err(format!("\"{}\" is not a server name, such as files.example.com.", l.site));
+            }
+            if !(lo..=hi).contains(&l.max) {
+                return Err(format!("The connections for {} must be between {lo} and {hi}.", l.site));
+            }
+        }
         if self.capture_skip_key == self.capture_force_key && self.capture_skip_key != CaptureKey::None {
             return Err("The keys that skip and force capture must differ.".into());
         }
@@ -578,6 +601,16 @@ impl Settings {
     /// none claims it.
     pub fn category_name(&self, filename: &str, url: &str) -> &str {
         self.category_of(filename, url).map_or(GENERAL, |c| c.name.as_str())
+    }
+
+    /// The connection limit for `host`, if a server limit covers it: the
+    /// most specific matching entry wins.
+    pub fn server_limit(&self, host: &str) -> Option<usize> {
+        self.server_limits
+            .iter()
+            .filter(|l| crate::net::site_matches(&l.site, host))
+            .max_by_key(|l| l.site.trim_start_matches("*.").len())
+            .map(|l| l.max)
     }
 
     /// Where new downloads go, by category, for files from any site.
@@ -829,6 +862,10 @@ mod tests {
             offer_exceptions: false,
             selection_button: SelectionButton::Sites,
             selection_button_sites: vec!["*.example.org".into()],
+            server_limits: vec![ServerLimit {
+                site: "*.mirror.net".into(),
+                max: 2,
+            }],
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
@@ -923,6 +960,26 @@ mod tests {
 
         let fixed = Folders::fixed(base.join("picked"));
         assert_eq!(fixed.for_name("a.zip"), base.join("picked"));
+    }
+
+    #[test]
+    fn server_limits_pick_the_most_specific_entry() {
+        let s = Settings {
+            server_limits: vec![
+                ServerLimit { site: "*.mirror.net".into(), max: 4 },
+                ServerLimit { site: "slow.mirror.net".into(), max: 1 },
+            ],
+            ..Settings::default()
+        };
+        assert_eq!(s.server_limit("dl.mirror.net"), Some(4));
+        assert_eq!(s.server_limit("slow.mirror.net"), Some(1));
+        assert_eq!(s.server_limit("example.com"), None);
+        assert!(s.validate().is_ok());
+        let bad = Settings {
+            server_limits: vec![ServerLimit { site: "x.net".into(), max: 40 }],
+            ..Settings::default()
+        };
+        assert!(bad.validate().is_err());
     }
 
     #[test]

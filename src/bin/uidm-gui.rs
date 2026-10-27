@@ -54,7 +54,7 @@ use uidm::protocol::{
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
-    parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
+    parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, ServerLimit, SERVER_CONNECTIONS_RANGE, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, USER_AGENT_PRESETS,
 };
 use uidm::state::DownloadTable;
@@ -630,6 +630,8 @@ struct OptionsDraft {
     selection_button: SelectionButton,
     /// One site per line.
     selection_button_sites: String,
+    /// Each server and its most connections.
+    server_limits: Vec<(String, usize)>,
     error: Option<String>,
     picked: Picked,
 }
@@ -721,6 +723,7 @@ impl OptionsDraft {
             offer_exceptions: s.offer_exceptions,
             selection_button: s.selection_button,
             selection_button_sites: s.selection_button_sites.join("\n"),
+            server_limits: s.server_limits.iter().map(|l| (l.site.clone(), l.max)).collect(),
             error: None,
             picked: Picked::default(),
         }
@@ -808,6 +811,14 @@ impl OptionsDraft {
             offer_exceptions: self.offer_exceptions,
             selection_button: self.selection_button,
             selection_button_sites: sites(&self.selection_button_sites),
+            server_limits: self
+                .server_limits
+                .iter()
+                .map(|(site, max)| ServerLimit {
+                    site: site.trim().to_ascii_lowercase(),
+                    max: *max,
+                })
+                .collect(),
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -1853,6 +1864,31 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.checkbox(&mut draft.use_browser_proxy, "For downloads from the browser, use the browser's proxy");
         ui.end_row();
     });
+
+    ui.add_space(8.0);
+    ui.strong("Connections per server");
+    ui.weak("Some servers refuse clients that open many connections. These limits count every download to the server together.");
+    let mut gone = None;
+    egui::Grid::new("server_limits").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
+        for (i, (site, max)) in draft.server_limits.iter_mut().enumerate() {
+            ui.add_sized([220.0, 20.0], egui::TextEdit::singleline(site).hint_text("*.example.com"));
+            ui.horizontal(|ui| {
+                let (lo, hi) = SERVER_CONNECTIONS_RANGE;
+                ui.add(egui::DragValue::new(max).range(lo..=hi));
+                ui.label("connections at most");
+            });
+            if ui.small_button("Remove").clicked() {
+                gone = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(i) = gone {
+        draft.server_limits.remove(i);
+    }
+    if ui.button("Add server").clicked() {
+        draft.server_limits.push((String::new(), 2));
+    }
 
     ui.add_space(8.0);
     ui.strong("Site logins");

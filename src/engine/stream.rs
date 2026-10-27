@@ -622,6 +622,7 @@ mod tests {
                 server_date: false,
                 temp_dir: None,
                 reuse_partial: None,
+                host_limit: None,
             }
         }
 

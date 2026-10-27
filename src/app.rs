@@ -33,6 +33,8 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         headers.push(("Referer".to_string(), referrer));
     }
     let folders = settings.folders_for(&d.url);
+    let host = url::Url::parse(&d.url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+    let host_limit = host.and_then(|h| settings.server_limit(&h));
     DownloadRequest {
         url: d.url,
         folders,
@@ -49,6 +51,7 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         server_date: settings.server_file_date,
         temp_dir: settings.temp_dir.as_deref().map(PathBuf::from).filter(|d| d.is_absolute()),
         reuse_partial: None,
+        host_limit,
     }
 }
 
