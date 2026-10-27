@@ -633,6 +633,14 @@ pub fn inspect(
     })
 }
 
+/// The files a download writing to `output` may leave: the file itself, its
+/// resume sidecar, and a stream's folder of segments.
+pub fn files_of(output: &Path) -> Vec<PathBuf> {
+    let mut parts = output.file_name().unwrap_or_default().to_os_string();
+    parts.push(".uidmparts");
+    vec![output.to_path_buf(), Manifest::sidecar_path(output), output.with_file_name(parts)]
+}
+
 /// Whether the partial file at `output` can be continued from the file
 /// `found` describes: the same size, and the same ETag or Last-Modified when
 /// both sides have one. A missing partial file or sidecar has nothing to keep,

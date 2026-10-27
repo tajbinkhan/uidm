@@ -268,7 +268,15 @@ enum Action {
     Add(String),
     Cancel(u64),
     Retry(u64),
-    Remove(u64),
+    /// Remove downloads, asking first if Options says so.
+    Remove(Vec<u64>),
+    /// Remove downloads now, and maybe their files.
+    RemoveNow {
+        ids: Vec<u64>,
+        delete_files: bool,
+        /// Stop asking, and remember `delete_files`.
+        dont_ask: bool,
+    },
     ClearFinished,
     /// Open a finished download; asks first if its scan found a threat.
     Open(u64),
@@ -394,6 +402,15 @@ struct App {
     columns_dialog: bool,
     /// Open Properties dialogs, one per download.
     properties: Vec<properties::PropertiesDialog>,
+    /// The confirmation before removing downloads.
+    remove_prompt: Option<RemovePrompt>,
+}
+
+/// Downloads about to be removed, and the confirmation's boxes.
+struct RemovePrompt {
+    ids: Vec<u64>,
+    delete_files: bool,
+    dont_ask: bool,
 }
 
 /// A folder chosen in the picker, delivered by its thread.
@@ -534,6 +551,8 @@ struct OptionsDraft {
     ffmpeg_path: String,
     /// ffmpeg.exe chosen with Browse.
     ffmpeg_picked: Picked,
+    confirm_remove: bool,
+    remove_deletes_files: bool,
     error: Option<String>,
     picked: Picked,
 }
@@ -610,6 +629,8 @@ impl OptionsDraft {
             video_button_excluded_sites: s.video_button_excluded_sites.join("\n"),
             ffmpeg_path: s.ffmpeg_path.clone(),
             ffmpeg_picked: Picked::default(),
+            confirm_remove: s.confirm_remove,
+            remove_deletes_files: s.remove_deletes_files,
             error: None,
             picked: Picked::default(),
         }
@@ -672,6 +693,8 @@ impl OptionsDraft {
             video_button: self.video_button,
             video_button_excluded_sites: sites(&self.video_button_excluded_sites),
             ffmpeg_path: self.ffmpeg_path.trim().to_string(),
+            confirm_remove: self.confirm_remove,
+            remove_deletes_files: self.remove_deletes_files,
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -720,6 +743,7 @@ impl App {
             layout: columns::Layout::load(),
             columns_dialog: false,
             properties: Vec::new(),
+            remove_prompt: None,
         };
         app.connect();
         app.install_tray();
@@ -885,8 +909,24 @@ impl App {
             Action::Retry(id) => {
                 send(&self.writer, &Incoming::Retry { id });
             }
-            Action::Remove(id) => {
-                send(&self.writer, &Incoming::Remove { id });
+            Action::Remove(ids) => self.ask_remove(ids),
+            Action::RemoveNow {
+                ids,
+                delete_files,
+                dont_ask,
+            } => {
+                for id in &ids {
+                    send(&self.writer, &Incoming::Remove { id: *id, delete_files });
+                    self.selected.remove(id);
+                }
+                let settings = self.shared.lock().unwrap().settings.clone();
+                if let Some(s) = settings.filter(|_| dont_ask) {
+                    self.perform(Action::QuickSettings(Settings {
+                        confirm_remove: false,
+                        remove_deletes_files: delete_files,
+                        ..s
+                    }));
+                }
             }
             Action::ClearFinished => {
                 let done: Vec<u64> = {
@@ -897,9 +937,7 @@ impl App {
                         .map(|e| e.id)
                         .collect()
                 };
-                for id in done {
-                    send(&self.writer, &Incoming::Remove { id });
-                }
+                self.ask_remove(done);
             }
             Action::Open(id) => {
                 let entry = self.shared.lock().unwrap().table.get(id).cloned();
@@ -1498,6 +1536,18 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 
         ui.label("");
         ui.checkbox(&mut draft.close_to_tray, "Closing the window keeps UIDM in the tray");
+        ui.end_row();
+
+        ui.label("Removing downloads");
+        ui.vertical(|ui| {
+            ui.checkbox(&mut draft.confirm_remove, "Ask first");
+            let text = if draft.confirm_remove {
+                "Tick the box to delete files by default"
+            } else {
+                "Also send their files to the Recycle Bin"
+            };
+            ui.checkbox(&mut draft.remove_deletes_files, text);
+        });
         ui.end_row();
 
         ui.label("ffmpeg");
@@ -2104,6 +2154,19 @@ impl eframe::App for App {
                     {
                         actions.push(Action::ClearFinished);
                     }
+                    let ticked: Vec<u64> = rows
+                        .iter()
+                        .filter(|e| self.selected.contains(&e.id) && e.status.is_terminal())
+                        .map(|e| e.id)
+                        .collect();
+                    if !ticked.is_empty()
+                        && ui
+                            .add_enabled(connected, egui::Button::new(format!("Remove ticked ({})", ticked.len())))
+                            .on_hover_text("Running downloads are left alone")
+                            .clicked()
+                    {
+                        actions.push(Action::Remove(ticked));
+                    }
                     if let Some(s) = &settings {
                         ui.separator();
                         let toggle = if s.speed_limit_enabled { "Turn off" } else { "Limit speed" };
@@ -2306,6 +2369,7 @@ impl eframe::App for App {
         self.confirm_window(ctx, &rows, connected, &mut actions);
         self.completed_window(ctx, connected, &mut actions);
         self.threat_window(ctx, &mut actions);
+        self.remove_window(ctx, &rows, connected, &mut actions);
         self.refresh_window(ctx, &rows, connected, &mut actions);
         self.tool_windows(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.queues_dialog.as_mut() {
@@ -2340,6 +2404,91 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Remove `ids`, asking first unless Options says not to.
+    fn ask_remove(&mut self, ids: Vec<u64>) {
+        if ids.is_empty() {
+            return;
+        }
+        let settings = self.shared.lock().unwrap().settings.clone().unwrap_or_default();
+        if settings.confirm_remove {
+            self.remove_prompt = Some(RemovePrompt {
+                ids,
+                delete_files: settings.remove_deletes_files,
+                dont_ask: false,
+            });
+        } else {
+            self.perform(Action::RemoveNow {
+                ids,
+                delete_files: settings.remove_deletes_files,
+                dont_ask: false,
+            });
+        }
+    }
+
+    /// The confirmation before removing downloads, with a box to send their
+    /// files to the Recycle Bin too.
+    fn remove_window(&mut self, ctx: &egui::Context, rows: &[DownloadEntry], connected: bool, actions: &mut Vec<Action>) {
+        let Some(p) = self.remove_prompt.as_mut() else {
+            return;
+        };
+        // One that started again since is left alone.
+        p.ids.retain(|id| rows.iter().any(|e| e.id == *id && e.status.is_terminal()));
+        let unfinished = rows
+            .iter()
+            .filter(|e| p.ids.contains(&e.id) && e.status != Status::Done)
+            .count();
+        let (what, partial) = match p.ids.as_slice() {
+            [] => {
+                self.remove_prompt = None;
+                return;
+            }
+            [id] => (
+                rows.iter().find(|e| e.id == *id).map(display_name).unwrap_or_default(),
+                "It is not finished, so its partial file goes too.".to_string(),
+            ),
+            ids => (
+                format!("{} downloads", ids.len()),
+                match unfinished {
+                    1 => "One of them is not finished; its partial file goes too.".to_string(),
+                    n => format!("{n} of them are not finished; their partial files go too."),
+                },
+            ),
+        };
+        let mut close = false;
+        egui::Window::new("Remove from the list")
+            .id(egui::Id::new("remove"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("Remove {what} from the list?"));
+                ui.add_space(4.0);
+                ui.checkbox(&mut p.delete_files, "Also send the files to the Recycle Bin");
+                if p.delete_files && unfinished > 0 {
+                    ui.colored_label(ui.visuals().warn_fg_color, partial);
+                }
+                ui.checkbox(&mut p.dont_ask, "Don't ask again")
+                    .on_hover_text("Options > General can turn the question back on");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(connected, egui::Button::new("Remove")).clicked() {
+                        actions.push(Action::RemoveNow {
+                            ids: p.ids.clone(),
+                            delete_files: p.delete_files,
+                            dont_ask: p.dont_ask,
+                        });
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            self.remove_prompt = None;
+        }
+    }
+
     /// The New link dialog: paste a new address, or take the next download
     /// from the browser; and, when the new link is for another file, whether
     /// to start over. It closes once the download has its new link.
@@ -2514,7 +2663,7 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 }
                 queue_menu(ui, e, row.queues, actions);
                 if ui.small_button("Remove").clicked() {
-                    actions.push(Action::Remove(e.id));
+                    actions.push(Action::Remove(vec![e.id]));
                 }
             }
             Status::Failed | Status::Canceled | Status::Interrupted => {
@@ -2531,7 +2680,7 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 }
                 queue_menu(ui, e, row.queues, actions);
                 if ui.small_button("Remove").clicked() {
-                    actions.push(Action::Remove(e.id));
+                    actions.push(Action::Remove(vec![e.id]));
                 }
             }
             Status::Done => {
@@ -2544,7 +2693,7 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                     }
                 }
                 if ui.small_button("Remove").clicked() {
-                    actions.push(Action::Remove(e.id));
+                    actions.push(Action::Remove(vec![e.id]));
                 }
             }
         });

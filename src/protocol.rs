@@ -56,8 +56,14 @@ pub enum Incoming {
     /// Start a failed or canceled download again; it resumes from its partial
     /// file. The old entry is removed and the retry gets a new id.
     Retry { id: u64 },
-    /// Forget a finished, failed or canceled download. Files are left alone.
-    Remove { id: u64 },
+    /// Forget a finished, failed or canceled download. Its files stay unless
+    /// `delete_files`, which sends the finished or partial file, its resume
+    /// sidecar and a stream's segments to the Recycle Bin.
+    Remove {
+        id: u64,
+        #[serde(default)]
+        delete_files: bool,
+    },
     /// Ask for every download the daemon knows about.
     List,
     /// Stop every queued or running download, keeping its partial file.

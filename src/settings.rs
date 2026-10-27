@@ -281,6 +281,12 @@ pub struct Settings {
     pub video_button_excluded_sites: Vec<String>,
     /// ffmpeg.exe, to join streams into .mp4 files. Empty looks on `PATH`.
     pub ffmpeg_path: String,
+    /// Ask before removing downloads from the list.
+    pub confirm_remove: bool,
+    /// Removing a download also sends its files to the Recycle Bin. The
+    /// confirmation's box starts with this, and it applies on its own once
+    /// the confirmation is turned off.
+    pub remove_deletes_files: bool,
 }
 
 impl Default for Settings {
@@ -319,6 +325,8 @@ impl Default for Settings {
             video_button: true,
             video_button_excluded_sites: Vec::new(),
             ffmpeg_path: String::new(),
+            confirm_remove: true,
+            remove_deletes_files: false,
         }
     }
 }
@@ -654,6 +662,8 @@ mod tests {
             video_button: false,
             video_button_excluded_sites: vec!["video.example.com".into()],
             ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".into(),
+            confirm_remove: false,
+            remove_deletes_files: true,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

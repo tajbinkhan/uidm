@@ -1068,7 +1068,7 @@ impl Daemon {
                     download.folder = path.parent().map(|d| d.display().to_string());
                 }
                 download.file_exists = Some(FileExists::Overwrite);
-                if let Err(e) = self.remove(old.id) {
+                if let Err(e) = self.remove(old.id, false) {
                     eprintln!("[uidm-daemon] could not remove #{}: {e}", old.id);
                 }
                 None
@@ -1816,15 +1816,24 @@ impl Daemon {
         }
     }
 
-    /// Forget a download that is no longer running. Its files stay on disk.
-    fn remove(&self, id: u64) -> Result<(), String> {
-        match self.status(id) {
+    /// Forget a download that is no longer running. Its files stay on disk
+    /// unless `delete_files`, which sends them to the Recycle Bin.
+    fn remove(&self, id: u64, delete_files: bool) -> Result<(), String> {
+        let entry = match self.entry(id) {
             None => return Err(format!("no download with id {id}")),
-            Some(s) if !s.is_terminal() => {
+            Some(e) if !e.status.is_terminal() => {
                 return Err(format!("download {id} is still running; cancel it first"))
             }
-            Some(_) => {}
-        }
+            Some(e) => e,
+        };
+        // Only a download that started wrote anything. One that never got
+        // past its save-as dialog only has a proposed path, which may be
+        // somebody else's file.
+        let wrote = entry.status == Status::Done || entry.connections > 0;
+        let files = match entry.path.as_deref() {
+            Some(p) if delete_files && wrote => engine::files_of(Path::new(p)),
+            _ => Vec::new(),
+        };
         self.hub.requests.lock().unwrap().remove(&id);
         if self.refresh_waiting.lock().unwrap().is_some_and(|w| w == id) {
             self.set_refresh_waiting(None);
@@ -1833,6 +1842,11 @@ impl Daemon {
         self.hub.publish(&Outgoing::Removed { id });
         if in_queue {
             self.hub.publish_queues();
+        }
+        if !files.is_empty() {
+            eprintln!("[uidm-daemon] recycling the files of #{id}");
+            uidm::recycle::recycle(&files)
+                .map_err(|e| format!("Removed {} from the list, but its files stay: {e}", entry.url))?;
         }
         Ok(())
     }
@@ -2090,8 +2104,8 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
             Err(message) => send(&Outgoing::Error { message }),
         },
-        Incoming::Remove { id } => {
-            if let Err(message) = daemon.remove(id) {
+        Incoming::Remove { id, delete_files } => {
+            if let Err(message) = daemon.remove(id, delete_files) {
                 send(&Outgoing::Error { message });
             }
         }
@@ -2716,5 +2730,33 @@ mod tests {
             ..Properties::default()
         };
         assert!(t.daemon.set_properties(failed, rename).is_err(), "only finished files move");
+    }
+
+    #[test]
+    fn removing_with_files_recycles_only_what_the_download_wrote() {
+        let t = setup("remove_files", Duplicate::NewName);
+        let kept = t.dir.join("kept.bin");
+        let id = t.finished("https://x/kept.bin", &kept);
+        t.daemon.remove(id, false).unwrap();
+        assert!(kept.exists(), "a plain remove keeps the file");
+
+        let gone = t.dir.join("gone.bin");
+        let id = t.finished("https://x/gone.bin", &gone);
+        let sidecar = t.dir.join("gone.bin.uidmpart");
+        std::fs::write(&sidecar, b"{}").unwrap();
+        t.daemon.remove(id, true).unwrap();
+        assert!(!gone.exists() && !sidecar.exists());
+        assert!(t.daemon.entry(id).is_none());
+
+        // A download that never started only proposed its path.
+        let other = t.dir.join("someone_elses.bin");
+        std::fs::write(&other, b"theirs").unwrap();
+        let id = t.failed("https://x/someone_elses.bin");
+        t.daemon.hub.update(id, |e| {
+            e.path = Some(other.display().to_string());
+            Ok(())
+        }).unwrap();
+        t.daemon.remove(id, true).unwrap();
+        assert!(other.exists());
     }
 }

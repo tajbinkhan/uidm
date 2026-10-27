@@ -19,6 +19,7 @@
 //! - `batch`: many URLs from a pattern or a list.
 //! - `listfile`: exporting and importing the download list.
 //! - `grab`: the site grabber's crawler.
+//! - `recycle`: sending files to the Recycle Bin.
 
 pub mod app;
 pub mod batch;
@@ -34,6 +35,7 @@ pub mod notify;
 pub mod power;
 pub mod protocol;
 pub mod queue;
+pub mod recycle;
 pub mod registry;
 pub mod scan;
 pub mod settings;
