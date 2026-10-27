@@ -7,6 +7,8 @@ use std::path::Path;
 use eframe::egui;
 use uidm::protocol::{DownloadEntry, DownloadLogin, Properties, Status};
 
+use crate::i18n::{tr, trf};
+
 use super::{browse_button, display_name, human_bytes, take_picked, Action, Picked};
 
 pub struct PropertiesDialog {
@@ -93,14 +95,14 @@ fn is_empty(p: &Properties) -> bool {
 
 fn status_text(s: Status) -> &'static str {
     match s {
-        Status::Queued => "Queued",
-        Status::Downloading => "Downloading",
-        Status::Done => "Finished",
-        Status::Failed => "Failed",
-        Status::Canceled => "Canceled",
-        Status::Interrupted => "Interrupted",
-        Status::Confirming => "Waiting for the save-as dialog",
-        Status::Waiting => "Waiting in a queue",
+        Status::Queued => tr("Queued"),
+        Status::Downloading => tr("Downloading"),
+        Status::Done => tr("Finished"),
+        Status::Failed => tr("Failed"),
+        Status::Canceled => tr("Canceled"),
+        Status::Interrupted => tr("Interrupted"),
+        Status::Confirming => tr("Waiting for the save-as dialog"),
+        Status::Waiting => tr("Waiting in a queue"),
     }
 }
 
@@ -121,78 +123,78 @@ pub fn dialog(
     let stopped = done || e.status.is_retryable();
     let mut open = true;
     let mut close = false;
-    egui::Window::new(format!("Properties of {}", display_name(e)))
+    egui::Window::new(trf!("Properties of {name}", name = display_name(e)))
         .id(egui::Id::new(("properties", d.id)))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
             egui::Grid::new("properties_info").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                ui.weak("Status");
+                ui.weak(tr("Status"));
                 ui.label(status_text(e.status));
                 ui.end_row();
-                ui.weak("Size");
+                ui.weak(tr("Size"));
                 ui.label(match e.total {
                     Some(t) if done => human_bytes(t),
-                    Some(t) => format!("{} of {}", human_bytes(e.done), human_bytes(t)),
+                    Some(t) => trf!("{done} of {total}", done = human_bytes(e.done), total = human_bytes(t)),
                     None => human_bytes(e.done),
                 });
                 ui.end_row();
-                ui.weak("Last try");
-                ui.label(e.last_try.map(super::columns::local_date).unwrap_or_else(|| "Not started yet".into()));
+                ui.weak(tr("Last try"));
+                ui.label(e.last_try.map(super::columns::local_date).unwrap_or_else(|| tr("Not started yet").into()));
                 ui.end_row();
                 if let Some(err) = &e.error {
-                    ui.weak("Result");
+                    ui.weak(tr("Result"));
                     ui.colored_label(ui.visuals().error_fg_color, err);
                     ui.end_row();
                 }
             });
             ui.separator();
             if !stopped {
-                ui.weak("Stop the download to change these.");
+                ui.weak(tr("Stop the download to change these."));
             }
             ui.add_enabled_ui(stopped, |ui| {
                 egui::Grid::new("properties_edit").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                    ui.label("Link");
+                    ui.label(tr("Link"));
                     ui.add(egui::TextEdit::singleline(&mut d.url).desired_width(420.0));
                     ui.end_row();
-                    ui.label("Referrer").on_hover_text("The page the download came from");
+                    ui.label(tr("Referrer")).on_hover_text(tr("The page the download came from"));
                     ui.add(
                         egui::TextEdit::singleline(&mut d.referrer)
-                            .hint_text("None")
+                            .hint_text(tr("None"))
                             .desired_width(420.0),
                     );
                     ui.end_row();
-                    ui.label("Description");
+                    ui.label(tr("Description"));
                     ui.add(
                         egui::TextEdit::multiline(&mut d.description)
-                            .hint_text("A note for yourself")
+                            .hint_text(tr("A note for yourself"))
                             .desired_rows(2)
                             .desired_width(420.0),
                     );
                     ui.end_row();
-                    ui.label("File name");
+                    ui.label(tr("File name"));
                     ui.add_enabled(done, egui::TextEdit::singleline(&mut d.filename).desired_width(420.0))
-                        .on_disabled_hover_text("A finished file can be renamed");
+                        .on_disabled_hover_text(tr("A finished file can be renamed"));
                     ui.end_row();
-                    ui.label("Folder");
+                    ui.label(tr("Folder"));
                     ui.horizontal(|ui| {
                         ui.add_enabled(done, egui::TextEdit::singleline(&mut d.folder).desired_width(340.0))
-                            .on_disabled_hover_text("A finished file can be moved");
-                        ui.add_enabled_ui(done, |ui| browse_button(ui, "Move the file to", &d.folder, &d.picked));
+                            .on_disabled_hover_text(tr("A finished file can be moved"));
+                        ui.add_enabled_ui(done, |ui| browse_button(ui, tr("Move the file to"), &d.folder, &d.picked));
                     });
                     ui.end_row();
                 });
                 ui.add_space(4.0);
                 ui.add_enabled_ui(!done, |ui| {
-                    ui.checkbox(&mut d.use_login, "Log in to this download's site")
-                        .on_disabled_hover_text("A finished download keeps no login");
+                    ui.checkbox(&mut d.use_login, tr("Log in to this download's site"))
+                        .on_disabled_hover_text(tr("A finished download keeps no login"));
                     if d.use_login {
                         ui.horizontal(|ui| {
-                            ui.label("User name");
+                            ui.label(tr("User name"));
                             ui.add(egui::TextEdit::singleline(&mut d.username).desired_width(140.0));
-                            ui.label("Password");
-                            let hint = if d.had_login { "Unchanged" } else { "" };
+                            ui.label(tr("Password"));
+                            let hint = if d.had_login { tr("Unchanged") } else { "" };
                             ui.add(
                                 egui::TextEdit::singleline(&mut d.password)
                                     .password(true)
@@ -208,11 +210,11 @@ pub fn dialog(
             let login_ok = !d.use_login || !d.username.trim().is_empty();
             ui.horizontal(|ui| {
                 let can_save = connected && stopped && login_ok && !is_empty(&changes);
-                if ui.add_enabled(can_save, egui::Button::new("Save")).clicked() {
+                if ui.add_enabled(can_save, egui::Button::new(tr("Save"))).clicked() {
                     actions.push(Action::SetProperties { id: d.id, changes });
                     close = true;
                 }
-                if ui.button("Close").clicked() {
+                if ui.button(tr("Close")).clicked() {
                     close = true;
                 }
             });

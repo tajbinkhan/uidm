@@ -454,6 +454,8 @@ pub struct Settings {
     pub theme: Theme,
     /// The window's text size, in percent; everything in it scales along.
     pub text_size: u32,
+    /// The window's language as a code such as `de`; empty follows Windows.
+    pub language: String,
 }
 
 impl Default for Settings {
@@ -518,6 +520,7 @@ impl Default for Settings {
             drop_target: false,
             theme: Theme::System,
             text_size: 100,
+            language: String::new(),
         }
     }
 }
@@ -544,6 +547,9 @@ impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         if self.proxy_mode == ProxyMode::Script && !crate::batch::is_web_url(self.proxy_pac_url.trim()) {
             return Err("The configuration script must be an http or https address.".into());
+        }
+        if self.language.len() > 16 || !self.language.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(format!("\"{}\" is not a language code, such as de or pt-BR.", self.language));
         }
         let (lo, hi) = TEXT_SIZE_RANGE;
         if !(lo..=hi).contains(&self.text_size) {
@@ -974,6 +980,7 @@ mod tests {
             drop_target: true,
             theme: Theme::Dark,
             text_size: 125,
+            language: "de".into(),
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

@@ -5,15 +5,17 @@
 use eframe::egui;
 use uidm::protocol::{DownloadEntry, SegmentInfo, SegmentState};
 
+use crate::i18n::{tr, trf};
+
 use super::{display_name, human_bytes};
 
 fn state_text(s: SegmentState) -> &'static str {
     match s {
-        SegmentState::Waiting => "Waiting",
-        SegmentState::Connecting => "Connecting",
-        SegmentState::Receiving => "Receiving",
-        SegmentState::Retrying => "Retrying",
-        SegmentState::Done => "Done",
+        SegmentState::Waiting => tr("Waiting"),
+        SegmentState::Connecting => tr("Connecting"),
+        SegmentState::Receiving => tr("Receiving"),
+        SegmentState::Retrying => tr("Retrying"),
+        SegmentState::Done => tr("Done"),
     }
 }
 
@@ -24,22 +26,22 @@ pub fn dialog(ctx: &egui::Context, id: u64, entry: Option<&DownloadEntry>, segme
         return false;
     };
     let mut open = true;
-    egui::Window::new(format!("Connections of {}", display_name(e)))
+    egui::Window::new(trf!("Connections of {name}", name = display_name(e)))
         .id(egui::Id::new(("connections", id)))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
             if let Some([done, all]) = e.parts.filter(|[_, all]| *all > 0) {
-                ui.label(format!("A stream of {all} segments; {done} are in."));
+                ui.label(trf!("A stream of {all} segments; {done} are in.", all = all, done = done));
                 ui.add(egui::ProgressBar::new(done as f32 / all as f32).desired_width(480.0).show_percentage());
                 return;
             }
             let Some(segments) = segments.filter(|s| !s.is_empty()) else {
                 ui.weak(if e.connections == 1 {
-                    "This server sends the file over one connection."
+                    tr("This server sends the file over one connection.")
                 } else {
-                    "No connection details yet. They appear while the download runs."
+                    tr("No connection details yet. They appear while the download runs.")
                 });
                 return;
             };
@@ -52,21 +54,21 @@ pub fn dialog(ctx: &egui::Context, id: u64, entry: Option<&DownloadEntry>, segme
                 .iter()
                 .filter(|s| matches!(s.state, SegmentState::Connecting | SegmentState::Receiving | SegmentState::Retrying))
                 .count();
-            ui.weak(format!("{} ranges, {active} connections working", sorted.len()));
+            ui.weak(trf!("{ranges} ranges, {active} connections working", ranges = sorted.len(), active = active));
             ui.add_space(4.0);
             egui::Grid::new(("connections_table", id))
                 .striped(true)
                 .num_columns(4)
                 .spacing([16.0, 4.0])
                 .show(ui, |ui| {
-                    for title in ["Range", "Downloaded", "", "State"] {
+                    for title in [tr("Range"), tr("Downloaded"), "", tr("State")] {
                         ui.strong(title);
                     }
                     ui.end_row();
                     for s in &sorted {
                         let len = s.end + 1 - s.start;
                         ui.label(format!("{} - {}", human_bytes(s.start), human_bytes(s.end + 1)));
-                        ui.label(format!("{} of {}", human_bytes(s.done), human_bytes(len)));
+                        ui.label(trf!("{done} of {total}", done = human_bytes(s.done), total = human_bytes(len)));
                         ui.add(egui::ProgressBar::new(s.done as f32 / len.max(1) as f32).desired_width(100.0));
                         let text = state_text(s.state);
                         match s.state {

@@ -6,6 +6,7 @@ use eframe::egui;
 use uidm::protocol::DownloadEntry;
 
 use super::display_name;
+use crate::i18n::{tr, trf};
 
 /// What the text is looked for in.
 #[derive(Clone, Copy, PartialEq)]
@@ -125,10 +126,10 @@ pub fn step_keys(ctx: &egui::Context, bar: &mut FindBar, ids: &[u64]) {
 pub fn show(ui: &mut egui::Ui, bar: &mut FindBar, ids: &[u64]) -> bool {
     let mut open = true;
     ui.horizontal(|ui| {
-        ui.label("Find:");
+        ui.label(tr("Find:"));
         let input = ui.add(
             egui::TextEdit::singleline(&mut bar.text)
-                .hint_text("File name or link")
+                .hint_text(tr("File name or link"))
                 .desired_width(220.0),
         );
         if std::mem::take(&mut bar.focus) {
@@ -140,10 +141,10 @@ pub fn show(ui: &mut egui::Ui, bar: &mut FindBar, ids: &[u64]) -> bool {
             bar.step(ids, back);
             input.request_focus();
         }
-        if ui.add_enabled(!ids.is_empty(), egui::Button::new("Previous")).on_hover_text("Shift+F3").clicked() {
+        if ui.add_enabled(!ids.is_empty(), egui::Button::new(tr("Previous"))).on_hover_text(tr("Shift+F3")).clicked() {
             bar.step(ids, true);
         }
-        if ui.add_enabled(!ids.is_empty(), egui::Button::new("Next")).on_hover_text("F3").clicked() {
+        if ui.add_enabled(!ids.is_empty(), egui::Button::new(tr("Next"))).on_hover_text("F3").clicked() {
             bar.step(ids, false);
         }
         egui::ComboBox::from_id_salt("find_scope")
@@ -153,20 +154,20 @@ pub fn show(ui: &mut egui::Ui, bar: &mut FindBar, ids: &[u64]) -> bool {
                     ui.selectable_value(&mut bar.scope, s, scope_label(s));
                 }
             });
-        ui.checkbox(&mut bar.match_case, "Match case");
-        ui.checkbox(&mut bar.whole, "Whole name only")
-            .on_hover_text("The whole file name or link must be the text");
+        ui.checkbox(&mut bar.match_case, tr("Match case"));
+        ui.checkbox(&mut bar.whole, tr("Whole name only"))
+            .on_hover_text(tr("The whole file name or link must be the text"));
         if bar.active() {
             let at = bar.current.and_then(|c| ids.iter().position(|id| *id == c));
             match (ids.len(), at) {
-                (0, _) => ui.colored_label(ui.visuals().warn_fg_color, "No matches"),
-                (n, Some(i)) => ui.weak(format!("{} of {n}", i + 1)),
-                (1, None) => ui.weak("1 match"),
-                (n, None) => ui.weak(format!("{n} matches")),
+                (0, _) => ui.colored_label(ui.visuals().warn_fg_color, tr("No matches")),
+                (n, Some(i)) => ui.weak(trf!("{current} of {count}", current = i + 1, count = n)),
+                (1, None) => ui.weak(tr("1 match")),
+                (n, None) => ui.weak(trf!("{count} matches", count = n)),
             };
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Close").on_hover_text("Escape").clicked() {
+            if ui.button(tr("Close")).on_hover_text(tr("Escape")).clicked() {
                 open = false;
             }
         });
@@ -176,8 +177,8 @@ pub fn show(ui: &mut egui::Ui, bar: &mut FindBar, ids: &[u64]) -> bool {
 
 fn scope_label(s: Scope) -> &'static str {
     match s {
-        Scope::Name => "In names and descriptions",
-        Scope::NameAndAddress => "In names, descriptions and links",
+        Scope::Name => tr("In names and descriptions"),
+        Scope::NameAndAddress => tr("In names, descriptions and links"),
     }
 }
 

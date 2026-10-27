@@ -10,6 +10,7 @@ use uidm::queue::{
 };
 
 use super::Action;
+use crate::i18n::{tr, trf};
 
 const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -20,8 +21,8 @@ pub fn next_run(q: &Queue) -> Option<String> {
     if q.running && q.started_by_schedule {
         let end = q.last_scheduled_day.and_then(|d| s.end_of_run(d));
         return Some(match (&s.stop, end) {
-            (Some(_), Some(end)) => format!("running until {}", end.display()),
-            _ => "running".to_string(),
+            (Some(_), Some(end)) => trf!("running until {time}", time = end.display()),
+            _ => tr("running").to_string(),
         });
     }
     s.next_start(now).map(|m| m.display())
@@ -33,27 +34,27 @@ pub fn header(ui: &mut egui::Ui, q: &Queue, connected: bool, actions: &mut Vec<A
     ui.horizontal_wrapped(|ui| {
         ui.strong(&q.name);
         if q.running {
-            ui.colored_label(ui.visuals().text_color(), "Started");
+            ui.colored_label(ui.visuals().text_color(), tr("Started"));
         } else {
-            ui.weak("Stopped");
+            ui.weak(tr("Stopped"));
         }
         ui.add_enabled_ui(connected, |ui| {
             if q.running {
-                if ui.button("Stop").clicked() {
+                if ui.button(tr("Stop")).clicked() {
                     actions.push(Action::StopQueue(q.id));
                 }
-            } else if ui.button("Start").clicked() {
+            } else if ui.button(tr("Start")).clicked() {
                 actions.push(Action::StartQueue(q.id));
             }
             ui.separator();
-            ui.label("When this run ends:");
+            ui.label(tr("When this run ends:"));
             let current = q.when_done_once.unwrap_or(q.when_done);
             let mut chosen = current;
             egui::ComboBox::from_id_salt(("once", q.id))
-                .selected_text(chosen.label())
+                .selected_text(tr(chosen.label()))
                 .show_ui(ui, |ui| {
                     for w in WhenDone::ALL {
-                        ui.selectable_value(&mut chosen, w, w.label());
+                        ui.selectable_value(&mut chosen, w, tr(w.label()));
                     }
                 });
             if chosen != current {
@@ -62,13 +63,13 @@ pub fn header(ui: &mut egui::Ui, q: &Queue, connected: bool, actions: &mut Vec<A
                 actions.push(Action::SetQueueOnce(q.id, once));
             }
             ui.separator();
-            if ui.button("Edit queue...").clicked() {
+            if ui.button(tr("Edit queue...")).clicked() {
                 actions.push(Action::OpenQueues(Some(q.id)));
             }
         });
         if let Some(next) = next_run(q) {
             ui.separator();
-            ui.weak(format!("Next run: {next}"));
+            ui.weak(trf!("Next run: {next}", next = next));
         }
     });
 }
@@ -96,7 +97,7 @@ pub struct QueueDraft {
 
 impl QueueDraft {
     fn new_queue() -> Self {
-        QueueDraft::from(&Queue::new(0, "New queue"))
+        QueueDraft::from(&Queue::new(0, tr("New queue")))
     }
 
     fn from(q: &Queue) -> Self {
@@ -196,7 +197,8 @@ pub fn dialog(
     }
     let mut open = true;
     let mut close = false;
-    egui::Window::new("Queues")
+    egui::Window::new(tr("Queues"))
+        .id(egui::Id::new("Queues"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -207,14 +209,14 @@ pub fn dialog(
                 ui.vertical(|ui| {
                     ui.set_width(160.0);
                     for q in queues {
-                        let label = if q.running { format!("{} (started)", q.name) } else { q.name.clone() };
+                        let label = if q.running { trf!("{name} (started)", name = q.name) } else { q.name.clone() };
                         if ui.selectable_label(d.selected == q.id, label).clicked() && d.selected != q.id {
                             d.selected = q.id;
                             d.draft = QueueDraft::from(q);
                         }
                     }
                     ui.add_space(6.0);
-                    if ui.button("New queue").clicked() {
+                    if ui.button(tr("New queue")).clicked() {
                         d.selected = 0;
                         d.draft = QueueDraft::new_queue();
                     }
@@ -236,57 +238,57 @@ fn form(
 ) {
     let draft = &mut d.draft;
     egui::Grid::new("queue_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-        ui.label("Name");
+        ui.label(tr("Name"));
         ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(220.0));
         ui.end_row();
 
-        ui.label("Downloads at once");
+        ui.label(tr("Downloads at once"));
         let (lo, hi) = QUEUE_CONCURRENCY_RANGE;
         ui.add(egui::DragValue::new(&mut draft.max_concurrent).range(lo..=hi));
         ui.end_row();
 
-        ui.label("Retry a failed download");
+        ui.label(tr("Retry a failed download"));
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut draft.retries).range(0..=QUEUE_RETRIES_MAX));
-            ui.label("times");
+            ui.label(tr("times"));
         });
         ui.end_row();
 
-        ui.label("When it is done");
+        ui.label(tr("When it is done"));
         egui::ComboBox::from_id_salt("when_done")
-            .selected_text(draft.when_done.label())
+            .selected_text(tr(draft.when_done.label()))
             .show_ui(ui, |ui| {
                 for w in WhenDone::ALL {
-                    ui.selectable_value(&mut draft.when_done, w, w.label());
+                    ui.selectable_value(&mut draft.when_done, w, tr(w.label()));
                 }
             });
         ui.end_row();
 
-        ui.label("Then open");
+        ui.label(tr("Then open"));
         ui.add(
             egui::TextEdit::singleline(&mut draft.open_when_done)
-                .hint_text("Nothing; or a program or file, as a full path")
+                .hint_text(tr("Nothing; or a program or file, as a full path"))
                 .desired_width(300.0),
         )
-        .on_hover_text("Opened once each time a run of the queue finishes");
+        .on_hover_text(tr("Opened once each time a run of the queue finishes"));
         ui.end_row();
 
         ui.label("");
-        ui.checkbox(&mut draft.start_on_launch, "Start this queue whenever UIDM starts");
+        ui.checkbox(&mut draft.start_on_launch, tr("Start this queue whenever UIDM starts"));
         ui.end_row();
 
-        ui.label("Schedule");
-        ui.checkbox(&mut draft.scheduled, "Start and stop on a schedule");
+        ui.label(tr("Schedule"));
+        ui.checkbox(&mut draft.scheduled, tr("Start and stop on a schedule"));
         ui.end_row();
 
         if draft.scheduled {
-            ui.label("Start at");
+            ui.label(tr("Start at"));
             ui.add(egui::TextEdit::singleline(&mut draft.start).hint_text("23:00").desired_width(60.0));
             ui.end_row();
 
             ui.label("");
             ui.horizontal(|ui| {
-                ui.checkbox(&mut draft.has_stop, "Stop at");
+                ui.checkbox(&mut draft.has_stop, tr("Stop at"));
                 ui.add_enabled(
                     draft.has_stop,
                     egui::TextEdit::singleline(&mut draft.stop).hint_text("07:00").desired_width(60.0),
@@ -294,22 +296,22 @@ fn form(
             });
             ui.end_row();
 
-            ui.label("Run");
+            ui.label(tr("Run"));
             ui.vertical(|ui| {
-                ui.radio_value(&mut draft.by_date, false, "On these days");
+                ui.radio_value(&mut draft.by_date, false, tr("On these days"));
                 ui.add_enabled_ui(!draft.by_date, |ui| {
                     ui.horizontal(|ui| {
                         for (i, name) in DAY_NAMES.iter().enumerate() {
-                            ui.checkbox(&mut draft.days[i], *name);
+                            ui.checkbox(&mut draft.days[i], tr(*name));
                         }
                     });
                 });
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut draft.by_date, true, "Once, on");
+                    ui.radio_value(&mut draft.by_date, true, tr("Once, on"));
                     ui.add_enabled(
                         draft.by_date,
                         egui::TextEdit::singleline(&mut draft.date)
-                            .hint_text("YYYY-MM-DD")
+                            .hint_text(tr("YYYY-MM-DD"))
                             .desired_width(100.0),
                     );
                 });
@@ -318,13 +320,13 @@ fn form(
 
             if let Ok(q) = draft.to_queue() {
                 if let Some(next) = q.schedule.as_ref().and_then(|s| s.next_start(queue::local_now())) {
-                    ui.label("Next run");
+                    ui.label(tr("Next run"));
                     ui.label(next.display());
                     ui.end_row();
                 }
             }
             ui.label("");
-            ui.weak("Times are this computer's. A stop time earlier than the start is the next day.");
+            ui.weak(tr("Times are this computer's. A stop time earlier than the start is the next day."));
             ui.end_row();
         }
     });
@@ -337,13 +339,13 @@ fn form(
     let mut deleted = false;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(connected, |ui| {
-            if ui.button("Save").clicked() {
+            if ui.button(tr("Save")).clicked() {
                 let duplicate = queues
                     .iter()
                     .any(|q| q.id != draft.id && q.name.eq_ignore_ascii_case(draft.name.trim()));
                 match draft.to_queue() {
                     Ok(_) if duplicate => {
-                        draft.error = Some(format!("There is already a queue named \"{}\".", draft.name.trim()))
+                        draft.error = Some(trf!("There is already a queue named \"{name}\".", name = draft.name.trim()))
                     }
                     Ok(q) => {
                         draft.error = None;
@@ -357,15 +359,15 @@ fn form(
             }
             let deletable = draft.id != 0 && draft.id != MAIN_QUEUE;
             if ui
-                .add_enabled(deletable, egui::Button::new("Delete"))
-                .on_hover_text("Its downloads move to the main queue")
+                .add_enabled(deletable, egui::Button::new(tr("Delete")))
+                .on_hover_text(tr("Its downloads move to the main queue"))
                 .clicked()
             {
                 actions.push(Action::DeleteQueue(draft.id));
                 deleted = true;
             }
         });
-        if ui.button("Close").clicked() {
+        if ui.button(tr("Close")).clicked() {
             *close = true;
         }
     });
@@ -390,22 +392,22 @@ pub fn countdown(
     actions: &mut Vec<Action>,
 ) {
     let left = deadline.saturating_duration_since(Instant::now()).as_secs();
-    let verb = match action {
-        WhenDone::Sleep => "go to sleep",
-        WhenDone::Hibernate => "hibernate",
-        WhenDone::ShutDown => "shut down",
-        _ => "continue",
+    let message = match action {
+        WhenDone::Sleep => trf!("This computer will go to sleep in {seconds} seconds.", seconds = left),
+        WhenDone::Hibernate => trf!("This computer will hibernate in {seconds} seconds.", seconds = left),
+        WhenDone::ShutDown => trf!("This computer will shut down in {seconds} seconds.", seconds = left),
+        _ => trf!("This computer will continue in {seconds} seconds.", seconds = left),
     };
-    egui::Window::new("Queue finished")
+    egui::Window::new(tr("Queue finished"))
         .id(egui::Id::new("countdown"))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.label(format!("The queue \"{queue}\" is done."));
-            ui.heading(format!("This computer will {verb} in {left} seconds."));
+            ui.label(trf!("The queue \"{queue}\" is done.", queue = queue));
+            ui.heading(message);
             ui.add_space(8.0);
-            if ui.add_enabled(connected, egui::Button::new("Cancel")).clicked() {
+            if ui.add_enabled(connected, egui::Button::new(tr("Cancel"))).clicked() {
                 actions.push(Action::CancelCountdown);
             }
         });

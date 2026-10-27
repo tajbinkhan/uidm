@@ -1,7 +1,7 @@
 //! Win32 calls the window needs outside egui: showing and hiding it while egui
 //! is idle (a hidden window gets no frames, so viewport commands would wait),
-//! reading the clipboard for the tray menu and the clipboard offer, and the
-//! Windows `Open with` picker.
+//! reading the clipboard for the tray menu and the clipboard offer, the
+//! Windows `Open with` picker, and the display languages.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -46,7 +46,11 @@ extern "system" {
 extern "system" {
     fn GlobalLock(mem: *mut c_void) -> *mut c_void;
     fn GlobalUnlock(mem: *mut c_void) -> i32;
+    fn GetUserPreferredUILanguages(flags: u32, count: *mut u32, buffer: *mut u16, size: *mut u32) -> i32;
 }
+
+/// Languages by name (`de-DE`) rather than by number.
+const MUI_LANGUAGE_NAME: u32 = 0x8;
 
 pub fn set_window(hwnd: isize) {
     WINDOW.store(hwnd, Ordering::Relaxed);
@@ -127,5 +131,27 @@ pub fn clipboard_text() -> Option<String> {
         }
         CloseClipboard();
         text
+    }
+}
+
+/// Windows' display languages, most preferred first, as tags such as
+/// `de-DE`.
+pub fn display_languages() -> Vec<String> {
+    let (mut count, mut size) = (0u32, 0u32);
+    // SAFETY: the first call only reports the size; the second fills a
+    // buffer of that size with NUL-separated strings, ending in two NULs.
+    unsafe {
+        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, std::ptr::null_mut(), &mut size) == 0 || size == 0 {
+            return Vec::new();
+        }
+        let mut buffer = vec![0u16; size as usize];
+        if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, buffer.as_mut_ptr(), &mut size) == 0 {
+            return Vec::new();
+        }
+        buffer
+            .split(|&c| c == 0)
+            .filter(|tag| !tag.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect()
     }
 }

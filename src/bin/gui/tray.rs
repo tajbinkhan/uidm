@@ -11,6 +11,8 @@ use std::sync::Arc;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use crate::i18n::tr;
+
 /// What the tray asks the window to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -27,7 +29,17 @@ struct Tray {
     icon: TrayIcon,
     speed_limit: CheckMenuItem,
     drop_target: CheckMenuItem,
+    /// The other items, and their English text.
+    items: Vec<(MenuItem, &'static str)>,
 }
+
+const OPEN: &str = "Open UIDM";
+const ADD: &str = "Add URL from clipboard";
+const PAUSE: &str = "Pause all";
+const RESUME: &str = "Resume all";
+const SPEED_LIMIT: &str = "Speed limit";
+const DROP_TARGET: &str = "Drop target";
+const EXIT: &str = "Exit";
 
 thread_local! {
     static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
@@ -42,13 +54,13 @@ pub fn install(
     on_command: Arc<dyn Fn(Command) + Send + Sync>,
     tooltip: Arc<dyn Fn() -> String + Send + Sync>,
 ) -> Result<(), String> {
-    let open = MenuItem::new("Open UIDM", true, None);
-    let add = MenuItem::new("Add URL from clipboard", true, None);
-    let pause = MenuItem::new("Pause all", true, None);
-    let resume = MenuItem::new("Resume all", true, None);
-    let speed_limit = CheckMenuItem::new("Speed limit", true, false, None);
-    let drop_target = CheckMenuItem::new("Drop target", true, false, None);
-    let exit = MenuItem::new("Exit", true, None);
+    let open = MenuItem::new(tr(OPEN), true, None);
+    let add = MenuItem::new(tr(ADD), true, None);
+    let pause = MenuItem::new(tr(PAUSE), true, None);
+    let resume = MenuItem::new(tr(RESUME), true, None);
+    let speed_limit = CheckMenuItem::new(tr(SPEED_LIMIT), true, false, None);
+    let drop_target = CheckMenuItem::new(tr(DROP_TARGET), true, false, None);
+    let exit = MenuItem::new(tr(EXIT), true, None);
     let menu = Menu::new();
     let separator = PredefinedMenuItem::separator();
     let separator2 = PredefinedMenuItem::separator();
@@ -93,6 +105,7 @@ pub fn install(
             icon,
             speed_limit,
             drop_target,
+            items: vec![(open, OPEN), (add, ADD), (pause, PAUSE), (resume, RESUME), (exit, EXIT)],
         })
     });
     Ok(())
@@ -129,6 +142,19 @@ pub fn set_speed_limit_checked(on: bool) {
             if tray.speed_limit.is_checked() != on {
                 tray.speed_limit.set_checked(on);
             }
+        }
+    });
+}
+
+/// Put the menu in the window's current language.
+pub fn relabel() {
+    TRAY.with(|t| {
+        if let Some(tray) = t.borrow().as_ref() {
+            for (item, english) in &tray.items {
+                item.set_text(tr(english));
+            }
+            tray.speed_limit.set_text(tr(SPEED_LIMIT));
+            tray.drop_target.set_text(tr(DROP_TARGET));
         }
     });
 }

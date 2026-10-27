@@ -14,6 +14,7 @@ use uidm::protocol::{Download, DownloadEntry};
 use uidm::queue::{Queue, MAIN_QUEUE};
 
 use super::{browse_button, human_bytes, take_picked, Action, Picked};
+use crate::i18n::{tr, trf};
 
 /// Text read from a file on the picker's thread, or why it could not be.
 pub type Loaded = Arc<Mutex<Option<Result<(String, String), String>>>>;
@@ -25,8 +26,8 @@ pub fn pick_text_file(ctx: &egui::Context, title: &'static str, slot: &Loaded) {
     thread::spawn(move || {
         let Some(path) = rfd::FileDialog::new()
             .set_title(title)
-            .add_filter("Lists", &["txt", "json"])
-            .add_filter("All files", &["*"])
+            .add_filter(tr("Lists"), &["txt", "json"])
+            .add_filter(tr("All files"), &["*"])
             .pick_file()
         else {
             return;
@@ -34,7 +35,7 @@ pub fn pick_text_file(ctx: &egui::Context, title: &'static str, slot: &Loaded) {
         let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let read = std::fs::read(&path)
             .map(|b| (name, String::from_utf8_lossy(&b).into_owned()))
-            .map_err(|e| format!("Could not read {}: {e}", path.display()));
+            .map_err(|e| trf!("Could not read {path}: {error}", path = path.display(), error = e));
         *slot.lock().unwrap() = Some(read);
         ctx.request_repaint();
     });
@@ -45,7 +46,7 @@ pub fn queue_combo(ui: &mut egui::Ui, id: &str, queue: &mut u64, queues: &[Queue
     let name = queues
         .iter()
         .find(|q| q.id == *queue)
-        .map_or("Main queue".to_string(), |q| q.name.clone());
+        .map_or(tr("Main queue").to_string(), |q| q.name.clone());
     egui::ComboBox::from_id_salt(id).selected_text(name).show_ui(ui, |ui| {
         for q in queues {
             ui.selectable_value(queue, q.id, &q.name);
@@ -148,7 +149,8 @@ pub fn batch_dialog(
     let mut open = true;
     let mut close = false;
     let title = if d.source == Source::Imported { "Import downloads" } else { "Add many downloads" };
-    egui::Window::new(title)
+    egui::Window::new(tr(title))
+        .id(egui::Id::new(title))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -157,27 +159,27 @@ pub fn batch_dialog(
         .show(ctx, |ui| {
             if d.source != Source::Imported {
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut d.source, Source::Pattern, "From a pattern");
-                    ui.selectable_value(&mut d.source, Source::List, "From a list");
+                    ui.selectable_value(&mut d.source, Source::Pattern, tr("From a pattern"));
+                    ui.selectable_value(&mut d.source, Source::List, tr("From a list"));
                 });
                 ui.separator();
             }
             let urls = d.urls();
             match d.source {
                 Source::Pattern => {
-                    ui.label("Address with ranges in brackets:");
+                    ui.label(tr("Address with ranges in brackets:"));
                     ui.add(
                         egui::TextEdit::singleline(&mut d.pattern)
                             .hint_text("https://example.com/photo[001-120].jpg")
                             .desired_width(600.0),
                     );
-                    ui.weak("[1-20] counts, [001-120] keeps the zeros, [0-100:5] counts in fives, [a-z] runs through letters.");
+                    ui.weak(tr("[1-20] counts, [001-120] keeps the zeros, [0-100:5] counts in fives, [a-z] runs through letters."));
                 }
                 Source::List => {
                     ui.horizontal(|ui| {
-                        ui.label("One address per line:");
-                        if ui.button("Load a text file...").clicked() {
-                            pick_text_file(ui.ctx(), "Load a list of addresses", &d.loaded);
+                        ui.label(tr("One address per line:"));
+                        if ui.button(tr("Load a text file...")).clicked() {
+                            pick_text_file(ui.ctx(), tr("Load a list of addresses"), &d.loaded);
                         }
                     });
                     egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
@@ -192,13 +194,13 @@ pub fn batch_dialog(
                 Source::Imported => {
                     if let Some((name, items, rejected)) = &d.imported {
                         ui.label(match items.len() {
-                            1 => format!("1 download in {name}."),
-                            n => format!("{n} downloads in {name}."),
+                            1 => trf!("1 download in {name}.", name = name),
+                            n => trf!("{count} downloads in {name}.", count = n, name = name),
                         });
                         if *rejected > 0 {
-                            ui.weak(format!("{rejected} entries are not web addresses and are left out."));
+                            ui.weak(trf!("{rejected} entries are not web addresses and are left out.", rejected = rejected));
                         }
-                        ui.weak("They are added waiting, with their file names and folders when the list has them.");
+                        ui.weak(tr("They are added waiting, with their file names and folders when the list has them."));
                     }
                 }
             }
@@ -215,14 +217,14 @@ pub fn batch_dialog(
                 }
                 Ok((u, rejected)) if d.source != Source::Imported => {
                     let mut line = match u.len() {
-                        1 => "1 address".to_string(),
-                        n => format!("{n} addresses"),
+                        1 => tr("1 address").to_string(),
+                        n => trf!("{count} addresses", count = n),
                     };
                     if *rejected > 0 {
-                        line.push_str(&format!(", {rejected} lines skipped (not web addresses)"));
+                        line.push_str(&trf!(", {rejected} lines skipped (not web addresses)", rejected = rejected));
                     }
                     if u.len() == MAX_BATCH {
-                        line.push_str(&format!(" (the most one batch can add is {MAX_BATCH})"));
+                        line.push_str(&trf!(" (the most one batch can add is {max})", max = MAX_BATCH));
                     }
                     ui.label(line);
                     let preview: Vec<&String> = if u.len() <= 6 {
@@ -242,21 +244,21 @@ pub fn batch_dialog(
 
             ui.add_space(6.0);
             egui::Grid::new("batch_target").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                ui.label("Queue");
+                ui.label(tr("Queue"));
                 ui.horizontal(|ui| {
                     queue_combo(ui, "batch_queue", &mut d.queue, queues);
-                    ui.checkbox(&mut d.start, "Start the queue now");
+                    ui.checkbox(&mut d.start, tr("Start the queue now"));
                 });
                 ui.end_row();
                 if d.source != Source::Imported {
-                    ui.label("Save to");
+                    ui.label(tr("Save to"));
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut d.folder)
-                                .hint_text("The folder of each file's category")
+                                .hint_text(tr("The folder of each file's category"))
                                 .desired_width(340.0),
                         );
-                        browse_button(ui, "Save the files to", &d.folder, &d.picked);
+                        browse_button(ui, tr("Save the files to"), &d.folder, &d.picked);
                     });
                     ui.end_row();
                 }
@@ -266,11 +268,11 @@ pub fn batch_dialog(
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let add = ui.add_enabled(connected && count > 0, egui::Button::new(format!("Add {count}")));
+                let add = ui.add_enabled(connected && count > 0, egui::Button::new(trf!("Add {count}", count = count)));
                 if add.clicked() {
                     let folder = d.folder.trim();
                     if !folder.is_empty() && !std::path::Path::new(folder).is_absolute() {
-                        d.error = Some(format!("The folder must be a full path: {folder}"));
+                        d.error = Some(trf!("The folder must be a full path: {folder}", folder = folder));
                         return;
                     }
                     let folder = (!folder.is_empty()).then(|| folder.to_string());
@@ -294,7 +296,7 @@ pub fn batch_dialog(
                     });
                     close = true;
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr("Cancel")).clicked() {
                     close = true;
                 }
             });
@@ -337,22 +339,23 @@ pub fn export_dialog(
         .collect();
     let mut open = true;
     let mut close = false;
-    egui::Window::new("Export the list")
+    egui::Window::new(tr("Export the list"))
+        .id(egui::Id::new("Export the list"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .min_width(420.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.radio_value(&mut d.selected_only, false, format!("All downloads ({})", rows.len()));
+            ui.radio_value(&mut d.selected_only, false, trf!("All downloads ({count})", count = rows.len()));
             ui.add_enabled_ui(!selected.is_empty(), |ui| {
-                ui.radio_value(&mut d.selected_only, true, format!("The ticked downloads ({})", selected.len()));
+                ui.radio_value(&mut d.selected_only, true, trf!("The ticked downloads ({count})", count = selected.len()));
             });
             ui.add_space(6.0);
-            ui.radio_value(&mut d.json, true, "UIDM list (.json): addresses, file names, folders and status");
-            ui.radio_value(&mut d.json, false, "Text (.txt): one address per line");
+            ui.radio_value(&mut d.json, true, tr("UIDM list (.json): addresses, file names, folders and status"));
+            ui.radio_value(&mut d.json, false, tr("Text (.txt): one address per line"));
             ui.add_space(4.0);
-            ui.weak("Exports never include cookies, request headers or passwords.");
+            ui.weak(tr("Exports never include cookies, request headers or passwords."));
             if let Some(m) = &d.message {
                 match m {
                     Ok(m) => ui.label(m),
@@ -361,7 +364,7 @@ pub fn export_dialog(
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(!picked.is_empty(), egui::Button::new("Save as...")).clicked() {
+                if ui.add_enabled(!picked.is_empty(), egui::Button::new(tr("Save as..."))).clicked() {
                     let (text, ext, default) = if d.json {
                         (listfile::export_json(&picked), "json", "downloads.json")
                     } else {
@@ -369,9 +372,10 @@ pub fn export_dialog(
                     };
                     let count = picked.len();
                     let (slot, ctx) = (Arc::clone(&d.result), ui.ctx().clone());
+                    let title = tr("Export the download list");
                     thread::spawn(move || {
                         let Some(path) = rfd::FileDialog::new()
-                            .set_title("Export the download list")
+                            .set_title(title)
                             .set_file_name(default)
                             .add_filter(ext, &[ext])
                             .save_file()
@@ -379,13 +383,13 @@ pub fn export_dialog(
                             return;
                         };
                         let result = std::fs::write(&path, text)
-                            .map(|_| format!("Saved {count} downloads to {}.", path.display()))
-                            .map_err(|e| format!("Could not save {}: {e}", path.display()));
+                            .map(|_| trf!("Saved {count} downloads to {path}.", count = count, path = path.display()))
+                            .map_err(|e| trf!("Could not save {path}: {error}", path = path.display(), error = e));
                         *slot.lock().unwrap() = Some(result);
                         ctx.request_repaint();
                     });
                 }
-                if ui.button("Close").clicked() {
+                if ui.button(tr("Close")).clicked() {
                     close = true;
                 }
             });
@@ -535,7 +539,7 @@ impl GrabDialog {
                 files: p.files,
                 checked,
                 pages: 0,
-                stopped: Some("Opened from the saved project. New crawl explores the site again.".into()),
+                stopped: Some(tr("Opened from the saved project. New crawl explores the site again.").into()),
             };
         }
         d
@@ -660,7 +664,8 @@ pub fn grab_dialog(
     let mut close = false;
     let mut again = false;
     let mut replace = None;
-    egui::Window::new("Site grabber")
+    egui::Window::new(tr("Site grabber"))
+        .id(egui::Id::new("Site grabber"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -693,27 +698,27 @@ fn project_bar(ui: &mut egui::Ui, d: &mut GrabDialog) -> Option<GrabDialog> {
     let dir = grab::projects_dir().ok();
     let mut next = None;
     ui.horizontal(|ui| {
-        ui.label("Project");
-        ui.add(egui::TextEdit::singleline(&mut d.project).hint_text("Name, to save it").desired_width(160.0));
+        ui.label(tr("Project"));
+        ui.add(egui::TextEdit::singleline(&mut d.project).hint_text(tr("Name, to save it")).desired_width(160.0));
         let named = !d.project.trim().is_empty();
-        if ui.add_enabled(named && dir.is_some(), egui::Button::new("Save")).clicked() {
+        if ui.add_enabled(named && dir.is_some(), egui::Button::new(tr("Save"))).clicked() {
             if let Some(dir) = &dir {
                 d.project_note = Some(match d.project().map(|p| p.save(dir)) {
-                    Ok(Ok(())) => format!("Saved \"{}\".", d.project.trim()),
-                    Ok(Err(e)) => format!("Could not save it: {e}"),
+                    Ok(Ok(())) => trf!("Saved \"{name}\".", name = d.project.trim()),
+                    Ok(Err(e)) => trf!("Could not save it: {error}", error = e),
                     Err(e) => e,
                 });
             }
         }
         let recent = dir.as_deref().map(grab::recent_projects).unwrap_or_default();
         ui.add_enabled_ui(!recent.is_empty(), |ui| {
-            ui.menu_button("Open", |ui| {
+            ui.menu_button(tr("Open"), |ui| {
                 for name in &recent {
                     if ui.button(name).clicked() {
                         if let Some(dir) = &dir {
                             match grab::Project::load(dir, name) {
                                 Ok(p) => next = Some(GrabDialog::open(p)),
-                                Err(e) => d.project_note = Some(format!("Could not open {name}: {e}")),
+                                Err(e) => d.project_note = Some(trf!("Could not open {name}: {error}", name = name, error = e)),
                             }
                         }
                         ui.close_menu();
@@ -721,18 +726,18 @@ fn project_bar(ui: &mut egui::Ui, d: &mut GrabDialog) -> Option<GrabDialog> {
                 }
             });
         });
-        if ui.button("New").on_hover_text("A new project from the template").clicked() {
+        if ui.button(tr("New")).on_hover_text(tr("A new project from the template")).clicked() {
             next = Some(GrabDialog::new());
         }
         if ui
-            .add_enabled(dir.is_some(), egui::Button::new("Save as template"))
-            .on_hover_text("New projects start with these settings")
+            .add_enabled(dir.is_some(), egui::Button::new(tr("Save as template")))
+            .on_hover_text(tr("New projects start with these settings"))
             .clicked()
         {
             if let Some(dir) = &dir {
                 d.project_note = Some(match grab::save_template(dir, &d.request()) {
-                    Ok(()) => "New projects now start with these settings.".into(),
-                    Err(e) => format!("Could not save the template: {e}"),
+                    Ok(()) => tr("New projects now start with these settings.").into(),
+                    Err(e) => trf!("Could not save the template: {error}", error = e),
                 });
             }
         }
@@ -756,50 +761,50 @@ fn grab_body(
     let req = d.request();
     match &mut d.phase {
         GrabPhase::Form => {
-            ui.weak("Reads a site's pages and lists the files they link to. It follows robots.txt and waits between pages.");
+            ui.weak(tr("Reads a site's pages and lists the files they link to. It follows robots.txt and waits between pages."));
             ui.add_space(6.0);
             egui::Grid::new("grab_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                ui.label("Start page");
+                ui.label(tr("Start page"));
                 ui.add(
                     egui::TextEdit::singleline(&mut d.start)
                         .hint_text("https://example.com/docs/")
                         .desired_width(420.0),
                 );
                 ui.end_row();
-                ui.label("Links deep");
+                ui.label(tr("Links deep"));
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut d.depth).range(grab::DEPTH_RANGE.0..=grab::DEPTH_RANGE.1));
-                    ui.weak("0 reads only the start page");
+                    ui.weak(tr("0 reads only the start page"));
                 });
                 ui.end_row();
                 ui.label("");
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut d.same_site, "Stay on the start page's site");
-                    ui.add_enabled(d.same_site, egui::Checkbox::new(&mut d.subdomains, "and its subdomains"));
+                    ui.checkbox(&mut d.same_site, tr("Stay on the start page's site"));
+                    ui.add_enabled(d.same_site, egui::Checkbox::new(&mut d.subdomains, tr("and its subdomains")));
                 });
                 ui.end_row();
                 ui.label("");
-                ui.checkbox(&mut d.no_parent, "Do not go above the start page's folder");
+                ui.checkbox(&mut d.no_parent, tr("Do not go above the start page's folder"));
                 ui.end_row();
-                ui.label("Sign-in");
+                ui.label(tr("Sign-in"));
                 ui.vertical(|ui| {
-                    ui.checkbox(&mut d.browser_cookies, "Use my browser's sign-in for the start site")
-                        .on_hover_text("Sign in on the site in your browser first. UIDM's extension hands over the site's cookies, which go to that site's pages only.");
-                    ui.weak("A login set in Options > Connection is used when the site asks for one.");
+                    ui.checkbox(&mut d.browser_cookies, tr("Use my browser's sign-in for the start site"))
+                        .on_hover_text(tr("Sign in on the site in your browser first. UIDM's extension hands over the site's cookies, which go to that site's pages only."));
+                    ui.weak(tr("A login set in Options > Connection is used when the site asks for one."));
                 });
                 ui.end_row();
-                ui.label("Keep files of type");
+                ui.label(tr("Keep files of type"));
                 ui.add(egui::TextEdit::singleline(&mut d.types).hint_text("pdf, zip").desired_width(240.0));
                 ui.end_row();
-                ui.label("Budget");
+                ui.label(tr("Budget"));
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut d.max_pages).range(grab::MAX_PAGES_RANGE.0..=grab::MAX_PAGES_RANGE.1));
-                    ui.label("pages, at most");
+                    ui.label(tr("pages, at most"));
                     ui.add(egui::DragValue::new(&mut d.max_mb).range(grab::MAX_MB_RANGE.0..=grab::MAX_MB_RANGE.1));
-                    ui.label("MB of pages");
+                    ui.label(tr("MB of pages"));
                 });
                 ui.end_row();
-                ui.label("Wait between pages");
+                ui.label(tr("Wait between pages"));
                 ui.horizontal(|ui| {
                     let (lo, hi) = grab::DELAY_MS_RANGE;
                     ui.add(
@@ -808,24 +813,24 @@ fn grab_body(
                             .speed(0.1)
                             .max_decimals(1),
                     );
-                    ui.label("seconds (longer if the site's robots.txt asks)");
+                    ui.label(tr("seconds (longer if the site's robots.txt asks)"));
                 });
                 ui.end_row();
             });
-            egui::CollapsingHeader::new("Filters").id_salt("grab_filters").show(ui, |ui| {
-                ui.weak("One pattern per line. * matches anything; a pattern without * matches anywhere in the address, as /docs/ does.");
+            egui::CollapsingHeader::new(tr("Filters")).id_salt("grab_filters").show(ui, |ui| {
+                ui.weak(tr("One pattern per line. * matches anything; a pattern without * matches anywhere in the address, as /docs/ does."));
                 egui::Grid::new("grab_filter_grid").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
                     let field = |ui: &mut egui::Ui, text: &mut String, hint: &str| {
                         ui.add(egui::TextEdit::multiline(text).hint_text(hint).desired_rows(2).desired_width(190.0));
                     };
-                    ui.label("Explore only");
-                    field(ui, &mut d.explore_only, "Every page in reach");
-                    ui.label("Never explore");
+                    ui.label(tr("Explore only"));
+                    field(ui, &mut d.explore_only, tr("Every page in reach"));
+                    ui.label(tr("Never explore"));
                     field(ui, &mut d.explore_skip, "*/logout*");
                     ui.end_row();
-                    ui.label("Keep only files");
-                    field(ui, &mut d.files_only, "Every file of the types");
-                    ui.label("Never keep");
+                    ui.label(tr("Keep only files"));
+                    field(ui, &mut d.files_only, tr("Every file of the types"));
+                    ui.label(tr("Never keep"));
                     field(ui, &mut d.files_skip, "*/old/*");
                     ui.end_row();
                 });
@@ -834,81 +839,80 @@ fn grab_body(
                         let mut on = value.is_some();
                         ui.checkbox(&mut on, label);
                         let mut v = value.unwrap_or(default);
-                        ui.add_enabled(on, egui::DragValue::new(&mut v).range(0.0..=1_000_000.0).speed(0.5).max_decimals(1).suffix(" MB"));
+                        ui.add_enabled(on, egui::DragValue::new(&mut v).range(0.0..=1_000_000.0).speed(0.5).max_decimals(1).suffix(tr(" MB")));
                         *value = on.then_some(v);
                     };
-                    size(ui, "At least", &mut d.min_mb, 1.0);
-                    size(ui, "At most", &mut d.max_mb_file, 100.0);
+                    size(ui, tr("At least"), &mut d.min_mb, 1.0);
+                    size(ui, tr("At most"), &mut d.max_mb_file, 100.0);
                 })
                 .response
-                .on_hover_text("Sizes are asked with one request per file, after the usual wait");
-                ui.checkbox(&mut d.hide_duplicates, "List a file once when the same name and size are found at other addresses");
-                ui.checkbox(&mut d.render_scripts, "Find links that page scripts add (slower)")
-                    .on_hover_text("The browser extension opens each page in a background tab and lets its scripts run. Without the browser, pages are read as the server sends them.");
+                .on_hover_text(tr("Sizes are asked with one request per file, after the usual wait"));
+                ui.checkbox(&mut d.hide_duplicates, tr("List a file once when the same name and size are found at other addresses"));
+                ui.checkbox(&mut d.render_scripts, tr("Find links that page scripts add (slower)"))
+                    .on_hover_text(tr("The browser extension opens each page in a background tab and lets its scripts run. Without the browser, pages are read as the server sends them."));
             });
-            egui::CollapsingHeader::new("Save for offline browsing").id_salt("grab_mirror").show(ui, |ui| {
-                ui.checkbox(&mut d.mirror, "Keep the site's folders: save each file under a folder that follows its address");
+            egui::CollapsingHeader::new(tr("Save for offline browsing")).id_salt("grab_mirror").show(ui, |ui| {
+                ui.checkbox(&mut d.mirror, tr("Keep the site's folders: save each file under a folder that follows its address"));
                 ui.add_enabled_ui(d.mirror, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Under");
-                        ui.add(egui::TextEdit::singleline(&mut d.mirror_folder).hint_text("A full path").desired_width(320.0));
-                        browse_button(ui, "Keep the site in", &d.mirror_folder, &d.mirror_picked);
+                        ui.label(tr("Under"));
+                        ui.add(egui::TextEdit::singleline(&mut d.mirror_folder).hint_text(tr("A full path")).desired_width(320.0));
+                        browse_button(ui, tr("Keep the site in"), &d.mirror_folder, &d.mirror_picked);
                     });
-                    ui.checkbox(&mut d.mirror_pages, "Save the pages too, with their links changed to the saved copies");
+                    ui.checkbox(&mut d.mirror_pages, tr("Save the pages too, with their links changed to the saved copies"));
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut d.mirror_overwrite, false, "Skip files already there");
-                        ui.radio_value(&mut d.mirror_overwrite, true, "Replace them");
+                        ui.radio_value(&mut d.mirror_overwrite, false, tr("Skip files already there"));
+                        ui.radio_value(&mut d.mirror_overwrite, true, tr("Replace them"));
                     });
                 });
             });
-            egui::CollapsingHeader::new("Schedule").id_salt("grab_schedule").show(ui, |ui| {
-                ui.weak("A saved project can run by itself while UIDM is running. Save the project after changing this.");
-                ui.checkbox(&mut d.sched, "Run this project on a schedule");
+            egui::CollapsingHeader::new(tr("Schedule")).id_salt("grab_schedule").show(ui, |ui| {
+                ui.weak(tr("A saved project can run by itself while UIDM is running. Save the project after changing this."));
+                ui.checkbox(&mut d.sched, tr("Run this project on a schedule"));
                 ui.add_enabled_ui(d.sched, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("At");
+                        ui.label(tr("At"));
                         ui.add(egui::TextEdit::singleline(&mut d.sched_start).hint_text("03:00").desired_width(50.0));
-                        ui.checkbox(&mut d.sched_has_stop, "stop at");
+                        ui.checkbox(&mut d.sched_has_stop, tr("stop at"));
                         ui.add_enabled(d.sched_has_stop, egui::TextEdit::singleline(&mut d.sched_stop).desired_width(50.0));
                     });
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut d.sched_by_date, false, "Every");
+                        ui.radio_value(&mut d.sched_by_date, false, tr("Every"));
                         ui.add_enabled_ui(!d.sched_by_date, |ui| {
                             for (i, name) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].iter().enumerate() {
-                                ui.checkbox(&mut d.sched_days[i], *name);
+                                ui.checkbox(&mut d.sched_days[i], tr(*name));
                             }
                         });
                     });
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut d.sched_by_date, true, "Once, on");
+                        ui.radio_value(&mut d.sched_by_date, true, tr("Once, on"));
                         ui.add_enabled(
                             d.sched_by_date,
                             egui::TextEdit::singleline(&mut d.sched_date).hint_text("2026-12-31").desired_width(90.0),
                         );
                     });
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut d.download_new, false, "Explore only");
-                        ui.radio_value(&mut d.download_new, true, "Explore and add new files to");
+                        ui.radio_value(&mut d.download_new, false, tr("Explore only"));
+                        ui.radio_value(&mut d.download_new, true, tr("Explore and add new files to"));
                         ui.add_enabled_ui(d.download_new, |ui| queue_combo(ui, "grab_sched_queue", &mut d.sched_queue, queues));
                     });
-                    ui.weak("Each run adds only files no earlier run found.");
+                    ui.weak(tr("Each run adds only files no earlier run found."));
                 });
             });
             ui.add_space(4.0);
             let least = d.max_pages as f64 * d.delay_secs;
-            ui.label(format!(
-                "Stops after {} pages or {} MB, whichever comes first; {} pages take at least {}.",
-                d.max_pages,
-                d.max_mb,
-                d.max_pages,
-                super::human_duration(least)
+            ui.label(trf!(
+                "Stops after {pages} pages or {mb} MB, whichever comes first; {pages} pages take at least {time}.",
+                pages = d.max_pages,
+                mb = d.max_mb,
+                time = super::human_duration(least)
             ));
             if let Some(e) = &d.error {
                 ui.colored_label(ui.visuals().error_fg_color, e);
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(connected, egui::Button::new("Start")).clicked() {
+                if ui.add_enabled(connected, egui::Button::new(tr("Start"))).clicked() {
                     let req = d.request();
                     match req.validate() {
                         Ok(()) => {
@@ -923,7 +927,7 @@ fn grab_body(
                         Err(e) => d.error = Some(e),
                     }
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr("Cancel")).clicked() {
                     *close = true;
                 }
             });
@@ -931,14 +935,16 @@ fn grab_body(
         GrabPhase::Running { pages, bytes, found } => {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(format!(
-                    "Read {pages} of at most {} pages ({}); found {found} files.",
-                    d.max_pages,
-                    human_bytes(*bytes)
+                ui.label(trf!(
+                    "Read {pages} of at most {max} pages ({size}); found {found} files.",
+                    pages = pages,
+                    max = d.max_pages,
+                    size = human_bytes(*bytes),
+                    found = found
                 ));
             });
             ui.add_space(8.0);
-            if ui.button("Stop").clicked() {
+            if ui.button(tr("Stop")).clicked() {
                 actions.push(Action::CancelGrab);
             }
         }
@@ -948,15 +954,15 @@ fn grab_body(
             pages,
             stopped,
         } => {
-            ui.label(format!("Read {pages} pages and found {} files.", files.len()));
+            ui.label(trf!("Read {pages} pages and found {count} files.", pages = pages, count = files.len()));
             if let Some(why) = stopped {
                 ui.weak(why.as_str());
             }
             ui.horizontal(|ui| {
-                if ui.small_button("Tick all").clicked() {
+                if ui.small_button(tr("Tick all")).clicked() {
                     checked.iter_mut().for_each(|c| *c = true);
                 }
-                if ui.small_button("Tick none").clicked() {
+                if ui.small_button(tr("Tick none")).clicked() {
                     checked.iter_mut().for_each(|c| *c = false);
                 }
             });
@@ -965,7 +971,7 @@ fn grab_body(
                     ui.horizontal(|ui| {
                         ui.checkbox(c, "");
                         ui.add(egui::Label::new(&f.name).truncate())
-                            .on_hover_text(format!("{}\nfound on {}", f.url, f.page));
+                            .on_hover_text(trf!("{url}\nfound on {page}", url = f.url, page = f.page));
                         if let Some(n) = f.size {
                             ui.weak(human_bytes(n));
                         }
@@ -975,13 +981,13 @@ fn grab_body(
             let n = checked.iter().filter(|c| **c).count();
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label("Queue");
+                ui.label(tr("Queue"));
                 queue_combo(ui, "grab_queue", &mut d.queue, queues);
-                ui.checkbox(&mut d.start_queue, "Start the queue now");
+                ui.checkbox(&mut d.start_queue, tr("Start the queue now"));
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(connected && n > 0, egui::Button::new(format!("Add {n}"))).clicked() {
+                if ui.add_enabled(connected && n > 0, egui::Button::new(trf!("Add {count}", count = n))).clicked() {
                     let items = files
                         .iter()
                         .zip(checked.iter())
@@ -995,10 +1001,10 @@ fn grab_body(
                     });
                     *close = true;
                 }
-                if ui.button("New crawl").clicked() {
+                if ui.button(tr("New crawl")).clicked() {
                     *again = true;
                 }
-                if ui.button("Close").clicked() {
+                if ui.button(tr("Close")).clicked() {
                     *close = true;
                 }
             });
@@ -1010,7 +1016,8 @@ fn grab_body(
 /// answered.
 pub fn clipboard_offer(ctx: &egui::Context, url: &str, connected: bool, actions: &mut Vec<Action>) -> bool {
     let mut answered = false;
-    egui::Window::new("Download the copied link?")
+    egui::Window::new(tr("Download the copied link?"))
+        .id(egui::Id::new("Download the copied link?"))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -40.0])
@@ -1019,11 +1026,11 @@ pub fn clipboard_offer(ctx: &egui::Context, url: &str, connected: bool, actions:
             ui.add(egui::Label::new(egui::RichText::new(url).monospace()).wrap());
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(connected, egui::Button::new("Download")).clicked() {
+                if ui.add_enabled(connected, egui::Button::new(tr("Download"))).clicked() {
                     actions.push(Action::Add(url.to_string()));
                     answered = true;
                 }
-                if ui.button("Ignore").clicked() {
+                if ui.button(tr("Ignore")).clicked() {
                     answered = true;
                 }
             });
