@@ -1402,13 +1402,17 @@ impl Daemon {
             h
         };
         let fetch = |url: &str| {
-            engine::fetch(url, &page_headers(url), &net, grab::MAX_PAGE_BYTES)
+            let page = engine::fetch(url, &page_headers(url), &net, grab::MAX_PAGE_BYTES)
                 .map(|f| grab::Page {
                     url: f.url,
                     content_type: f.content_type,
                     body: f.body,
                 })
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            if let Some(m) = req.mirror.as_ref().filter(|m| m.pages) {
+                save_page(req, m, &page);
+            }
+            Ok(page)
         };
         // Wait in short steps, so stopping is quick.
         let wait = |d: Duration| {
@@ -1477,19 +1481,10 @@ impl Daemon {
                 stop.store(true, Ordering::Relaxed);
             }
         });
-        let page_of: HashMap<String, String> = out.files.iter().map(|f| (f.url.clone(), f.page.clone())).collect();
         let new = project.record_run(out.files);
         eprintln!("[uidm-daemon] grabber project {} found {} new files", project.name, new.len());
         if project.download_new && !new.is_empty() {
-            let items = new
-                .iter()
-                .map(|f| Download {
-                    url: f.url.clone(),
-                    referrer: page_of.get(&f.url).cloned(),
-                    start: Some(false),
-                    ..Download::default()
-                })
-                .collect();
+            let items = new.iter().filter_map(|f| grab::download_for(&project.request, f)).collect();
             // Through the usual path, which skips addresses already in the
             // list.
             let (added, skipped) = self.add_many(items, Some(project.queue));
@@ -2713,6 +2708,33 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::remove_file(from).map_err(|e| format!("Copied the file, but could not delete {}: {e}", from.display()))
 }
 
+/// Keep a page a crawl read under its mirror folder, with its links to
+/// kept pages and files pointing at the local copies. Not robots.txt, and
+/// not pages that are not HTML.
+fn save_page(req: &GrabRequest, m: &grab::Mirror, page: &grab::Page) {
+    let html = page.content_type.as_deref().is_none_or(|t| t.to_ascii_lowercase().contains("html"));
+    let Ok(url) = url::Url::parse(&page.url) else {
+        return;
+    };
+    if !html || url.path() == "/robots.txt" {
+        return;
+    }
+    let root = Path::new(m.folder.trim());
+    let here = grab::mirror_path(root, &url, true);
+    if here.exists() && !m.overwrite {
+        return;
+    }
+    let text = String::from_utf8_lossy(&page.body);
+    let out = grab::rewrite_links(&text, &url, &here, root, |u| grab::kept_locally(req, u));
+    let written = here
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| uidm::settings::write_atomic(&here, out.as_bytes()));
+    if let Err(e) = written {
+        eprintln!("[uidm-daemon] could not save {}: {e}", here.display());
+    }
+}
+
 /// Open the program or file a queue names for the end of its run, as
 /// Explorer would on a double-click.
 fn open_after_run(file: &str) {
@@ -3346,5 +3368,40 @@ mod tests {
         assert_eq!(t.len(), 1, "the new find was added");
         t.daemon.run_scheduled_grab(&dir, saved, 2);
         assert_eq!(t.len(), 1, "nothing new the second time");
+    }
+
+    #[test]
+    fn crawled_pages_are_saved_with_local_links() {
+        let dir = std::env::temp_dir().join(format!("uidm_save_page_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mirror = grab::Mirror {
+            folder: dir.display().to_string(),
+            pages: true,
+            overwrite: false,
+        };
+        let req = GrabRequest {
+            start: "https://s/".into(),
+            mirror: Some(mirror.clone()),
+            ..GrabRequest::default()
+        };
+        let page = grab::Page {
+            url: "https://s/docs/".into(),
+            content_type: Some("text/html".into()),
+            body: br#"<a href="guide.pdf">g</a>"#.to_vec(),
+        };
+        save_page(&req, &mirror, &page);
+        let saved = dir.join("s").join("docs").join("index.html");
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), r#"<a href="guide.pdf">g</a>"#);
+        std::fs::write(&saved, "mine").unwrap();
+        save_page(&req, &mirror, &page);
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), "mine", "skipped, not replaced");
+        let robots = grab::Page {
+            url: "https://s/robots.txt".into(),
+            content_type: Some("text/plain".into()),
+            body: b"User-agent: *".to_vec(),
+        };
+        save_page(&req, &mirror, &robots);
+        assert!(!dir.join("s").join("robots.txt.html").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

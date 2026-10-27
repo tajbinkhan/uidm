@@ -431,6 +431,12 @@ pub struct GrabDialog {
     max_mb_file: Option<f64>,
     hide_duplicates: bool,
     browser_cookies: bool,
+    /// Keep the site's folders under `mirror_folder`.
+    mirror: bool,
+    mirror_folder: String,
+    mirror_pages: bool,
+    mirror_overwrite: bool,
+    mirror_picked: Picked,
     queue: u64,
     start_queue: bool,
     error: Option<String>,
@@ -555,6 +561,11 @@ impl GrabDialog {
             max_mb_file: d.max_size.map(|b| b as f64 / MB),
             hide_duplicates: d.hide_duplicates,
             browser_cookies: d.browser_cookies,
+            mirror: d.mirror.is_some(),
+            mirror_folder: d.mirror.as_ref().map(|m| m.folder.clone()).unwrap_or_default(),
+            mirror_pages: d.mirror.as_ref().is_some_and(|m| m.pages),
+            mirror_overwrite: d.mirror.as_ref().is_some_and(|m| m.overwrite),
+            mirror_picked: Picked::default(),
             queue: MAIN_QUEUE,
             start_queue: false,
             error: None,
@@ -592,6 +603,11 @@ impl GrabDialog {
             max_size: self.max_mb_file.map(|m| (m * MB).round() as u64),
             hide_duplicates: self.hide_duplicates,
             browser_cookies: self.browser_cookies,
+            mirror: self.mirror.then(|| grab::Mirror {
+                folder: self.mirror_folder.trim().to_string(),
+                pages: self.mirror_pages,
+                overwrite: self.mirror_overwrite,
+            }),
         }
     }
 
@@ -636,6 +652,7 @@ pub fn grab_dialog(
     connected: bool,
     actions: &mut Vec<Action>,
 ) -> bool {
+    take_picked(&d.mirror_picked, &mut d.mirror_folder);
     let mut open = true;
     let mut close = false;
     let mut again = false;
@@ -732,6 +749,8 @@ fn grab_body(
     close: &mut bool,
     again: &mut bool,
 ) {
+    // The settings found files are saved with.
+    let req = d.request();
     match &mut d.phase {
         GrabPhase::Form => {
             ui.weak("Reads a site's pages and lists the files they link to. It follows robots.txt and waits between pages.");
@@ -821,6 +840,21 @@ fn grab_body(
                 .response
                 .on_hover_text("Sizes are asked with one request per file, after the usual wait");
                 ui.checkbox(&mut d.hide_duplicates, "List a file once when the same name and size are found at other addresses");
+            });
+            egui::CollapsingHeader::new("Save for offline browsing").id_salt("grab_mirror").show(ui, |ui| {
+                ui.checkbox(&mut d.mirror, "Keep the site's folders: save each file under a folder that follows its address");
+                ui.add_enabled_ui(d.mirror, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Under");
+                        ui.add(egui::TextEdit::singleline(&mut d.mirror_folder).hint_text("A full path").desired_width(320.0));
+                        browse_button(ui, "Keep the site in", &d.mirror_folder, &d.mirror_picked);
+                    });
+                    ui.checkbox(&mut d.mirror_pages, "Save the pages too, with their links changed to the saved copies");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut d.mirror_overwrite, false, "Skip files already there");
+                        ui.radio_value(&mut d.mirror_overwrite, true, "Replace them");
+                    });
+                });
             });
             egui::CollapsingHeader::new("Schedule").id_salt("grab_schedule").show(ui, |ui| {
                 ui.weak("A saved project can run by itself while UIDM is running. Save the project after changing this.");
@@ -947,12 +981,7 @@ fn grab_body(
                         .iter()
                         .zip(checked.iter())
                         .filter(|(_, c)| **c)
-                        .map(|(f, _)| Download {
-                            url: f.url.clone(),
-                            referrer: Some(f.page.clone()),
-                            start: Some(false),
-                            ..Download::default()
-                        })
+                        .filter_map(|(f, _)| grab::download_for(&req, f))
                         .collect();
                     actions.push(Action::AddMany {
                         items,

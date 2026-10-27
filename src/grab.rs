@@ -72,6 +72,24 @@ pub struct GrabRequest {
     /// supplies them when the crawl starts.
     #[serde(default)]
     pub browser_cookies: bool,
+    /// Save for offline browsing: files under folders that mirror their
+    /// addresses, and maybe the pages too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<Mirror>,
+}
+
+/// Where and how a crawl is saved for offline browsing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mirror {
+    /// The folder the site's folders are made under, a full path.
+    pub folder: String,
+    /// Save the pages read too, with their links to saved files and pages
+    /// changed to the local copies.
+    #[serde(default)]
+    pub pages: bool,
+    /// Replace files already there; otherwise they are skipped.
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 /// Pages a crawl should never open, so it does not sign itself out.
@@ -109,6 +127,7 @@ impl Default for GrabRequest {
             max_size: None,
             hide_duplicates: true,
             browser_cookies: false,
+            mirror: None,
         }
     }
 }
@@ -138,6 +157,9 @@ impl GrabRequest {
         }
         if self.types.is_empty() {
             return Err("Choose at least one file type to keep.".into());
+        }
+        if let Some(m) = self.mirror.as_ref().filter(|m| !Path::new(m.folder.trim()).is_absolute()) {
+            return Err(format!("The folder to keep the site in must be a full path: {}", m.folder));
         }
         if let (Some(lo), Some(hi)) = (self.min_size, self.max_size) {
             if lo > hi {
@@ -182,6 +204,132 @@ fn glob(pattern: &str, text: &str) -> bool {
         }
     }
     rest.is_empty()
+}
+
+/// One path part made safe for a Windows file name.
+fn safe_part(part: &str) -> String {
+    let decoded = percent_encoding::percent_decode_str(part).decode_utf8_lossy();
+    let clean: String = decoded
+        .chars()
+        .map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c })
+        .collect();
+    let clean = clean.trim_end_matches(['.', ' ']).to_string();
+    if clean.is_empty() || clean == "." || clean == ".." {
+        "_".to_string()
+    } else {
+        clean
+    }
+}
+
+/// Where `url` is kept under the mirror folder `root`: the host, then its
+/// path. A folder address gets `index.html`; a page gets `.html` added when
+/// its name does not end in it, so a browser opens it as a page; a query
+/// adds a short hash to the name, so `?page=2` does not overwrite `?page=1`.
+pub fn mirror_path(root: &Path, url: &Url, page: bool) -> PathBuf {
+    let mut path = root.join(safe_part(url.host_str().unwrap_or("site")));
+    let segments: Vec<&str> = url.path_segments().map(|s| s.collect()).unwrap_or_default();
+    let (dirs, last) = match segments.split_last() {
+        Some((last, dirs)) => (dirs, *last),
+        None => (&[][..], ""),
+    };
+    for d in dirs.iter().filter(|d| !d.is_empty()) {
+        path.push(safe_part(d));
+    }
+    let mut name = if last.is_empty() { "index.html".to_string() } else { safe_part(last) };
+    if let Some(q) = url.query() {
+        let mut hash: u32 = 0x811c_9dc5;
+        for b in q.bytes() {
+            hash = (hash ^ b as u32).wrapping_mul(0x0100_0193);
+        }
+        name = match name.rsplit_once('.') {
+            Some((stem, ext)) => format!("{stem}_{hash:08x}.{ext}"),
+            None => format!("{name}_{hash:08x}"),
+        };
+    }
+    let lower = name.to_ascii_lowercase();
+    if page && !lower.ends_with(".html") && !lower.ends_with(".htm") {
+        name.push_str(".html");
+    }
+    path.join(name)
+}
+
+/// The path from the file `from` to the file `to`, with `/`, for a link.
+fn relative_link(from: &Path, to: &Path) -> String {
+    let from: Vec<_> = from.parent().map(|p| p.components().collect()).unwrap_or_default();
+    let to: Vec<_> = to.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut parts: Vec<String> = vec!["..".to_string(); from.len() - common];
+    parts.extend(to[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    let link = parts.join("/");
+    // Spaces and the like as a browser expects them in a link.
+    link.replace('%', "%25").replace(' ', "%20").replace('#', "%23")
+}
+
+/// `html`, read from `page` and kept at `here`, with the links that `local`
+/// says are kept locally (given the target's address, it answers whether
+/// it is a page and so where it is kept) pointing at their copies.
+/// Other links stay as they are.
+pub fn rewrite_links(html: &str, page: &Url, here: &Path, root: &Path, local: impl Fn(&Url) -> Option<bool>) -> String {
+    let doc = Html::parse_document(html);
+    let mut replacements: Vec<(String, String)> = Vec::new();
+    for (sel, attr) in [("a[href]", "href"), ("area[href]", "href"), ("img[src]", "src"), ("source[src]", "src"), ("iframe[src]", "src"), ("frame[src]", "src"), ("link[href]", "href")] {
+        let Ok(s) = Selector::parse(sel) else { continue };
+        for e in doc.select(&s) {
+            let Some(value) = e.value().attr(attr) else { continue };
+            let Ok(mut target) = page.join(value.trim()) else { continue };
+            let fragment = target.fragment().map(|f| format!("#{f}")).unwrap_or_default();
+            target.set_fragment(None);
+            if let Some(is_page) = local(&target) {
+                let link = relative_link(here, &mirror_path(root, &target, is_page));
+                replacements.push((value.to_string(), format!("{link}{fragment}")));
+            }
+        }
+    }
+    let mut out = html.to_string();
+    for (from, to) in replacements {
+        for quote in ['"', '\''] {
+            out = out.replace(&format!("={quote}{from}{quote}"), &format!("={quote}{to}{quote}"));
+        }
+    }
+    out
+}
+
+/// Whether a crawl that saves pages keeps `url` locally, and if so whether
+/// as a page: pages on the start site, and files of the kept types.
+pub fn kept_locally(req: &GrabRequest, url: &Url) -> Option<bool> {
+    let ext = url_extension(url);
+    let types: HashSet<String> = req.types.iter().map(|t| t.trim().trim_start_matches('.').to_ascii_lowercase()).collect();
+    if ext.as_ref().is_some_and(|e| types.contains(e)) {
+        return Some(false);
+    }
+    let page_like = ext.is_none_or(|e| PAGE_EXTENSIONS.contains(&e.as_str()));
+    (page_like && on_start_site(req, url.as_str())).then_some(true)
+}
+
+/// The download for found file `f`: waiting, with the page as referrer,
+/// and under the mirror folder when the crawl keeps one. `None` when the
+/// mirror skips existing files and this one is there.
+pub fn download_for(req: &GrabRequest, f: &GrabFile) -> Option<crate::protocol::Download> {
+    let mut d = crate::protocol::Download {
+        url: f.url.clone(),
+        referrer: Some(f.page.clone()),
+        start: Some(false),
+        ..crate::protocol::Download::default()
+    };
+    if let (Some(m), Ok(url)) = (&req.mirror, Url::parse(&f.url)) {
+        let path = mirror_path(Path::new(m.folder.trim()), &url, false);
+        if path.exists() && !m.overwrite {
+            return None;
+        }
+        d.filename = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        d.folder = path.parent().map(|p| p.display().to_string());
+        d.file_exists = Some(if m.overwrite {
+            crate::settings::FileExists::Overwrite
+        } else {
+            crate::settings::FileExists::Rename
+        });
+    }
+    Some(d)
 }
 
 /// Whether a page at `url` belongs to the start site of `req`, which is
@@ -950,6 +1098,47 @@ Crawl-delay: 2.5
         assert_eq!(second.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["c.pdf"]);
         assert_eq!(p.checked, [false, true], "only the new one is ticked");
         assert_eq!(p.seen.len(), 3);
+    }
+
+    #[test]
+    fn mirror_paths_follow_addresses() {
+        let root = Path::new(r"C:\site");
+        let at = |u: &str, page: bool| mirror_path(root, &Url::parse(u).unwrap(), page);
+        assert_eq!(at("https://s.com/docs/a%20b.pdf", false), root.join("s.com").join("docs").join("a b.pdf"));
+        assert_eq!(at("https://s.com/docs/", true), root.join("s.com").join("docs").join("index.html"));
+        assert_eq!(at("https://s.com/", true), root.join("s.com").join("index.html"));
+        assert_eq!(at("https://s.com/list.php", true), root.join("s.com").join("list.php.html"));
+        assert_ne!(at("https://s.com/list.php?page=1", true), at("https://s.com/list.php?page=2", true));
+        assert_eq!(at("https://s.com/a/../b:c.pdf", false), root.join("s.com").join("b_c.pdf"));
+    }
+
+    #[test]
+    fn saved_pages_link_to_the_local_copies() {
+        let root = Path::new(r"C:\site");
+        let page = Url::parse("https://s/docs/index.html").unwrap();
+        let here = mirror_path(root, &page, true);
+        let req = GrabRequest { start: "https://s/".into(), ..GrabRequest::default() };
+        let html = r##"<a href="guide.pdf">g</a> <a href='/top/'>t</a> <a href="https://other/x.pdf">o</a> <a href="#part">p</a> <img src="pic.png">"##;
+        let out = rewrite_links(html, &page, &here, root, |u| kept_locally(&req, u));
+        assert!(out.contains(r#"href="guide.pdf""#), "same folder");
+        assert!(out.contains("href='../top/index.html'"));
+        assert!(out.contains(r#"href="../../other/x.pdf""#), "a kept file on another site");
+        assert!(out.contains(r#"src="pic.png""#), "not a kept type: untouched");
+        assert!(out.contains(r##"href="index.html#part""##));
+
+        let file = GrabFile { url: "https://s/docs/guide.pdf".into(), name: "guide.pdf".into(), page: page.to_string(), size: None };
+        let dir = std::env::temp_dir().join(format!("uidm_mirror_{}", std::process::id()));
+        let mirrored = GrabRequest { mirror: Some(Mirror { folder: dir.display().to_string(), pages: true, overwrite: false }), ..req.clone() };
+        let d = download_for(&mirrored, &file).unwrap();
+        assert_eq!(d.folder.as_deref(), Some(dir.join("s").join("docs").display().to_string().as_str()));
+        assert_eq!(d.filename.as_deref(), Some("guide.pdf"));
+        std::fs::create_dir_all(dir.join("s").join("docs")).unwrap();
+        std::fs::write(dir.join("s").join("docs").join("guide.pdf"), b"x").unwrap();
+        assert!(download_for(&mirrored, &file).is_none(), "an existing file is skipped");
+        let replace = GrabRequest { mirror: Some(Mirror { overwrite: true, ..mirrored.mirror.clone().unwrap() }), ..req.clone() };
+        assert!(download_for(&replace, &file).is_some());
+        assert_eq!(download_for(&req, &file).unwrap().folder, None, "no mirror: the category decides");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
