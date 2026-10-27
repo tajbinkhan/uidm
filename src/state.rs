@@ -110,6 +110,7 @@ impl DownloadTable {
             | Outgoing::Error { .. }
             | Outgoing::Settings { .. }
             | Outgoing::Show
+            | Outgoing::ShowDone { .. }
             | Outgoing::Queues { .. }
             | Outgoing::Countdown { .. }
             | Outgoing::CountdownCanceled
@@ -171,6 +172,7 @@ fn blank(id: u64, url: &str, status: Status) -> DownloadEntry {
         scan: None,
         parts: None,
         note: None,
+        duplicate_of: None,
     }
 }
 

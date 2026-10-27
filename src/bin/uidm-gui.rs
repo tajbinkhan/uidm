@@ -41,7 +41,7 @@ use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incomin
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
-    parse_extensions, Category, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
+    parse_extensions, Category, Duplicate, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS,
 };
 use uidm::state::DownloadTable;
@@ -205,11 +205,17 @@ impl Shared {
                 self.save_result = Some(Err(message.clone()));
             }
             Outgoing::Progress { id, done, .. } => self.sample_speed(*id, *done),
-            Outgoing::AddedMany { count } => {
-                self.notice = Some(match count {
+            Outgoing::AddedMany { count, skipped } => {
+                let mut notice = match count {
                     1 => "Added 1 download, waiting in its queue.".to_string(),
                     n => format!("Added {n} downloads, waiting in their queue."),
-                });
+                };
+                match skipped {
+                    0 => {}
+                    1 => notice.push_str(" Skipped 1 already in the list."),
+                    n => notice.push_str(&format!(" Skipped {n} already in the list.")),
+                }
+                self.notice = Some(notice);
             }
             Outgoing::GrabProgress { pages, bytes, found } => {
                 self.grab_events.push_back(GrabEvent::Progress(*pages, *bytes, *found));
@@ -281,6 +287,8 @@ enum Action {
         /// What to do if the file name is taken; the setting decides when
         /// missing.
         file_exists: Option<FileExists>,
+        /// For a duplicate address, what to do about the other download.
+        duplicate: Option<Duplicate>,
     },
     /// Add a URL to the main queue without starting it.
     AddLater(String),
@@ -408,6 +416,8 @@ struct ConfirmDraft {
     picked: Picked,
     /// Under the Ask setting, what to do when the name is taken.
     when_taken: FileExists,
+    /// For a duplicate address, what to do about the other download.
+    duplicate: Duplicate,
 }
 
 /// Units the speed limit can be entered in.
@@ -490,6 +500,7 @@ struct OptionsDraft {
     limit_unit: SpeedUnit,
     resume_at_startup: bool,
     file_exists: FileExists,
+    if_duplicate: Duplicate,
     ask_where_to_save: bool,
     categories: Vec<CategoryDraft>,
     capture_types: String,
@@ -559,6 +570,7 @@ impl OptionsDraft {
             limit_unit,
             resume_at_startup: s.resume_at_startup,
             file_exists: s.file_exists,
+            if_duplicate: s.if_duplicate,
             ask_where_to_save: s.ask_where_to_save,
             categories: s
                 .categories
@@ -622,6 +634,7 @@ impl OptionsDraft {
                 })
                 .collect(),
             file_exists: self.file_exists,
+            if_duplicate: self.if_duplicate,
             ask_where_to_save: self.ask_where_to_save,
             categories: self
                 .categories
@@ -934,6 +947,7 @@ impl App {
                 start,
                 queue,
                 file_exists,
+                duplicate,
             } => {
                 send(
                     &self.writer,
@@ -944,6 +958,7 @@ impl App {
                         start,
                         queue,
                         file_exists,
+                        duplicate,
                     },
                 );
             }
@@ -1119,6 +1134,7 @@ impl App {
                     .unwrap_or_default(),
                 picked: Picked::default(),
                 when_taken: FileExists::Rename,
+                duplicate: Duplicate::NewName,
             });
         }
         let Some(draft) = self.confirm.as_mut() else {
@@ -1131,9 +1147,23 @@ impl App {
             let ask = s.settings.as_ref().is_some_and(|s| s.file_exists == FileExists::Ask);
             (s.queues.clone(), ask)
         };
-        // Under Ask, a name taken by a file in the folder needs an answer.
+        // Another download with the same address, which the dialog asks
+        // about. A running one cannot be replaced.
+        let other = entry.duplicate_of.and_then(|o| rows.iter().find(|e| e.id == o));
+        let other_running = other.is_some_and(|o| !o.status.is_terminal());
+        if other_running && draft.duplicate == Duplicate::Overwrite {
+            draft.duplicate = Duplicate::NewName;
+        }
+        // Replacing the other download writes over its file, so the name and
+        // folder are its own.
+        let replaced = other
+            .filter(|_| draft.duplicate == Duplicate::Overwrite)
+            .and_then(|o| o.path.as_deref());
+        // Under Ask, a name taken by a file in the folder needs an answer,
+        // unless the duplicate question already covers it.
         let name = uidm::engine::clean_filename(draft.filename.trim());
-        let taken = ask && !name.is_empty() && Path::new(draft.folder.trim()).join(&name).is_file();
+        let taken =
+            ask && other.is_none() && !name.is_empty() && Path::new(draft.folder.trim()).join(&name).is_file();
 
         egui::Window::new("Save download")
             .id(egui::Id::new("confirm"))
@@ -1148,7 +1178,10 @@ impl App {
                     ui.end_row();
 
                     ui.label("File name");
-                    ui.add(egui::TextEdit::singleline(&mut draft.filename).desired_width(360.0));
+                    ui.add_enabled(
+                        replaced.is_none(),
+                        egui::TextEdit::singleline(&mut draft.filename).desired_width(360.0),
+                    );
                     ui.end_row();
 
                     ui.label("Size");
@@ -1159,12 +1192,51 @@ impl App {
                     ui.end_row();
 
                     ui.label("Save to");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut draft.folder).desired_width(280.0));
-                        browse_button(ui, "Save to", &draft.folder, &draft.picked);
+                    ui.add_enabled_ui(replaced.is_none(), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut draft.folder).desired_width(280.0));
+                            browse_button(ui, "Save to", &draft.folder, &draft.picked);
+                        });
                     });
                     ui.end_row();
                 });
+                if let Some(old) = other {
+                    ui.add_space(4.0);
+                    let state = match old.status {
+                        Status::Done => "finished",
+                        Status::Failed => "failed",
+                        Status::Canceled => "canceled",
+                        Status::Interrupted => "interrupted",
+                        Status::Waiting => "waiting",
+                        Status::Queued | Status::Downloading | Status::Confirming => "running",
+                    };
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("This address is already in the list as {} ({state}).", display_name(old)),
+                    );
+                    ui.radio_value(
+                        &mut draft.duplicate,
+                        Duplicate::NewName,
+                        "Add it anyway, with a new name if the old file is in the way",
+                    );
+                    ui.add_enabled_ui(!other_running, |ui| {
+                        ui.radio_value(
+                            &mut draft.duplicate,
+                            Duplicate::Overwrite,
+                            "Replace the old download and overwrite its file",
+                        )
+                        .on_disabled_hover_text("The old download is still running.");
+                    });
+                    let existing = match old.status {
+                        Status::Done => "Don't add it; show the finished download",
+                        s if s.is_retryable() => "Don't add it; resume the old download",
+                        _ => "Don't add it; the old download is already running",
+                    };
+                    ui.radio_value(&mut draft.duplicate, Duplicate::Existing, existing);
+                    if let Some(path) = replaced {
+                        ui.weak(format!("{path} will be overwritten."));
+                    }
+                }
                 if taken {
                     ui.add_space(4.0);
                     ui.colored_label(
@@ -1206,12 +1278,19 @@ impl App {
                             start,
                             queue: Some(draft.later_queue),
                             file_exists: taken.then_some(draft.when_taken),
+                            duplicate: other.map(|_| draft.duplicate),
                         };
-                        if ui.button("Start download").clicked() {
-                            actions.push(answer(true));
-                        }
-                        if ui.button("Download later").clicked() {
-                            actions.push(answer(false));
+                        if other.is_some() && draft.duplicate == Duplicate::Existing {
+                            if ui.button("OK").clicked() {
+                                actions.push(answer(true));
+                            }
+                        } else {
+                            if ui.button("Start download").clicked() {
+                                actions.push(answer(true));
+                            }
+                            if ui.button("Download later").clicked() {
+                                actions.push(answer(false));
+                            }
                         }
                         if ui.button("Cancel").clicked() {
                             actions.push(Action::Cancel(draft.id));
@@ -1358,6 +1437,16 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
             .show_ui(ui, |ui| {
                 for f in [FileExists::Rename, FileExists::Overwrite, FileExists::Ask] {
                     ui.selectable_value(&mut draft.file_exists, f, file_exists_label(f));
+                }
+            });
+        ui.end_row();
+
+        ui.label("If the address is in the list");
+        egui::ComboBox::from_id_salt("if_duplicate")
+            .selected_text(duplicate_label(draft.if_duplicate))
+            .show_ui(ui, |ui| {
+                for d in [Duplicate::Ask, Duplicate::NewName, Duplicate::Overwrite, Duplicate::Existing] {
+                    ui.selectable_value(&mut draft.if_duplicate, d, duplicate_label(d));
                 }
             });
         ui.end_row();
@@ -1622,6 +1711,15 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     });
 }
 
+fn duplicate_label(d: Duplicate) -> &'static str {
+    match d {
+        Duplicate::Ask => "Ask me",
+        Duplicate::NewName => "Add it with a new name",
+        Duplicate::Overwrite => "Replace the old download",
+        Duplicate::Existing => "Use the old download",
+    }
+}
+
 fn file_exists_label(f: FileExists) -> &'static str {
     match f {
         FileExists::Rename => "Save with a new name",
@@ -1650,6 +1748,11 @@ fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) 
         s.apply(msg);
         match msg {
             Outgoing::Show => true,
+            // A duplicate of a finished download shows its dialog again.
+            Outgoing::ShowDone { id } => {
+                s.completed.push_back((*id, false));
+                true
+            }
             Outgoing::Countdown { .. } => true,
             Outgoing::Quit => std::process::exit(0),
             Outgoing::Updated { item } => item.status == Status::Confirming,
@@ -2367,6 +2470,7 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                         start: true,
                         queue: None,
                         file_exists: None,
+                        duplicate: None,
                     });
                 }
                 queue_menu(ui, e, row.queues, actions);

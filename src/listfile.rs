@@ -143,6 +143,7 @@ mod tests {
             scan: None,
             parts: None,
             note: None,
+            duplicate_of: None,
         }
     }
 

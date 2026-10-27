@@ -62,6 +62,8 @@ impl History {
                     Status::Interrupted
                 };
             }
+            // The question it was waiting on went away with the daemon.
+            e.duplicate_of = None;
         }
         let max_id = history.items.iter().map(|e| e.id).max().unwrap_or(0);
         history.next_id = history.next_id.max(max_id + 1);
@@ -167,6 +169,7 @@ mod tests {
             scan: None,
             parts: None,
             note: None,
+            duplicate_of: None,
         }
     }
 

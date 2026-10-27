@@ -60,7 +60,7 @@ use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
 use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Status};
-use uidm::settings::{self, FileExists, Folders, Settings};
+use uidm::settings::{self, Duplicate, FileExists, Folders, Settings};
 use uidm::notify::{self, Sound, Toast};
 use uidm::power;
 use uidm::queue::{self, Queue, WhenDone, COUNTDOWN_SECS, MAIN_QUEUE};
@@ -907,7 +907,15 @@ impl Daemon {
             thread::sleep(CONFIRM_FALLBACK);
             if daemon.status(id) == Some(Status::Confirming) && !daemon.hub.window_open() {
                 eprintln!("[uidm-daemon] no window to confirm #{id}; starting it as proposed");
-                if let Err(e) = daemon.confirm(id, None, None, true, None, fallback) {
+                // A "download later" asked only about a duplicate keeps waiting.
+                let (start, queue) = daemon
+                    .hub
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .map_or((true, None), |d| (d.start != Some(false), d.queue));
+                if let Err(e) = daemon.confirm(id, None, None, start, queue, fallback, None) {
                     eprintln!("[uidm-daemon] could not start #{id}: {e}");
                 }
             }
@@ -978,16 +986,119 @@ impl Daemon {
     }
 
     /// Take a new download: ask where to save it when the settings say so,
-    /// otherwise queue it at once.
-    fn add(self: &Arc<Self>, download: Download) -> (u64, String) {
+    /// otherwise queue it at once. If its address is already in the list, the
+    /// duplicate setting decides first, asking in the save-as dialog under
+    /// `Ask` even when that dialog is off.
+    fn add(self: &Arc<Self>, mut download: Download) -> (u64, String) {
+        if let Some(old) = self.duplicate_of(&download) {
+            let choice = self.settings.lock().unwrap().if_duplicate;
+            eprintln!("[uidm-daemon] {} is already in the list as #{} ({choice:?})", download.url, old.id);
+            if choice == Duplicate::Ask {
+                return self.ask(download, Some(old.id));
+            }
+            if let Some(kept) = self.settle_duplicate(&mut download, &old, choice) {
+                return kept;
+            }
+        }
         if download.start == Some(false) {
             return self.add_later(download);
         }
         if self.settings.lock().unwrap().ask_where_to_save {
-            self.ask(download)
+            self.ask(download, None)
         } else {
             self.start(download, None)
         }
+    }
+
+    /// The newest download in the list with `download`'s address. Form posts
+    /// and streams are never duplicates: one address can stand for different
+    /// files there (another form, another quality).
+    fn duplicate_of(&self, download: &Download) -> Option<DownloadEntry> {
+        if uidm::app::post_body(download).is_some() || download.media.is_some() {
+            return None;
+        }
+        let table = self.hub.table.lock().unwrap();
+        table
+            .entries()
+            .filter(|e| uidm::app::same_address(&e.url, &download.url))
+            .last()
+            .cloned()
+    }
+
+    /// Apply `choice` to `download`, whose address download `old` already
+    /// has. Returns the download to report when nothing new should be added;
+    /// otherwise `download` is ready to add.
+    fn settle_duplicate(
+        self: &Arc<Self>,
+        download: &mut Download,
+        old: &DownloadEntry,
+        choice: Duplicate,
+    ) -> Option<(u64, String)> {
+        match choice {
+            Duplicate::Ask | Duplicate::NewName => {
+                download.file_exists = Some(FileExists::Rename);
+                None
+            }
+            Duplicate::Existing => self.use_existing(old),
+            // A running download's file cannot be replaced under it.
+            Duplicate::Overwrite if !old.status.is_terminal() => self.use_existing(old),
+            Duplicate::Overwrite => {
+                if let Some(path) = old.path.as_deref().map(Path::new) {
+                    download.filename = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                    download.folder = path.parent().map(|d| d.display().to_string());
+                }
+                download.file_exists = Some(FileExists::Overwrite);
+                if let Err(e) = self.remove(old.id) {
+                    eprintln!("[uidm-daemon] could not remove #{}: {e}", old.id);
+                }
+                None
+            }
+        }
+    }
+
+    /// Point the user at download `old` instead of adding its address again:
+    /// show a finished one's completion dialog again, resume a stopped one,
+    /// and bring the window up for a running one. `None` when the finished
+    /// file is gone, so the new download should be added after all.
+    fn use_existing(self: &Arc<Self>, old: &DownloadEntry) -> Option<(u64, String)> {
+        let kept = Some((old.id, old.url.clone()));
+        match old.status {
+            Status::Done if !old.path.as_deref().is_some_and(|p| Path::new(p).is_file()) => None,
+            Status::Done => {
+                if self.hub.window_open() {
+                    self.hub.broadcast(&Outgoing::ShowDone { id: old.id });
+                } else {
+                    // Without a window, a notification stands in for the
+                    // dialog, whatever the notification setting.
+                    let mut settings = self.settings.lock().unwrap().clone();
+                    settings.notify = Notify::Toast;
+                    settings.sound_on_done = false;
+                    self.notify(old.id, false, &settings);
+                }
+                kept
+            }
+            s if s.is_retryable() => match self.retry(old.id) {
+                Ok(resumed) => Some(resumed),
+                Err(e) => {
+                    eprintln!("[uidm-daemon] could not resume #{}: {e}", old.id);
+                    kept
+                }
+            },
+            _ => {
+                self.show_window();
+                kept
+            }
+        }
+    }
+
+    /// Take download `id` off the list though it never ran: a duplicate the
+    /// user chose not to add.
+    fn drop_entry(&self, id: u64) {
+        self.hub.requests.lock().unwrap().remove(&id);
+        if self.hub.leave_queues(id) {
+            self.hub.publish_queues();
+        }
+        self.hub.publish(&Outgoing::Removed { id });
     }
 
     /// Add `download` to a queue (the main one unless it names another)
@@ -1036,20 +1147,39 @@ impl Daemon {
     }
 
     /// Add `items` to wait in `queue`, announcing the queue once rather than
-    /// once per download. Items that are not web addresses are skipped.
-    fn add_many(&self, items: Vec<Download>, queue: Option<u64>) -> usize {
+    /// once per download. Items that are not web addresses are skipped, and
+    /// so are those already in the list unless the duplicate setting says to
+    /// add them (with a new name, or in place of a stopped download). Returns
+    /// how many were added and how many were skipped as duplicates.
+    fn add_many(self: &Arc<Self>, items: Vec<Download>, queue: Option<u64>) -> (usize, usize) {
         let queue = self.queue_or_main(queue);
-        let ids: Vec<u64> = items
-            .into_iter()
-            .filter(|d| uidm::batch::is_web_url(&d.url) && check_body(d).is_ok())
-            .map(|d| self.stage(d).0)
-            .collect();
+        let choice = self.settings.lock().unwrap().if_duplicate;
+        let mut ids = Vec::new();
+        let mut skipped = 0;
+        for mut d in items {
+            if !uidm::batch::is_web_url(&d.url) || check_body(&d).is_err() {
+                continue;
+            }
+            if let Some(old) = self.duplicate_of(&d) {
+                let add = match choice {
+                    Duplicate::NewName => true,
+                    Duplicate::Overwrite => old.status.is_terminal(),
+                    Duplicate::Ask | Duplicate::Existing => false,
+                };
+                if !add {
+                    skipped += 1;
+                    continue;
+                }
+                self.settle_duplicate(&mut d, &old, choice);
+            }
+            ids.push(self.stage(d).0);
+        }
         let count = ids.len();
         let _ = self.hub.update_queue(queue, |q| {
             q.order.extend(ids);
             Ok(())
         });
-        count
+        (count, skipped)
     }
 
     /// Read a stream's playlist on another thread and answer `reply` with
@@ -1130,7 +1260,9 @@ impl Daemon {
 
     /// Announce `download` as queued, probe it on another thread, then hold it
     /// as `confirming` with the proposed file until a window answers.
-    fn ask(self: &Arc<Self>, download: Download) -> (u64, String) {
+    /// `duplicate_of` is another download with the same address, for the
+    /// dialog to ask about.
+    fn ask(self: &Arc<Self>, download: Download, duplicate_of: Option<u64>) -> (u64, String) {
         let url = download.url.clone();
         let id = self.engine.reserve_id();
         self.hub.requests.lock().unwrap().insert(id, download.clone());
@@ -1141,7 +1273,6 @@ impl Daemon {
 
         let daemon = Arc::clone(self);
         thread::spawn(move || {
-            let folders = daemon.settings.lock().unwrap().folders();
             let req = daemon.request_for(download.clone());
             // Probing a POST download would send a GET (or repeat the POST),
             // so its dialog proposes a name from the request alone.
@@ -1163,7 +1294,9 @@ impl Daemon {
                     return;
                 }
             };
-            let path = folders.for_name(&found.filename).join(&found.filename);
+            let path = req.folders.for_name(&found.filename).join(&found.filename);
+            // The other one may have been removed while this was probed.
+            let duplicate_of = duplicate_of.filter(|o| daemon.status(*o).is_some());
             let asked = daemon.hub.update(id, |e| {
                 if e.status != Status::Queued {
                     return Err("no longer queued".into());
@@ -1172,6 +1305,7 @@ impl Daemon {
                 e.path = Some(path.display().to_string());
                 e.total = found.total;
                 e.resumable = found.resumable;
+                e.duplicate_of = duplicate_of;
                 Ok(())
             });
             if asked.is_err() {
@@ -1186,20 +1320,41 @@ impl Daemon {
     /// `waiting` one. Missing names and folders keep the proposed ones. With
     /// `start` false it waits in `queue` (the main queue by default).
     /// `file_exists`, when given, decides what happens if the name is taken,
-    /// now and on later starts.
+    /// now and on later starts. For a download asked about as a duplicate,
+    /// `duplicate` decides what happens to the other download first (a new
+    /// name when missing).
+    #[allow(clippy::too_many_arguments)]
     fn confirm(
-        &self,
+        self: &Arc<Self>,
         id: u64,
-        filename: Option<String>,
-        folder: Option<String>,
+        mut filename: Option<String>,
+        mut folder: Option<String>,
         start: bool,
         queue: Option<u64>,
-        file_exists: Option<FileExists>,
+        mut file_exists: Option<FileExists>,
+        duplicate: Option<Duplicate>,
     ) -> Result<(), String> {
+        let other = self.entry(id).and_then(|e| e.duplicate_of).and_then(|o| self.entry(o));
+        if let Some(old) = other {
+            let choice = duplicate.unwrap_or(Duplicate::NewName);
+            let mut download = self.hub.requests.lock().unwrap().get(&id).cloned().unwrap_or_default();
+            if let Some((kept, _)) = self.settle_duplicate(&mut download, &old, choice) {
+                eprintln!("[uidm-daemon] #{id} duplicates #{}; using #{kept} instead", old.id);
+                self.drop_entry(id);
+                return Ok(());
+            }
+            // Replacing the other download means writing over its file.
+            if choice == Duplicate::Overwrite && old.path.is_some() {
+                filename = download.filename.clone();
+                folder = download.folder.clone();
+            }
+            file_exists = file_exists.or(download.file_exists);
+        }
         let item = self.hub.update(id, |e| {
             if !matches!(e.status, Status::Confirming | Status::Waiting) {
                 return Err(format!("download {id} is not waiting to be started"));
             }
+            e.duplicate_of = None;
             if filename.is_none() && folder.is_none() {
                 // Keep whatever the download already has: a chosen file, a
                 // partial file, or nothing yet.
@@ -1389,8 +1544,12 @@ impl Daemon {
     fn request_for(&self, download: Download) -> DownloadRequest {
         let settings = self.settings.lock().unwrap().clone();
         let net = self.net_for(&download, &settings);
+        let folder = download.folder.as_deref().map(PathBuf::from).filter(|f| f.is_absolute());
         let mut req = to_request(download, &settings);
         req.net = Arc::new(net);
+        if let Some(folder) = folder {
+            req.folders = Folders::fixed(folder);
+        }
         req
     }
 
@@ -1754,9 +1913,9 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             });
         }
         Incoming::AddMany { items, queue } => {
-            let count = daemon.add_many(items, queue);
-            eprintln!("[uidm-daemon] added {count} downloads to wait");
-            send(&Outgoing::AddedMany { count });
+            let (count, skipped) = daemon.add_many(items, queue);
+            eprintln!("[uidm-daemon] added {count} downloads to wait, skipped {skipped} already in the list");
+            send(&Outgoing::AddedMany { count, skipped });
         }
         Incoming::ProbeMedia { request, download } => {
             if let Err(message) = check_body(&download) {
@@ -1782,7 +1941,8 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             start,
             queue,
             file_exists,
-        } => match daemon.confirm(id, filename, folder, start, queue, file_exists) {
+            duplicate,
+        } => match daemon.confirm(id, filename, folder, start, queue, file_exists, duplicate) {
             Ok(()) => eprintln!("[uidm-daemon] confirm #{id} (start: {start})"),
             Err(message) => send(&Outgoing::Error { message }),
         },
@@ -2018,4 +2178,286 @@ fn spawn_idle_monitor(daemon: Arc<Daemon>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    const BODY: &[u8] = b"the new bytes";
+
+    /// A server that answers every request with `BODY`, without ranges.
+    fn serve() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                thread::spawn(move || {
+                    let mut req = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => req.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                        BODY.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    if !req.starts_with(b"HEAD") {
+                        let _ = stream.write_all(BODY);
+                    }
+                });
+            }
+        });
+        format!("http://{addr}/f.bin")
+    }
+
+    struct Setup {
+        daemon: Arc<Daemon>,
+        dir: PathBuf,
+        /// What a pretend window receives.
+        window: Receiver<Vec<u8>>,
+    }
+
+    /// A daemon with no files, saving to a fresh folder, with a pretend
+    /// window connected so nothing opens on screen.
+    fn setup(name: &str, choice: Duplicate) -> Setup {
+        let dir = std::env::temp_dir().join(format!("uidm_dup_{}_{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (daemon, ..) = Daemon::new(Paths {
+            settings: None,
+            history: None,
+            requests: None,
+        });
+        {
+            let mut s = daemon.settings.lock().unwrap();
+            s.download_dir = Some(dir.display().to_string());
+            s.ask_where_to_save = false;
+            s.if_duplicate = choice;
+        }
+        let (tx, window) = channel();
+        daemon.hub.clients.lock().unwrap().insert(1, tx);
+        daemon.hub.windows.lock().unwrap().insert(1);
+        Setup {
+            daemon: Arc::new(daemon),
+            dir,
+            window,
+        }
+    }
+
+    impl Setup {
+        /// Put a finished download of `url` in the list, its file at `path`
+        /// holding `old`.
+        fn finished(&self, url: &str, path: &Path) -> u64 {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"old").unwrap();
+            let id = self.daemon.engine.reserve_id();
+            let url = url.to_string();
+            self.daemon.hub.publish(&Outgoing::Added { id, url: url.clone() });
+            self.daemon.hub.publish(&Outgoing::Done {
+                id,
+                url,
+                path: path.display().to_string(),
+                note: None,
+            });
+            id
+        }
+
+        fn failed(&self, url: &str) -> u64 {
+            let id = self.daemon.engine.reserve_id();
+            let url = url.to_string();
+            self.daemon.hub.publish(&Outgoing::Added { id, url: url.clone() });
+            self.daemon.hub.publish(&Outgoing::Failed {
+                id,
+                url,
+                error: "gone".into(),
+            });
+            id
+        }
+
+        fn add(&self, url: &str) -> u64 {
+            self.daemon
+                .add(Download {
+                    url: url.into(),
+                    ..Download::default()
+                })
+                .0
+        }
+
+        fn len(&self) -> usize {
+            self.daemon.hub.table.lock().unwrap().len()
+        }
+
+        /// Wait for download `id` to reach `status`, and return it.
+        fn wait(&self, id: u64, status: Status) -> DownloadEntry {
+            let until = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(e) = self.daemon.entry(id).filter(|e| e.status == status) {
+                    return e;
+                }
+                assert!(Instant::now() < until, "#{id} never became {status:?}: {:?}", self.daemon.entry(id));
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        fn window_got(&self, wanted: impl Fn(&Outgoing) -> bool) -> bool {
+            self.window
+                .try_iter()
+                .filter_map(|f| serde_json::from_slice::<Outgoing>(&f).ok())
+                .any(|m| wanted(&m))
+        }
+    }
+
+    #[test]
+    fn new_name_keeps_the_old_file() {
+        let t = setup("new_name", Duplicate::NewName);
+        let url = serve();
+        let old = t.finished(&url, &t.dir.join("f.bin"));
+        let new = t.add(&format!("{url}#again"));
+        assert_ne!(new, old);
+        let done = t.wait(new, Status::Done);
+        assert_eq!(done.path.map(PathBuf::from), Some(t.dir.join("f (1).bin")));
+        assert_eq!(std::fs::read(t.dir.join("f.bin")).unwrap(), b"old");
+        assert!(t.daemon.entry(old).is_some(), "the old download stays in the list");
+    }
+
+    #[test]
+    fn overwrite_replaces_the_old_download_and_its_file() {
+        let t = setup("overwrite", Duplicate::Overwrite);
+        let url = serve();
+        // Saved somewhere its category would not pick now.
+        let path = t.dir.join("elsewhere").join("f.bin");
+        let old = t.finished(&url, &path);
+        let new = t.add(&url);
+        let done = t.wait(new, Status::Done);
+        assert_eq!(done.path.map(PathBuf::from), Some(path.clone()));
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        assert!(t.daemon.entry(old).is_none(), "the old download left the list");
+    }
+
+    #[test]
+    fn overwrite_keeps_a_running_download() {
+        let t = setup("overwrite_running", Duplicate::Overwrite);
+        let url = serve();
+        let old = t.daemon.engine.reserve_id();
+        t.daemon.hub.publish(&Outgoing::Added { id: old, url: url.clone() });
+        assert_eq!(t.daemon.status(old), Some(Status::Queued));
+        assert_eq!(t.add(&url), old);
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn existing_shows_a_finished_download_again() {
+        let t = setup("existing_done", Duplicate::Existing);
+        let url = serve();
+        let old = t.finished(&url, &t.dir.join("f.bin"));
+        assert_eq!(t.add(&url), old);
+        assert_eq!(t.len(), 1, "nothing was added");
+        assert!(t.window_got(|m| matches!(m, Outgoing::ShowDone { id } if *id == old)));
+    }
+
+    #[test]
+    fn existing_adds_anyway_when_the_finished_file_is_gone() {
+        let t = setup("existing_gone", Duplicate::Existing);
+        let url = serve();
+        let old = t.finished(&url, &t.dir.join("f.bin"));
+        std::fs::remove_file(t.dir.join("f.bin")).unwrap();
+        let new = t.add(&url);
+        assert_ne!(new, old);
+        t.wait(new, Status::Done);
+    }
+
+    #[test]
+    fn existing_resumes_a_stopped_download() {
+        let t = setup("existing_failed", Duplicate::Existing);
+        let url = serve();
+        let old = t.failed(&url);
+        let resumed = t.add(&url);
+        assert_ne!(resumed, old, "a retry gets a new id");
+        t.wait(resumed, Status::Done);
+        assert!(t.daemon.entry(old).is_none());
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn ask_holds_it_in_the_dialog_then_follows_the_answer() {
+        let t = setup("ask", Duplicate::Ask);
+        let url = serve();
+        let old = t.finished(&url, &t.dir.join("f.bin"));
+        let new = t.add(&url);
+        let asked = t.wait(new, Status::Confirming);
+        assert_eq!(asked.duplicate_of, Some(old));
+        t.daemon
+            .confirm(new, None, None, true, None, None, Some(Duplicate::Existing))
+            .unwrap();
+        assert!(t.daemon.entry(new).is_none(), "the new download was not added");
+        assert!(t.window_got(|m| matches!(m, Outgoing::ShowDone { id } if *id == old)));
+
+        // No answer about the duplicate means a new name.
+        let again = t.add(&url);
+        t.wait(again, Status::Confirming);
+        t.daemon.confirm(again, None, None, true, None, None, None).unwrap();
+        let done = t.wait(again, Status::Done);
+        assert_eq!(done.path.map(PathBuf::from), Some(t.dir.join("f (1).bin")));
+        assert_eq!(done.duplicate_of, None);
+    }
+
+    #[test]
+    fn ask_then_overwrite_writes_over_the_old_file() {
+        let t = setup("ask_overwrite", Duplicate::Ask);
+        let url = serve();
+        let path = t.dir.join("elsewhere").join("f.bin");
+        let old = t.finished(&url, &path);
+        let new = t.add(&url);
+        t.wait(new, Status::Confirming);
+        t.daemon
+            .confirm(new, Some("ignored.bin".into()), None, true, None, None, Some(Duplicate::Overwrite))
+            .unwrap();
+        let done = t.wait(new, Status::Done);
+        assert_eq!(done.path.map(PathBuf::from), Some(path.clone()));
+        assert_eq!(std::fs::read(&path).unwrap(), BODY);
+        assert!(t.daemon.entry(old).is_none());
+    }
+
+    #[test]
+    fn add_many_skips_duplicates_unless_told_to_add_them() {
+        let url = serve();
+        let items = |urls: &[&str]| {
+            urls.iter()
+                .map(|u| Download {
+                    url: u.to_string(),
+                    ..Download::default()
+                })
+                .collect::<Vec<_>>()
+        };
+        let t = setup("many_ask", Duplicate::Ask);
+        t.finished(&url, &t.dir.join("f.bin"));
+        assert_eq!(t.daemon.add_many(items(&[&url, "https://example.com/other.bin"]), None), (1, 1));
+
+        let t = setup("many_new_name", Duplicate::NewName);
+        t.finished(&url, &t.dir.join("f.bin"));
+        assert_eq!(t.daemon.add_many(items(&[&url]), None), (1, 0));
+    }
+
+    #[test]
+    fn form_posts_are_never_duplicates() {
+        let t = setup("post", Duplicate::Existing);
+        let url = "https://example.com/form";
+        t.finished(url, &t.dir.join("form"));
+        let get = Download {
+            url: url.into(),
+            ..Download::default()
+        };
+        assert!(t.daemon.duplicate_of(&get).is_some());
+        let post = Download {
+            method: Some("POST".into()),
+            ..get
+        };
+        assert!(t.daemon.duplicate_of(&post).is_none());
+    }
 }

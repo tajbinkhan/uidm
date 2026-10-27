@@ -70,6 +70,19 @@ Downloaded files are left alone.
   even with the dialog turned off: the download stops before writing anything
   and opens the dialog. If no window answers within 20 seconds, it gets a new
   name.
+- **When the address is already in the list**, UIDM asks by default: the
+  save-as dialog (shown for this even when it is turned off) says which
+  download has it and offers **Add it anyway** (with a new name if the old
+  file is in the way), **Replace the old download** (it leaves the list and
+  the new one overwrites its file; not while the old one is running) or
+  **Don't add it** (a finished one shows its completion dialog again, a
+  stopped one resumes, a running one is left alone). Options (**If the
+  address is in the list**) can make one of these the answer every time.
+  Addresses match ignoring `#fragments` and the case of the host. Form
+  downloads and streams are never treated as duplicates. **Add many**,
+  imports and the site grabber skip addresses already in the list, unless the
+  setting adds them with a new name or replaces stopped ones. If no window
+  answers within 20 seconds, the download is added with a new name.
 - **Categories** sort downloads by file type into their own folders:
   Compressed, Documents, Music, Programs and Video go into folders of those
   names inside the download folder, and everything else (**General**) goes
@@ -166,7 +179,8 @@ Downloaded files are left alone.
   without a click, and the same link is not offered twice in a row.
 - **Options** (top right of the window) has five tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
-  10), a total speed limit, what to do when a file name is taken, the save-as
+  10), a total speed limit, what to do when a file name is taken or an
+  address is already in the list, the save-as
   dialog, whether to resume unfinished downloads when UIDM starts, Start with
   Windows, whether closing the window keeps UIDM in the tray, and where
   ffmpeg is. **Categories**: as above. **Browser capture**: the rules below,
@@ -370,6 +384,7 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "remove", "id": 1 }
 { "op": "confirm", "id": 1, "filename": "f.zip", "folder": "D:\\Downloads", "start": true }
 { "op": "confirm", "id": 1, "file_exists": "overwrite" }
+{ "op": "confirm", "id": 4, "duplicate": "existing" }
 { "op": "list" }
 { "op": "pause_all" }
 { "op": "resume_all" }
@@ -396,7 +411,7 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "get_settings" }
 { "op": "set_settings", "settings": { "download_dir": null, "connections": 8, "max_concurrent": 3,
   "speed_limit_enabled": false, "speed_limit_kbps": 1024, "resume_at_startup": false,
-  "file_exists": "rename", "ask_where_to_save": true,
+  "file_exists": "rename", "if_duplicate": "ask", "ask_where_to_save": true,
   "categories": [ { "name": "Compressed", "extensions": ["zip", "rar"], "folder": null } ],
   "capture_types": ["zip", "pdf"], "capture_min_size_kb": 0,
   "capture_excluded_sites": ["*.example.com"], "close_to_tray": true,
@@ -424,6 +439,7 @@ Daemon to clients:
   "done": 12345, "status": "done", "error": null, "resumable": true, "connections": 8 } ] }
 { "op": "settings", "settings": { ... } }
 { "op": "show" }
+{ "op": "show_done", "id": 1 }
 { "op": "queues", "items": [ { "id": 1, "name": "Main queue", "max_concurrent": 1, "running": false,
   "order": [7, 9], "schedule": null, "when_done": "nothing", "when_done_once": null, "retries": 0,
   "last_scheduled_day": null, "started_by_schedule": false } ] }
@@ -436,7 +452,7 @@ Daemon to clients:
 { "op": "progress", "id": 9, "url": "...", "done": 5242880, "total": null, "parts": [40, 120] }
 { "op": "done", "id": 9, "url": "...", "path": "C:\\Users\\...\\Video\\Talk.ts",
   "note": "Saved as a .ts video. With ffmpeg (set in Options) it would be an .mp4." }
-{ "op": "added_many", "count": 120 }
+{ "op": "added_many", "count": 120, "skipped": 3 }
 { "op": "media_info", "request": 3, "info": { "kind": "hls", "duration": 1520.0, "drm": false,
   "video": [ { "id": "https://.../1080/index.m3u8", "label": "1080p, 5.0 Mbps", "height": 1080,
   "bandwidth": 5000000, "size": 950000000 } ], "audio": [] } }
@@ -460,14 +476,22 @@ and `folder` default to the proposed ones, and `start: false` makes it
 the name is taken, for this start and later ones; without it the setting
 decides. `name_taken` means the name is taken under the `ask` setting:
 nothing was written, and the download is `confirming` with `path` set to the
-taken file. Canceling a `confirming` download reports `canceled`. `retry` removes
+taken file. A `confirming` download whose address is already in the list
+carries `duplicate_of`, the other download's id, and `confirm` answers it
+with `duplicate`: `new_name` (the default), `overwrite` (the other one is
+removed and its file is the target, whatever `filename` and `folder` say;
+refused as `existing` while the other one runs) or `existing` (the new
+download is `removed`; the other one is shown again with `show_done` if
+finished, retried if stopped). Canceling a `confirming` download reports
+`canceled`. `retry` removes
 the old entry (`removed`) and queues a new one with a new id; it is refused
 unless the download failed, was canceled or was interrupted. `remove` is
 refused while a download is still running. `set_settings` with an invalid
 value (`connections` outside 1-16, `max_concurrent` outside 1-10, a speed
 limit outside 1-10,000,000 KB/s, or a folder that is not a full path) is
 refused with an `error` that says why. `download_dir: null` means the
-Downloads folder, and `file_exists` is `rename`, `overwrite` or `ask`. A category
+Downloads folder, `file_exists` is `rename`, `overwrite` or `ask`, and
+`if_duplicate` is `ask`, `new_name`, `overwrite` or `existing`. A category
 needs a unique name other than `General`, at least one file type, and a full
 path or `null` for its folder (`null` means a folder named after it inside the
 download folder). File types are lowercase letters and digits without the
@@ -507,7 +531,9 @@ running; `quit` tells windows to close.
 `progress` carries `parts`, segments done and in all, and its `total` is
 `null`; entries keep `parts` and a finished download's `note`. `add_many`
 answers with `added_many` and adds each item waiting, skipping items that are
-not web addresses; `folder`, a full path, fixes where an item is saved.
+not web addresses, and items already in the list unless `if_duplicate` is
+`new_name`, or `overwrite` for a stopped download (`skipped` counts those);
+`folder`, a full path, fixes where an item is saved.
 `probe_media` echoes `request` in its `media_info`, whose `error` says why a
 stream cannot be downloaded and `drm` whether that is because of DRM. `grab`
 answers with `grab_progress` after each page and one `grab_done`, to the
@@ -764,6 +790,20 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 ## Verified
 
+- Duplicate addresses (#30). Daemon tests run the real engine against a local
+  server: with a new name the copy is saved as `f (1).bin` and the old file
+  is untouched; replacing writes over the old file in the folder it was saved
+  to and drops the old entry, but keeps a running one and adds nothing;
+  using the existing download sends `show_done` for a finished one, retries
+  a failed one, and adds the new one when the finished file is gone; under
+  ask the download waits as `confirming` with `duplicate_of`, then follows an
+  `existing` or `overwrite` answer, and no answer gives a new name;
+  `add_many` skips a duplicate under ask and adds it under new name; a form
+  POST is never a duplicate. Unit tests cover address matching, the setting's
+  default and `confirm` with `duplicate`. The window's dialog and Options
+  choice were built but not tried on screen, and nothing ran through the
+  host or the browser.
+
 - Asking about taken file names (#8). Engine tests against a local server:
   under ask, an existing file and one with a stale sidecar both stop with
   `name_taken` before anything is written, then rename and overwrite answers
@@ -995,7 +1035,10 @@ arguments; no real ffmpeg was run on real video.
   starts.
 - Starting a download from the browser popup while it waits for the save-as
   dialog answers no question: under the ask setting a taken name gets a new
-  name.
+  name, and an address already in the list is added with a new name.
+- A copy added with a new name while the old download has a matching
+  partial file resumes that partial file instead of starting a new one, so
+  both entries point at it.
 - Adding a category does not add its types to the captured types; that list
   is edited on its own.
 - A schedule only works while the daemon runs. It stays up for a schedule

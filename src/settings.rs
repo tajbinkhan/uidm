@@ -189,6 +189,27 @@ pub enum FileExists {
     Ask,
 }
 
+/// What to do when a new download's address is already in the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Duplicate {
+    /// Hold it in the save-as dialog until the user picks one of the others.
+    /// Without a window to answer, it is added with a new name. Many
+    /// downloads added at once skip their duplicates instead of asking.
+    #[default]
+    Ask,
+    /// Add it anyway; if the other download's file is in the way, the new one
+    /// gets a numbered name.
+    NewName,
+    /// Add it in place of the other download: the other one leaves the list
+    /// and the new one overwrites its file. If the other one is running, it
+    /// is kept and the new one is not added.
+    Overwrite,
+    /// Do not add it. A finished download shows its completion dialog again;
+    /// a stopped one resumes; a running one is left alone.
+    Existing,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -206,6 +227,8 @@ pub struct Settings {
     /// Queue interrupted downloads again when the daemon starts.
     pub resume_at_startup: bool,
     pub file_exists: FileExists,
+    /// What to do when a new download's address is already in the list.
+    pub if_duplicate: Duplicate,
     /// Show a save-as dialog for each new download before it starts.
     pub ask_where_to_save: bool,
     /// File types and their folders. Files of no listed type are `General`.
@@ -270,6 +293,7 @@ impl Default for Settings {
             speed_limit_kbps: DEFAULT_SPEED_LIMIT_KBPS,
             resume_at_startup: false,
             file_exists: FileExists::Rename,
+            if_duplicate: Duplicate::Ask,
             ask_where_to_save: true,
             categories: default_categories(),
             capture_types: default_capture_types(),
@@ -586,6 +610,7 @@ mod tests {
         assert_eq!(s.connections, 4);
         assert_eq!(s.max_concurrent, DEFAULT_MAX_CONCURRENT);
         assert_eq!(s.file_exists, FileExists::Rename);
+        assert_eq!(s.if_duplicate, Duplicate::Ask);
     }
 
     #[test]
@@ -599,6 +624,7 @@ mod tests {
             speed_limit_kbps: 500,
             resume_at_startup: true,
             file_exists: FileExists::Overwrite,
+            if_duplicate: Duplicate::Existing,
             ask_where_to_save: false,
             categories: vec![Category::new("Books", &["epub"])],
             capture_types: vec!["zip".into()],

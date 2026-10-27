@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::grab::{GrabFile, GrabRequest};
 use crate::media::{MediaChoice, MediaInfo};
 use crate::queue::{Queue, WhenDone};
-use crate::settings::{FileExists, Settings};
+use crate::settings::{Duplicate, FileExists, Settings};
 
 /// A request from a client (the browser via the host, or the desktop window)
 /// to the daemon.
@@ -83,6 +83,11 @@ pub enum Incoming {
         /// setting decides when missing.
         #[serde(default)]
         file_exists: Option<FileExists>,
+        /// For a download with `duplicate_of`: what to do about the other
+        /// download with the same address. Missing (or `ask`) adds it with a
+        /// new name.
+        #[serde(default)]
+        duplicate: Option<Duplicate>,
     },
     /// Create a queue (`id` 0) or change one: name, downloads at once,
     /// schedule, what happens when done, retries.
@@ -171,7 +176,7 @@ pub struct Download {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<u64>,
     /// The folder to save in, a full path, instead of the one its category
-    /// picks. Only for a download added with `start: false`.
+    /// picks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
     /// A stream (HLS or DASH) to download as one video, and which quality.
@@ -260,6 +265,10 @@ pub struct DownloadEntry {
     /// as two files because ffmpeg was not found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// While `confirming`: another download in the list has the same
+    /// address, and the save-as dialog asks what to do about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<u64>,
 }
 
 /// A message from the daemon to a client.
@@ -321,6 +330,9 @@ pub enum Outgoing {
     /// Ask the desktop window to come to the front (from a notification).
     /// Other clients ignore it.
     Show,
+    /// Show the completion dialog of finished download `id` again: a new
+    /// download had the same address. Other clients ignore it.
+    ShowDone { id: u64 },
     /// Every queue, in order: a reply to `list`, and sent to every client when
     /// one changes.
     Queues { items: Vec<Queue> },
@@ -354,8 +366,13 @@ pub enum Outgoing {
         url: String,
         reason: String,
     },
-    /// Reply to `add_many`: how many downloads were added.
-    AddedMany { count: usize },
+    /// Reply to `add_many`: how many downloads were added, and how many were
+    /// skipped because their address was already in the list.
+    AddedMany {
+        count: usize,
+        #[serde(default)]
+        skipped: usize,
+    },
     /// Reply to `probe_media`.
     MediaInfo { request: u64, info: MediaInfo },
     /// A crawl's progress: pages read, bytes read and files found so far.
@@ -501,7 +518,14 @@ mod tests {
             _ => panic!("expected confirm"),
         }
         match serde_json::from_slice(br#"{"op":"confirm","id":4}"#).unwrap() {
-            Incoming::Confirm { file_exists, .. } => assert_eq!(file_exists, None),
+            Incoming::Confirm { file_exists, duplicate, .. } => {
+                assert_eq!(file_exists, None);
+                assert_eq!(duplicate, None);
+            }
+            _ => panic!("expected confirm"),
+        }
+        match serde_json::from_slice(br#"{"op":"confirm","id":4,"duplicate":"existing"}"#).unwrap() {
+            Incoming::Confirm { duplicate, .. } => assert_eq!(duplicate, Some(Duplicate::Existing)),
             _ => panic!("expected confirm"),
         }
         // A download without a choice keeps its JSON as it was.
