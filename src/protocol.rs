@@ -382,6 +382,9 @@ pub struct DownloadEntry {
     /// and restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed_limit: Option<u64>,
+    /// Where its unfinished data is, when not at `path`: a temporary folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial: Option<String>,
 }
 
 /// A message from the daemon to a client.
@@ -406,6 +409,10 @@ pub enum Outgoing {
         total: Option<u64>,
         resumable: bool,
         connections: usize,
+        /// Where the data goes until it is complete, when not at `path` (a
+        /// temporary folder).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<String>,
     },
     /// Periodic progress for a running download.
     Progress {

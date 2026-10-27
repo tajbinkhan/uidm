@@ -93,6 +93,13 @@ pub struct DownloadRequest {
     pub speed_limit: Option<u64>,
     /// Give the finished file the server's `Last-Modified` date.
     pub server_date: bool,
+    /// Where partial files are written until they are complete; `None`
+    /// writes them in place.
+    pub temp_dir: Option<PathBuf>,
+    /// Where an earlier attempt kept its partial file (or a stream's
+    /// segments), when not at `reuse_path`: in a temporary folder, which may
+    /// have changed since.
+    pub reuse_partial: Option<PathBuf>,
 }
 
 /// Progress events over the course of a download. `id` matches the `Ack`.
@@ -105,6 +112,8 @@ pub enum Progress {
         total: Option<u64>,
         resumable: bool,
         connections: usize,
+        /// Where the data goes until it is complete, when not at `path`.
+        partial: Option<PathBuf>,
     },
     Advanced {
         id: u64,
@@ -485,6 +494,10 @@ fn run_inner(
     fs::create_dir_all(&dir)?;
     let claim = choose_output(&shared.claimed, &dir, &filename, req, &probe)?;
     let output = claim.path.clone();
+    let work = work_file(req, &output);
+    if let Some(dir) = work.parent() {
+        fs::create_dir_all(dir)?;
+    }
 
     let segmented = probe.resumable && probe.total.map_or(false, |t| t > 0);
     let connections = if segmented {
@@ -500,6 +513,7 @@ fn run_inner(
         total: probe.total,
         resumable: probe.resumable,
         connections,
+        partial: (work != output).then(|| work.clone()),
     });
 
     let own = shared.own_limiter(id);
@@ -510,9 +524,14 @@ fn run_inner(
             connections,
             resplit,
         };
-        run_segmented(id, token, &agent, req, output, &probe, plan, reporter, limiter)
+        run_segmented(id, token, &agent, req, work.clone(), &probe, plan, reporter, limiter)
     } else {
-        run_single(id, token, &agent, req, output, &probe, reporter, limiter)
+        run_single(id, token, &agent, req, work.clone(), &probe, reporter, limiter)
+    };
+    // A finished file written in the temporary folder moves into place.
+    let result = match result {
+        Ok(_) if work != output && !token.load(Ordering::Relaxed) => move_into_place(&work, &output).map(|()| output.clone()),
+        other => other,
     };
     drop(claim);
     // A canceled download also returns its path; only a finished one gets
@@ -582,6 +601,7 @@ fn run_post(
         total: probe.total,
         resumable: false,
         connections: 1,
+        partial: None,
     });
     let mut file = File::create(&output)?;
     let mut buf = vec![0u8; BUF_SIZE];
@@ -726,6 +746,17 @@ pub fn files_of(output: &Path) -> Vec<PathBuf> {
     vec![output.to_path_buf(), Manifest::sidecar_path(output), output.with_file_name(parts)]
 }
 
+/// The resume sidecar of a partial file at `partial`.
+pub fn sidecar_path(partial: &Path) -> PathBuf {
+    Manifest::sidecar_path(partial)
+}
+
+/// The files of a partial download kept in a temporary folder: the file (or
+/// a stream's segment folder) and its resume sidecar.
+pub fn partial_files(partial: &Path) -> Vec<PathBuf> {
+    vec![partial.to_path_buf(), Manifest::sidecar_path(partial)]
+}
+
 /// Whether the partial file at `output` can be continued from the file
 /// `found` describes: the same size, and the same ETag or Last-Modified when
 /// both sides have one. A missing partial file or sidecar has nothing to keep,
@@ -790,6 +821,43 @@ const MAX_RENAMES: u32 = 9999;
 ///
 /// A sidecar left without its file is deleted, so it can never mark bytes of a
 /// fresh file as already downloaded.
+/// Where a download whose finished file is `output` writes its data: the
+/// earlier attempt's partial file if it is still there, else a file in the
+/// temporary folder named after `output`, else `output` itself.
+fn work_file(req: &DownloadRequest, output: &Path) -> PathBuf {
+    if let Some(p) = req.reuse_partial.as_ref().filter(|p| p.is_file()) {
+        return p.clone();
+    }
+    match &req.temp_dir {
+        Some(dir) => temp_name(dir, output, ""),
+        None => output.to_path_buf(),
+    }
+}
+
+/// `<dir>\<file name>.<hash of the full path><suffix>`: the same for the same
+/// finished file on every run, so a resume finds it, and different for two
+/// files of the same name in different folders.
+pub fn temp_name(dir: &Path, output: &Path, suffix: &str) -> PathBuf {
+    // FNV-1a, which unlike the standard hasher never changes between builds.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in output.to_string_lossy().to_lowercase().bytes() {
+        hash = (hash ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    let name = output.file_name().unwrap_or_default().to_string_lossy();
+    dir.join(format!("{name}.{hash:016x}{suffix}"))
+}
+
+/// Move a finished file from the temporary folder to `to`: a rename on the
+/// same drive, a copy and delete across drives. Its resume sidecar goes.
+fn move_into_place(from: &Path, to: &Path) -> Result<(), EngineError> {
+    let _ = fs::remove_file(Manifest::sidecar_path(from));
+    if fs::rename(from, to).is_err() {
+        fs::copy(from, to)?;
+        fs::remove_file(from)?;
+    }
+    Ok(())
+}
+
 fn choose_output<'a>(
     claimed: &'a Mutex<HashSet<PathBuf>>,
     dir: &Path,
@@ -824,6 +892,12 @@ fn pick_free_path(
         }
         let sidecar = Manifest::sidecar_path(&path);
         if !path.exists() {
+            // A partial copy in the temporary folder resumes; a stale one
+            // starts over.
+            let work = work_file(req, &path);
+            if work != path && !(work.is_file() && sidecar_matches(&Manifest::sidecar_path(&work), probe)) {
+                let _ = fs::remove_file(Manifest::sidecar_path(&work));
+            }
             let _ = fs::remove_file(&sidecar);
             return Ok(path);
         }
@@ -1467,6 +1541,8 @@ mod tests {
                 ffmpeg: None,
                 speed_limit: None,
                 server_date: false,
+                temp_dir: None,
+                reuse_partial: None,
             }
         }
 
@@ -1740,6 +1816,92 @@ mod tests {
             let resumed = download(|_| {}, request(&server.url, &dir, FileExists::Rename));
             assert_eq!(resumed, path, "resumes into the same file");
             assert_eq!(fs::read(&path).unwrap(), data);
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        /// Start a slow download, stop it partway, and return where its data
+        /// went and the reported partial path.
+        fn stop_partway(server: &TestServer, req: DownloadRequest) -> (PathBuf, Option<PathBuf>) {
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(
+                Arc::new(move |p: Progress| {
+                    let _ = tx.lock().unwrap().send(p);
+                }),
+                1,
+            );
+            let id = engine.enqueue(req);
+            let started = loop {
+                if let Progress::Started { path, partial, .. } = rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                    break (path, partial);
+                }
+            };
+            while server.served.load(Ordering::Relaxed) < 512 * 1024 {
+                thread::sleep(Duration::from_millis(20));
+            }
+            engine.cancel(id);
+            while !matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), Progress::Canceled { .. }) {}
+            started
+        }
+
+        #[test]
+        fn a_temporary_folder_holds_the_partial_file_until_it_is_done() {
+            const LEN: usize = 2 * 1024 * 1024;
+            let data = body(LEN);
+            let behavior = Behavior {
+                slow_range_start: Some(0),
+                slow_bytes_per_sec: 512 * 1024,
+                ..Behavior::default()
+            };
+            let server = TestServer::start_with(data.clone(), behavior);
+            let dir = temp_dir("temp_folder");
+            let temp = dir.join("temp");
+            let req = || {
+                let mut r = request(&server.url, &dir.join("out"), FileExists::Rename);
+                r.temp_dir = Some(temp.clone());
+                r
+            };
+            let (path, partial) = stop_partway(&server, req());
+            let partial = partial.expect("the partial file is in the temporary folder");
+            assert_eq!(partial.parent(), Some(temp.as_path()));
+            assert!(partial.is_file() && Manifest::sidecar_path(&partial).is_file());
+            assert!(!path.exists(), "nothing unfinished in the download folder");
+
+            // A plain resume finds it in the temporary folder by its name.
+            let done = download(|_| {}, req());
+            assert_eq!(done, path);
+            assert_eq!(fs::read(&path).unwrap(), data);
+            assert!(!partial.exists() && !Manifest::sidecar_path(&partial).exists());
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_partial_file_resumes_after_the_temporary_folder_changes() {
+            const LEN: usize = 2 * 1024 * 1024;
+            let data = body(LEN);
+            let behavior = Behavior {
+                slow_range_start: Some(0),
+                slow_bytes_per_sec: 512 * 1024,
+                ..Behavior::default()
+            };
+            let server = TestServer::start_with(data.clone(), behavior);
+            let dir = temp_dir("temp_moved");
+            let mut req = request(&server.url, &dir.join("out"), FileExists::Rename);
+            req.temp_dir = Some(dir.join("old"));
+            let (path, partial) = stop_partway(&server, req);
+            let mut req = request(&server.url, &dir.join("out"), FileExists::Rename);
+            let served = server.served.load(Ordering::Relaxed);
+
+            // Retried as the daemon does: its own file, and where its data is.
+            req.temp_dir = Some(dir.join("new"));
+            req.reuse_path = Some(path.clone());
+            req.reuse_partial = partial.clone();
+            let done = download(|_| {}, req);
+            assert_eq!(done, path);
+            assert_eq!(fs::read(&path).unwrap(), data);
+            let again = server.served.load(Ordering::Relaxed) - served;
+            assert!(again < LEN as u64, "only the rest was fetched: {again} bytes");
+            assert!(!partial.unwrap().exists());
             fs::remove_dir_all(&dir).ok();
         }
 

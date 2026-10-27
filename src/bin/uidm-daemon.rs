@@ -453,6 +453,7 @@ impl Daemon {
         });
         let mut req = self.request_for(download);
         req.speed_limit = item.speed_limit;
+        req.reuse_partial = item.partial.as_deref().map(PathBuf::from);
         match plan {
             (Some(path), true) => req.reuse_path = Some(PathBuf::from(path)),
             (Some(path), false) => {
@@ -1444,9 +1445,16 @@ impl Daemon {
     /// Queue `download`, remember it for retries, and announce it.
     /// `reuse_path` is a partial file an earlier attempt left behind.
     fn start(&self, download: Download, reuse_path: Option<PathBuf>) -> (u64, String) {
+        self.start_resuming(download, reuse_path, None)
+    }
+
+    /// `start`, with where the earlier attempt kept its partial data when
+    /// that was a temporary folder.
+    fn start_resuming(&self, download: Download, reuse_path: Option<PathBuf>, reuse_partial: Option<PathBuf>) -> (u64, String) {
         let url = download.url.clone();
         let mut req = self.request_for(download.clone());
         req.reuse_path = reuse_path;
+        req.reuse_partial = reuse_partial;
         let id = self.engine.enqueue(req);
         self.hub.requests.lock().unwrap().insert(id, download);
         // A very fast download can finish before its request is stored; drop
@@ -1507,7 +1515,8 @@ impl Daemon {
         // which may be somebody else's file.
         let started = entry.connections > 0;
         let reuse_path = entry.path.filter(|_| started).map(PathBuf::from);
-        let (new_id, url) = self.start(download, reuse_path);
+        let reuse_partial = entry.partial.filter(|_| started).map(PathBuf::from);
+        let (new_id, url) = self.start_resuming(download, reuse_path, reuse_partial);
         if let Some(q) = queue {
             let _ = self.move_to_queue(new_id, q, None);
         }
@@ -1562,7 +1571,13 @@ impl Daemon {
             download.filename = path.file_name().map(|n| n.to_string_lossy().into_owned());
             download.folder = path.parent().map(|d| d.display().to_string());
         }
-        // No reuse_path: the old file is not resumed.
+        // No reuse_path, and no resume sidecar left: a partial file still
+        // there is a taken name like any other, not something to resume.
+        if entry.status != Status::Done {
+            for p in [entry.path.as_deref(), entry.partial.as_deref()].into_iter().flatten() {
+                let _ = std::fs::remove_file(engine::sidecar_path(Path::new(p)));
+            }
+        }
         let req = self.request_for(download.clone());
         self.hub.update(id, |e| {
             if !again(e.status) {
@@ -1577,6 +1592,7 @@ impl Daemon {
             e.note = None;
             e.resumable = false;
             e.connections = 0;
+            e.partial = None;
             Ok(())
         })?;
         self.hub.requests.lock().unwrap().insert(id, download);
@@ -1608,7 +1624,7 @@ impl Daemon {
         }
         let started = entry.connections > 0;
         if started && !restart {
-            if let Some(path) = entry.path.as_deref() {
+            if let Some(path) = entry.partial.as_deref().or(entry.path.as_deref()) {
                 let req = self.request_for(download.clone());
                 let found = engine::inspect(&download.url, None, &req.headers, &req.net)
                     .map_err(|e| format!("could not reach the new link: {e}"))?;
@@ -1904,10 +1920,13 @@ impl Daemon {
         // past its save-as dialog only has a proposed path, which may be
         // somebody else's file.
         let wrote = entry.status == Status::Done || entry.connections > 0;
-        let files = match entry.path.as_deref() {
+        let mut files = match entry.path.as_deref() {
             Some(p) if delete_files && wrote => engine::files_of(Path::new(p)),
             _ => Vec::new(),
         };
+        if let Some(p) = entry.partial.as_deref().filter(|_| delete_files && wrote) {
+            files.extend(engine::partial_files(Path::new(p)));
+        }
         self.hub.requests.lock().unwrap().remove(&id);
         if self.refresh_waiting.lock().unwrap().is_some_and(|w| w == id) {
             self.set_refresh_waiting(None);

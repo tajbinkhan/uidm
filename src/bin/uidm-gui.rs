@@ -591,6 +591,9 @@ struct OptionsDraft {
     remove_deletes_files: bool,
     server_file_date: bool,
     manual_user_agent: String,
+    /// Empty writes partial files in place.
+    temp_dir: String,
+    temp_picked: Picked,
     error: Option<String>,
     picked: Picked,
 }
@@ -671,6 +674,8 @@ impl OptionsDraft {
             remove_deletes_files: s.remove_deletes_files,
             server_file_date: s.server_file_date,
             manual_user_agent: s.manual_user_agent.clone(),
+            temp_dir: s.temp_dir.clone().unwrap_or_default(),
+            temp_picked: Picked::default(),
             error: None,
             picked: Picked::default(),
         }
@@ -737,6 +742,7 @@ impl OptionsDraft {
             remove_deletes_files: self.remove_deletes_files,
             server_file_date: self.server_file_date,
             manual_user_agent: self.manual_user_agent.trim().to_string(),
+            temp_dir: optional(&self.temp_dir),
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -1457,6 +1463,7 @@ impl App {
             None => {}
         }
         take_picked(&draft.picked, &mut draft.folder);
+        take_picked(&draft.temp_picked, &mut draft.temp_dir);
         take_picked(&draft.ffmpeg_picked, &mut draft.ffmpeg_path);
         for c in &mut draft.categories {
             take_picked(&c.picked, &mut c.folder);
@@ -1530,6 +1537,23 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
             if ui.button("Default").on_hover_text("Use your Downloads folder").clicked() {
                 draft.folder.clear();
             }
+        });
+        ui.end_row();
+
+        ui.label("Temporary folder");
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.temp_dir)
+                        .hint_text("None: partial files sit next to finished ones")
+                        .desired_width(280.0),
+                );
+                browse_button(ui, "Temporary folder", &draft.temp_dir, &draft.temp_picked);
+                if ui.button("None").clicked() {
+                    draft.temp_dir.clear();
+                }
+            });
+            ui.weak("Unfinished downloads are written here and move to their folder once complete. Paused ones keep their place if you change it.");
         });
         ui.end_row();
 

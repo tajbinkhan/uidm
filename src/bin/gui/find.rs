@@ -206,6 +206,7 @@ mod tests {
             description: None,
             login_user: None,
             speed_limit: None,
+            partial: None,
         }
     }
 

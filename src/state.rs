@@ -36,10 +36,12 @@ impl DownloadTable {
                 total,
                 resumable,
                 connections,
+                partial,
             } => {
                 let e = self.entry(*id, url);
                 e.status = Status::Downloading;
                 e.path = Some(path.clone());
+                e.partial = partial.clone();
                 e.total = *total;
                 e.resumable = *resumable;
                 e.connections = *connections;
@@ -73,6 +75,7 @@ impl DownloadTable {
                 let e = self.entry(*id, url);
                 e.status = Status::Done;
                 e.path = Some(path.clone());
+                e.partial = None;
                 if let Some(t) = e.total {
                     e.done = t;
                 }
@@ -180,6 +183,7 @@ fn blank(id: u64, url: &str, status: Status) -> DownloadEntry {
         description: None,
         login_user: None,
         speed_limit: None,
+        partial: None,
     }
 }
 
@@ -202,6 +206,7 @@ mod tests {
             total: Some(1000),
             resumable: true,
             connections: 4,
+            partial: None,
         }
     }
 

@@ -294,6 +294,9 @@ pub struct Settings {
     /// by hand, in a batch, from a list or by the grabber). Empty sends the
     /// default.
     pub manual_user_agent: String,
+    /// Where unfinished downloads are written, a full path; finished files
+    /// then move to their real folder. `None` writes them in place.
+    pub temp_dir: Option<String>,
 }
 
 impl Default for Settings {
@@ -336,6 +339,7 @@ impl Default for Settings {
             remove_deletes_files: false,
             server_file_date: true,
             manual_user_agent: String::new(),
+            temp_dir: None,
         }
     }
 }
@@ -360,6 +364,9 @@ pub const USER_AGENT_PRESETS: [(&str, &str); 3] = [
 impl Settings {
     /// Check every value, returning a message fit to show the user.
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(dir) = self.temp_dir.as_deref().filter(|d| !Path::new(d).is_absolute()) {
+            return Err(format!("The temporary folder must be a full path: {dir}"));
+        }
         if self.manual_user_agent.chars().any(char::is_control) {
             return Err("The User-Agent must be one line of text.".into());
         }
@@ -695,6 +702,7 @@ mod tests {
             remove_deletes_files: true,
             server_file_date: false,
             manual_user_agent: USER_AGENT_PRESETS[0].1.into(),
+            temp_dir: Some("D:\\UIDM temp".into()),
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

@@ -244,6 +244,7 @@ mod tests {
             description: None,
             login_user: Some("me".into()),
             speed_limit: None,
+            partial: None,
         }
     }
 

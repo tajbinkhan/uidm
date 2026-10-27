@@ -3,7 +3,7 @@
 //! each track into one file, and make one video with ffmpeg when it is there.
 //!
 //! Segments are saved one file each in a `<file>.uidmparts` folder next to
-//! the output, first as `.tmp` and renamed once complete, so a canceled or
+//! the output (or in the temporary folder, when one is set), first as `.tmp` and renamed once complete, so a canceled or
 //! failed download resumes segment by segment: complete ones are not fetched
 //! again. The folder goes once the video is made.
 //!
@@ -224,7 +224,12 @@ pub(super) fn run(
     };
     let claim = choose_output(&shared.claimed, &dir, &filename, req, &probe)?;
     let output = claim.path.clone();
-    let parts = parts_dir(&output);
+    let beside = parts_dir(&output);
+    let parts = match (&req.reuse_partial, &req.temp_dir) {
+        (Some(p), _) if p.is_dir() => p.clone(),
+        (_, Some(dir)) => super::temp_name(dir, &output, ".uidmparts"),
+        _ => beside.clone(),
+    };
     fs::create_dir_all(&parts)?;
 
     let mut jobs = Vec::new();
@@ -255,6 +260,7 @@ pub(super) fn run(
         total: None,
         resumable: true,
         connections: workers,
+        partial: (parts != beside).then(|| parts.clone()),
     });
     fetch_all(id, token, agent, req, &jobs, workers, reporter, shared)?;
     if token.load(Ordering::Relaxed) {
@@ -614,6 +620,8 @@ mod tests {
                 ffmpeg: None,
                 speed_limit: None,
                 server_date: false,
+                temp_dir: None,
+                reuse_partial: None,
             }
         }
 

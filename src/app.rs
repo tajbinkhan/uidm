@@ -1,6 +1,8 @@
 //! Glue shared by the host and the daemon: turning protocol messages into
 //! engine requests and engine events into protocol messages.
 
+use std::path::PathBuf;
+
 use crate::engine::{DownloadRequest, Progress};
 use crate::protocol::{Download, Outgoing};
 use crate::settings::Settings;
@@ -44,6 +46,8 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         ffmpeg: settings.ffmpeg(),
         speed_limit: d.speed_limit,
         server_date: settings.server_file_date,
+        temp_dir: settings.temp_dir.as_deref().map(PathBuf::from).filter(|d| d.is_absolute()),
+        reuse_partial: None,
     }
 }
 
@@ -82,6 +86,7 @@ pub fn progress_to_outgoing(p: Progress) -> Outgoing {
             total,
             resumable,
             connections,
+            partial,
         } => Outgoing::Started {
             id,
             url,
@@ -89,6 +94,7 @@ pub fn progress_to_outgoing(p: Progress) -> Outgoing {
             total,
             resumable,
             connections,
+            partial: partial.map(|p| p.display().to_string()),
         },
         Progress::Advanced {
             id,
