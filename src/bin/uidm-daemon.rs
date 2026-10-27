@@ -560,6 +560,8 @@ impl Daemon {
             q.schedule = edited.schedule;
             q.when_done = edited.when_done;
             q.retries = edited.retries;
+            q.open_when_done = edited.open_when_done.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+            q.start_on_launch = edited.start_on_launch;
             id
         };
         self.hub.publish_queues();
@@ -739,16 +741,19 @@ impl Daemon {
                 attempts.remove(d);
             }
         }
-        let Ok((name, action)) = self.hub.update_queue(id, |q| {
+        let Ok((name, action, open)) = self.hub.update_queue(id, |q| {
             q.running = false;
             q.started_by_schedule = false;
             let action = q.when_done_once.take().unwrap_or(q.when_done);
-            Ok((q.name.clone(), action))
+            Ok((q.name.clone(), action, q.open_when_done.clone()))
         }) else {
             return;
         };
         eprintln!("[uidm-daemon] queue {name} is done");
         if !started.is_empty() {
+            if let Some(file) = open {
+                open_after_run(&file);
+            }
             self.when_done(action, &name);
         }
     }
@@ -2121,6 +2126,13 @@ fn run() -> io::Result<()> {
     if let Err(e) = register_notifications() {
         eprintln!("[uidm-daemon] could not register for notifications: {e}");
     }
+    // Queues set to start with UIDM.
+    let launch: Vec<u64> = daemon.hub.queues.lock().unwrap().iter().filter(|q| q.start_on_launch).map(|q| q.id).collect();
+    for id in launch {
+        if let Err(e) = daemon.start_queue(id, None) {
+            eprintln!("[uidm-daemon] could not start queue {id}: {e}");
+        }
+    }
     if daemon.settings.lock().unwrap().resume_at_startup {
         daemon.resume_interrupted();
     }
@@ -2547,6 +2559,15 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     }
     std::fs::copy(from, to).map_err(|e| format!("Could not move the file to {}: {e}", to.display()))?;
     std::fs::remove_file(from).map_err(|e| format!("Copied the file, but could not delete {}: {e}", from.display()))
+}
+
+/// Open the program or file a queue names for the end of its run, as
+/// Explorer would on a double-click.
+fn open_after_run(file: &str) {
+    eprintln!("[uidm-daemon] opening {file}");
+    if let Err(e) = Command::new("explorer.exe").arg(file).spawn() {
+        eprintln!("[uidm-daemon] could not open {file}: {e}");
+    }
 }
 
 /// Start the desktop window from this daemon's folder.

@@ -104,6 +104,13 @@ pub struct Queue {
     /// by it).
     #[serde(default)]
     pub started_by_schedule: bool,
+    /// A program or file to open each time a run of it finishes, before
+    /// `when_done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_when_done: Option<String>,
+    /// Start it whenever UIDM starts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub start_on_launch: bool,
 }
 
 pub const QUEUE_CONCURRENCY_RANGE: (usize, usize) = (1, 10);
@@ -123,6 +130,8 @@ impl Queue {
             retries: 0,
             last_scheduled_day: None,
             started_by_schedule: false,
+            open_when_done: None,
+            start_on_launch: false,
         }
     }
 
@@ -144,6 +153,9 @@ impl Queue {
         }
         if let Some(s) = &self.schedule {
             s.validate()?;
+        }
+        if let Some(f) = self.open_when_done.as_deref().filter(|f| !std::path::Path::new(f.trim()).is_absolute()) {
+            return Err(format!("The file to open must be a full path: {f}"));
         }
         Ok(())
     }

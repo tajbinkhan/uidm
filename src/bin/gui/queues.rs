@@ -81,6 +81,9 @@ pub struct QueueDraft {
     max_concurrent: usize,
     retries: u32,
     when_done: WhenDone,
+    /// Empty opens nothing.
+    open_when_done: String,
+    start_on_launch: bool,
     scheduled: bool,
     start: String,
     has_stop: bool,
@@ -110,6 +113,8 @@ impl QueueDraft {
             max_concurrent: q.max_concurrent,
             retries: q.retries,
             when_done: q.when_done,
+            open_when_done: q.open_when_done.clone().unwrap_or_default(),
+            start_on_launch: q.start_on_launch,
             scheduled: s.is_some(),
             start: s.as_ref().map_or("23:00".into(), |s| s.start.clone()),
             has_stop: s.as_ref().is_some_and(|s| s.stop.is_some()),
@@ -127,6 +132,8 @@ impl QueueDraft {
         q.max_concurrent = self.max_concurrent;
         q.retries = self.retries;
         q.when_done = self.when_done;
+        q.open_when_done = Some(self.open_when_done.trim().to_string()).filter(|f| !f.is_empty());
+        q.start_on_launch = self.start_on_launch;
         q.schedule = self.scheduled.then(|| Schedule {
             start: self.start.trim().to_string(),
             stop: self.has_stop.then(|| self.stop.trim().to_string()),
@@ -253,6 +260,19 @@ fn form(
                     ui.selectable_value(&mut draft.when_done, w, w.label());
                 }
             });
+        ui.end_row();
+
+        ui.label("Then open");
+        ui.add(
+            egui::TextEdit::singleline(&mut draft.open_when_done)
+                .hint_text("Nothing; or a program or file, as a full path")
+                .desired_width(300.0),
+        )
+        .on_hover_text("Opened once each time a run of the queue finishes");
+        ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut draft.start_on_launch, "Start this queue whenever UIDM starts");
         ui.end_row();
 
         ui.label("Schedule");
@@ -403,6 +423,8 @@ mod tests {
         q.max_concurrent = 2;
         q.retries = 1;
         q.when_done = WhenDone::ShutDown;
+        q.open_when_done = Some(r"C:\Tools\after.bat".into());
+        q.start_on_launch = true;
         q.schedule = Some(Schedule {
             start: "23:00".into(),
             stop: Some("07:00".into()),
@@ -412,6 +434,11 @@ mod tests {
         let back = QueueDraft::from(&q).to_queue().unwrap();
         assert_eq!(back.schedule, q.schedule);
         assert_eq!((back.max_concurrent, back.retries, back.when_done), (2, 1, WhenDone::ShutDown));
+        assert_eq!(back.open_when_done.as_deref(), Some(r"C:\Tools\after.bat"));
+        assert!(back.start_on_launch);
+        let mut relative = QueueDraft::from(&q);
+        relative.open_when_done = "after.bat".into();
+        assert!(relative.to_queue().is_err(), "only full paths");
 
         let mut once = QueueDraft::from(&q);
         once.by_date = true;
