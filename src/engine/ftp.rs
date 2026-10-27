@@ -44,6 +44,11 @@ fn io(e: std::io::Error) -> EngineError {
     EngineError::Io(e.to_string())
 }
 
+/// Whether `s` holds a character that would break an FTP command line.
+fn has_control(s: &str) -> bool {
+    s.contains(['\r', '\n', '\0'])
+}
+
 fn decode(s: &str) -> String {
     percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned()
 }
@@ -87,6 +92,9 @@ impl Control {
         let saved = net::find_login(&opts.logins, &c.host).map(|l| (l.username.clone(), l.password.clone()));
         let given = from_url.is_some() || saved.is_some();
         let (user, pass) = from_url.or(saved).unwrap_or_else(|| ("anonymous".into(), "uidm@".into()));
+        if has_control(&user) || has_control(&pass) {
+            return Err(EngineError::Protocol("the FTP login has control characters in it".into()));
+        }
         let user = match &target {
             Some(t) => format!("{user}@{t}"),
             None => user,
@@ -103,7 +111,11 @@ impl Control {
         if code != 200 {
             return Err(EngineError::Protocol(format!("the FTP server would not send binary: {code} {text}")));
         }
-        Ok((c, decode(parsed.path())))
+        let path = decode(parsed.path());
+        if has_control(&path) {
+            return Err(EngineError::Protocol("the FTP address has control characters in its path".into()));
+        }
+        Ok((c, path))
     }
 
     /// One reply, joining the lines of a multi-line one.
@@ -134,6 +146,10 @@ impl Control {
     }
 
     fn command(&mut self, cmd: &str) -> Result<(u16, String), EngineError> {
+        // A line break would end this command and start another.
+        if has_control(cmd) {
+            return Err(EngineError::Protocol("control characters in an FTP command".into()));
+        }
         self.stream.write_all(format!("{cmd}\r\n").as_bytes()).map_err(io)?;
         self.reply()
     }
@@ -465,6 +481,16 @@ mod tests {
             ..FtpOptions::default()
         };
         assert_eq!(probe(&s.url, &saved).unwrap().total, Some(10));
+    }
+
+    #[test]
+    fn encoded_line_breaks_cannot_add_commands() {
+        let s = server::start(body(10), None);
+        let path = s.url.replace("file.bin", "file.bin%0D%0ADELE%20file.bin");
+        assert!(matches!(probe(&path, &FtpOptions::default()), Err(EngineError::Protocol(_))));
+        let user = s.url.replace("ftp://", "ftp://ann%0D%0AQUIT:x@");
+        assert!(matches!(probe(&user, &FtpOptions::default()), Err(EngineError::Protocol(_))));
+        assert!(has_control("a\nb") && !has_control("a b"));
     }
 
     #[test]
