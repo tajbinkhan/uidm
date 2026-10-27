@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::grab::{GrabFile, GrabRequest};
 use crate::media::{MediaChoice, MediaInfo};
 use crate::queue::{Queue, WhenDone};
-use crate::settings::Settings;
+use crate::settings::{FileExists, Settings};
 
 /// A request from a client (the browser via the host, or the desktop window)
 /// to the daemon.
@@ -79,6 +79,10 @@ pub enum Incoming {
         /// missing).
         #[serde(default)]
         queue: Option<u64>,
+        /// What to do if the file name is taken (rename or overwrite); the
+        /// setting decides when missing.
+        #[serde(default)]
+        file_exists: Option<FileExists>,
     },
     /// Create a queue (`id` 0) or change one: name, downloads at once,
     /// schedule, what happens when done, retries.
@@ -174,6 +178,10 @@ pub struct Download {
     /// `url` is its playlist or manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaChoice>,
+    /// What to do when its file name is taken, chosen in the save-as dialog;
+    /// the setting decides when missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_exists: Option<FileExists>,
 }
 
 /// Where a download is in its life.
@@ -329,6 +337,15 @@ pub enum Outgoing {
     /// Which download waits for a new link from the browser, if any. Sent to
     /// every client when it changes, and after `downloads` in a `list` reply.
     RefreshWaiting { id: Option<u64> },
+    /// A download's file name is taken and the setting says to ask: nothing
+    /// was written, and it waits as `confirming` with `path`, the taken file,
+    /// until a window answers with `confirm`.
+    NameTaken {
+        id: u64,
+        url: String,
+        path: String,
+        total: Option<u64>,
+    },
     /// Reply to `refresh_link`: the new link is for another file, so the
     /// partial file cannot be kept. Send `refresh_link` again with
     /// `restart: true` to start over.
@@ -468,5 +485,30 @@ mod tests {
             }
             _ => panic!("expected add"),
         }
+    }
+
+    /// The save-as dialog's answer to a taken name, and a `confirm` without
+    /// one (the browser popup, older windows).
+    #[test]
+    fn parse_confirm_with_and_without_file_exists() {
+        let raw = br#"{"op":"confirm","id":4,"file_exists":"overwrite"}"#;
+        match serde_json::from_slice(raw).unwrap() {
+            Incoming::Confirm { id, start, file_exists, .. } => {
+                assert_eq!(id, 4);
+                assert!(start, "start defaults to true");
+                assert_eq!(file_exists, Some(FileExists::Overwrite));
+            }
+            _ => panic!("expected confirm"),
+        }
+        match serde_json::from_slice(br#"{"op":"confirm","id":4}"#).unwrap() {
+            Incoming::Confirm { file_exists, .. } => assert_eq!(file_exists, None),
+            _ => panic!("expected confirm"),
+        }
+        // A download without a choice keeps its JSON as it was.
+        let d = Download {
+            url: "https://x/a.zip".into(),
+            ..Download::default()
+        };
+        assert!(!serde_json::to_string(&d).unwrap().contains("file_exists"));
     }
 }

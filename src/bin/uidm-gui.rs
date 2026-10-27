@@ -278,6 +278,9 @@ enum Action {
         folder: Option<String>,
         start: bool,
         queue: Option<u64>,
+        /// What to do if the file name is taken; the setting decides when
+        /// missing.
+        file_exists: Option<FileExists>,
     },
     /// Add a URL to the main queue without starting it.
     AddLater(String),
@@ -403,6 +406,8 @@ struct ConfirmDraft {
     filename: String,
     folder: String,
     picked: Picked,
+    /// Under the Ask setting, what to do when the name is taken.
+    when_taken: FileExists,
 }
 
 /// Units the speed limit can be entered in.
@@ -928,6 +933,7 @@ impl App {
                 folder,
                 start,
                 queue,
+                file_exists,
             } => {
                 send(
                     &self.writer,
@@ -937,6 +943,7 @@ impl App {
                         folder,
                         start,
                         queue,
+                        file_exists,
                     },
                 );
             }
@@ -1111,6 +1118,7 @@ impl App {
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
                 picked: Picked::default(),
+                when_taken: FileExists::Rename,
             });
         }
         let Some(draft) = self.confirm.as_mut() else {
@@ -1118,7 +1126,14 @@ impl App {
         };
         take_picked(&draft.picked, &mut draft.folder);
         let waiting = rows.iter().filter(|e| e.status == Status::Confirming).count();
-        let queue_list = self.shared.lock().unwrap().queues.clone();
+        let (queue_list, ask) = {
+            let s = self.shared.lock().unwrap();
+            let ask = s.settings.as_ref().is_some_and(|s| s.file_exists == FileExists::Ask);
+            (s.queues.clone(), ask)
+        };
+        // Under Ask, a name taken by a file in the folder needs an answer.
+        let name = uidm::engine::clean_filename(draft.filename.trim());
+        let taken = ask && !name.is_empty() && Path::new(draft.folder.trim()).join(&name).is_file();
 
         egui::Window::new("Save download")
             .id(egui::Id::new("confirm"))
@@ -1150,6 +1165,18 @@ impl App {
                     });
                     ui.end_row();
                 });
+                if taken {
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("{name} already exists in this folder."),
+                    );
+                    ui.horizontal(|ui| {
+                        for f in [FileExists::Rename, FileExists::Overwrite] {
+                            ui.radio_value(&mut draft.when_taken, f, file_exists_label(f));
+                        }
+                    });
+                }
                 if waiting > 1 {
                     ui.weak(format!("{} more downloads are waiting after this one.", waiting - 1));
                 }
@@ -1178,6 +1205,7 @@ impl App {
                             folder: Some(draft.folder.trim().to_string()),
                             start,
                             queue: Some(draft.later_queue),
+                            file_exists: taken.then_some(draft.when_taken),
                         };
                         if ui.button("Start download").clicked() {
                             actions.push(answer(true));
@@ -1328,7 +1356,7 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         egui::ComboBox::from_id_salt("file_exists")
             .selected_text(file_exists_label(draft.file_exists))
             .show_ui(ui, |ui| {
-                for f in [FileExists::Rename, FileExists::Overwrite] {
+                for f in [FileExists::Rename, FileExists::Overwrite, FileExists::Ask] {
                     ui.selectable_value(&mut draft.file_exists, f, file_exists_label(f));
                 }
             });
@@ -1598,6 +1626,7 @@ fn file_exists_label(f: FileExists) -> &'static str {
     match f {
         FileExists::Rename => "Save with a new name",
         FileExists::Overwrite => "Overwrite it",
+        FileExists::Ask => "Ask me",
     }
 }
 
@@ -1624,6 +1653,7 @@ fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) 
             Outgoing::Countdown { .. } => true,
             Outgoing::Quit => std::process::exit(0),
             Outgoing::Updated { item } => item.status == Status::Confirming,
+            Outgoing::NameTaken { .. } => true,
             Outgoing::Done { id, .. } if s.dialog_mode() => {
                 s.completed.push_back((*id, false));
                 true
@@ -2336,6 +2366,7 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                         folder: None,
                         start: true,
                         queue: None,
+                        file_exists: None,
                     });
                 }
                 queue_menu(ui, e, row.queues, actions);

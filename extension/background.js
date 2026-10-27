@@ -300,6 +300,14 @@ function onHostMessage(msg) {
     case "removed":
       downloads.delete(msg.id);
       break;
+    case "name_taken": {
+      // UIDM asks in its window whether to rename or overwrite; it keeps the
+      // download either way, so no hand-back.
+      const e = upsert(msg.id, msg.url);
+      Object.assign(e, { status: "confirming", path: msg.path, total: msg.total, error: null });
+      captured.delete(msg.id);
+      break;
+    }
     case "updated":
       downloads.set(msg.item.id, msg.item);
       // Kept for later: it is UIDM's now, so no hand-back.
@@ -559,7 +567,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (isWeb(msg.url)) send({ op: "add", url: msg.url });
       break;
     case "start":
-      if (Number.isInteger(msg.id)) send({ op: "confirm", id: msg.id, start: true });
+      if (Number.isInteger(msg.id)) {
+        const confirm = { op: "confirm", id: msg.id, start: true };
+        // Started from the popup, nothing asks about a taken name: under
+        // "ask" it gets a new one instead of asking again.
+        if (rules && rules.file_exists === "ask") confirm.file_exists = "rename";
+        send(confirm);
+      }
       break;
     case "cancel":
     case "retry":

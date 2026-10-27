@@ -156,5 +156,6 @@ fn print_progress(p: Progress, ok: &AtomicBool) {
         }
         Progress::Failed { error, .. } => eprintln!("\n[failed] {error}"),
         Progress::Canceled { .. } => eprintln!("\n[canceled]"),
+        Progress::NameTaken { path, .. } => eprintln!("\n[failed] {} already exists", path.display()),
     }
 }

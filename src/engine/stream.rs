@@ -705,6 +705,36 @@ mod tests {
         }
 
         #[test]
+        fn a_taken_name_under_ask_stops_before_any_segment() {
+            let (files, _) = hls_site();
+            let server = TestServer::start_files(files);
+            let dir = temp_dir("ask");
+            let existing = dir.join("Movie night.ts");
+            fs::write(&existing, b"last week's movie").unwrap();
+            let mut req = request(format!("{}/v/master.m3u8", server.url), &dir, MediaChoice::default());
+            req.file_exists = FileExists::Ask;
+
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(Arc::new(move |p: Progress| {
+                let _ = tx.lock().unwrap().send(p);
+            }), 1);
+            engine.enqueue(req);
+            let taken = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("download timed out") {
+                    Progress::NameTaken { path, .. } => break path,
+                    Progress::Advanced { .. } | Progress::Finished { .. } => panic!("the stream downloaded"),
+                    Progress::Failed { error, .. } => panic!("failed: {error}"),
+                    _ => {}
+                }
+            };
+            assert_eq!(taken, existing);
+            assert_eq!(fs::read(&existing).unwrap(), b"last week's movie");
+            assert!(!parts_dir(&existing).exists(), "no segments fetched");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
         fn cookies_go_only_to_the_playlists_origin() {
             // Another server holds two of the segments and the key.
             let key = [5u8; 16];

@@ -122,6 +122,14 @@ pub enum Progress {
         id: u64,
         url: String,
     },
+    /// The file name is taken and the request says to ask: nothing was
+    /// written. `path` is the taken file.
+    NameTaken {
+        id: u64,
+        url: String,
+        path: PathBuf,
+        total: Option<u64>,
+    },
 }
 
 #[derive(Debug)]
@@ -139,6 +147,8 @@ pub enum EngineError {
     /// UIDM will not download this (DRM, a live stream); the message says
     /// why, for the user.
     Refused(String),
+    /// The file name is taken and the request says to ask first.
+    NameTaken { path: PathBuf, total: Option<u64> },
 }
 
 impl fmt::Display for EngineError {
@@ -152,6 +162,7 @@ impl fmt::Display for EngineError {
             EngineError::Io(s) => write!(f, "io error: {s}"),
             EngineError::Protocol(s) => write!(f, "protocol error: {s}"),
             EngineError::Refused(s) => f.write_str(s),
+            EngineError::NameTaken { path, .. } => write!(f, "{} already exists", path.display()),
         }
     }
 }
@@ -163,7 +174,10 @@ impl EngineError {
     fn is_permanent(&self) -> bool {
         matches!(
             self,
-            EngineError::NeedsLogin(_) | EngineError::LoginRejected(_) | EngineError::Refused(_)
+            EngineError::NeedsLogin(_)
+                | EngineError::LoginRejected(_)
+                | EngineError::Refused(_)
+                | EngineError::NameTaken { .. }
         )
     }
 }
@@ -383,6 +397,7 @@ fn run(id: u64, token: CancelToken, req: DownloadRequest, reporter: Reporter, sh
     }
     match result {
         Ok(Saved { path, note }) => reporter.send(Progress::Finished { id, url, path, note }),
+        Err(EngineError::NameTaken { path, total }) => reporter.send(Progress::NameTaken { id, url, path, total }),
         Err(e) => {
             let mut error = e.to_string();
             if let EngineError::Status(code) = e {
@@ -676,6 +691,10 @@ const MAX_RENAMES: u32 = 9999;
 ///   copy whose sidecar matches what the server reports now (a resume), or
 ///   may be overwritten under the `Overwrite` setting.
 ///
+/// Under `Ask`, a name taken by an unrelated file is a `NameTaken` error
+/// instead, before anything is written. A POST does not ask: answering would
+/// send the form again, so it gets a new name.
+///
 /// A sidecar left without its file is deleted, so it can never mark bytes of a
 /// fresh file as already downloaded.
 fn choose_output<'a>(
@@ -686,9 +705,7 @@ fn choose_output<'a>(
     probe: &http::Probe,
 ) -> Result<Claim<'a>, EngineError> {
     let mut set = claimed.lock().unwrap();
-    let path = pick_free_path(&set, dir, filename, req, probe).ok_or_else(|| {
-        EngineError::Io(format!("no free file name for {filename} in {}", dir.display()))
-    })?;
+    let path = pick_free_path(&set, dir, filename, req, probe)?;
     set.insert(path.clone());
     Ok(Claim { set: claimed, path })
 }
@@ -699,12 +716,13 @@ fn pick_free_path(
     filename: &str,
     req: &DownloadRequest,
     probe: &http::Probe,
-) -> Option<PathBuf> {
+) -> Result<PathBuf, EngineError> {
     if let Some(path) = &req.reuse_path {
         if !claimed.contains(path) {
-            return Some(path.clone());
+            return Ok(path.clone());
         }
     }
+    let ask = req.file_exists == FileExists::Ask && req.post_body.is_none();
 
     for n in 0..=MAX_RENAMES {
         let path = dir.join(numbered_name(filename, n));
@@ -714,17 +732,26 @@ fn pick_free_path(
         let sidecar = Manifest::sidecar_path(&path);
         if !path.exists() {
             let _ = fs::remove_file(&sidecar);
-            return Some(path);
+            return Ok(path);
         }
         if sidecar_matches(&sidecar, probe) {
-            return Some(path);
+            return Ok(path);
         }
         if req.file_exists == FileExists::Overwrite && path.is_file() {
             let _ = fs::remove_file(&sidecar);
-            return Some(path);
+            return Ok(path);
+        }
+        if ask && path.is_file() {
+            return Err(EngineError::NameTaken {
+                path,
+                total: probe.total,
+            });
         }
     }
-    None
+    Err(EngineError::Io(format!(
+        "no free file name for {filename} in {}",
+        dir.display()
+    )))
 }
 
 /// `report.pdf` for 0, then `report (1).pdf`, `report (2).pdf`, ...
@@ -1375,6 +1402,106 @@ mod tests {
             let path = download(|_| {}, request(&server.url, &dir, FileExists::Overwrite));
             assert_eq!(path, existing);
             assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        /// Run one download that should stop at a taken name; the taken file
+        /// and the size it reported.
+        fn name_taken(req: DownloadRequest) -> (PathBuf, Option<u64>) {
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(
+                Arc::new(move |p: Progress| {
+                    let _ = tx.lock().unwrap().send(p);
+                }),
+                1,
+            );
+            engine.enqueue(req);
+            loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("download timed out") {
+                    Progress::NameTaken { path, total, .. } => return (path, total),
+                    Progress::Started { .. } => panic!("the download started"),
+                    Progress::Finished { .. } => panic!("the download finished"),
+                    Progress::Failed { error, .. } => panic!("download failed: {error}"),
+                    _ => {}
+                }
+            }
+        }
+
+        #[test]
+        fn ask_setting_stops_before_writing_a_taken_name() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("ask");
+            let existing = dir.join("report.pdf");
+            fs::write(&existing, b"someone else's report").unwrap();
+
+            let (path, total) = name_taken(request(&server.url, &dir, FileExists::Ask));
+            assert_eq!(path, existing);
+            assert_eq!(total, Some(LEN as u64));
+            assert_eq!(fs::read(&existing).unwrap(), b"someone else's report");
+            assert!(!Manifest::sidecar_path(&existing).exists(), "nothing written");
+            assert!(!dir.join("report (1).pdf").exists());
+
+            // A stale sidecar does not make the file ours: it still asks.
+            Manifest::new(server.url.clone(), 999, None, None, &split(999, 2))
+                .save(&Manifest::sidecar_path(&existing))
+                .unwrap();
+            assert_eq!(name_taken(request(&server.url, &dir, FileExists::Ask)).0, existing);
+            assert_eq!(fs::read(&existing).unwrap(), b"someone else's report");
+
+            // The answers, as the save-as dialog sends them.
+            let renamed = download(|_| {}, request(&server.url, &dir, FileExists::Rename));
+            assert_eq!(renamed, dir.join("report (1).pdf"));
+            assert_eq!(fs::read(&existing).unwrap(), b"someone else's report");
+            let replaced = download(|_| {}, request(&server.url, &dir, FileExists::Overwrite));
+            assert_eq!(replaced, existing);
+            assert_eq!(fs::read(&existing).unwrap(), body(LEN));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn ask_setting_lets_a_free_name_and_a_resume_through() {
+            let data = body(LEN);
+            let server = TestServer::start(data.clone());
+            let dir = temp_dir("ask_free");
+            let path = download(|_| {}, request(&server.url, &dir, FileExists::Ask));
+            assert_eq!(path, dir.join("report.pdf"));
+
+            // A partial copy with a matching sidecar is this download's own.
+            let partial = dir.join("partial.pdf");
+            let half = LEN / 2;
+            let mut on_disk = data[..half].to_vec();
+            on_disk.resize(LEN, 0);
+            fs::write(&partial, &on_disk).unwrap();
+            let mut m = Manifest::new(server.url.clone(), LEN as u64, Some("\"v1\"".into()), None, &split(LEN as u64, 2));
+            m.segments[0].done = m.segments[0].len();
+            m.save(&Manifest::sidecar_path(&partial)).unwrap();
+            let mut req = request(&server.url, &dir, FileExists::Ask);
+            req.filename = Some("partial.pdf".into());
+            assert_eq!(download(|_| {}, req), partial);
+            assert_eq!(fs::read(&partial).unwrap(), data);
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        /// Asking would mean sending the form again, so a POST is renamed.
+        #[test]
+        fn a_post_under_ask_gets_a_new_name() {
+            let data = body(LEN);
+            let form = b"file=report".to_vec();
+            let behavior = Behavior {
+                post_only_body: Some(form.clone()),
+                ..Behavior::default()
+            };
+            let server = TestServer::start_with(data.clone(), behavior);
+            let dir = temp_dir("ask_post");
+            fs::write(dir.join("report.pdf"), b"old").unwrap();
+            let mut req = request(&server.url, &dir, FileExists::Ask);
+            req.filename = None;
+            req.post_body = Some(form);
+            let path = download(|_| {}, req);
+            assert_eq!(path, dir.join("report (1).pdf"));
+            assert_eq!(fs::read(&path).unwrap(), data);
+            assert_eq!(fs::read(dir.join("report.pdf")).unwrap(), b"old");
             fs::remove_dir_all(&dir).ok();
         }
 

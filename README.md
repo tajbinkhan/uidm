@@ -63,6 +63,13 @@ Downloaded files are left alone.
   **Start** button) or **Cancel**. If the window is closed, UIDM opens it; if
   no window shows up within 20 seconds, the download starts as proposed.
   Options can turn the dialog off.
+- **When a file name is taken**, UIDM saves the new file as `name (1).ext`
+  by default. Options (**If the file exists**) can make it overwrite the old
+  file instead, or ask. With **Ask me**, the save-as dialog says the name is
+  taken and offers **Save with a new name** or **Overwrite it**. This holds
+  even with the dialog turned off: the download stops before writing anything
+  and opens the dialog. If no window answers within 20 seconds, it gets a new
+  name.
 - **Categories** sort downloads by file type into their own folders:
   Compressed, Documents, Music, Programs and Video go into folders of those
   names inside the download folder, and everything else (**General**) goes
@@ -318,8 +325,13 @@ A new download never writes into an existing file unless that file is a
 partial copy of the same download, which its `.uidmpart` sidecar proves (same
 size, and same ETag or Last-Modified when the server sends them). Otherwise it
 is saved as `name (1).ext`, `name (2).ext`, and so on, or replaces the file
-when Options says to overwrite. Two downloads never write the same file at
-once. A retry reuses the file its earlier attempt wrote.
+when Options says to overwrite. When Options says to ask, the engine stops
+before writing and reports `name_taken`. The daemon holds the download as
+`confirming` until the save-as dialog answers with rename or overwrite, or
+gives it a new name when no window answers within 20 seconds. A form
+download (POST) is renamed without asking, since asking would send the form
+again. Two downloads never write the same file at once. A retry reuses the
+file its earlier attempt wrote.
 
 Downloads run up to the **Downloads at once** setting (3 by default) and the
 rest queue in order. Changing the setting takes effect at once: raising it
@@ -357,6 +369,7 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "retry", "id": 1 }
 { "op": "remove", "id": 1 }
 { "op": "confirm", "id": 1, "filename": "f.zip", "folder": "D:\\Downloads", "start": true }
+{ "op": "confirm", "id": 1, "file_exists": "overwrite" }
 { "op": "list" }
 { "op": "pause_all" }
 { "op": "resume_all" }
@@ -418,6 +431,7 @@ Daemon to clients:
 { "op": "countdown_canceled" }
 { "op": "quit" }
 { "op": "refresh_waiting", "id": 7 }
+{ "op": "name_taken", "id": 1, "url": "...", "path": "C:\\Users\\...\\f.zip", "total": 12345 }
 { "op": "refresh_mismatch", "id": 7, "url": "https://...", "reason": "The new link is for a 3.0 MB file; ..." }
 { "op": "progress", "id": 9, "url": "...", "done": 5242880, "total": null, "parts": [40, 120] }
 { "op": "done", "id": 9, "url": "...", "path": "C:\\Users\\...\\Video\\Talk.ts",
@@ -442,14 +456,18 @@ other event covers. A `hello` with `client: "window"` tells the daemon a
 window is open to show save-as dialogs. `confirm` answers the dialog of a
 `confirming` download or starts a `waiting` one, keeping its id; `filename`
 and `folder` default to the proposed ones, and `start: false` makes it
-`waiting`. Canceling a `confirming` download reports `canceled`. `retry` removes
+`waiting`. `file_exists` (`rename` or `overwrite`) decides what happens if
+the name is taken, for this start and later ones; without it the setting
+decides. `name_taken` means the name is taken under the `ask` setting:
+nothing was written, and the download is `confirming` with `path` set to the
+taken file. Canceling a `confirming` download reports `canceled`. `retry` removes
 the old entry (`removed`) and queues a new one with a new id; it is refused
 unless the download failed, was canceled or was interrupted. `remove` is
 refused while a download is still running. `set_settings` with an invalid
 value (`connections` outside 1-16, `max_concurrent` outside 1-10, a speed
 limit outside 1-10,000,000 KB/s, or a folder that is not a full path) is
 refused with an `error` that says why. `download_dir: null` means the
-Downloads folder, and `file_exists` is `rename` or `overwrite`. A category
+Downloads folder, and `file_exists` is `rename`, `overwrite` or `ask`. A category
 needs a unique name other than `General`, at least one file type, and a full
 path or `null` for its folder (`null` means a folder named after it inside the
 download folder). File types are lowercase letters and digits without the
@@ -746,6 +764,20 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 ## Verified
 
+- Asking about taken file names (#8). Engine tests against a local server:
+  under ask, an existing file and one with a stale sidecar both stop with
+  `name_taken` before anything is written, then rename and overwrite answers
+  save as `name (1)` and replace the file; a free name and a matching sidecar
+  (a resume) go through without asking; a POST is renamed; a stream stops
+  before fetching a segment. Unit tests cover `name_taken` in the download
+  table and `confirm` with and without `file_exists`. The extension test
+  shows a `name_taken` download in the popup and starts it with a new name.
+  End to end, a daemon and host run from a scratch folder (with
+  `LOCALAPPDATA` and `APPDATA` pointed there) against a local server, driven
+  through the host as the browser does: overwrite and rename answers, no
+  answer (no window could open, so after 20.0 s it was saved as
+  `name (2)`), and **Download later** with rename, then started, keeping
+  the choice. The window's dialog was built but not tried on screen.
 - Streams, batches, lists and the grabber (milestone 6). Unit tests cover URL
   patterns (padding, steps, counting down, letters, several ranges, other
   brackets kept, the 10,000 cap and overflow), pasted lists, the clipboard
@@ -958,9 +990,12 @@ arguments; no real ffmpeg was run on real video.
 - The history is written about a second after each change, so a crash can
   lose the last second of progress; the sidecar still has it, so resuming is
   unaffected.
-- When a file name is taken, UIDM renames or overwrites; it cannot ask. The
-  save-as dialog shows the proposed name, not the `name (1)` the engine may
-  pick if that name is taken when the download starts.
+- Under the rename setting, the save-as dialog shows the proposed name, not
+  the `name (1)` the engine may pick if that name is taken when the download
+  starts.
+- Starting a download from the browser popup while it waits for the save-as
+  dialog answers no question: under the ask setting a taken name gets a new
+  name.
 - Adding a category does not add its types to the captured types; that list
   is edited on its own.
 - A schedule only works while the daemon runs. It stays up for a schedule

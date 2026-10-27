@@ -60,7 +60,7 @@ use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
 use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Status};
-use uidm::settings::{self, Folders, Settings};
+use uidm::settings::{self, FileExists, Folders, Settings};
 use uidm::notify::{self, Sound, Toast};
 use uidm::power;
 use uidm::queue::{self, Queue, WhenDone, COUNTDOWN_SECS, MAIN_QUEUE};
@@ -131,6 +131,8 @@ enum Note {
     Failed(u64),
     /// A finished download's virus scan is done.
     Scanned(u64),
+    /// A download stopped to ask about its taken file name.
+    NameTaken(u64),
 }
 
 impl Hub {
@@ -165,7 +167,7 @@ impl Hub {
         }
         if matches!(
             msg,
-            Outgoing::Done { .. } | Outgoing::Failed { .. } | Outgoing::Canceled { .. }
+            Outgoing::Done { .. } | Outgoing::Failed { .. } | Outgoing::Canceled { .. } | Outgoing::NameTaken { .. }
         ) {
             let _ = self.wake.send(());
         }
@@ -176,6 +178,9 @@ impl Hub {
             }
             Outgoing::Failed { id, .. } => {
                 let _ = self.notes.send(Note::Failed(*id));
+            }
+            Outgoing::NameTaken { id, .. } => {
+                let _ = self.notes.send(Note::NameTaken(*id));
             }
             _ => {}
         }
@@ -656,7 +661,11 @@ impl Daemon {
                 }
             }
 
-            let busy = active > 0 || statuses.iter().any(|(_, s)| *s == Status::Waiting);
+            // A download asking about a taken file name is still to do.
+            let busy = active > 0
+                || statuses
+                    .iter()
+                    .any(|(_, s)| matches!(s, Status::Waiting | Status::Confirming));
             // A scheduled run that has started nothing yet stays open until
             // its stop time, for downloads added meanwhile.
             let started_any = !self.runs.lock().unwrap().get(&q.id).is_none_or(|r| r.is_empty());
@@ -878,7 +887,31 @@ impl Daemon {
                     self.notify(id, true, &settings);
                 }
             }
+            // Without a window to ask, a taken name gets a new one.
+            Note::NameTaken(id) => self.await_answer(id, Some(FileExists::Rename)),
         }
+    }
+
+    /// Wait for a window to answer download `id`'s save-as dialog, opening
+    /// one if none is open. If none connects within `CONFIRM_FALLBACK`, the
+    /// download starts as proposed: `fallback` decides what happens if its
+    /// name is taken, `None` leaving that to the setting.
+    fn await_answer(self: &Arc<Self>, id: u64, fallback: Option<FileExists>) {
+        if !self.hub.window_open() {
+            if let Err(e) = open_window() {
+                eprintln!("[uidm-daemon] could not open the window: {e}");
+            }
+        }
+        let daemon = Arc::clone(self);
+        thread::spawn(move || {
+            thread::sleep(CONFIRM_FALLBACK);
+            if daemon.status(id) == Some(Status::Confirming) && !daemon.hub.window_open() {
+                eprintln!("[uidm-daemon] no window to confirm #{id}; starting it as proposed");
+                if let Err(e) = daemon.confirm(id, None, None, true, None, fallback) {
+                    eprintln!("[uidm-daemon] could not start #{id}: {e}");
+                }
+            }
+        });
     }
 
     fn notify(self: &Arc<Self>, id: u64, failed: bool, settings: &Settings) {
@@ -1144,18 +1177,7 @@ impl Daemon {
             if asked.is_err() {
                 return; // canceled while being probed
             }
-            if !daemon.hub.window_open() {
-                if let Err(e) = open_window() {
-                    eprintln!("[uidm-daemon] could not open the window: {e}");
-                }
-            }
-            thread::sleep(CONFIRM_FALLBACK);
-            if daemon.status(id) == Some(Status::Confirming) && !daemon.hub.window_open() {
-                eprintln!("[uidm-daemon] no window to confirm #{id}; starting it as proposed");
-                if let Err(e) = daemon.confirm(id, None, None, true, None) {
-                    eprintln!("[uidm-daemon] could not start #{id}: {e}");
-                }
-            }
+            daemon.await_answer(id, None);
         });
         (id, url)
     }
@@ -1163,6 +1185,8 @@ impl Daemon {
     /// Answer the save-as dialog of a `confirming` download, or start a
     /// `waiting` one. Missing names and folders keep the proposed ones. With
     /// `start` false it waits in `queue` (the main queue by default).
+    /// `file_exists`, when given, decides what happens if the name is taken,
+    /// now and on later starts.
     fn confirm(
         &self,
         id: u64,
@@ -1170,6 +1194,7 @@ impl Daemon {
         folder: Option<String>,
         start: bool,
         queue: Option<u64>,
+        file_exists: Option<FileExists>,
     ) -> Result<(), String> {
         let item = self.hub.update(id, |e| {
             if !matches!(e.status, Status::Confirming | Status::Waiting) {
@@ -1206,6 +1231,18 @@ impl Daemon {
             e.status = Status::Waiting;
             Ok(())
         })?;
+        if file_exists.is_some() {
+            self.hub
+                .requests
+                .lock()
+                .unwrap()
+                .entry(id)
+                .or_insert_with(|| Download {
+                    url: item.url.clone(),
+                    ..Download::default()
+                })
+                .file_exists = file_exists;
+        }
         if start {
             return self.dispatch(id);
         }
@@ -1744,7 +1781,8 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             folder,
             start,
             queue,
-        } => match daemon.confirm(id, filename, folder, start, queue) {
+            file_exists,
+        } => match daemon.confirm(id, filename, folder, start, queue, file_exists) {
             Ok(()) => eprintln!("[uidm-daemon] confirm #{id} (start: {start})"),
             Err(message) => send(&Outgoing::Error { message }),
         },

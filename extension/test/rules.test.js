@@ -134,6 +134,22 @@ test("downloads waiting for the save-as dialog show in the popup and can be star
   assert.equal(JSON.stringify(w.sent.at(-1)), JSON.stringify({ op: "confirm", id: 7, start: true }));
 });
 
+test("a taken name under ask waits in the popup and starts with a new name", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.port.onMessage.fire({ op: "settings", settings: { file_exists: "ask" } });
+  w.port.onMessage.fire({ op: "added", id: 8, url: "https://dl.net/a.zip" });
+  w.port.onMessage.fire({ op: "name_taken", id: 8, url: "https://dl.net/a.zip", path: "C:\\dl\\a.zip", total: 10 });
+  const state = await w.popup({ type: "state" });
+  assert.equal(state.items[0].status, "confirming");
+  assert.equal(state.items[0].path, "C:\\dl\\a.zip");
+  await w.popup({ type: "start", id: 8 });
+  assert.equal(
+    JSON.stringify(w.sent.at(-1)),
+    JSON.stringify({ op: "confirm", id: 8, start: true, file_exists: "rename" }),
+  );
+});
+
 test("download later from the context menu adds without starting", async () => {
   const w = loadWorker();
   w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });

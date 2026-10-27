@@ -184,6 +184,9 @@ pub enum FileExists {
     Rename,
     /// Replace the existing file.
     Overwrite,
+    /// Stop before writing anything and let the user choose in the save-as
+    /// dialog. Without a window to answer, the download gets a new name.
+    Ask,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

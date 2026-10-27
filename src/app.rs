@@ -31,7 +31,7 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         headers,
         connections: settings.connections,
         reuse_path: None,
-        file_exists: settings.file_exists,
+        file_exists: d.file_exists.unwrap_or(settings.file_exists),
         post_body,
         net: Default::default(),
         media: d.media,
@@ -89,5 +89,11 @@ pub fn progress_to_outgoing(p: Progress) -> Outgoing {
         },
         Progress::Failed { id, url, error } => Outgoing::Failed { id, url, error },
         Progress::Canceled { id, url } => Outgoing::Canceled { id, url },
+        Progress::NameTaken { id, url, path, total } => Outgoing::NameTaken {
+            id,
+            url,
+            path: path.display().to_string(),
+            total,
+        },
     }
 }

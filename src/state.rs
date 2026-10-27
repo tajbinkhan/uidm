@@ -88,6 +88,13 @@ impl DownloadTable {
             Outgoing::Canceled { id, url } => {
                 self.entry(*id, url).status = Status::Canceled;
             }
+            Outgoing::NameTaken { id, url, path, total } => {
+                let e = self.entry(*id, url);
+                e.status = Status::Confirming;
+                e.path = Some(path.clone());
+                e.total = *total;
+                e.error = None;
+            }
             Outgoing::Removed { id } => {
                 self.entries.remove(id);
             }
@@ -251,6 +258,26 @@ mod tests {
         t.apply(&Outgoing::Removed { id: 3 });
         assert!(t.get(3).is_none());
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn a_taken_name_waits_for_the_save_as_dialog() {
+        let mut t = DownloadTable::new();
+        t.apply(&Outgoing::Added {
+            id: 6,
+            url: "u".into(),
+        });
+        t.apply(&Outgoing::NameTaken {
+            id: 6,
+            url: "u".into(),
+            path: r"C:\dl\report.pdf".into(),
+            total: Some(42),
+        });
+        let e = t.get(6).unwrap();
+        assert_eq!(e.status, Status::Confirming);
+        assert_eq!(e.path.as_deref(), Some(r"C:\dl\report.pdf"));
+        assert_eq!(e.total, Some(42));
+        assert_eq!(e.connections, 0, "never started, so a retry does not reuse the file");
     }
 
     #[test]
