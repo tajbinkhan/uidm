@@ -232,12 +232,18 @@ tests, not in a running Firefox.
   address is already in the list, the save-as
   dialog, whether to resume unfinished downloads when UIDM starts, Start with
   Windows, whether closing the window keeps UIDM in the tray, where ffmpeg
-  is, the **Theme** (follow Windows, light or dark) and the **Text size**
-  (80% to 150%, scaling the whole window). Theme and text size change as soon
-  as you save. **Categories**: as above. **Browser capture**: the rules below,
+  is, the **Language**, the **Theme** (follow Windows, light or dark) and the
+  **Text size** (80% to 150%, scaling the whole window). Language, theme and
+  text size change as soon as you save. **Categories**: as above. **Browser capture**: the rules below,
   the video button and the clipboard prompt. **When
   done**: notifications, sounds and the virus scan. **Connection**: proxies
   and site logins. The status bar shows the speed limit and toggles it.
+
+- **Languages**: the window comes in English, German, Spanish and French.
+  It starts in the first Windows display language it has, else English;
+  **Options > General > Language** picks another. The extension follows the
+  browser's language, with the same four. Messages from the daemon (errors,
+  notifications) are still in English.
 
 Files are saved to your Downloads folder, sorted by category, unless Options
 says otherwise.
@@ -797,8 +803,10 @@ is a failed scan, as is one that runs over 10 minutes.
 | `src/ipc.rs` | Daemon address, start-up, token file, HMAC handshake |
 | `src/app.rs` | Request building and event mapping |
 | `src/protocol.rs` | Framing and message types |
+| `src/bin/gui/i18n.rs`, `src/bin/gui/lang/` | The window's text in other languages, one JSON table each |
 | `src/engine/` | Queue, segments, resume sidecar, speed limiter, HTTP, streams (`stream.rs`) |
 | `extension/` | MV3 extension: capture, context menu, popup |
+| `extension/_locales/` | The extension's text in each language |
 | `extension/firefox.json` | What the Firefox copy changes in `manifest.json` |
 | `extension/rules.js` | Capture rules (file types, minimum size, excluded sites) |
 | `extension/post.js` | Matching downloads to the form POSTs that started them |
@@ -858,6 +866,19 @@ To run one download without the browser, window or daemon:
 ```bash
 cargo run --release --bin uidm-host -- download https://example.com/file.zip
 ```
+
+### Adding a language
+
+The window's strings are written in English in the code, and that English is
+each string's ID: `tr("Save")`, or `trf!("{count} files", count = n)` for text
+with values. A language is one JSON file in `src/bin/gui/lang/`, mapping each
+English string to its translation, plus a line in `LANGUAGES` in
+`src/bin/gui/i18n.rs`; a missing string shows in English. The tests check that
+every key is still used and keeps its `{placeholders}`. The extension's text is
+in `extension/_locales/<code>/messages.json`, as Chrome expects; its tests
+check that every locale has the same messages as `en`. egui draws text without
+shaping it, so scripts that need shaping, such as Bengali, Hindi or Arabic,
+would not display correctly yet.
 
 ## Verified
 
