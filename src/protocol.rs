@@ -147,6 +147,15 @@ pub enum Incoming {
         #[serde(default)]
         user_agent: Option<String>,
     },
+    /// A page as the browser showed it, answering `render_page`: its HTML
+    /// after its scripts ran and its address then, or nothing.
+    Rendered {
+        request: u64,
+        #[serde(default)]
+        html: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+    },
     /// The browser's cookies for a URL, answering `cookies_wanted`.
     Cookies {
         request: u64,
@@ -553,6 +562,9 @@ pub enum Outgoing {
     /// Asks the browser extension for its cookies for `url` (for a site
     /// crawl that signs in with them); it answers with `cookies`.
     CookiesWanted { request: u64, url: String },
+    /// Asks the browser extension to open `url` in a background tab, let
+    /// its scripts run, and answer with `rendered`.
+    RenderPage { request: u64, url: String },
     /// A crawl's progress: pages read, bytes read and files found so far.
     GrabProgress { pages: u64, bytes: u64, found: usize },
     /// A crawl ended: what it found, and why it stopped early, if it did.

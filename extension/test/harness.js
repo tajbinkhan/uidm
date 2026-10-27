@@ -11,7 +11,11 @@ function event() {
   const listeners = [];
   return {
     addListener: (f) => listeners.push(f),
-    fire: (...args) => Promise.all(listeners.map((f) => f(...args))),
+    removeListener: (f) => {
+      const i = listeners.indexOf(f);
+      if (i >= 0) listeners.splice(i, 1);
+    },
+    fire: (...args) => Promise.all([...listeners].map((f) => f(...args))),
   };
 }
 

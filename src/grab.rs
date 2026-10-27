@@ -76,6 +76,11 @@ pub struct GrabRequest {
     /// addresses, and maybe the pages too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirror: Option<Mirror>,
+    /// Read each page as the browser shows it, after its scripts ran, so
+    /// links that scripts add are found too. Slower: the browser extension
+    /// opens each page in a background tab.
+    #[serde(default)]
+    pub render_scripts: bool,
 }
 
 /// Where and how a crawl is saved for offline browsing.
@@ -128,6 +133,7 @@ impl Default for GrabRequest {
             hide_duplicates: true,
             browser_cookies: false,
             mirror: None,
+            render_scripts: false,
         }
     }
 }

@@ -279,3 +279,31 @@ test("a site crawl gets the browser's cookies for its start page", async () => {
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(JSON.stringify(w.sent.at(-1)), JSON.stringify({ op: "cookies", request: 3, cookies: "session=abc" }));
 });
+
+test("a crawl's page is rendered in a background tab and the tab is closed", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  const { event } = require("./harness.js");
+  const removed = [];
+  w.chrome.tabs = {
+    ...w.chrome.tabs,
+    onUpdated: event(),
+    create: async ({ url, active }) => {
+      assert.equal(active, false);
+      setTimeout(() => w.chrome.tabs.onUpdated.fire(11, { status: "complete" }), 0);
+      return { id: 11, url };
+    },
+    remove: async (id) => removed.push(id),
+  };
+  w.chrome.scripting = {
+    executeScript: async () => [{ result: { html: "<a href='/added-by-script.pdf'>", url: "https://site.net/app/" } }],
+  };
+  w.port.onMessage.fire({ op: "render_page", request: 5, url: "https://site.net/app" });
+  const until = Date.now() + 5000;
+  while (!w.sent.some((m) => m.op === "rendered") && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+  const answer = w.sent.find((m) => m.op === "rendered");
+  assert.equal(answer.request, 5);
+  assert.equal(answer.url, "https://site.net/app/");
+  assert.ok(answer.html.includes("added-by-script.pdf"));
+  assert.equal(JSON.stringify(removed), "[11]");
+});

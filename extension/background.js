@@ -350,6 +350,11 @@ function onHostMessage(msg) {
     case "refresh_waiting":
       refreshWaiting = msg.id ?? null;
       break;
+    case "render_page":
+      renderPage(msg.url).then((page) =>
+        send({ op: "rendered", request: msg.request, html: page ? page.html : null, url: page ? page.url : null }),
+      );
+      break;
     case "cookies_wanted":
       // A site crawl in UIDM signs in with the browser's cookies.
       if (isWeb(msg.url)) {
@@ -585,6 +590,48 @@ async function pickLinks(tabId, pageUrl, selection = false) {
     if (cookies.get(origin)) l.cookies = cookies.get(origin);
   }
   return send({ op: "pick_links", page: pageUrl, links, user_agent: navigator.userAgent });
+}
+
+// --- Pages for a site crawl --------------------------------------------------
+
+// A page UIDM's grabber reads after its scripts run: opened in a background
+// tab, given time to load and settle, then read and closed.
+const RENDER_TIMEOUT_MS = 30000;
+const RENDER_SETTLE_MS = 1500;
+
+function waitForLoad(tabId, ms) {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    };
+    const listener = (id, info) => {
+      if (id === tabId && info.status === "complete") done();
+    };
+    const timer = setTimeout(done, ms);
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+// The page at `url` as the browser shows it: { html, url }, or null.
+async function renderPage(url) {
+  if (!isWeb(url) || !chrome.scripting || !chrome.tabs || !chrome.tabs.create) return null;
+  let tab = null;
+  try {
+    tab = await chrome.tabs.create({ url, active: false });
+    await waitForLoad(tab.id, RENDER_TIMEOUT_MS);
+    await new Promise((r) => setTimeout(r, RENDER_SETTLE_MS));
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => ({ html: document.documentElement.outerHTML, url: location.href }),
+    });
+    return res && res.result ? res.result : null;
+  } catch (_) {
+    return null;
+  } finally {
+    if (tab) chrome.tabs.remove(tab.id).catch(() => {});
+  }
 }
 
 // --- Context menu -----------------------------------------------------------

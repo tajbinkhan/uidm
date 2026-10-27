@@ -431,6 +431,7 @@ pub struct GrabDialog {
     max_mb_file: Option<f64>,
     hide_duplicates: bool,
     browser_cookies: bool,
+    render_scripts: bool,
     /// Keep the site's folders under `mirror_folder`.
     mirror: bool,
     mirror_folder: String,
@@ -561,6 +562,7 @@ impl GrabDialog {
             max_mb_file: d.max_size.map(|b| b as f64 / MB),
             hide_duplicates: d.hide_duplicates,
             browser_cookies: d.browser_cookies,
+            render_scripts: d.render_scripts,
             mirror: d.mirror.is_some(),
             mirror_folder: d.mirror.as_ref().map(|m| m.folder.clone()).unwrap_or_default(),
             mirror_pages: d.mirror.as_ref().is_some_and(|m| m.pages),
@@ -603,6 +605,7 @@ impl GrabDialog {
             max_size: self.max_mb_file.map(|m| (m * MB).round() as u64),
             hide_duplicates: self.hide_duplicates,
             browser_cookies: self.browser_cookies,
+            render_scripts: self.render_scripts,
             mirror: self.mirror.then(|| grab::Mirror {
                 folder: self.mirror_folder.trim().to_string(),
                 pages: self.mirror_pages,
@@ -840,6 +843,8 @@ fn grab_body(
                 .response
                 .on_hover_text("Sizes are asked with one request per file, after the usual wait");
                 ui.checkbox(&mut d.hide_duplicates, "List a file once when the same name and size are found at other addresses");
+                ui.checkbox(&mut d.render_scripts, "Find links that page scripts add (slower)")
+                    .on_hover_text("The browser extension opens each page in a background tab and lets its scripts run. Without the browser, pages are read as the server sends them.");
             });
             egui::CollapsingHeader::new("Save for offline browsing").id_salt("grab_mirror").show(ui, |ui| {
                 ui.checkbox(&mut d.mirror, "Keep the site's folders: save each file under a folder that follows its address");

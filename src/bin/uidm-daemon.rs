@@ -248,6 +248,13 @@ impl Hub {
         Ok(item)
     }
 
+    /// Whether a client other than a window is connected: the browser
+    /// extension, through its host.
+    fn extension_connected(&self) -> bool {
+        let windows = self.windows.lock().unwrap().len();
+        self.clients.lock().unwrap().len() > windows
+    }
+
     fn window_open(&self) -> bool {
         !self.windows.lock().unwrap().is_empty()
     }
@@ -364,6 +371,8 @@ struct Daemon {
     quota_warned: AtomicBool,
     /// Crawls waiting for the browser's cookies, by request.
     cookie_waits: Mutex<HashMap<u64, Sender<Option<String>>>>,
+    /// Crawls waiting for a page the browser renders: its HTML and address.
+    render_waits: Mutex<HashMap<u64, Sender<Option<(String, String)>>>>,
     /// Grabber projects whose scheduled run is going on, by name.
     grab_runs: Mutex<HashSet<String>>,
     /// When the projects' schedules were last looked at.
@@ -466,6 +475,7 @@ impl Daemon {
             quota_paused: Mutex::new(None),
             quota_warned: AtomicBool::new(false),
             cookie_waits: Mutex::new(HashMap::new()),
+            render_waits: Mutex::new(HashMap::new()),
             grab_runs: Mutex::new(HashSet::new()),
             grab_checked: Mutex::new(None),
         };
@@ -1401,7 +1411,32 @@ impl Daemon {
             }
             h
         };
+        // Rendering needs the browser extension connected.
+        let render = std::cell::Cell::new(req.render_scripts && self.hub.extension_connected());
         let fetch = |url: &str| {
+            // A page as the browser shows it, when asked and the browser
+            // can; otherwise as the server sends it.
+            let rendered = (render.get() && !url.ends_with("/robots.txt"))
+                .then(|| self.render_in_browser(url))
+                .flatten();
+            // A browser that does not answer once is not asked again.
+            if render.get() && rendered.is_none() && !url.ends_with("/robots.txt") {
+                eprintln!("[uidm-daemon] the browser did not render {url}; reading pages as sent");
+                render.set(false);
+            }
+            if let Some((html, at)) = rendered {
+                let mut body = html.into_bytes();
+                body.truncate(grab::MAX_PAGE_BYTES as usize);
+                let page = grab::Page {
+                    url: at,
+                    content_type: Some("text/html".into()),
+                    body,
+                };
+                if let Some(m) = req.mirror.as_ref().filter(|m| m.pages) {
+                    save_page(req, m, &page);
+                }
+                return Ok(page);
+            }
             let page = engine::fetch(url, &page_headers(url), &net, grab::MAX_PAGE_BYTES)
                 .map(|f| grab::Page {
                     url: f.url,
@@ -1494,6 +1529,24 @@ impl Daemon {
             eprintln!("[uidm-daemon] could not save grabber project {}: {e}", project.name);
         }
     }
+    /// Ask the browser extension to render `url` in a background tab and
+    /// wait for its HTML and final address. `None` without an extension or
+    /// an answer in time.
+    fn render_in_browser(&self, url: &str) -> Option<(String, String)> {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let request = NEXT.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = channel();
+        self.render_waits.lock().unwrap().insert(request, tx);
+        self.hub.broadcast(&Outgoing::RenderPage {
+            request,
+            url: url.to_string(),
+        });
+        // The extension gives up on a page after 30 seconds itself.
+        let got = rx.recv_timeout(Duration::from_secs(40)).ok().flatten();
+        self.render_waits.lock().unwrap().remove(&request);
+        got
+    }
+
     /// Ask the browser extension for its cookies for `url`, waiting a few
     /// seconds for the answer. `None` without an extension or cookies.
     fn browser_cookies(&self, url: &str) -> Option<String> {
@@ -2547,6 +2600,11 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
                 daemon.show_window();
             }
         }
+        Incoming::Rendered { request, html, url } => {
+            if let Some(tx) = daemon.render_waits.lock().unwrap().remove(&request) {
+                let _ = tx.send(html.zip(url));
+            }
+        }
         Incoming::Cookies { request, cookies } => {
             if let Some(tx) = daemon.cookie_waits.lock().unwrap().remove(&request) {
                 let _ = tx.send(cookies);
@@ -3403,5 +3461,23 @@ mod tests {
         save_page(&req, &mirror, &robots);
         assert!(!dir.join("s").join("robots.txt.html").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_crawl_can_have_the_browser_render_a_page() {
+        let t = setup("render_page", Duplicate::NewName);
+        assert!(!t.daemon.hub.extension_connected(), "only a window is connected");
+        let d = Arc::clone(&t.daemon);
+        let asking = thread::spawn(move || d.render_in_browser("https://site.net/app"));
+        let request = loop {
+            let frame = t.window.recv_timeout(Duration::from_secs(5)).expect("no render_page");
+            if let Ok(Outgoing::RenderPage { request, .. }) = serde_json::from_slice(&frame) {
+                break request;
+            }
+        };
+        let tx = t.daemon.render_waits.lock().unwrap().remove(&request).unwrap();
+        tx.send(Some(("<a href=x.pdf>".into(), "https://site.net/app/".into()))).unwrap();
+        let (html, url) = asking.join().unwrap().unwrap();
+        assert_eq!((html.as_str(), url.as_str()), ("<a href=x.pdf>", "https://site.net/app/"));
     }
 }

@@ -632,9 +632,11 @@ Manager, removed with their login.
 **Proxies.** The system proxy is read from the Internet settings in the
 registry each time a download starts: `ProxyServer` (one proxy, or
 `http=…;https=…;socks=…`) and the `ProxyOverride` bypass list, including
-`<local>`. Automatic configuration scripts are not read. The manual HTTPS
+`<local>`, and its configuration script or automatic detection (WPAD), which
+WinHTTP runs to pick the proxy per address. The manual HTTPS
 proxy is the proxy for `https://` URLs (an HTTP proxy reached with `CONNECT`;
-empty means the HTTP one); a SOCKS5 proxy, when set, carries everything.
+empty means the HTTP one); a SOCKS4 or SOCKS5 proxy, when set, carries
+everything.
 ureq sends proxy credentials only when it tunnels `https://` requests, so
 for plain `http://` requests through a proxy with a login UIDM adds
 `Proxy-Authorization` itself and follows redirects itself, adding it only on
@@ -1081,8 +1083,10 @@ arguments; no real ffmpeg was run on real video.
 - The video button sits outside a video in full screen, so it is hidden
   then, and it only knows the media its tab loaded after the extension
   started; reloading the page fills the list.
-- The site grabber reads pages as the server sends them; links that a page's
-  scripts add are not seen.
+- The site grabber reads pages as the server sends them unless **Find links
+  that page scripts add** is on. That option needs the browser extension: it
+  opens each page in a background tab, which is slower and shows the tabs
+  briefly. Without the browser connected, pages are read as sent.
 - Clipboard watching runs in the window, so it stops when the window is
   closed with **Exit**.
 - Every client sees every download, not only the ones it started.
