@@ -434,6 +434,10 @@ pub struct GrabDialog {
     queue: u64,
     start_queue: bool,
     error: Option<String>,
+    /// The project's name, for saving.
+    project: String,
+    /// What the last project action did.
+    project_note: Option<String>,
 }
 
 /// Patterns typed one per line or separated by spaces.
@@ -444,8 +448,41 @@ fn pattern_list(text: &str) -> Vec<String> {
 const MB: f64 = 1024.0 * 1024.0;
 
 impl GrabDialog {
+    /// A new project, from the saved template.
     pub fn new() -> Self {
-        Self::from_request(&GrabRequest::default())
+        let template = grab::projects_dir().map(|d| grab::template(&d)).unwrap_or_default();
+        Self::from_request(&template)
+    }
+
+    /// The project these fields and the crawl's results make.
+    fn project(&self) -> grab::Project {
+        let (files, checked) = match &self.phase {
+            GrabPhase::Review { files, checked, .. } => (files.clone(), checked.clone()),
+            _ => (Vec::new(), Vec::new()),
+        };
+        grab::Project {
+            name: self.project.trim().to_string(),
+            request: self.request(),
+            files,
+            checked,
+        }
+    }
+
+    /// The form and results of a saved project.
+    fn open(p: grab::Project) -> Self {
+        let mut d = Self::from_request(&p.request);
+        d.project = p.name.clone();
+        if !p.files.is_empty() {
+            let mut checked = p.checked;
+            checked.resize(p.files.len(), true);
+            d.phase = GrabPhase::Review {
+                files: p.files,
+                checked,
+                pages: 0,
+                stopped: Some("Opened from the saved project. New crawl explores the site again.".into()),
+            };
+        }
+        d
     }
 
     /// The form filled from `d`.
@@ -472,6 +509,8 @@ impl GrabDialog {
             queue: MAIN_QUEUE,
             start_queue: false,
             error: None,
+            project: String::new(),
+            project_note: None,
         }
     }
 
@@ -541,217 +580,23 @@ pub fn grab_dialog(
     let mut open = true;
     let mut close = false;
     let mut again = false;
+    let mut replace = None;
     egui::Window::new("Site grabber")
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .min_width(640.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| match &mut d.phase {
-            GrabPhase::Form => {
-                ui.weak("Reads a site's pages and lists the files they link to. It follows robots.txt and waits between pages.");
-                ui.add_space(6.0);
-                egui::Grid::new("grab_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                    ui.label("Start page");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut d.start)
-                            .hint_text("https://example.com/docs/")
-                            .desired_width(420.0),
-                    );
-                    ui.end_row();
-                    ui.label("Links deep");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut d.depth).range(grab::DEPTH_RANGE.0..=grab::DEPTH_RANGE.1));
-                        ui.weak("0 reads only the start page");
-                    });
-                    ui.end_row();
-                    ui.label("");
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut d.same_site, "Stay on the start page's site");
-                        ui.add_enabled(d.same_site, egui::Checkbox::new(&mut d.subdomains, "and its subdomains"));
-                    });
-                    ui.end_row();
-                    ui.label("");
-                    ui.checkbox(&mut d.no_parent, "Do not go above the start page's folder");
-                    ui.end_row();
-                    ui.label("Sign-in");
-                    ui.vertical(|ui| {
-                        ui.checkbox(&mut d.browser_cookies, "Use my browser's sign-in for the start site")
-                            .on_hover_text("Sign in on the site in your browser first. UIDM's extension hands over the site's cookies, which go to that site's pages only.");
-                        ui.weak("A login set in Options > Connection is used when the site asks for one.");
-                    });
-                    ui.end_row();
-                    ui.label("Keep files of type");
-                    ui.add(egui::TextEdit::singleline(&mut d.types).hint_text("pdf, zip").desired_width(240.0));
-                    ui.end_row();
-                    ui.label("Budget");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut d.max_pages).range(grab::MAX_PAGES_RANGE.0..=grab::MAX_PAGES_RANGE.1));
-                        ui.label("pages, at most");
-                        ui.add(egui::DragValue::new(&mut d.max_mb).range(grab::MAX_MB_RANGE.0..=grab::MAX_MB_RANGE.1));
-                        ui.label("MB of pages");
-                    });
-                    ui.end_row();
-                    ui.label("Wait between pages");
-                    ui.horizontal(|ui| {
-                        let (lo, hi) = grab::DELAY_MS_RANGE;
-                        ui.add(
-                            egui::DragValue::new(&mut d.delay_secs)
-                                .range(lo as f64 / 1000.0..=hi as f64 / 1000.0)
-                                .speed(0.1)
-                                .max_decimals(1),
-                        );
-                        ui.label("seconds (longer if the site's robots.txt asks)");
-                    });
-                    ui.end_row();
-                });
-                egui::CollapsingHeader::new("Filters").id_salt("grab_filters").show(ui, |ui| {
-                    ui.weak("One pattern per line. * matches anything; a pattern without * matches anywhere in the address, as /docs/ does.");
-                    egui::Grid::new("grab_filter_grid").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
-                        let field = |ui: &mut egui::Ui, text: &mut String, hint: &str| {
-                            ui.add(egui::TextEdit::multiline(text).hint_text(hint).desired_rows(2).desired_width(190.0));
-                        };
-                        ui.label("Explore only");
-                        field(ui, &mut d.explore_only, "Every page in reach");
-                        ui.label("Never explore");
-                        field(ui, &mut d.explore_skip, "*/logout*");
-                        ui.end_row();
-                        ui.label("Keep only files");
-                        field(ui, &mut d.files_only, "Every file of the types");
-                        ui.label("Never keep");
-                        field(ui, &mut d.files_skip, "*/old/*");
-                        ui.end_row();
-                    });
-                    ui.horizontal(|ui| {
-                        let size = |ui: &mut egui::Ui, label: &str, value: &mut Option<f64>, default: f64| {
-                            let mut on = value.is_some();
-                            ui.checkbox(&mut on, label);
-                            let mut v = value.unwrap_or(default);
-                            ui.add_enabled(on, egui::DragValue::new(&mut v).range(0.0..=1_000_000.0).speed(0.5).max_decimals(1).suffix(" MB"));
-                            *value = on.then_some(v);
-                        };
-                        size(ui, "At least", &mut d.min_mb, 1.0);
-                        size(ui, "At most", &mut d.max_mb_file, 100.0);
-                    })
-                    .response
-                    .on_hover_text("Sizes are asked with one request per file, after the usual wait");
-                    ui.checkbox(&mut d.hide_duplicates, "List a file once when the same name and size are found at other addresses");
-                });
-                ui.add_space(4.0);
-                let least = d.max_pages as f64 * d.delay_secs;
-                ui.label(format!(
-                    "Stops after {} pages or {} MB, whichever comes first; {} pages take at least {}.",
-                    d.max_pages,
-                    d.max_mb,
-                    d.max_pages,
-                    super::human_duration(least)
-                ));
-                if let Some(e) = &d.error {
-                    ui.colored_label(ui.visuals().error_fg_color, e);
-                }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(connected, egui::Button::new("Start")).clicked() {
-                        let req = d.request();
-                        match req.validate() {
-                            Ok(()) => {
-                                d.error = None;
-                                d.phase = GrabPhase::Running {
-                                    pages: 0,
-                                    bytes: 0,
-                                    found: 0,
-                                };
-                                actions.push(Action::Grab(req));
-                            }
-                            Err(e) => d.error = Some(e),
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                });
+        .show(ctx, |ui| {
+            if !d.running() {
+                replace = project_bar(ui, d);
+                ui.separator();
             }
-            GrabPhase::Running { pages, bytes, found } => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!(
-                        "Read {pages} of at most {} pages ({}); found {found} files.",
-                        d.max_pages,
-                        human_bytes(*bytes)
-                    ));
-                });
-                ui.add_space(8.0);
-                if ui.button("Stop").clicked() {
-                    actions.push(Action::CancelGrab);
-                }
-            }
-            GrabPhase::Review {
-                files,
-                checked,
-                pages,
-                stopped,
-            } => {
-                ui.label(format!("Read {pages} pages and found {} files.", files.len()));
-                if let Some(why) = stopped {
-                    ui.weak(why.as_str());
-                }
-                ui.horizontal(|ui| {
-                    if ui.small_button("Tick all").clicked() {
-                        checked.iter_mut().for_each(|c| *c = true);
-                    }
-                    if ui.small_button("Tick none").clicked() {
-                        checked.iter_mut().for_each(|c| *c = false);
-                    }
-                });
-                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                    for (f, c) in files.iter().zip(checked.iter_mut()) {
-                        ui.horizontal(|ui| {
-                            ui.checkbox(c, "");
-                            ui.add(egui::Label::new(&f.name).truncate())
-                                .on_hover_text(format!("{}\nfound on {}", f.url, f.page));
-                            if let Some(n) = f.size {
-                                ui.weak(human_bytes(n));
-                            }
-                        });
-                    }
-                });
-                let n = checked.iter().filter(|c| **c).count();
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label("Queue");
-                    queue_combo(ui, "grab_queue", &mut d.queue, queues);
-                    ui.checkbox(&mut d.start_queue, "Start the queue now");
-                });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(connected && n > 0, egui::Button::new(format!("Add {n}"))).clicked() {
-                        let items = files
-                            .iter()
-                            .zip(checked.iter())
-                            .filter(|(_, c)| **c)
-                            .map(|(f, _)| Download {
-                                url: f.url.clone(),
-                                referrer: Some(f.page.clone()),
-                                start: Some(false),
-                                ..Download::default()
-                            })
-                            .collect();
-                        actions.push(Action::AddMany {
-                            items,
-                            queue: d.queue,
-                            start_queue: d.start_queue,
-                        });
-                        close = true;
-                    }
-                    if ui.button("New crawl").clicked() {
-                        again = true;
-                    }
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                });
-            }
+            grab_body(ui, d, queues, connected, actions, &mut close, &mut again);
         });
+    if let Some(next) = replace {
+        *d = next;
+    }
     if again {
         d.phase = GrabPhase::Form;
     }
@@ -760,6 +605,278 @@ pub fn grab_dialog(
         actions.push(Action::CancelGrab);
     }
     !closed
+}
+
+/// The project strip: its name, Save, Open, New and Save as template.
+/// Returns the dialog to switch to when a project is opened or a new one
+/// started.
+fn project_bar(ui: &mut egui::Ui, d: &mut GrabDialog) -> Option<GrabDialog> {
+    let dir = grab::projects_dir().ok();
+    let mut next = None;
+    ui.horizontal(|ui| {
+        ui.label("Project");
+        ui.add(egui::TextEdit::singleline(&mut d.project).hint_text("Name, to save it").desired_width(160.0));
+        let named = !d.project.trim().is_empty();
+        if ui.add_enabled(named && dir.is_some(), egui::Button::new("Save")).clicked() {
+            if let Some(dir) = &dir {
+                d.project_note = Some(match d.project().save(dir) {
+                    Ok(()) => format!("Saved \"{}\".", d.project.trim()),
+                    Err(e) => format!("Could not save it: {e}"),
+                });
+            }
+        }
+        let recent = dir.as_deref().map(grab::recent_projects).unwrap_or_default();
+        ui.add_enabled_ui(!recent.is_empty(), |ui| {
+            ui.menu_button("Open", |ui| {
+                for name in &recent {
+                    if ui.button(name).clicked() {
+                        if let Some(dir) = &dir {
+                            match grab::Project::load(dir, name) {
+                                Ok(p) => next = Some(GrabDialog::open(p)),
+                                Err(e) => d.project_note = Some(format!("Could not open {name}: {e}")),
+                            }
+                        }
+                        ui.close_menu();
+                    }
+                }
+            });
+        });
+        if ui.button("New").on_hover_text("A new project from the template").clicked() {
+            next = Some(GrabDialog::new());
+        }
+        if ui
+            .add_enabled(dir.is_some(), egui::Button::new("Save as template"))
+            .on_hover_text("New projects start with these settings")
+            .clicked()
+        {
+            if let Some(dir) = &dir {
+                d.project_note = Some(match grab::save_template(dir, &d.request()) {
+                    Ok(()) => "New projects now start with these settings.".into(),
+                    Err(e) => format!("Could not save the template: {e}"),
+                });
+            }
+        }
+    });
+    if let Some(note) = &d.project_note {
+        ui.weak(note.as_str());
+    }
+    next
+}
+
+fn grab_body(
+    ui: &mut egui::Ui,
+    d: &mut GrabDialog,
+    queues: &[Queue],
+    connected: bool,
+    actions: &mut Vec<Action>,
+    close: &mut bool,
+    again: &mut bool,
+) {
+    match &mut d.phase {
+        GrabPhase::Form => {
+            ui.weak("Reads a site's pages and lists the files they link to. It follows robots.txt and waits between pages.");
+            ui.add_space(6.0);
+            egui::Grid::new("grab_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                ui.label("Start page");
+                ui.add(
+                    egui::TextEdit::singleline(&mut d.start)
+                        .hint_text("https://example.com/docs/")
+                        .desired_width(420.0),
+                );
+                ui.end_row();
+                ui.label("Links deep");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut d.depth).range(grab::DEPTH_RANGE.0..=grab::DEPTH_RANGE.1));
+                    ui.weak("0 reads only the start page");
+                });
+                ui.end_row();
+                ui.label("");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut d.same_site, "Stay on the start page's site");
+                    ui.add_enabled(d.same_site, egui::Checkbox::new(&mut d.subdomains, "and its subdomains"));
+                });
+                ui.end_row();
+                ui.label("");
+                ui.checkbox(&mut d.no_parent, "Do not go above the start page's folder");
+                ui.end_row();
+                ui.label("Sign-in");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut d.browser_cookies, "Use my browser's sign-in for the start site")
+                        .on_hover_text("Sign in on the site in your browser first. UIDM's extension hands over the site's cookies, which go to that site's pages only.");
+                    ui.weak("A login set in Options > Connection is used when the site asks for one.");
+                });
+                ui.end_row();
+                ui.label("Keep files of type");
+                ui.add(egui::TextEdit::singleline(&mut d.types).hint_text("pdf, zip").desired_width(240.0));
+                ui.end_row();
+                ui.label("Budget");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut d.max_pages).range(grab::MAX_PAGES_RANGE.0..=grab::MAX_PAGES_RANGE.1));
+                    ui.label("pages, at most");
+                    ui.add(egui::DragValue::new(&mut d.max_mb).range(grab::MAX_MB_RANGE.0..=grab::MAX_MB_RANGE.1));
+                    ui.label("MB of pages");
+                });
+                ui.end_row();
+                ui.label("Wait between pages");
+                ui.horizontal(|ui| {
+                    let (lo, hi) = grab::DELAY_MS_RANGE;
+                    ui.add(
+                        egui::DragValue::new(&mut d.delay_secs)
+                            .range(lo as f64 / 1000.0..=hi as f64 / 1000.0)
+                            .speed(0.1)
+                            .max_decimals(1),
+                    );
+                    ui.label("seconds (longer if the site's robots.txt asks)");
+                });
+                ui.end_row();
+            });
+            egui::CollapsingHeader::new("Filters").id_salt("grab_filters").show(ui, |ui| {
+                ui.weak("One pattern per line. * matches anything; a pattern without * matches anywhere in the address, as /docs/ does.");
+                egui::Grid::new("grab_filter_grid").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
+                    let field = |ui: &mut egui::Ui, text: &mut String, hint: &str| {
+                        ui.add(egui::TextEdit::multiline(text).hint_text(hint).desired_rows(2).desired_width(190.0));
+                    };
+                    ui.label("Explore only");
+                    field(ui, &mut d.explore_only, "Every page in reach");
+                    ui.label("Never explore");
+                    field(ui, &mut d.explore_skip, "*/logout*");
+                    ui.end_row();
+                    ui.label("Keep only files");
+                    field(ui, &mut d.files_only, "Every file of the types");
+                    ui.label("Never keep");
+                    field(ui, &mut d.files_skip, "*/old/*");
+                    ui.end_row();
+                });
+                ui.horizontal(|ui| {
+                    let size = |ui: &mut egui::Ui, label: &str, value: &mut Option<f64>, default: f64| {
+                        let mut on = value.is_some();
+                        ui.checkbox(&mut on, label);
+                        let mut v = value.unwrap_or(default);
+                        ui.add_enabled(on, egui::DragValue::new(&mut v).range(0.0..=1_000_000.0).speed(0.5).max_decimals(1).suffix(" MB"));
+                        *value = on.then_some(v);
+                    };
+                    size(ui, "At least", &mut d.min_mb, 1.0);
+                    size(ui, "At most", &mut d.max_mb_file, 100.0);
+                })
+                .response
+                .on_hover_text("Sizes are asked with one request per file, after the usual wait");
+                ui.checkbox(&mut d.hide_duplicates, "List a file once when the same name and size are found at other addresses");
+            });
+            ui.add_space(4.0);
+            let least = d.max_pages as f64 * d.delay_secs;
+            ui.label(format!(
+                "Stops after {} pages or {} MB, whichever comes first; {} pages take at least {}.",
+                d.max_pages,
+                d.max_mb,
+                d.max_pages,
+                super::human_duration(least)
+            ));
+            if let Some(e) = &d.error {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(connected, egui::Button::new("Start")).clicked() {
+                    let req = d.request();
+                    match req.validate() {
+                        Ok(()) => {
+                            d.error = None;
+                            d.phase = GrabPhase::Running {
+                                pages: 0,
+                                bytes: 0,
+                                found: 0,
+                            };
+                            actions.push(Action::Grab(req));
+                        }
+                        Err(e) => d.error = Some(e),
+                    }
+                }
+                if ui.button("Cancel").clicked() {
+                    *close = true;
+                }
+            });
+        }
+        GrabPhase::Running { pages, bytes, found } => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!(
+                    "Read {pages} of at most {} pages ({}); found {found} files.",
+                    d.max_pages,
+                    human_bytes(*bytes)
+                ));
+            });
+            ui.add_space(8.0);
+            if ui.button("Stop").clicked() {
+                actions.push(Action::CancelGrab);
+            }
+        }
+        GrabPhase::Review {
+            files,
+            checked,
+            pages,
+            stopped,
+        } => {
+            ui.label(format!("Read {pages} pages and found {} files.", files.len()));
+            if let Some(why) = stopped {
+                ui.weak(why.as_str());
+            }
+            ui.horizontal(|ui| {
+                if ui.small_button("Tick all").clicked() {
+                    checked.iter_mut().for_each(|c| *c = true);
+                }
+                if ui.small_button("Tick none").clicked() {
+                    checked.iter_mut().for_each(|c| *c = false);
+                }
+            });
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                for (f, c) in files.iter().zip(checked.iter_mut()) {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(c, "");
+                        ui.add(egui::Label::new(&f.name).truncate())
+                            .on_hover_text(format!("{}\nfound on {}", f.url, f.page));
+                        if let Some(n) = f.size {
+                            ui.weak(human_bytes(n));
+                        }
+                    });
+                }
+            });
+            let n = checked.iter().filter(|c| **c).count();
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Queue");
+                queue_combo(ui, "grab_queue", &mut d.queue, queues);
+                ui.checkbox(&mut d.start_queue, "Start the queue now");
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(connected && n > 0, egui::Button::new(format!("Add {n}"))).clicked() {
+                    let items = files
+                        .iter()
+                        .zip(checked.iter())
+                        .filter(|(_, c)| **c)
+                        .map(|(f, _)| Download {
+                            url: f.url.clone(),
+                            referrer: Some(f.page.clone()),
+                            start: Some(false),
+                            ..Download::default()
+                        })
+                        .collect();
+                    actions.push(Action::AddMany {
+                        items,
+                        queue: d.queue,
+                        start_queue: d.start_queue,
+                    });
+                    *close = true;
+                }
+                if ui.button("New crawl").clicked() {
+                    *again = true;
+                }
+                if ui.button("Close").clicked() {
+                    *close = true;
+                }
+            });
+        }
+    }
 }
 
 /// Offer to download a copied link: Download or Ignore. Returns false once

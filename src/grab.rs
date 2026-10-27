@@ -12,8 +12,11 @@
 //! (proxy, logins).
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -367,6 +370,89 @@ pub fn links(html: &str, page: &Url) -> (Vec<Url>, Vec<Url>) {
         files.extend(pick(sel, attr));
     }
     (pages, files)
+}
+
+/// A saved grabber project: its settings, and what its last crawl found
+/// with the boxes ticked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Project {
+    pub name: String,
+    pub request: GrabRequest,
+    #[serde(default)]
+    pub files: Vec<GrabFile>,
+    /// Ticked files, one flag per entry of `files`.
+    #[serde(default)]
+    pub checked: Vec<bool>,
+}
+
+/// `%APPDATA%\UIDM\grabber`, next to the settings file.
+pub fn projects_dir() -> io::Result<PathBuf> {
+    let settings = crate::settings::settings_path()?;
+    Ok(settings.with_file_name("grabber"))
+}
+
+const TEMPLATE_FILE: &str = "template.json";
+
+/// The file a project named `name` is kept in.
+fn project_file(dir: &Path, name: &str) -> PathBuf {
+    let safe: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || " -_.()".contains(c) { c } else { '_' })
+        .collect();
+    dir.join(format!("{}.project.json", safe.trim_matches('.')))
+}
+
+impl Project {
+    pub fn save(&self, dir: &Path) -> io::Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "A project needs a name."));
+        }
+        let bytes = serde_json::to_vec_pretty(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        crate::settings::write_atomic(&project_file(dir, &self.name), &bytes)
+    }
+
+    pub fn load(dir: &Path, name: &str) -> io::Result<Project> {
+        let bytes = fs::read(project_file(dir, name))?;
+        serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+}
+
+/// The saved projects' names, most recently saved first.
+pub fn recent_projects(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(SystemTime, String)> = entries
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".project.json"))
+        .filter_map(|e| {
+            let modified = e.metadata().and_then(|m| m.modified()).ok()?;
+            let project: Project = serde_json::from_slice(&fs::read(e.path()).ok()?).ok()?;
+            Some((modified, project.name))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, n)| n).collect()
+}
+
+/// The settings new projects start from: the saved template, or the
+/// defaults.
+pub fn template(dir: &Path) -> GrabRequest {
+    fs::read(dir.join(TEMPLATE_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<GrabRequest>(&b).ok())
+        .map(|r| GrabRequest { start: String::new(), ..r })
+        .unwrap_or_default()
+}
+
+pub fn save_template(dir: &Path, req: &GrabRequest) -> io::Result<()> {
+    let req = GrabRequest {
+        start: String::new(),
+        ..req.clone()
+    };
+    let bytes = serde_json::to_vec_pretty(&req).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    crate::settings::write_atomic(&dir.join(TEMPLATE_FILE), &bytes)
 }
 
 /// How a crawl ended.
@@ -791,6 +877,30 @@ Crawl-delay: 2.5
         assert!(on_start_site(&request(1), "https://s/a/"));
         assert!(!on_start_site(&request(1), "https://cdn.s/a"));
         assert!(on_start_site(&GrabRequest { subdomains: true, ..request(1) }, "https://cdn.s/a"));
+    }
+
+    #[test]
+    fn projects_and_the_template_are_saved_and_loaded() {
+        let dir = std::env::temp_dir().join(format!("uidm_grab_projects_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert!(recent_projects(&dir).is_empty());
+        assert_eq!(template(&dir), GrabRequest::default());
+        let p = Project {
+            name: "Docs: manuals".into(),
+            request: GrabRequest { depth: 3, ..request(1) },
+            files: vec![GrabFile { url: "https://s/a.pdf".into(), name: "a.pdf".into(), page: "https://s/".into(), size: None }],
+            checked: vec![false],
+        };
+        p.save(&dir).unwrap();
+        assert_eq!(Project::load(&dir, "Docs: manuals").unwrap(), p);
+        std::thread::sleep(Duration::from_millis(20));
+        Project { name: "Second".into(), ..p.clone() }.save(&dir).unwrap();
+        assert_eq!(recent_projects(&dir), ["Second", "Docs: manuals"], "most recent first");
+        save_template(&dir, &GrabRequest { max_pages: 7, ..request(1) }).unwrap();
+        let t = template(&dir);
+        assert_eq!((t.max_pages, t.start.as_str()), (7, ""), "a template has no start page");
+        assert!(Project { name: " ".into(), ..p }.save(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
