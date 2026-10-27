@@ -141,6 +141,13 @@ pub enum Incoming {
     /// Change a stopped or finished download's link, referrer, description,
     /// login, or (when finished) its file's name and folder.
     SetProperties { id: u64, changes: Properties },
+    /// Set or clear one download's own speed limit, in bytes per second. A
+    /// running download changes speed at once.
+    SetSpeedLimit {
+        id: u64,
+        #[serde(default)]
+        bytes_per_sec: Option<u64>,
+    },
     /// Ask for the current settings; answered with `settings`.
     GetSettings,
     /// Replace the settings. Invalid values are refused with `error`; valid
@@ -207,6 +214,9 @@ pub struct Download {
     /// site before any login saved in Options.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login: Option<DownloadLogin>,
+    /// This download's own speed limit in bytes per second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_limit: Option<u64>,
 }
 
 /// A download's own login.
@@ -344,6 +354,10 @@ pub struct DownloadEntry {
     /// password stays in the daemon's encrypted request store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login_user: Option<String>,
+    /// Its own speed limit in bytes per second, kept across stops, retries
+    /// and restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_limit: Option<u64>,
 }
 
 /// A message from the daemon to a client.

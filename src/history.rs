@@ -174,6 +174,7 @@ mod tests {
             last_try: None,
             description: None,
             login_user: None,
+            speed_limit: None,
         }
     }
 

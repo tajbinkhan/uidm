@@ -31,7 +31,7 @@ use std::time::Duration;
 use crate::media::MediaChoice;
 use crate::net::NetConfig;
 use crate::settings::{FileExists, Folders};
-use limit::RateLimiter;
+use limit::{RateLimiter, Throttle};
 use resume::Manifest;
 use segments::split;
 
@@ -85,6 +85,9 @@ pub struct DownloadRequest {
     /// ffmpeg, for turning a stream into an .mp4. `None` saves what can be
     /// saved without it.
     pub ffmpeg: Option<PathBuf>,
+    /// This download's own speed limit in bytes per second, on top of the
+    /// total one.
+    pub speed_limit: Option<u64>,
 }
 
 /// Progress events over the course of a download. `id` matches the `Ack`.
@@ -216,11 +219,20 @@ struct Sched {
 /// What every running download shares.
 struct Shared {
     limiter: RateLimiter,
+    /// Each running download's own limit, by id.
+    own_limits: Mutex<HashMap<u64, Arc<RateLimiter>>>,
     /// Whether a connection that finishes early takes over half of the
     /// largest remaining range. Only tests turn it off, to compare.
     resplit: AtomicBool,
     /// Output files in use, so two downloads never pick the same file.
     claimed: Mutex<HashSet<PathBuf>>,
+}
+
+impl Shared {
+    /// Download `id`'s own limiter; an unlimited one if it has none.
+    fn own_limiter(&self, id: u64) -> Arc<RateLimiter> {
+        self.own_limits.lock().unwrap().get(&id).cloned().unwrap_or_default()
+    }
 }
 
 struct Inner {
@@ -251,6 +263,7 @@ impl Engine {
                 registry: Mutex::new(HashMap::new()),
                 shared: Arc::new(Shared {
                     limiter: RateLimiter::default(),
+                    own_limits: Mutex::new(HashMap::new()),
                     resplit: AtomicBool::new(true),
                     claimed: Mutex::new(HashSet::new()),
                 }),
@@ -307,6 +320,18 @@ impl Engine {
     /// Set the total speed limit in bytes per second, or `None` for no limit.
     pub fn set_speed_limit(&self, bytes_per_sec: Option<u64>) {
         self.inner.shared.limiter.set_rate(bytes_per_sec);
+    }
+
+    /// Set one download's own speed limit, or `None` to clear it. A running
+    /// download slows down or speeds up at once; a queued one starts with it.
+    pub fn set_download_limit(&self, id: u64, bytes_per_sec: Option<u64>) {
+        if let Some(own) = self.inner.shared.own_limits.lock().unwrap().get(&id) {
+            own.set_rate(bytes_per_sec);
+        }
+        let mut sched = self.inner.sched.lock().unwrap();
+        for job in sched.queue.iter_mut().filter(|j| j.id == id) {
+            job.req.speed_limit = bytes_per_sec;
+        }
     }
 
     /// Downloads queued or running. Each leaves the registry when it finishes,
@@ -373,6 +398,7 @@ fn pump(inner: &Arc<Inner>) {
 pub fn run_blocking(req: DownloadRequest, cb: Arc<dyn Fn(Progress) + Send + Sync>) {
     let shared = Shared {
         limiter: RateLimiter::default(),
+        own_limits: Mutex::new(HashMap::new()),
         resplit: AtomicBool::new(true),
         claimed: Mutex::new(HashSet::new()),
     };
@@ -390,7 +416,15 @@ fn run(id: u64, token: CancelToken, req: DownloadRequest, reporter: Reporter, sh
         reporter.send(Progress::Canceled { id, url });
         return;
     }
+    let own = Arc::new(RateLimiter::new(req.speed_limit));
+    shared.own_limits.lock().unwrap().insert(id, Arc::clone(&own));
     let result = run_inner(id, &token, &req, &reporter, shared);
+    {
+        let mut own_limits = shared.own_limits.lock().unwrap();
+        if own_limits.get(&id).is_some_and(|o| Arc::ptr_eq(o, &own)) {
+            own_limits.remove(&id);
+        }
+    }
     if token.load(Ordering::Relaxed) {
         reporter.send(Progress::Canceled { id, url });
         return;
@@ -461,7 +495,8 @@ fn run_inner(
         connections,
     });
 
-    let limiter = &shared.limiter;
+    let own = shared.own_limiter(id);
+    let limiter = &Throttle::new(&shared.limiter, &own);
     let resplit = shared.resplit.load(Ordering::Relaxed);
     let result = if segmented {
         let plan = Plan {
@@ -503,7 +538,8 @@ fn run_post(
     let mut file = File::create(&output)?;
     let mut buf = vec![0u8; BUF_SIZE];
     let (mut done, mut last) = (0u64, 0u64);
-    let limiter = &shared.limiter;
+    let own = shared.own_limiter(id);
+    let limiter = &Throttle::new(&shared.limiter, &own);
     loop {
         if token.load(Ordering::Relaxed) {
             return Ok(output);
@@ -852,7 +888,7 @@ fn run_segmented(
     probe: &http::Probe,
     plan: Plan,
     reporter: &Reporter,
-    limiter: &RateLimiter,
+    limiter: &Throttle,
 ) -> Result<PathBuf, EngineError> {
     let total = probe.total.expect("segmented path requires a known total");
     let url = probe.final_url.clone();
@@ -977,7 +1013,7 @@ struct SegmentCtx<'a> {
     global_done: &'a AtomicU64,
     last_report: &'a AtomicU64,
     reporter: &'a Reporter,
-    limiter: &'a RateLimiter,
+    limiter: &'a Throttle<'a>,
     total: u64,
 }
 
@@ -1096,7 +1132,7 @@ fn run_single(
     output: PathBuf,
     probe: &http::Probe,
     reporter: &Reporter,
-    limiter: &RateLimiter,
+    limiter: &Throttle,
 ) -> Result<PathBuf, EngineError> {
     let mut attempt = 0u32;
     loop {
@@ -1129,7 +1165,7 @@ fn single_once(
     output: &std::path::Path,
     probe: &http::Probe,
     reporter: &Reporter,
-    limiter: &RateLimiter,
+    limiter: &Throttle,
 ) -> Result<(), EngineError> {
     let mut reader = http::fetch_whole(agent, &probe.final_url, &req.headers)?;
     let mut file = File::create(output)?;
@@ -1309,6 +1345,7 @@ mod tests {
                 net: Arc::new(NetConfig::default()),
                 media: None,
                 ffmpeg: None,
+                speed_limit: None,
             }
         }
 

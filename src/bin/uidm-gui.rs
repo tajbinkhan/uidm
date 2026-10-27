@@ -352,6 +352,10 @@ enum Action {
     /// Tick or untick a download, for exporting.
     Select(u64, bool),
     OpenProperties(u64),
+    /// Open the speed limit dialog for a download.
+    OpenSpeedLimit(u64),
+    /// Set or clear a download's own limit, in bytes per second.
+    SetSpeedLimit(u64, Option<u64>),
     SetProperties {
         id: u64,
         changes: Properties,
@@ -406,6 +410,16 @@ struct App {
     properties: Vec<properties::PropertiesDialog>,
     /// The confirmation before removing downloads.
     remove_prompt: Option<RemovePrompt>,
+    /// The speed limit dialog for one download.
+    limit_dialog: Option<LimitDialog>,
+}
+
+/// A download's own speed limit being edited.
+struct LimitDialog {
+    id: u64,
+    enabled: bool,
+    value: f64,
+    unit: SpeedUnit,
 }
 
 /// Downloads about to be removed, and the confirmation's boxes.
@@ -746,6 +760,7 @@ impl App {
             columns_dialog: false,
             properties: Vec::new(),
             remove_prompt: None,
+            limit_dialog: None,
         };
         app.connect();
         app.install_tray();
@@ -1065,6 +1080,22 @@ impl App {
                 if let Some(e) = entry.filter(|_| !self.properties.iter().any(|d| d.id == id)) {
                     self.properties.push(properties::PropertiesDialog::new(&e));
                 }
+            }
+            Action::OpenSpeedLimit(id) => {
+                let entry = self.shared.lock().unwrap().table.get(id).cloned();
+                if let Some(e) = entry {
+                    let kbps = e.speed_limit.map_or(512, |b| (b / 1024).max(1));
+                    let unit = if kbps >= 1024 && kbps.is_multiple_of(1024) { SpeedUnit::Mb } else { SpeedUnit::Kb };
+                    self.limit_dialog = Some(LimitDialog {
+                        id,
+                        enabled: e.speed_limit.is_some(),
+                        value: kbps as f64 / unit.kb(),
+                        unit,
+                    });
+                }
+            }
+            Action::SetSpeedLimit(id, bytes_per_sec) => {
+                send(&self.writer, &Incoming::SetSpeedLimit { id, bytes_per_sec });
             }
             Action::SetProperties { id, changes } => {
                 send(&self.writer, &Incoming::SetProperties { id, changes });
@@ -2375,6 +2406,7 @@ impl eframe::App for App {
         self.completed_window(ctx, connected, &mut actions);
         self.threat_window(ctx, &mut actions);
         self.remove_window(ctx, &rows, connected, &mut actions);
+        self.limit_window(ctx, &rows, connected, &mut actions);
         self.refresh_window(ctx, &rows, connected, &mut actions);
         self.tool_windows(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.queues_dialog.as_mut() {
@@ -2409,6 +2441,66 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// The speed limit dialog for one download.
+    fn limit_window(&mut self, ctx: &egui::Context, rows: &[DownloadEntry], connected: bool, actions: &mut Vec<Action>) {
+        let Some(d) = self.limit_dialog.as_mut() else {
+            return;
+        };
+        let Some(e) = rows.iter().find(|e| e.id == d.id) else {
+            self.limit_dialog = None;
+            return;
+        };
+        let mut close = false;
+        egui::Window::new("Speed limit")
+            .id(egui::Id::new("download_limit"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("A speed limit for {} alone.", display_name(e)));
+                ui.weak("The total limit still applies; the lower one wins. The limit stays when it stops and resumes.");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut d.enabled, "Limit to");
+                    ui.add_enabled_ui(d.enabled, |ui| {
+                        let (lo, hi) = SPEED_LIMIT_RANGE_KBPS;
+                        let unit = d.unit.kb();
+                        ui.add(
+                            egui::DragValue::new(&mut d.value)
+                                .range(lo as f64 / unit..=hi as f64 / unit)
+                                .max_decimals(1),
+                        );
+                        let before = d.unit;
+                        egui::ComboBox::from_id_salt("download_limit_unit")
+                            .selected_text(d.unit.label())
+                            .width(70.0)
+                            .show_ui(ui, |ui| {
+                                for u in [SpeedUnit::Kb, SpeedUnit::Mb] {
+                                    ui.selectable_value(&mut d.unit, u, u.label());
+                                }
+                            });
+                        if before != d.unit {
+                            d.value = d.value * before.kb() / d.unit.kb();
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(connected, egui::Button::new("Save")).clicked() {
+                        let bytes = d.enabled.then(|| (d.value * d.unit.kb() * 1024.0).round() as u64);
+                        actions.push(Action::SetSpeedLimit(d.id, bytes));
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            self.limit_dialog = None;
+        }
+    }
+
     /// Remove `ids`, asking first unless Options says not to.
     fn ask_remove(&mut self, ids: Vec<u64>) {
         if ids.is_empty() {
@@ -2683,9 +2775,7 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 if ui.small_button("Retry").on_hover_text("Go on from where it stopped").clicked() {
                     actions.push(Action::Retry(e.id));
                 }
-                if ui.small_button("Download again").on_hover_text("Start over from the beginning").clicked() {
-                    actions.push(Action::Redownload(e.id));
-                }
+
                 queue_menu(ui, e, row.queues, actions);
                 if ui.small_button("Remove").clicked() {
                     actions.push(Action::Remove(vec![e.id]));
@@ -2700,20 +2790,38 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                         actions.push(Action::ShowInFolder(path.clone()));
                     }
                 }
-                if ui
-                    .small_button("Download again")
-                    .on_hover_text("Fetch it again; if the file is still there, the file-exists option decides")
-                    .clicked()
-                {
-                    actions.push(Action::Redownload(e.id));
-                }
+
                 if ui.small_button("Remove").clicked() {
                     actions.push(Action::Remove(vec![e.id]));
                 }
             }
         });
-        if ui.small_button("Properties").on_hover_text("Its details, link, description and login").clicked() {
+        row_menu(ui, e, connected, actions);
+    });
+}
+
+/// The "More" menu at the end of a row: Properties, its own speed limit,
+/// and downloading it again.
+fn row_menu(ui: &mut egui::Ui, e: &DownloadEntry, connected: bool, actions: &mut Vec<Action>) {
+    ui.menu_button("More", |ui| {
+        if ui.button("Properties...").on_hover_text("Its details, link, description and login").clicked() {
             actions.push(Action::OpenProperties(e.id));
+            ui.close_menu();
+        }
+        let limit = ui
+            .add_enabled(connected && e.status != Status::Done, egui::Button::new("Speed limit..."))
+            .on_hover_text("A limit for this download alone");
+        if limit.clicked() {
+            actions.push(Action::OpenSpeedLimit(e.id));
+            ui.close_menu();
+        }
+        let again = matches!(e.status, Status::Done | Status::Failed | Status::Canceled | Status::Interrupted);
+        let redo = ui
+            .add_enabled(connected && again, egui::Button::new("Download again"))
+            .on_hover_text("Start over from the first byte; if the file is still there, the file-exists option decides");
+        if redo.clicked() {
+            actions.push(Action::Redownload(e.id));
+            ui.close_menu();
         }
     });
 }
@@ -2793,6 +2901,9 @@ fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row) {
                 }
                 if let Some(note) = &e.note {
                     ui.weak("(note)").on_hover_text(note);
+                }
+                if let Some(limit) = e.speed_limit {
+                    ui.weak("(limited)").on_hover_text(format!("Limited to {}/s", human_bytes(limit)));
                 }
             });
         }

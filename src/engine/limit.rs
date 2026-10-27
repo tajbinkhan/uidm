@@ -115,10 +115,53 @@ impl RateLimiter {
     }
 }
 
+/// The total limit and one download's own limit together. A read asks for
+/// no more than the stricter of the two allows and then waits for both, so
+/// the lower limit wins.
+pub struct Throttle<'a> {
+    total: &'a RateLimiter,
+    own: &'a RateLimiter,
+}
+
+impl<'a> Throttle<'a> {
+    pub fn new(total: &'a RateLimiter, own: &'a RateLimiter) -> Self {
+        Throttle { total, own }
+    }
+
+    pub fn chunk_size(&self, buf_len: usize) -> usize {
+        self.total.chunk_size(buf_len).min(self.own.chunk_size(buf_len))
+    }
+
+    pub fn consume(&self, n: usize, cancel: &AtomicBool) {
+        self.total.consume(n, cancel);
+        self.own.consume(n, cancel);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn the_lower_of_two_limits_wins() {
+        // 2 MiB/s in all, 256 KiB/s for this download: 384 KiB takes 1.5s.
+        let total = RateLimiter::new(Some(2 * 1024 * 1024));
+        let own = RateLimiter::new(Some(256 * 1024));
+        let t = Throttle::new(&total, &own);
+        let cancel = AtomicBool::new(false);
+        let chunk = t.chunk_size(64 * 1024);
+        assert_eq!(chunk, 256 * 1024 / 10);
+        let start = Instant::now();
+        let mut left: usize = 384 * 1024;
+        while left > 0 {
+            let n = chunk.min(left);
+            t.consume(n, &cancel);
+            left -= n;
+        }
+        let secs = start.elapsed().as_secs_f64();
+        assert!((secs - 1.5).abs() < 0.2, "took {secs:.2}s, expected about 1.5s");
+    }
 
     #[test]
     fn unlimited_never_waits() {

@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 
 use url::Url;
 
+use super::limit::Throttle;
+
 use super::{
     backoff, choose_output, derive_filename, fetch_with, http, numbered_name, sanitize_filename, CancelToken,
     DownloadRequest, EngineError, Progress, Reporter, Saved, Shared, BUF_SIZE, MAX_CONNECTIONS, MAX_RETRIES,
@@ -425,7 +427,8 @@ impl Fetching<'_> {
         let tmp = job.path.with_extension("tmp");
         let mut file = BufWriter::new(File::create(&tmp)?);
         let mut buf = vec![0u8; BUF_SIZE];
-        let limiter = &self.shared.limiter;
+        let own = self.shared.own_limiter(self.id);
+        let limiter = Throttle::new(&self.shared.limiter, &own);
         loop {
             if self.token.load(Ordering::Relaxed) {
                 return Ok(());
@@ -608,6 +611,7 @@ mod tests {
                 net: Default::default(),
                 media: Some(choice),
                 ffmpeg: None,
+                speed_limit: None,
             }
         }
 

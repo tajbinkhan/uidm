@@ -243,6 +243,7 @@ mod tests {
             last_try: None,
             description: None,
             login_user: Some("me".into()),
+            speed_limit: None,
         }
     }
 

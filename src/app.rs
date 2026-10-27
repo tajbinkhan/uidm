@@ -36,6 +36,7 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         net: Default::default(),
         media: d.media,
         ffmpeg: settings.ffmpeg(),
+        speed_limit: d.speed_limit,
     }
 }
 

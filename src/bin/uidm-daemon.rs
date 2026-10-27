@@ -62,7 +62,7 @@ use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_L
 use uidm::protocol::{
     read_message, write_frame, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Status,
 };
-use uidm::settings::{self, Duplicate, FileExists, Folders, Settings};
+use uidm::settings::{self, Duplicate, FileExists, Folders, Settings, SPEED_LIMIT_RANGE_KBPS};
 use uidm::notify::{self, Sound, Toast};
 use uidm::power;
 use uidm::queue::{self, Queue, WhenDone, COUNTDOWN_SECS, MAIN_QUEUE};
@@ -195,11 +195,12 @@ impl Hub {
             let request = self.requests.lock().unwrap().get(id).cloned();
             if let Some(d) = request {
                 let _ = self.update(*id, |e| {
-                    let before = (e.referrer.clone(), e.description.clone(), e.login_user.clone());
+                    let before = e.clone();
                     e.referrer = e.referrer.take().or(d.referrer);
                     e.description = e.description.take().or(d.description);
                     e.login_user = e.login_user.take().or(d.login.map(|l| l.username));
-                    if before == (e.referrer.clone(), e.description.clone(), e.login_user.clone()) {
+                    e.speed_limit = e.speed_limit.or(d.speed_limit);
+                    if *e == before {
                         return Err("nothing new".into());
                     }
                     Ok(())
@@ -451,6 +452,7 @@ impl Daemon {
             ..Download::default()
         });
         let mut req = self.request_for(download);
+        req.speed_limit = item.speed_limit;
         match plan {
             (Some(path), true) => req.reuse_path = Some(PathBuf::from(path)),
             (Some(path), false) => {
@@ -1490,9 +1492,10 @@ impl Daemon {
                 referrer: entry.referrer.clone(),
                 ..Download::default()
             });
-        // The new entry keeps the old one's description.
+        // The new entry keeps the old one's description and speed limit.
         let download = Download {
             description: entry.description.clone(),
+            speed_limit: entry.speed_limit,
             ..download
         };
         // A retried download keeps its place in its queue.
@@ -1509,6 +1512,26 @@ impl Daemon {
             let _ = self.move_to_queue(new_id, q, None);
         }
         Ok((new_id, url))
+    }
+
+    /// Set or clear download `id`'s own speed limit. It is kept on the
+    /// entry (so in the history) and in the stored request, and a running
+    /// download changes speed at once.
+    fn set_download_limit(&self, id: u64, bytes_per_sec: Option<u64>) -> Result<(), String> {
+        let limit = bytes_per_sec.filter(|b| *b > 0);
+        let (lo, hi) = SPEED_LIMIT_RANGE_KBPS;
+        if let Some(b) = limit.filter(|b| !(lo * 1024..=hi * 1024).contains(b)) {
+            return Err(format!("{} KB/s is not a speed limit between {lo} and {hi} KB/s.", b / 1024));
+        }
+        self.hub.update(id, |e| {
+            e.speed_limit = limit;
+            Ok(())
+        })?;
+        if let Some(d) = self.hub.requests.lock().unwrap().get_mut(&id) {
+            d.speed_limit = limit;
+        }
+        self.engine.set_download_limit(id, limit);
+        Ok(())
     }
 
     /// Start download `id` again from the first byte, under the same id, so
@@ -1531,6 +1554,7 @@ impl Daemon {
             ..Download::default()
         });
         download.description = entry.description.clone();
+        download.speed_limit = entry.speed_limit;
         // Only a download that started has a file of its own; a proposed
         // path may be somebody else's.
         let wrote = entry.status == Status::Done || entry.connections > 0;
@@ -2209,6 +2233,11 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::CancelRefresh => daemon.set_refresh_waiting(None),
+        Incoming::SetSpeedLimit { id, bytes_per_sec } => {
+            if let Err(message) = daemon.set_download_limit(id, bytes_per_sec) {
+                send(&Outgoing::Error { message });
+            }
+        }
         Incoming::Redownload { id } => {
             if let Err(message) = daemon.redownload(id) {
                 send(&Outgoing::Error { message });
@@ -2854,5 +2883,23 @@ mod tests {
         t.daemon.hub.publish(&Outgoing::Added { id, url: "https://x/a".into() });
         assert!(t.daemon.redownload(id).is_err());
         assert!(t.daemon.redownload(999).is_err());
+    }
+
+    #[test]
+    fn a_download_limit_is_kept_through_a_retry() {
+        let t = setup("own_limit", Duplicate::NewName);
+        let id = t.failed("https://x/slow.bin");
+        t.daemon.set_download_limit(id, Some(64 * 1024)).unwrap();
+        assert_eq!(t.daemon.entry(id).unwrap().speed_limit, Some(64 * 1024));
+        assert!(t.daemon.set_download_limit(id, Some(10)).is_err(), "below the smallest limit");
+        let (new_id, _) = t.daemon.retry(id).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while t.daemon.entry(new_id).and_then(|e| e.speed_limit).is_none() {
+            assert!(Instant::now() < until, "the retry lost its limit");
+            thread::sleep(Duration::from_millis(20));
+        }
+        t.daemon.cancel(new_id);
+        t.daemon.set_download_limit(new_id, None).unwrap();
+        assert_eq!(t.daemon.entry(new_id).unwrap().speed_limit, None);
     }
 }
