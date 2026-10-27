@@ -54,6 +54,18 @@ impl CaptureKey {
     }
 }
 
+/// Where selecting text with links on a page shows a "Download with UIDM"
+/// button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionButton {
+    Off,
+    #[default]
+    Everywhere,
+    /// Only on the sites in `selection_button_sites`.
+    Sites,
+}
+
 /// How UIDM tells you a download finished or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -331,6 +343,10 @@ pub struct Settings {
     /// After the save-as dialog of the same captured address is canceled
     /// twice, offer to stop capturing it.
     pub offer_exceptions: bool,
+    pub selection_button: SelectionButton,
+    /// With `SelectionButton::Sites`, the sites that get the button, such
+    /// as `*.example.com`.
+    pub selection_button_sites: Vec<String>,
 }
 
 impl Default for Settings {
@@ -378,6 +394,8 @@ impl Default for Settings {
             capture_force_key: CaptureKey::Ctrl,
             capture_excluded_urls: Vec::new(),
             offer_exceptions: true,
+            selection_button: SelectionButton::Everywhere,
+            selection_button_sites: Vec::new(),
         }
     }
 }
@@ -748,6 +766,8 @@ mod tests {
             capture_force_key: CaptureKey::None,
             capture_excluded_urls: vec!["https://example.com/files/*".into()],
             offer_exceptions: false,
+            selection_button: SelectionButton::Sites,
+            selection_button_sites: vec!["*.example.org".into()],
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

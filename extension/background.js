@@ -175,6 +175,13 @@ function onContentMessage(msg, sender, sendResponse) {
     case "video:download":
       downloadMedia(tabId, msg, pageUrl).then((ok) => sendResponse({ ok }));
       return true;
+    case "selection:enabled":
+      sendResponse({ enabled: connected && selectionButtonAllowed(rules, pageUrl) });
+      return false;
+    case "selection:links":
+      // Only the selection's links, from every frame of this tab.
+      pickLinks(tabId, sender.tab.url || pageUrl, true).then((ok) => sendResponse({ ok }));
+      return true;
     case "link:skip":
       // The skip key was held: the download this click starts stays.
       skipClick = { time: Date.now() };
@@ -588,12 +595,18 @@ chrome.runtime.onInstalled.addListener(() => {
       contexts: ["image", "video", "audio"],
     });
     chrome.contextMenus.create({ id: "uidm-all-links", title: "Download all links with UIDM", contexts: ["page", "frame"] });
+    chrome.contextMenus.create({
+      id: "uidm-selection-links",
+      title: "Download the selected links with UIDM",
+      contexts: ["selection"],
+    });
   });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId === "uidm-all-links") {
-    await pickLinks(tab && tab.id, info.pageUrl || (tab && tab.url) || "");
+  if (info.menuItemId === "uidm-all-links" || info.menuItemId === "uidm-selection-links") {
+    const selection = info.menuItemId === "uidm-selection-links";
+    await pickLinks(tab && tab.id, info.pageUrl || (tab && tab.url) || "", selection);
     return;
   }
   const isLink = info.menuItemId === "uidm-link" || info.menuItemId === "uidm-later-link";

@@ -54,7 +54,7 @@ use uidm::protocol::{
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
-    parse_extensions, CaptureKey, Category, Duplicate, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
+    parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, USER_AGENT_PRESETS,
 };
 use uidm::state::DownloadTable;
@@ -622,6 +622,9 @@ struct OptionsDraft {
     /// One address per line.
     capture_excluded_urls: String,
     offer_exceptions: bool,
+    selection_button: SelectionButton,
+    /// One site per line.
+    selection_button_sites: String,
     error: Option<String>,
     picked: Picked,
 }
@@ -708,6 +711,8 @@ impl OptionsDraft {
             capture_force_key: s.capture_force_key,
             capture_excluded_urls: s.capture_excluded_urls.join("\n"),
             offer_exceptions: s.offer_exceptions,
+            selection_button: s.selection_button,
+            selection_button_sites: s.selection_button_sites.join("\n"),
             error: None,
             picked: Picked::default(),
         }
@@ -785,6 +790,8 @@ impl OptionsDraft {
                 .map(str::to_string)
                 .collect(),
             offer_exceptions: self.offer_exceptions,
+            selection_button: self.selection_button,
+            selection_button_sites: sites(&self.selection_button_sites),
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -2004,6 +2011,29 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         });
         ui.end_row();
 
+        ui.label("Selected links");
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Show a Download with UIDM button by selected text with links");
+                egui::ComboBox::from_id_salt("selection_button")
+                    .selected_text(selection_label(draft.selection_button))
+                    .show_ui(ui, |ui| {
+                        for b in [SelectionButton::Off, SelectionButton::Everywhere, SelectionButton::Sites] {
+                            ui.selectable_value(&mut draft.selection_button, b, selection_label(b));
+                        }
+                    });
+            });
+            if draft.selection_button == SelectionButton::Sites {
+                ui.add(
+                    egui::TextEdit::multiline(&mut draft.selection_button_sites)
+                        .hint_text("One site per line, such as *.example.com")
+                        .desired_rows(2)
+                        .desired_width(360.0),
+                );
+            }
+        });
+        ui.end_row();
+
         ui.label("Videos");
         ui.checkbox(&mut draft.video_button, "Show a download button over videos playing in the browser");
         ui.end_row();
@@ -2025,6 +2055,14 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         );
         ui.end_row();
     });
+}
+
+fn selection_label(b: SelectionButton) -> &'static str {
+    match b {
+        SelectionButton::Off => "Nowhere",
+        SelectionButton::Everywhere => "On every site",
+        SelectionButton::Sites => "On these sites only",
+    }
 }
 
 fn key_combo(ui: &mut egui::Ui, id: &str, key: &mut CaptureKey) {

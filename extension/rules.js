@@ -106,6 +106,17 @@ function urlMatches(pattern, url) {
   return re.test(u) || (!/^[a-z]+:\/\//.test(p) && re.test(u.replace(/^[a-z]+:\/\//, "")));
 }
 
+// Whether selecting text with links on the page at `url` shows the
+// "Download with UIDM" button: UIDM's `selection_button` is "off",
+// "everywhere" or "sites" (those in `selection_button_sites`).
+function selectionButtonAllowed(rules, url) {
+  const mode = (rules && rules.selection_button) || "everywhere";
+  if (mode === "off") return false;
+  if (mode === "everywhere") return true;
+  const host = hostOf(url);
+  return (rules.selection_button_sites || []).some((site) => siteMatches(site, host));
+}
+
 // The file type of a download: from its name, else its MIME type, else its
 // URL path. "" when none says.
 function downloadType(item) {
@@ -172,5 +183,5 @@ function captureDecision(rules, item) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies, urlMatches };
+  module.exports = { extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies, urlMatches, selectionButtonAllowed };
 }

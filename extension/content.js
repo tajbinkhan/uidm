@@ -42,6 +42,83 @@
   document.addEventListener("auxclick", onClick, true);
 })();
 
+// The selection button: selecting text that holds links (or bare web
+// addresses) shows a small "Download with UIDM" button by the selection.
+// It opens UIDM's link picker with just those links. Whether it shows at
+// all is asked once, on the first such selection.
+(() => {
+  let enabled = null;
+  let host = null;
+  let button = null;
+  let timer = 0;
+
+  function build() {
+    host = document.createElement("div");
+    host.style.cssText = "position:fixed;z-index:2147483647;top:0;left:0;display:none;";
+    const root = host.attachShadow({ mode: "closed" });
+    const style = document.createElement("style");
+    style.textContent = `
+      :host { all: initial; }
+      button { padding: 4px 9px; border: 0; border-radius: 6px; background: rgba(37,99,235,.95); color: #fff; font: 12px system-ui, sans-serif; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+      button:hover { background: #1d4ed8; }
+    `;
+    button = document.createElement("button");
+    button.textContent = "Download with UIDM";
+    // Keep the selection: a press would otherwise clear it.
+    button.addEventListener("mousedown", (ev) => ev.preventDefault());
+    button.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      chrome.runtime.sendMessage({ type: "selection:links" }).catch(() => {});
+      hide();
+    });
+    root.append(style, button);
+    (document.body || document.documentElement).append(host);
+  }
+
+  function hide() {
+    if (host) host.style.display = "none";
+  }
+
+  function hasLinks(sel) {
+    if (/https?:\/\/\S/.test(String(sel))) return true;
+    for (let i = 0; i < sel.rangeCount; i++) {
+      const range = sel.getRangeAt(i);
+      if (range.cloneContents().querySelector("a[href]")) return true;
+      const a = range.commonAncestorContainer;
+      const el = a.nodeType === 1 ? a : a.parentElement;
+      if (el && el.closest("a[href]")) return true;
+    }
+    return false;
+  }
+
+  async function check() {
+    const sel = getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount || !hasLinks(sel)) return hide();
+    if (enabled === null) {
+      const answer = await chrome.runtime.sendMessage({ type: "selection:enabled" }).catch(() => null);
+      enabled = !!(answer && answer.enabled);
+    }
+    if (!enabled) return;
+    if (!host) build();
+    const r = sel.getRangeAt(sel.rangeCount - 1).getBoundingClientRect();
+    host.style.display = "block";
+    host.style.left = `${Math.max(0, Math.min(r.right, innerWidth - 150))}px`;
+    host.style.top = `${Math.max(0, Math.min(r.bottom + 6, innerHeight - 30))}px`;
+  }
+
+  document.addEventListener("mouseup", (ev) => {
+    if (ev.target === host) return;
+    clearTimeout(timer);
+    timer = setTimeout(check, 10);
+  });
+  document.addEventListener("keyup", (ev) => ev.shiftKey && check());
+  document.addEventListener("selectionchange", () => {
+    const sel = getSelection();
+    if (!sel || sel.isCollapsed) hide();
+  });
+  addEventListener("scroll", hide, true);
+})();
+
 (() => {
   // Frames too small to hold a video (trackers, widgets) are skipped.
   if (window.top !== window && innerWidth < 200) return;

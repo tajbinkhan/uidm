@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies, urlMatches } = require("../rules.js");
+const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies, urlMatches, selectionButtonAllowed } = require("../rules.js");
 
 const RULES = {
   capture_types: ["zip", "pdf", "exe", "mp4"],
@@ -231,4 +231,29 @@ test("all links on a page go to the window's picker with cookies", async () => {
   const msg = w.sent.find((m) => m.op === "pick_links");
   assert.equal(msg.page, "https://dl.net/list");
   assert.equal(JSON.stringify(msg.links.map((l) => [l.url, l.cookies ?? null])), JSON.stringify([["https://dl.net/a.zip", "s=1"], ["https://cdn.org/b.png", null]]));
+});
+
+test("where the selection button shows", () => {
+  assert.ok(selectionButtonAllowed(null, "https://x.net/"), "on everywhere by default");
+  assert.ok(selectionButtonAllowed({ selection_button: "everywhere" }, "https://x.net/"));
+  assert.ok(!selectionButtonAllowed({ selection_button: "off" }, "https://x.net/"));
+  const sites = { selection_button: "sites", selection_button_sites: ["*.example.com"] };
+  assert.ok(selectionButtonAllowed(sites, "https://dl.example.com/list"));
+  assert.ok(!selectionButtonAllowed(sites, "https://x.net/"));
+});
+
+test("the selection button asks for the selection's links only", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  let asked = null;
+  w.chrome.scripting = {
+    executeScript: async ({ args }) => {
+      asked = args;
+      return [{ result: [{ url: "https://dl.net/a.zip", text: "" }] }];
+    },
+  };
+  const answer = await w.content({ type: "selection:links" }, 5, "https://dl.net/list");
+  assert.equal(answer.ok, true);
+  assert.equal(JSON.stringify(asked), "[true]");
+  assert.equal(w.sent.at(-1).op, "pick_links");
 });
