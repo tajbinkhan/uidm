@@ -54,6 +54,7 @@ impl DownloadTable {
                 done,
                 total,
                 parts,
+                ..
             } => {
                 let e = self.entry(*id, url);
                 // A late progress event must not revive a finished download.
@@ -211,6 +212,7 @@ mod tests {
             done,
             total: Some(1000),
             parts: None,
+            segments: None,
         }
     }
 

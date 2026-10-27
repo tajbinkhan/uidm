@@ -302,6 +302,30 @@ impl Status {
     }
 }
 
+/// One connection's share of a segmented download, for showing each
+/// connection's progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SegmentInfo {
+    /// First and last byte of the range.
+    pub start: u64,
+    pub end: u64,
+    /// Bytes of the range fetched so far.
+    pub done: u64,
+    pub state: SegmentState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SegmentState {
+    /// No connection has it yet.
+    Waiting,
+    Connecting,
+    Receiving,
+    /// The last attempt failed; it tries again after a pause.
+    Retrying,
+    Done,
+}
+
 /// The virus scan of a finished download.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
@@ -392,6 +416,9 @@ pub enum Outgoing {
         /// For a stream: segments fetched and segments in all.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parts: Option<[u64; 2]>,
+        /// For a download in byte ranges: each connection's range and state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        segments: Option<Vec<SegmentInfo>>,
     },
     /// A download finished; `path` is the saved file.
     Done {

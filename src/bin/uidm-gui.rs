@@ -17,6 +17,8 @@
 
 #[path = "gui/columns.rs"]
 mod columns;
+#[path = "gui/connections.rs"]
+mod connections;
 #[path = "gui/find.rs"]
 mod find;
 #[path = "gui/properties.rs"]
@@ -44,7 +46,9 @@ use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
-use uidm::protocol::{read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Properties, Scan, Status};
+use uidm::protocol::{
+    read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Properties, Scan, SegmentInfo, Status,
+};
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
@@ -154,6 +158,8 @@ struct Shared {
     grab_events: VecDeque<GrabEvent>,
     /// A copied link to offer to download.
     clipboard: Option<String>,
+    /// Each download's connections, from its latest progress.
+    segments: HashMap<u64, Vec<SegmentInfo>>,
 }
 
 /// News of a site crawl.
@@ -211,7 +217,15 @@ impl Shared {
                 self.saving = false;
                 self.save_result = Some(Err(message.clone()));
             }
-            Outgoing::Progress { id, done, .. } => self.sample_speed(*id, *done),
+            Outgoing::Progress { id, done, segments, .. } => {
+                self.sample_speed(*id, *done);
+                if let Some(s) = segments {
+                    self.segments.insert(*id, s.clone());
+                }
+            }
+            Outgoing::Started { id, .. } => {
+                self.segments.remove(id);
+            }
             Outgoing::AddedMany { count, skipped } => {
                 let mut notice = match count {
                     1 => "Added 1 download, waiting in its queue.".to_string(),
@@ -235,6 +249,9 @@ impl Shared {
             | Outgoing::Canceled { id, .. }
             | Outgoing::Removed { id } => {
                 self.speeds.remove(id);
+                if matches!(msg, Outgoing::Removed { .. }) {
+                    self.segments.remove(id);
+                }
             }
             Outgoing::Error { message } => self.last_error = Some(message.clone()),
             _ => {}
@@ -352,6 +369,7 @@ enum Action {
     /// Tick or untick a download, for exporting.
     Select(u64, bool),
     OpenProperties(u64),
+    OpenConnections(u64),
     /// Open the speed limit dialog for a download.
     OpenSpeedLimit(u64),
     /// Set or clear a download's own limit, in bytes per second.
@@ -412,6 +430,8 @@ struct App {
     remove_prompt: Option<RemovePrompt>,
     /// The speed limit dialog for one download.
     limit_dialog: Option<LimitDialog>,
+    /// Downloads whose Connections dialog is open.
+    connection_dialogs: Vec<u64>,
 }
 
 /// A download's own speed limit being edited.
@@ -739,6 +759,7 @@ impl App {
                 notice: None,
                 grab_events: VecDeque::new(),
                 clipboard: None,
+                segments: HashMap::new(),
             })),
             writer: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
@@ -761,6 +782,7 @@ impl App {
             properties: Vec::new(),
             remove_prompt: None,
             limit_dialog: None,
+            connection_dialogs: Vec::new(),
         };
         app.connect();
         app.install_tray();
@@ -1079,6 +1101,11 @@ impl App {
                 let entry = self.shared.lock().unwrap().table.get(id).cloned();
                 if let Some(e) = entry.filter(|_| !self.properties.iter().any(|d| d.id == id)) {
                     self.properties.push(properties::PropertiesDialog::new(&e));
+                }
+            }
+            Action::OpenConnections(id) => {
+                if !self.connection_dialogs.contains(&id) {
+                    self.connection_dialogs.push(id);
                 }
             }
             Action::OpenSpeedLimit(id) => {
@@ -2407,6 +2434,11 @@ impl eframe::App for App {
         self.threat_window(ctx, &mut actions);
         self.remove_window(ctx, &rows, connected, &mut actions);
         self.limit_window(ctx, &rows, connected, &mut actions);
+        let segments = self.shared.lock().unwrap().segments.clone();
+        self.connection_dialogs.retain(|id| {
+            let entry = rows.iter().find(|e| e.id == *id);
+            connections::dialog(ctx, *id, entry, segments.get(id).map(Vec::as_slice))
+        });
         self.refresh_window(ctx, &rows, connected, &mut actions);
         self.tool_windows(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.queues_dialog.as_mut() {
@@ -2806,6 +2838,10 @@ fn row_menu(ui: &mut egui::Ui, e: &DownloadEntry, connected: bool, actions: &mut
     ui.menu_button("More", |ui| {
         if ui.button("Properties...").on_hover_text("Its details, link, description and login").clicked() {
             actions.push(Action::OpenProperties(e.id));
+            ui.close_menu();
+        }
+        if ui.button("Connections...").on_hover_text("Each connection's range and progress").clicked() {
+            actions.push(Action::OpenConnections(e.id));
             ui.close_menu();
         }
         let limit = ui

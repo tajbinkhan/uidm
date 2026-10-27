@@ -89,12 +89,14 @@ pub fn progress_to_outgoing(p: Progress) -> Outgoing {
             done,
             total,
             parts,
+            segments,
         } => Outgoing::Progress {
             id,
             url,
             done,
             total,
             parts,
+            segments,
         },
         Progress::Finished { id, url, path, note } => Outgoing::Done {
             id,

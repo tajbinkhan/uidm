@@ -26,9 +26,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::media::MediaChoice;
+use crate::protocol::{SegmentInfo, SegmentState};
 use crate::net::NetConfig;
 use crate::settings::{FileExists, Folders};
 use limit::{RateLimiter, Throttle};
@@ -47,6 +48,8 @@ const MAX_CONNECTIONS: usize = 16;
 const BUF_SIZE: usize = 64 * 1024;
 /// Report progress and flush the resume manifest at most this often, in bytes.
 const REPORT_EVERY: u64 = 1024 * 1024;
+/// Byte-driven reports carry each connection's progress at most this often.
+const SEGMENTS_EVERY: Duration = Duration::from_millis(500);
 /// Transient-failure retries per segment before giving up.
 const MAX_RETRIES: u32 = 5;
 /// Backoff base and ceiling for retries.
@@ -108,6 +111,8 @@ pub enum Progress {
         total: Option<u64>,
         /// For a stream: segments fetched and segments in all.
         parts: Option<[u64; 2]>,
+        /// For a download in byte ranges: each connection's range and state.
+        segments: Option<Vec<SegmentInfo>>,
     },
     Finished {
         id: u64,
@@ -560,6 +565,7 @@ fn run_post(
                 done,
                 total: probe.total,
                 parts: None,
+                segments: None,
             });
         }
     }
@@ -840,6 +846,12 @@ struct Plan {
 struct Work {
     manifest: Manifest,
     busy: Vec<bool>,
+    /// What each segment's connection is doing, for showing progress.
+    states: Vec<SegmentState>,
+    /// When progress last carried the segments. Byte-driven reports carry
+    /// them at most every `SEGMENTS_EVERY`, so a fast download does not
+    /// flood clients with them.
+    segments_at: Option<Instant>,
 }
 
 impl Work {
@@ -851,6 +863,7 @@ impl Work {
         let segments = &self.manifest.segments;
         if let Some(i) = (0..segments.len()).find(|&i| !self.busy[i] && !segments[i].is_complete()) {
             self.busy[i] = true;
+            self.states[i] = SegmentState::Connecting;
             return Some(i);
         }
         if !resplit {
@@ -873,7 +886,23 @@ impl Work {
         seg.end = mid - 1;
         self.manifest.segments.push(new);
         self.busy.push(true);
+        self.states.push(SegmentState::Connecting);
         Some(self.manifest.segments.len() - 1)
+    }
+
+    /// Each segment's range, progress and state.
+    fn snapshot(&self) -> Vec<SegmentInfo> {
+        self.manifest
+            .segments
+            .iter()
+            .zip(&self.states)
+            .map(|(s, state)| SegmentInfo {
+                start: s.start,
+                end: s.end,
+                done: s.done,
+                state: if s.is_complete() { SegmentState::Done } else { *state },
+            })
+            .collect()
     }
 }
 
@@ -918,7 +947,13 @@ fn run_segmented(
     let unfinished = manifest.segments.iter().filter(|s| !s.is_complete()).count();
     let resumed = manifest.bytes_done();
     let busy = vec![false; manifest.segments.len()];
-    let shared = Arc::new(Mutex::new(Work { manifest, busy }));
+    let states = vec![SegmentState::Waiting; manifest.segments.len()];
+    let shared = Arc::new(Mutex::new(Work {
+        manifest,
+        busy,
+        states,
+        segments_at: None,
+    }));
     let global_done = Arc::new(AtomicU64::new(resumed));
     let last_report = Arc::new(AtomicU64::new(resumed));
     let first_error: Arc<Mutex<Option<EngineError>>> = Arc::new(Mutex::new(None));
@@ -964,7 +999,11 @@ fn run_segmented(
                         return;
                     };
                     let result = download_segment(&ctx, idx);
-                    shared.lock().unwrap().busy[idx] = false;
+                    {
+                        let mut w = shared.lock().unwrap();
+                        w.busy[idx] = false;
+                        w.states[idx] = SegmentState::Waiting;
+                    }
                     if let Err(e) = result {
                         let mut slot = first_error.lock().unwrap();
                         if slot.is_none() {
@@ -988,13 +1027,17 @@ fn run_segmented(
         return Err(err);
     }
 
-    let done = shared.lock().unwrap().manifest.bytes_done();
+    let (done, segments) = {
+        let w = shared.lock().unwrap();
+        (w.manifest.bytes_done(), w.snapshot())
+    };
     reporter.send(Progress::Advanced {
         id,
         url: url.clone(),
         done,
         total: Some(total),
         parts: None,
+        segments: Some(segments),
     });
     let _ = fs::remove_file(&sidecar);
     Ok(output)
@@ -1037,10 +1080,33 @@ fn download_segment(ctx: &SegmentCtx, idx: usize) -> Result<(), EngineError> {
                 if attempt > MAX_RETRIES {
                     return Err(e);
                 }
+                set_state(ctx, idx, SegmentState::Retrying);
                 thread::sleep(backoff(attempt));
+                set_state(ctx, idx, SegmentState::Connecting);
             }
         }
     }
+}
+
+/// Record what segment `idx`'s connection is doing and report it. These
+/// changes are rare next to the byte-driven reports, so each one is sent.
+fn set_state(ctx: &SegmentCtx, idx: usize, state: SegmentState) {
+    let segments = {
+        let mut w = ctx.shared.lock().unwrap();
+        if w.states[idx] == state {
+            return;
+        }
+        w.states[idx] = state;
+        w.snapshot()
+    };
+    ctx.reporter.send(Progress::Advanced {
+        id: ctx.id,
+        url: ctx.url.to_string(),
+        done: ctx.global_done.load(Ordering::Relaxed),
+        total: Some(ctx.total),
+        parts: None,
+        segments: Some(segments),
+    });
 }
 
 fn download_segment_once(ctx: &SegmentCtx, idx: usize) -> Result<(), EngineError> {
@@ -1054,6 +1120,7 @@ fn download_segment_once(ctx: &SegmentCtx, idx: usize) -> Result<(), EngineError
     }
 
     let mut reader = http::fetch_range(ctx.agent, ctx.url, ctx.headers, cursor, end)?;
+    set_state(ctx, idx, SegmentState::Receiving);
     // A private handle per thread gives each its own file pointer, so the
     // positioned writes below never race one another.
     let file = OpenOptions::new().write(true).open(ctx.output)?;
@@ -1109,16 +1176,25 @@ fn maybe_report(ctx: &SegmentCtx, global: u64) {
     {
         return; // another thread reported; skip to avoid a duplicate.
     }
+    let segments = match ctx.shared.lock() {
+        Ok(mut w) => {
+            w.manifest.save(ctx.sidecar).ok();
+            let due = w.segments_at.is_none_or(|at| at.elapsed() >= SEGMENTS_EVERY);
+            if due {
+                w.segments_at = Some(Instant::now());
+            }
+            due.then(|| w.snapshot())
+        }
+        Err(_) => None,
+    };
     ctx.reporter.send(Progress::Advanced {
         id: ctx.id,
         url: ctx.url.to_string(),
         done: global,
         total: Some(ctx.total),
         parts: None,
+        segments,
     });
-    if let Ok(w) = ctx.shared.lock() {
-        w.manifest.save(ctx.sidecar).ok();
-    }
 }
 
 /// Single-stream path for a server without range support. Not resumable, so a
@@ -1193,6 +1269,7 @@ fn single_once(
                 done,
                 total: probe.total,
                 parts: None,
+                segments: None,
             });
         }
     }
@@ -1629,6 +1706,8 @@ mod tests {
             let mut w = Work {
                 manifest: Manifest::new("u".into(), 4 << 20, None, None, &split(4 << 20, 1)),
                 busy: vec![true],
+                states: vec![SegmentState::Receiving],
+                segments_at: None,
             };
             w.manifest.segments[0].done = 1 << 20;
             let i = w.next(true).unwrap();
@@ -1640,6 +1719,38 @@ mod tests {
             w.manifest.segments[0].done = a.len() - 1000;
             w.manifest.segments[i].done = b.len() - 1000;
             assert!(w.next(true).is_none(), "too little left to split");
+        }
+
+        #[test]
+        fn progress_shows_each_connection() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("connections");
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(
+                Arc::new(move |p: Progress| {
+                    let _ = tx.lock().unwrap().send(p);
+                }),
+                1,
+            );
+            engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let mut states = HashSet::new();
+            let last = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("download timed out") {
+                    Progress::Advanced { segments: Some(s), .. } => {
+                        states.extend(s.iter().map(|x| x.state));
+                        if s.iter().all(|x| x.state == SegmentState::Done) {
+                            break s;
+                        }
+                    }
+                    Progress::Failed { error, .. } => panic!("download failed: {error}"),
+                    _ => {}
+                }
+            };
+            assert!(last.len() >= 4, "one range per connection at least");
+            assert_eq!(last.iter().map(|s| s.done).sum::<u64>(), LEN as u64);
+            assert!(states.contains(&SegmentState::Connecting) && states.contains(&SegmentState::Receiving));
+            fs::remove_dir_all(&dir).ok();
         }
 
         /// A download a form started: the server sends the file only to the

@@ -375,6 +375,7 @@ impl Fetching<'_> {
             done: self.done_bytes.load(Ordering::Relaxed),
             total: None,
             parts: Some([self.done_parts.load(Ordering::Relaxed), self.total_parts]),
+            segments: None,
         });
     }
 
