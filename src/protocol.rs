@@ -246,6 +246,10 @@ pub struct Download {
     /// This download's own speed limit in bytes per second.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed_limit: Option<u64>,
+    /// Show the save-as dialog for it (`true`) or not, whatever the
+    /// setting says; missing follows the setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<bool>,
 }
 
 /// A link on a web page, offered in the window's link picker.

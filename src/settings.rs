@@ -431,6 +431,8 @@ pub struct Settings {
     pub check_updates: bool,
     /// When that last happened, in seconds since 1970.
     pub last_update_check: u64,
+    /// Show the drop target, a small window that takes dragged links.
+    pub drop_target: bool,
 }
 
 impl Default for Settings {
@@ -492,6 +494,7 @@ impl Default for Settings {
             quota_hours: 24,
             check_updates: true,
             last_update_check: 0,
+            drop_target: false,
         }
     }
 }
@@ -941,6 +944,7 @@ mod tests {
             quota_hours: 6,
             check_updates: false,
             last_update_check: 1_700_000_000,
+            drop_target: true,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

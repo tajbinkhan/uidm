@@ -19,12 +19,14 @@ pub enum Command {
     PauseAll,
     ResumeAll,
     ToggleSpeedLimit,
+    ToggleDropTarget,
     Exit,
 }
 
 struct Tray {
     icon: TrayIcon,
     speed_limit: CheckMenuItem,
+    drop_target: CheckMenuItem,
 }
 
 thread_local! {
@@ -45,11 +47,12 @@ pub fn install(
     let pause = MenuItem::new("Pause all", true, None);
     let resume = MenuItem::new("Resume all", true, None);
     let speed_limit = CheckMenuItem::new("Speed limit", true, false, None);
+    let drop_target = CheckMenuItem::new("Drop target", true, false, None);
     let exit = MenuItem::new("Exit", true, None);
     let menu = Menu::new();
     let separator = PredefinedMenuItem::separator();
     let separator2 = PredefinedMenuItem::separator();
-    menu.append_items(&[&open, &add, &separator, &pause, &resume, &speed_limit, &separator2, &exit])
+    menu.append_items(&[&open, &add, &drop_target, &separator, &pause, &resume, &speed_limit, &separator2, &exit])
         .map_err(|e| e.to_string())?;
 
     let ids: Vec<(MenuId, Command)> = vec![
@@ -58,6 +61,7 @@ pub fn install(
         (pause.id().clone(), Command::PauseAll),
         (resume.id().clone(), Command::ResumeAll),
         (speed_limit.id().clone(), Command::ToggleSpeedLimit),
+        (drop_target.id().clone(), Command::ToggleDropTarget),
         (exit.id().clone(), Command::Exit),
     ];
     let run = Arc::clone(&on_command);
@@ -84,7 +88,13 @@ pub fn install(
         .with_icon(Icon::from_rgba(rgba, size, size).map_err(|e| e.to_string())?)
         .build()
         .map_err(|e| e.to_string())?;
-    TRAY.with(|t| *t.borrow_mut() = Some(Tray { icon, speed_limit }));
+    TRAY.with(|t| {
+        *t.borrow_mut() = Some(Tray {
+            icon,
+            speed_limit,
+            drop_target,
+        })
+    });
     Ok(())
 }
 
@@ -97,6 +107,17 @@ pub fn set_tooltip(text: &str) {
     TRAY.with(|t| {
         if let Some(tray) = t.borrow().as_ref() {
             let _ = tray.icon.set_tooltip(Some(text));
+        }
+    });
+}
+
+/// Show whether the drop target is open, next to its menu item.
+pub fn set_drop_target_checked(on: bool) {
+    TRAY.with(|t| {
+        if let Some(tray) = t.borrow().as_ref() {
+            if tray.drop_target.is_checked() != on {
+                tray.drop_target.set_checked(on);
+            }
         }
     });
 }

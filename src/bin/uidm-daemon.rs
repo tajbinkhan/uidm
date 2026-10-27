@@ -1169,7 +1169,7 @@ impl Daemon {
         if download.start == Some(false) {
             return self.add_later(download);
         }
-        if self.settings.lock().unwrap().ask_where_to_save {
+        if download.ask.unwrap_or(self.settings.lock().unwrap().ask_where_to_save) {
             self.ask(download, None)
         } else {
             self.start(download, None)
@@ -3615,5 +3615,17 @@ mod tests {
         assert!(matches!(t.daemon.check_update(&serve_tag("v0.0.1")), Outgoing::Update { newer: None, error: None }));
         assert!(matches!(t.daemon.check_update("http://127.0.0.1:1/none"), Outgoing::Update { error: Some(_), .. }));
         assert!(t.daemon.settings.lock().unwrap().last_update_check > 0, "the check was noted");
+    }
+
+    #[test]
+    fn a_dropped_link_always_gets_the_save_as_dialog() {
+        let t = setup("ask_flag", Duplicate::NewName);
+        assert!(!t.daemon.settings.lock().unwrap().ask_where_to_save);
+        let (id, _) = t.daemon.add(Download {
+            url: serve(),
+            ask: Some(true),
+            ..Download::default()
+        });
+        t.wait(id, Status::Confirming);
     }
 }

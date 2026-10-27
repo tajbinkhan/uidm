@@ -19,6 +19,8 @@
 mod columns;
 #[path = "gui/connections.rs"]
 mod connections;
+#[path = "gui/droptarget.rs"]
+mod droptarget;
 #[path = "gui/find.rs"]
 mod find;
 #[path = "gui/links.rs"]
@@ -508,6 +510,9 @@ struct App {
     links: Option<links::LinksDialog>,
     /// A zip download's preview, asked for or shown.
     zip_preview: Option<ZipPreview>,
+    /// This window opened the drop target, so finding it closed means the
+    /// user closed it.
+    drop_shown: bool,
     /// The About box is open; `true` in the second place while a check
     /// it started waits for its answer.
     about: Option<bool>,
@@ -708,6 +713,7 @@ struct OptionsDraft {
     quota_mb: u64,
     quota_hours: u64,
     check_updates: bool,
+    drop_target: bool,
     error: Option<String>,
     picked: Picked,
 }
@@ -810,6 +816,7 @@ impl OptionsDraft {
             quota_mb: s.quota_mb,
             quota_hours: s.quota_hours,
             check_updates: s.check_updates,
+            drop_target: s.drop_target,
             error: None,
             picked: Picked::default(),
         }
@@ -915,6 +922,7 @@ impl OptionsDraft {
             quota_mb: self.quota_mb,
             quota_hours: self.quota_hours,
             check_updates: self.check_updates,
+            drop_target: self.drop_target,
             // The daemon keeps its own.
             last_update_check: 0,
         };
@@ -978,6 +986,7 @@ impl App {
             links: None,
             zip_preview: None,
             about: None,
+            drop_shown: false,
             canceled_once: HashSet::new(),
             exception_offer: None,
         };
@@ -1062,6 +1071,20 @@ impl App {
                             &Incoming::SetSettings {
                                 settings: Settings {
                                     speed_limit_enabled: on,
+                                    ..s
+                                },
+                            },
+                        );
+                    }
+                }
+                tray::Command::ToggleDropTarget => {
+                    let settings = shared.lock().unwrap().settings.clone();
+                    if let Some(s) = settings {
+                        send(
+                            &writer,
+                            &Incoming::SetSettings {
+                                settings: Settings {
+                                    drop_target: !s.drop_target,
                                     ..s
                                 },
                             },
@@ -1899,6 +1922,11 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.end_row();
 
         ui.label("");
+        ui.checkbox(&mut draft.drop_target, "Show the drop target, a small window on top that takes dragged links")
+            .on_hover_text("Drag it to move it, double-click it to open UIDM, right-click it to close it");
+        ui.end_row();
+
+        ui.label("");
         ui.checkbox(&mut draft.check_updates, "Look for a newer UIDM on GitHub once a week")
             .on_hover_text("Only a notice with a link; nothing is downloaded or installed");
         ui.end_row();
@@ -2582,6 +2610,7 @@ impl eframe::App for App {
         }
         if let Some(s) = &settings {
             tray::set_speed_limit_checked(s.speed_limit_enabled);
+            self.sync_drop_target(s, &mut actions);
         }
 
         egui::TopBottomPanel::top("add").show(ctx, |ui| {
@@ -2975,6 +3004,49 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Open or close the drop target to match the setting. Closing it with
+    /// a right-click turns the setting off.
+    fn sync_drop_target(&mut self, s: &Settings, actions: &mut Vec<Action>) {
+        let open = droptarget::is_open();
+        tray::set_drop_target_checked(s.drop_target && open);
+        match (s.drop_target, open, self.drop_shown) {
+            (true, false, false) => {
+                let writer = Arc::clone(&self.writer);
+                let ctx = self.ctx.clone();
+                droptarget::open(
+                    Arc::new(move |url: String| {
+                        // Each dropped link goes through the save-as dialog.
+                        send(
+                            &writer,
+                            &Incoming::Add(Download {
+                                url,
+                                ask: Some(true),
+                                ..Download::default()
+                            }),
+                        );
+                        win::show();
+                        ctx.request_repaint();
+                    }),
+                    Arc::new(win::show),
+                );
+                self.drop_shown = true;
+            }
+            (true, false, true) => {
+                self.drop_shown = false;
+                actions.push(Action::QuickSettings(Settings {
+                    drop_target: false,
+                    ..s.clone()
+                }));
+            }
+            (false, true, _) => {
+                droptarget::close();
+                self.drop_shown = false;
+            }
+            (false, false, _) => self.drop_shown = false,
+            (true, true, _) => {}
+        }
+    }
+
     /// The About box: the version, the project's page, and a check for a
     /// newer release.
     fn about_window(&mut self, ctx: &egui::Context, connected: bool, actions: &mut Vec<Action>) {
