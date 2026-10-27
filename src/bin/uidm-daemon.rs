@@ -364,6 +364,10 @@ struct Daemon {
     quota_warned: AtomicBool,
     /// Crawls waiting for the browser's cookies, by request.
     cookie_waits: Mutex<HashMap<u64, Sender<Option<String>>>>,
+    /// Grabber projects whose scheduled run is going on, by name.
+    grab_runs: Mutex<HashSet<String>>,
+    /// When the projects' schedules were last looked at.
+    grab_checked: Mutex<Option<Instant>>,
 }
 
 /// A countdown before sleeping, hibernating or shutting down.
@@ -462,6 +466,8 @@ impl Daemon {
             quota_paused: Mutex::new(None),
             quota_warned: AtomicBool::new(false),
             cookie_waits: Mutex::new(HashMap::new()),
+            grab_runs: Mutex::new(HashSet::new()),
+            grab_checked: Mutex::new(None),
         };
         (daemon, dirty_rx, notes_rx, wake_rx)
     }
@@ -844,7 +850,19 @@ impl Daemon {
     /// schedule ahead, or a countdown runs.
     fn queues_need_daemon(&self) -> bool {
         let now = queue::local_now();
+        let projects = || {
+            let Ok(dir) = grab::projects_dir() else {
+                return false;
+            };
+            !self.grab_runs.lock().unwrap().is_empty()
+                || grab::recent_projects(&dir).iter().any(|name| {
+                    grab::Project::load(&dir, name).ok().and_then(|p| p.schedule).is_some_and(|s| {
+                        s.next_start(now).is_some() || s.open_run(now).is_some()
+                    })
+                })
+        };
         self.countdown_message().is_some()
+            || projects()
             || self.hub.queues.lock().unwrap().iter().any(|q| {
                 q.running
                     || q.schedule.as_ref().is_some_and(|s| {
@@ -1341,12 +1359,6 @@ impl Daemon {
             }
             grabs.insert(client, Arc::clone(&stop));
         }
-        let settings = self.settings.lock().unwrap().clone();
-        let start = Download {
-            url: req.start.clone(),
-            ..Download::default()
-        };
-        let net = self.net_for(&start, &settings);
         let daemon = Arc::clone(self);
         thread::spawn(move || {
             let send = |msg: &Outgoing| {
@@ -1354,36 +1366,8 @@ impl Daemon {
                     let _ = reply.send(frame);
                 }
             };
-            let headers = [("User-Agent".to_string(), GRABBER_AGENT.to_string())];
-            let cookies = if req.browser_cookies { daemon.browser_cookies(&req.start) } else { None };
-            // The browser's cookies go to the start site's pages only.
-            let page_headers = |url: &str| {
-                let mut h = headers.to_vec();
-                if let Some(c) = cookies.as_ref().filter(|_| grab::on_start_site(&req, url)) {
-                    h.push(("Cookie".to_string(), c.clone()));
-                }
-                h
-            };
-            let fetch = |url: &str| {
-                engine::fetch(url, &page_headers(url), &net, grab::MAX_PAGE_BYTES)
-                    .map(|f| grab::Page {
-                        url: f.url,
-                        content_type: f.content_type,
-                        body: f.body,
-                    })
-                    .map_err(|e| e.to_string())
-            };
-            // Wait in short steps, so stopping is quick.
-            let wait = |d: Duration| {
-                let until = Instant::now() + d;
-                while Instant::now() < until && !stop.load(Ordering::Relaxed) {
-                    thread::sleep(Duration::from_millis(100).min(until - Instant::now()));
-                }
-            };
             eprintln!("[uidm-daemon] client #{client} crawls {}", req.start);
-            // A file's size, for the size filters and duplicates.
-            let size = |url: &str| engine::inspect(url, None, &page_headers(url), &net).ok().and_then(|i| i.total);
-            let out = grab::crawl(&req, fetch, size, wait, &stop, |pages, bytes, found| {
+            let out = daemon.run_crawl(&req, &stop, |pages, bytes, found| {
                 send(&Outgoing::GrabProgress { pages, bytes, found })
             });
             daemon.grabs.lock().unwrap().remove(&client);
@@ -1397,6 +1381,124 @@ impl Daemon {
         Ok(())
     }
 
+    /// Crawl for `req` on this thread, with the settings' proxy and logins,
+    /// the browser's cookies when it asks, and short waits so `stop` is
+    /// noticed quickly.
+    fn run_crawl(&self, req: &GrabRequest, stop: &AtomicBool, progress: impl FnMut(u64, u64, usize)) -> grab::Outcome {
+        let settings = self.settings.lock().unwrap().clone();
+        let start = Download {
+            url: req.start.clone(),
+            ..Download::default()
+        };
+        let net = self.net_for(&start, &settings);
+        let headers = [("User-Agent".to_string(), GRABBER_AGENT.to_string())];
+        let cookies = if req.browser_cookies { self.browser_cookies(&req.start) } else { None };
+        // The browser's cookies go to the start site's pages only.
+        let page_headers = |url: &str| {
+            let mut h = headers.to_vec();
+            if let Some(c) = cookies.as_ref().filter(|_| grab::on_start_site(req, url)) {
+                h.push(("Cookie".to_string(), c.clone()));
+            }
+            h
+        };
+        let fetch = |url: &str| {
+            engine::fetch(url, &page_headers(url), &net, grab::MAX_PAGE_BYTES)
+                .map(|f| grab::Page {
+                    url: f.url,
+                    content_type: f.content_type,
+                    body: f.body,
+                })
+                .map_err(|e| e.to_string())
+        };
+        // Wait in short steps, so stopping is quick.
+        let wait = |d: Duration| {
+            let until = Instant::now() + d;
+            while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(100).min(until - Instant::now()));
+            }
+        };
+        // A file's size, for the size filters and duplicates.
+        let size = |url: &str| engine::inspect(url, None, &page_headers(url), &net).ok().and_then(|i| i.total);
+        grab::crawl(req, fetch, size, wait, stop, progress)
+    }
+
+    /// Look for due grabber projects at most every half minute: the
+    /// scheduler wakes on every download event, and this reads files.
+    fn check_grab_schedules(self: &Arc<Self>) {
+        {
+            let mut last = self.grab_checked.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        self.run_grab_schedules(queue::local_now());
+    }
+
+    /// Start the saved grabber projects whose scheduled run is due, each on
+    /// its own thread. Runs with the scheduler.
+    fn run_grab_schedules(self: &Arc<Self>, now: queue::Moment) {
+        let Ok(dir) = grab::projects_dir() else {
+            return;
+        };
+        for name in grab::recent_projects(&dir) {
+            let Ok(mut project) = grab::Project::load(&dir, &name) else {
+                continue;
+            };
+            let Some(day) = project.schedule.as_ref().and_then(|s| s.open_run(now)) else {
+                continue;
+            };
+            if project.last_scheduled_day == Some(day) || !self.grab_runs.lock().unwrap().insert(name.clone()) {
+                continue;
+            }
+            // Saved first, so a restart does not start the same run again.
+            project.last_scheduled_day = Some(day);
+            if let Err(e) = project.save(&dir) {
+                eprintln!("[uidm-daemon] could not save grabber project {name}: {e}");
+            }
+            let daemon = Arc::clone(self);
+            let dir = dir.clone();
+            thread::spawn(move || {
+                daemon.run_scheduled_grab(&dir, project, day);
+                daemon.grab_runs.lock().unwrap().remove(&name);
+            });
+        }
+    }
+
+    /// One scheduled run of a grabber project: crawl until done or until the
+    /// schedule's stop time, keep what it found, and add new finds to the
+    /// project's queue when it says to.
+    fn run_scheduled_grab(self: &Arc<Self>, dir: &Path, mut project: grab::Project, day: i64) {
+        eprintln!("[uidm-daemon] schedule runs grabber project {}", project.name);
+        let end = project.schedule.as_ref().filter(|s| s.stop.is_some()).and_then(|s| s.end_of_run(day));
+        let stop = AtomicBool::new(false);
+        let out = self.run_crawl(&project.request, &stop, |_, _, _| {
+            if end.is_some_and(|end| queue::local_now() >= end) {
+                stop.store(true, Ordering::Relaxed);
+            }
+        });
+        let page_of: HashMap<String, String> = out.files.iter().map(|f| (f.url.clone(), f.page.clone())).collect();
+        let new = project.record_run(out.files);
+        eprintln!("[uidm-daemon] grabber project {} found {} new files", project.name, new.len());
+        if project.download_new && !new.is_empty() {
+            let items = new
+                .iter()
+                .map(|f| Download {
+                    url: f.url.clone(),
+                    referrer: page_of.get(&f.url).cloned(),
+                    start: Some(false),
+                    ..Download::default()
+                })
+                .collect();
+            // Through the usual path, which skips addresses already in the
+            // list.
+            let (added, skipped) = self.add_many(items, Some(project.queue));
+            eprintln!("[uidm-daemon] added {added}, skipped {skipped} already in the list");
+        }
+        if let Err(e) = project.save(dir) {
+            eprintln!("[uidm-daemon] could not save grabber project {}: {e}", project.name);
+        }
+    }
     /// Ask the browser extension for its cookies for `url`, waiting a few
     /// seconds for the answer. `None` without an extension or cookies.
     fn browser_cookies(&self, url: &str) -> Option<String> {
@@ -2496,6 +2598,7 @@ fn spawn_scheduler(daemon: Arc<Daemon>, wake: Receiver<()>) {
             Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 while wake.try_recv().is_ok() {}
                 daemon.tick();
+                daemon.check_grab_schedules();
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
         }
@@ -3199,5 +3302,49 @@ mod tests {
         let tx = t.daemon.cookie_waits.lock().unwrap().remove(&request).unwrap();
         tx.send(Some("session=abc".into())).unwrap();
         assert_eq!(asking.join().unwrap().as_deref(), Some("session=abc"));
+    }
+
+    #[test]
+    fn a_scheduled_project_adds_only_new_finds() {
+        let t = setup("grab_schedule", Duplicate::NewName);
+        // A one-page site linking to one PDF.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let (status, body) = if head.starts_with("GET / ") {
+                    ("200 OK", "<a href=\"/report.pdf\">r</a>")
+                } else {
+                    ("404 Not Found", "")
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let request = GrabRequest {
+            start: format!("http://{addr}/"),
+            depth: 0,
+            delay_ms: 200,
+            ..GrabRequest::default()
+        };
+        let project: grab::Project = serde_json::from_value(serde_json::json!({
+            "name": "nightly",
+            "request": request,
+            "download_new": true,
+        }))
+        .unwrap();
+        let dir = t.dir.join("projects");
+        t.daemon.run_scheduled_grab(&dir, project, 1);
+        let saved = grab::Project::load(&dir, "nightly").unwrap();
+        assert_eq!(saved.seen, [format!("http://{addr}/report.pdf")]);
+        assert_eq!(t.len(), 1, "the new find was added");
+        t.daemon.run_scheduled_grab(&dir, saved, 2);
+        assert_eq!(t.len(), 1, "nothing new the second time");
     }
 }

@@ -383,6 +383,26 @@ pub struct Project {
     /// Ticked files, one flag per entry of `files`.
     #[serde(default)]
     pub checked: Vec<bool>,
+    /// When the daemon runs it by itself: once, or on chosen days, with an
+    /// optional stop time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<crate::queue::Schedule>,
+    /// A scheduled run adds the files it finds for the first time to
+    /// `queue`; otherwise it only explores.
+    #[serde(default)]
+    pub download_new: bool,
+    #[serde(default = "main_queue")]
+    pub queue: u64,
+    /// Every file address earlier runs found, so a run adds only new ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seen: Vec<String>,
+    /// The day of the scheduled run last started, so it starts only once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_scheduled_day: Option<i64>,
+}
+
+fn main_queue() -> u64 {
+    crate::queue::MAIN_QUEUE
 }
 
 /// `%APPDATA%\UIDM\grabber`, next to the settings file.
@@ -412,6 +432,17 @@ impl Project {
         crate::settings::write_atomic(&project_file(dir, &self.name), &bytes)
     }
 
+    /// Take a run's findings as the project's list, and return those no
+    /// earlier run found.
+    pub fn record_run(&mut self, found: Vec<GrabFile>) -> Vec<GrabFile> {
+        let seen: HashSet<String> = self.seen.iter().cloned().collect();
+        let new: Vec<GrabFile> = found.iter().filter(|f| !seen.contains(&f.url)).cloned().collect();
+        self.seen.extend(new.iter().map(|f| f.url.clone()));
+        self.checked = found.iter().map(|f| !seen.contains(&f.url)).collect();
+        self.files = found;
+        new
+    }
+
     pub fn load(dir: &Path, name: &str) -> io::Result<Project> {
         let bytes = fs::read(project_file(dir, name))?;
         serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -432,7 +463,7 @@ pub fn recent_projects(dir: &Path) -> Vec<String> {
             Some((modified, project.name))
         })
         .collect();
-    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.sort_by_key(|f| std::cmp::Reverse(f.0));
     found.into_iter().map(|(_, n)| n).collect()
 }
 
@@ -890,6 +921,11 @@ Crawl-delay: 2.5
             request: GrabRequest { depth: 3, ..request(1) },
             files: vec![GrabFile { url: "https://s/a.pdf".into(), name: "a.pdf".into(), page: "https://s/".into(), size: None }],
             checked: vec![false],
+            schedule: None,
+            download_new: false,
+            queue: crate::queue::MAIN_QUEUE,
+            seen: Vec::new(),
+            last_scheduled_day: None,
         };
         p.save(&dir).unwrap();
         assert_eq!(Project::load(&dir, "Docs: manuals").unwrap(), p);
@@ -901,6 +937,19 @@ Crawl-delay: 2.5
         assert_eq!((t.max_pages, t.start.as_str()), (7, ""), "a template has no start page");
         assert!(Project { name: " ".into(), ..p }.save(&dir).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_run_adds_only_what_earlier_runs_did_not_find() {
+        let file = |u: &str| GrabFile { url: u.into(), name: u.rsplit('/').next().unwrap().into(), page: "https://s/".into(), size: None };
+        let mut p: Project = serde_json::from_str(r#"{"name":"p","request":{"start":"https://s/","depth":1,"same_site":true,"types":["pdf"],"max_pages":5,"max_bytes":1048576,"delay_ms":1000}}"#).unwrap();
+        assert_eq!(p.queue, crate::queue::MAIN_QUEUE, "an older project file loads");
+        let first = p.record_run(vec![file("https://s/a.pdf"), file("https://s/b.pdf")]);
+        assert_eq!(first.len(), 2);
+        let second = p.record_run(vec![file("https://s/b.pdf"), file("https://s/c.pdf")]);
+        assert_eq!(second.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["c.pdf"]);
+        assert_eq!(p.checked, [false, true], "only the new one is ticked");
+        assert_eq!(p.seen.len(), 3);
     }
 
     #[test]
