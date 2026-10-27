@@ -11,6 +11,7 @@
 //! fragmented MP4 segments), and a stream with separate audio is saved as two
 //! files, with a note saying so.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
@@ -21,6 +22,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use url::Url;
 
 use super::{
     backoff, choose_output, derive_filename, fetch_with, http, numbered_name, sanitize_filename, CancelToken,
@@ -45,6 +48,22 @@ fn parts_dir(output: &Path) -> PathBuf {
 
 fn refused(e: String) -> EngineError {
     EngineError::Refused(e)
+}
+
+/// The download's headers for a request to `url`. The cookies and any
+/// `Authorization` were given for `added` (the address the stream was added
+/// with), so they go only to its origin, never to another server a playlist
+/// or manifest names.
+fn headers_for<'a>(added: &str, headers: &'a [(String, String)], url: &str) -> Cow<'a, [(String, String)]> {
+    let same_origin = match (Url::parse(added), Url::parse(url)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => false,
+    };
+    if same_origin {
+        return Cow::Borrowed(headers);
+    }
+    let credential = |k: &str| k.eq_ignore_ascii_case("cookie") || k.eq_ignore_ascii_case("authorization");
+    Cow::Owned(headers.iter().filter(|(k, _)| !credential(k)).cloned().collect())
 }
 
 /// Fetch and read a playlist or manifest as text.
@@ -77,7 +96,7 @@ fn load_tracks(
                 }
                 let variant = hls::pick_variant(&master, choice.video.as_deref());
                 let media = |url: &str, audio: bool| -> Result<Track, EngineError> {
-                    let (base, text) = get_text(agent, url, &req.headers)?;
+                    let (base, text) = get_text(agent, url, &headers_for(&req.url, &req.headers, url))?;
                     match hls::parse(&text, &base, audio).map_err(refused)? {
                         hls::Playlist::Media(track) => Ok(track),
                         hls::Playlist::Master(_) => Err(refused("A quality's playlist lists more playlists.".into())),
@@ -128,7 +147,7 @@ pub fn probe(url: &str, headers: &[(String, String)], net: &NetConfig) -> MediaI
                 // The length, from the best quality's playlist; it also shows
                 // whether the segments are DRM protected.
                 let best = &master.variants[0].url;
-                let first = get_text(&agent, best, headers)
+                let first = get_text(&agent, best, &headers_for(url, headers, best))
                     .map_err(|e| e.to_string())
                     .and_then(|(b, t)| hls::parse(&t, &b, false));
                 match first {
@@ -364,7 +383,7 @@ impl Fetching<'_> {
         if let Some(k) = keys.get(url) {
             return Ok(*k);
         }
-        let page = fetch_with(self.agent, url, &self.req.headers, 64)?;
+        let page = fetch_with(self.agent, url, &headers_for(&self.req.url, &self.req.headers, url), 64)?;
         let key: [u8; 16] = page
             .body
             .as_slice()
@@ -398,10 +417,10 @@ impl Fetching<'_> {
 
     fn segment_once(&self, job: &Job, counted: &mut u64) -> Result<(), EngineError> {
         let s = &job.segment;
-        let headers = &self.req.headers;
+        let headers = headers_for(&self.req.url, &self.req.headers, &s.url);
         let mut reader = match s.range {
-            Some((a, b)) => http::fetch_range(self.agent, &s.url, headers, a, b)?,
-            None => http::fetch_whole(self.agent, &s.url, headers)?,
+            Some((a, b)) => http::fetch_range(self.agent, &s.url, &headers, a, b)?,
+            None => http::fetch_whole(self.agent, &s.url, &headers)?,
         };
         let tmp = job.path.with_extension("tmp");
         let mut file = BufWriter::new(File::create(&tmp)?);
@@ -536,6 +555,29 @@ mod tests {
         assert_eq!(parts_dir(Path::new(r"C:\dl\movie.mp4")), PathBuf::from(r"C:\dl\movie.mp4.uidmparts"));
     }
 
+    #[test]
+    fn credentials_stay_on_the_added_origin() {
+        let headers = vec![
+            ("User-Agent".to_string(), "UIDM".to_string()),
+            ("Cookie".to_string(), "session=1".to_string()),
+            ("authorization".to_string(), "Bearer t".to_string()),
+        ];
+        let added = "https://video.example/v/master.m3u8";
+        for same in ["https://video.example/v/1.ts", "https://video.example:443/keys/k", "https://VIDEO.example/x"] {
+            assert_eq!(headers_for(added, &headers, same).as_ref(), headers.as_slice(), "{same}");
+        }
+        for other in [
+            "https://cdn.example/v/1.ts",
+            "http://video.example/v/1.ts",
+            "https://video.example:8443/v/1.ts",
+            "https://sub.video.example/v/1.ts",
+            "not a url",
+        ] {
+            let kept = headers_for(added, &headers, other);
+            assert_eq!(kept.as_ref(), &headers[..1], "{other}");
+        }
+    }
+
     /// Whole streams against a local server.
     mod live {
         use super::super::super::testserver::TestServer;
@@ -659,6 +701,49 @@ mod tests {
             let (path, _) = result.unwrap();
             assert_eq!(path, dir.join("Movie night (1).ts"));
             assert_eq!(fs::read(&path).unwrap(), b"low");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn cookies_go_only_to_the_playlists_origin() {
+            // Another server holds two of the segments and the key.
+            let key = [5u8; 16];
+            let mut cdn_files = HashMap::new();
+            cdn_files.insert("/c/1.ts".to_string(), segment(1));
+            cdn_files.insert("/c/2.ts".to_string(), encrypt(&key, &2u128.to_be_bytes(), &segment(2)));
+            cdn_files.insert("/keys/k".to_string(), key.to_vec());
+            let cdn = TestServer::start_files(cdn_files);
+
+            let mut files = HashMap::new();
+            files.insert(
+                "/v/master.m3u8".to_string(),
+                b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000\nindex.m3u8\n".to_vec(),
+            );
+            let playlist = format!(
+                "#EXTM3U\n#EXTINF:4,\n0.ts\n#EXTINF:4,\n{c}/c/1.ts\n#EXT-X-KEY:METHOD=AES-128,URI=\"{c}/keys/k\"\n#EXTINF:4,\n{c}/c/2.ts\n#EXT-X-ENDLIST\n",
+                c = cdn.url
+            );
+            files.insert("/v/index.m3u8".to_string(), playlist.into_bytes());
+            files.insert("/v/0.ts".to_string(), segment(0));
+            let site = TestServer::start_files(files);
+
+            let dir = temp_dir("cookies");
+            let mut req = request(format!("{}/v/master.m3u8", site.url), &dir, MediaChoice::default());
+            req.headers = vec![
+                ("Cookie".into(), "session=secret".into()),
+                ("Authorization".into(), "Bearer secret".into()),
+            ];
+            let (result, _) = run(req);
+            let (path, _) = result.unwrap();
+            let plain: Vec<u8> = (0..3).flat_map(segment).collect();
+            assert_eq!(fs::read(&path).unwrap(), plain);
+
+            let mut paths: Vec<String> = site.cookies_seen.lock().unwrap().iter().map(|(p, _)| p.clone()).collect();
+            paths.sort();
+            assert_eq!(paths, ["/v/0.ts", "/v/index.m3u8", "/v/master.m3u8"]);
+            assert_eq!(site.auth_seen.lock().unwrap().len(), 3);
+            assert!(cdn.cookies_seen.lock().unwrap().is_empty(), "no cookies to the other server");
+            assert!(cdn.auth_seen.lock().unwrap().is_empty(), "no Authorization to the other server");
             fs::remove_dir_all(&dir).ok();
         }
 

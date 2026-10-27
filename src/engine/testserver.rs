@@ -35,6 +35,8 @@ pub struct TestServer {
     pub served: Arc<AtomicU64>,
     /// Every `Authorization` header received.
     pub auth_seen: Arc<Mutex<Vec<String>>>,
+    /// The path and `Cookie` header of every request that sent one.
+    pub cookies_seen: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 /// A body of `len` bytes that differs at every offset modulo 251, so a
@@ -72,18 +74,26 @@ impl TestServer {
         let counter = Arc::clone(&served);
         let auth_seen = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&auth_seen);
+        let cookies_seen = Arc::new(Mutex::new(Vec::new()));
+        let cookies = Arc::clone(&cookies_seen);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let body = Arc::clone(&body);
                 let counter = Arc::clone(&counter);
                 let seen = Arc::clone(&seen);
+                let cookies = Arc::clone(&cookies);
                 let behavior = behavior.clone();
                 thread::spawn(move || {
-                    let _ = serve(stream, &body, &counter, &behavior, &seen);
+                    let _ = serve(stream, &body, &counter, &behavior, &seen, &cookies);
                 });
             }
         });
-        TestServer { url, served, auth_seen }
+        TestServer {
+            url,
+            served,
+            auth_seen,
+            cookies_seen,
+        }
     }
 }
 
@@ -93,6 +103,7 @@ fn serve(
     served: &AtomicU64,
     behavior: &Behavior,
     auth_seen: &Mutex<Vec<String>>,
+    cookies_seen: &Mutex<Vec<(String, String)>>,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut range: Option<(u64, u64)> = None;
@@ -113,6 +124,10 @@ fn serve(
             let value = line["authorization:".len()..].trim().to_string();
             auth_seen.lock().unwrap().push(value.clone());
             auth = Some(value);
+        }
+        if lower.starts_with("cookie:") {
+            let path = request_line.split(' ').nth(1).unwrap_or("/").to_string();
+            cookies_seen.lock().unwrap().push((path, line["cookie:".len()..].trim().to_string()));
         }
         if let Some(spec) = lower.strip_prefix("range: bytes=") {
             let mut parts = spec.trim().splitn(2, '-');
