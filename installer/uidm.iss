@@ -1,7 +1,8 @@
 ; Inno Setup script for UIDM's Windows installer. It installs for the current
 ; user only, needs no administrator rights, and does what install-host.ps1
-; does: the three programs, the extension folder, the native-messaging host
-; registered with Chrome and Edge, and a Start menu shortcut.
+; does: the three programs, the extension folder and its Firefox copy, the
+; native-messaging host registered with Chrome, Edge and Firefox, and a Start
+; menu shortcut.
 ;
 ; Build it with installer\build.ps1, which builds the programs and passes the
 ; version from Cargo.toml. To call the compiler yourself:
@@ -13,6 +14,8 @@
 #define HostName "com.uidm.host"
 ; Fixed by the public key in extension\manifest.json.
 #define ExtensionId "epmjakacaejhdhldkpbjnakhfmjjbhfm"
+; From extension\firefox.json.
+#define FirefoxId "uidm@uidm.local"
 #define Root ".."
 
 [Setup]
@@ -51,7 +54,9 @@ Name: desktopicon; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm
 Source: "{#Root}\target\release\uidm-host.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\target\release\uidm-daemon.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\target\release\uidm-gui.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#Root}\extension\*"; DestDir: "{app}\extension"; Excludes: "test\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#Root}\extension\*"; DestDir: "{app}\extension"; Excludes: "test\*,firefox.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Made by build.ps1 with make-firefox.ps1.
+Source: "{#Root}\firefox\*"; DestDir: "{app}\firefox"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "uidm.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -60,6 +65,8 @@ Source: "{#Root}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 ; manifest itself is written in [Code], with this install's path in it.
 Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueName: ""; ValueData: "{app}\{#HostName}.json"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueName: ""; ValueData: "{app}\{#HostName}.json"; Flags: uninsdeletekey
+; Firefox names the allowed extension by ID, so it has its own manifest.
+Root: HKCU; Subkey: "Software\Mozilla\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueName: ""; ValueData: "{app}\{#HostName}.firefox.json"; Flags: uninsdeletekey
 
 [Icons]
 Name: "{autoprograms}\UIDM"; Filename: "{app}\uidm-gui.exe"; WorkingDir: "{app}"; IconFilename: "{app}\uidm.ico"; Comment: "UIDM download manager"
@@ -71,6 +78,7 @@ Filename: "{app}\extension"; Description: "Open the extension folder, to load it
 
 [UninstallDelete]
 Type: files; Name: "{app}\{#HostName}.json"
+Type: files; Name: "{app}\{#HostName}.firefox.json"
 
 [Code]
 const
@@ -101,11 +109,12 @@ begin
   Result := Result + '"';
 end;
 
-{ The native-messaging manifest: where uidm-host.exe is, and the only
-  extension allowed to start it. }
-procedure WriteHostManifest();
+{ A native-messaging manifest: where uidm-host.exe is, and the only
+  extension allowed to start it. Allowed is the last line, such as
+  "allowed_origins": [...]. }
+procedure WriteHostManifest(FileName, Allowed: String);
 var
-  Json: String;
+  Json, Path: String;
 begin
   Json :=
     '{' + #13#10 +
@@ -113,10 +122,11 @@ begin
     '  "description": "UIDM download manager native-messaging host",' + #13#10 +
     '  "type": "stdio",' + #13#10 +
     '  "path": ' + JsonString(ExpandConstant('{app}\uidm-host.exe')) + ',' + #13#10 +
-    '  "allowed_origins": ["chrome-extension://{#ExtensionId}/"]' + #13#10 +
+    '  ' + Allowed + #13#10 +
     '}' + #13#10;
-  if not SaveStringToFile(ExpandConstant('{app}\{#HostName}.json'), Json, False) then
-    RaiseException('Could not write ' + ExpandConstant('{app}\{#HostName}.json'));
+  Path := ExpandConstant('{app}\') + FileName;
+  if not SaveStringToFile(Path, Json, False) then
+    RaiseException('Could not write ' + Path);
 end;
 
 { Find the UIDM programs running from this install's folder and, with Stop,
@@ -167,7 +177,10 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
-    WriteHostManifest();
+  begin
+    WriteHostManifest('{#HostName}.json', '"allowed_origins": ["chrome-extension://{#ExtensionId}/"]');
+    WriteHostManifest('{#HostName}.firefox.json', '"allowed_extensions": ["{#FirefoxId}"]');
+  end;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -179,6 +192,8 @@ begin
       '2. Click Load unpacked and choose this folder:' + #13#10 +
       '    ' + ExpandConstant('{app}\extension') + #13#10 +
       '3. Check that its ID reads {#ExtensionId}.' + #13#10#13#10 +
+      'In Firefox, open about:debugging, choose This Firefox, then Load Temporary Add-on, ' +
+      'and pick manifest.json in ' + ExpandConstant('{app}\firefox') + '.' + #13#10#13#10 +
       'For streamed videos to be saved as .mp4, install ffmpeg and put it on PATH, or choose it in Options.';
 end;
 

@@ -12,7 +12,8 @@ pattern, a list or a site crawl, and watches the clipboard for links.
 Run `UIDM-Setup-<version>.exe`. GitHub Actions builds it on every push, in
 the `uidm-windows-setup` artifact, and [Build](#build) says how to make it
 yourself. It installs for your user only, without administrator rights, into
-`%LOCALAPPDATA%\Programs\UIDM`. It registers UIDM with Chrome and Edge, adds
+`%LOCALAPPDATA%\Programs\UIDM`. It registers UIDM with Chrome, Edge and
+Firefox, adds
 **UIDM** to the Start menu (and, if you tick it, the desktop), and lists UIDM
 under **Installed apps**. Setup is not code-signed, so Windows SmartScreen
 may warn before it runs.
@@ -24,8 +25,9 @@ under [Build](#build), run this from this folder:
 .\install-host.ps1
 ```
 
-That builds the three programs if needed, registers UIDM with Chrome and Edge,
-and adds **UIDM** to the Start menu.
+That builds the three programs if needed, registers UIDM with Chrome, Edge and
+Firefox, makes the Firefox copy of the extension, and adds **UIDM** to the
+Start menu.
 
 Either way, load the extension once:
 
@@ -59,14 +61,19 @@ files are left alone either way.
 
 ### Firefox
 
-The same extension folder loads in Firefox 128 or later, with the ID
-`uidm@uidm.local`. `install-host.ps1` registers UIDM with Firefox as well
-(under `HKCU\Software\Mozilla\NativeMessagingHosts`, with a host manifest
-that names that ID). Until the extension is signed by Mozilla, load it for
-each Firefox session:
+Firefox 128 or later loads the `firefox` folder, a copy of the extension with
+its own manifest and the ID `uidm@uidm.local`. Firefox runs background scripts
+where Chrome runs a service worker, and Chrome warns about Firefox's keys, so
+the two cannot share one `manifest.json`. Setup installs the `firefox` folder
+next to `extension`; with a checkout, `install-host.ps1` makes it, and
+`.\installer\make-firefox.ps1 -Out firefox` remakes it after you change the
+extension. Both register UIDM with Firefox (under
+`HKCU\Software\Mozilla\NativeMessagingHosts`, with a host manifest that names
+that ID). Until the extension is signed by Mozilla, load it for each Firefox
+session:
 
 1. Open `about:debugging`, choose **This Firefox**, then **Load Temporary
-   Add-on...**, and pick `manifest.json` in the `extension` folder.
+   Add-on...**, and pick `manifest.json` in the `firefox` folder.
 2. In `about:addons`, open UIDM's **Permissions** and allow **Access your
    data for all websites**. Firefox asks for this separately; without it the
    video button, the selection button, form downloads and **Download all
@@ -74,10 +81,10 @@ each Firefox session:
 
 Known gaps in Firefox:
 
-- Setup does not register UIDM with Firefox yet; use `install-host.ps1`.
-- **Use the browser's proxy** finds nothing, because Firefox reports its
-  proxy settings in another form.
 - A temporary add-on is removed when Firefox closes.
+- **Use the browser's proxy** finds Firefox's manual proxy only; with
+  **Use system proxy settings** or a configuration script it finds nothing,
+  as in Chrome.
 
 These were checked against a stand-in for the browser API in the extension's
 tests, not in a running Firefox.
@@ -790,6 +797,7 @@ is a failed scan, as is one that runs over 10 minutes.
 | `src/protocol.rs` | Framing and message types |
 | `src/engine/` | Queue, segments, resume sidecar, speed limiter, HTTP, streams (`stream.rs`) |
 | `extension/` | MV3 extension: capture, context menu, popup |
+| `extension/firefox.json` | What the Firefox copy changes in `manifest.json` |
 | `extension/rules.js` | Capture rules (file types, minimum size, excluded sites) |
 | `extension/post.js` | Matching downloads to the form POSTs that started them |
 | `extension/media.js` | Which responses are videos and streams, per tab, and the video menu |
@@ -797,9 +805,10 @@ is a failed scan, as is one that runs over 10 minutes.
 | `extension/test/` | Node tests for the rules and the service worker |
 | `assets/icon-64.rgba` | Window icon, raw RGBA made from `extension/icons/128.png` |
 | `host/com.uidm.host.json` | Template of the native-messaging manifest |
-| `install-host.ps1` | Builds, registers with Chrome and Edge, adds the Start menu entry |
+| `install-host.ps1` | Builds, registers with Chrome, Edge and Firefox, adds the Start menu entry |
 | `installer/uidm.iss` | Inno Setup script for `UIDM-Setup-<version>.exe` |
 | `installer/build.ps1` | Builds the programs and the installer into `dist\` |
+| `installer/make-firefox.ps1` | Makes the Firefox copy of the extension |
 | `installer/uidm.ico` | Setup and shortcut icon, packed from `extension/icons` by `make-icon.js` |
 
 ## Build
@@ -815,9 +824,10 @@ node --test extension/test/*.test.js
 
 GitHub Actions builds the Windows programs on every push and pull request
 (`.github/workflows/build.yml`): it runs `cargo build --release` and
-`cargo test` with the stable MSVC toolchain on `windows-latest`, then uploads
-`uidm-windows`, an artifact with the three programs under `target\release`,
-the extension and `install-host.ps1`, ready for `.\install-host.ps1`, and
+`cargo test` with the stable MSVC toolchain on `windows-latest`, and the
+extension's tests with Node, then uploads `uidm-windows`, an artifact with the
+three programs under `target\release`, the extension, its Firefox copy and
+`install-host.ps1`, ready for `.\install-host.ps1`, and
 `uidm-windows-setup`, with the installer.
 
 To build the installer, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)

@@ -79,8 +79,7 @@ function loadWorker({ firefox = false } = {}) {
   });
   const run = (file) => vm.runInContext(fs.readFileSync(path.join(dir, file), "utf8"), context);
   if (firefox) {
-    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
-    manifest.background.scripts.forEach(run);
+    firefoxManifest().background.scripts.forEach(run);
   } else {
     context.importScripts = (...files) => files.forEach(run);
     run("background.js");
@@ -94,9 +93,22 @@ function loadWorker({ firefox = false } = {}) {
   return { port, sent, browserCalls, chrome, popup, content };
 }
 
+// manifest.json as installer\make-firefox.ps1 changes it for Firefox: each
+// key of firefox.json replaces the manifest's, and null removes it.
+function firefoxManifest() {
+  const dir = path.join(__dirname, "..");
+  const read = (file) => JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+  const manifest = read("manifest.json");
+  for (const [key, value] of Object.entries(read("firefox.json"))) {
+    if (value === null) delete manifest[key];
+    else manifest[key] = value;
+  }
+  return manifest;
+}
+
 let nextDownloadId = 1;
 function download(fields) {
   return { id: nextDownloadId++, url: "", referrer: "", filename: "", mime: "", totalBytes: 0, fileSize: 0, incognito: false, ...fields };
 }
 
-module.exports = { loadWorker, download, event, setBrowserProxy };
+module.exports = { loadWorker, download, event, setBrowserProxy, firefoxManifest };

@@ -25,6 +25,9 @@ if (-not $SkipBuild) {
     }
 }
 
+# Setup installs this beside the extension folder, for Firefox.
+& (Join-Path $PSScriptRoot "make-firefox.ps1") -Out (Join-Path $root "firefox")
+
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 if (-not $iscc) {
     $iscc = @(
