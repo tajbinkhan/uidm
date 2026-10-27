@@ -419,30 +419,61 @@ pub struct GrabDialog {
     max_pages: u64,
     max_mb: u64,
     delay_secs: f64,
+    /// The filters, each list one pattern per line or separated by spaces.
+    explore_only: String,
+    explore_skip: String,
+    files_only: String,
+    files_skip: String,
+    subdomains: bool,
+    no_parent: bool,
+    /// Size limits in MB, when ticked.
+    min_mb: Option<f64>,
+    max_mb_file: Option<f64>,
+    hide_duplicates: bool,
     queue: u64,
     start_queue: bool,
     error: Option<String>,
 }
 
+/// Patterns typed one per line or separated by spaces.
+fn pattern_list(text: &str) -> Vec<String> {
+    text.split_whitespace().map(str::to_string).collect()
+}
+
+const MB: f64 = 1024.0 * 1024.0;
+
 impl GrabDialog {
     pub fn new() -> Self {
-        let d = GrabRequest::default();
+        Self::from_request(&GrabRequest::default())
+    }
+
+    /// The form filled from `d`.
+    pub fn from_request(d: &GrabRequest) -> Self {
         GrabDialog {
             phase: GrabPhase::Form,
-            start: String::new(),
+            start: d.start.clone(),
             depth: d.depth,
             same_site: d.same_site,
             types: d.types.join(", "),
             max_pages: d.max_pages,
             max_mb: d.max_bytes / (1024 * 1024),
             delay_secs: d.delay_ms as f64 / 1000.0,
+            explore_only: d.explore_only.join("\n"),
+            explore_skip: d.explore_skip.join("\n"),
+            files_only: d.files_only.join("\n"),
+            files_skip: d.files_skip.join("\n"),
+            subdomains: d.subdomains,
+            no_parent: d.no_parent,
+            min_mb: d.min_size.map(|b| b as f64 / MB),
+            max_mb_file: d.max_size.map(|b| b as f64 / MB),
+            hide_duplicates: d.hide_duplicates,
             queue: MAIN_QUEUE,
             start_queue: false,
             error: None,
         }
     }
 
-    fn request(&self) -> GrabRequest {
+    pub fn request(&self) -> GrabRequest {
         GrabRequest {
             start: self.start.trim().to_string(),
             depth: self.depth,
@@ -451,6 +482,15 @@ impl GrabDialog {
             max_pages: self.max_pages,
             max_bytes: self.max_mb * 1024 * 1024,
             delay_ms: (self.delay_secs * 1000.0).round() as u64,
+            explore_only: pattern_list(&self.explore_only),
+            explore_skip: pattern_list(&self.explore_skip),
+            files_only: pattern_list(&self.files_only),
+            files_skip: pattern_list(&self.files_skip),
+            subdomains: self.subdomains,
+            no_parent: self.no_parent,
+            min_size: self.min_mb.map(|m| (m * MB).round() as u64),
+            max_size: self.max_mb_file.map(|m| (m * MB).round() as u64),
+            hide_duplicates: self.hide_duplicates,
         }
     }
 
@@ -523,7 +563,13 @@ pub fn grab_dialog(
                     });
                     ui.end_row();
                     ui.label("");
-                    ui.checkbox(&mut d.same_site, "Stay on the start page's site");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut d.same_site, "Stay on the start page's site");
+                        ui.add_enabled(d.same_site, egui::Checkbox::new(&mut d.subdomains, "and its subdomains"));
+                    });
+                    ui.end_row();
+                    ui.label("");
+                    ui.checkbox(&mut d.no_parent, "Do not go above the start page's folder");
                     ui.end_row();
                     ui.label("Keep files of type");
                     ui.add(egui::TextEdit::singleline(&mut d.types).hint_text("pdf, zip").desired_width(240.0));
@@ -548,6 +594,38 @@ pub fn grab_dialog(
                         ui.label("seconds (longer if the site's robots.txt asks)");
                     });
                     ui.end_row();
+                });
+                egui::CollapsingHeader::new("Filters").id_salt("grab_filters").show(ui, |ui| {
+                    ui.weak("One pattern per line. * matches anything; a pattern without * matches anywhere in the address, as /docs/ does.");
+                    egui::Grid::new("grab_filter_grid").num_columns(4).spacing([10.0, 6.0]).show(ui, |ui| {
+                        let field = |ui: &mut egui::Ui, text: &mut String, hint: &str| {
+                            ui.add(egui::TextEdit::multiline(text).hint_text(hint).desired_rows(2).desired_width(190.0));
+                        };
+                        ui.label("Explore only");
+                        field(ui, &mut d.explore_only, "Every page in reach");
+                        ui.label("Never explore");
+                        field(ui, &mut d.explore_skip, "*/logout*");
+                        ui.end_row();
+                        ui.label("Keep only files");
+                        field(ui, &mut d.files_only, "Every file of the types");
+                        ui.label("Never keep");
+                        field(ui, &mut d.files_skip, "*/old/*");
+                        ui.end_row();
+                    });
+                    ui.horizontal(|ui| {
+                        let size = |ui: &mut egui::Ui, label: &str, value: &mut Option<f64>, default: f64| {
+                            let mut on = value.is_some();
+                            ui.checkbox(&mut on, label);
+                            let mut v = value.unwrap_or(default);
+                            ui.add_enabled(on, egui::DragValue::new(&mut v).range(0.0..=1_000_000.0).speed(0.5).max_decimals(1).suffix(" MB"));
+                            *value = on.then_some(v);
+                        };
+                        size(ui, "At least", &mut d.min_mb, 1.0);
+                        size(ui, "At most", &mut d.max_mb_file, 100.0);
+                    })
+                    .response
+                    .on_hover_text("Sizes are asked with one request per file, after the usual wait");
+                    ui.checkbox(&mut d.hide_duplicates, "List a file once when the same name and size are found at other addresses");
                 });
                 ui.add_space(4.0);
                 let least = d.max_pages as f64 * d.delay_secs;
@@ -621,6 +699,9 @@ pub fn grab_dialog(
                             ui.checkbox(c, "");
                             ui.add(egui::Label::new(&f.name).truncate())
                                 .on_hover_text(format!("{}\nfound on {}", f.url, f.page));
+                            if let Some(n) = f.size {
+                                ui.weak(human_bytes(n));
+                            }
                         });
                     }
                 });

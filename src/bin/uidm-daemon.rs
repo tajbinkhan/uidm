@@ -1369,7 +1369,9 @@ impl Daemon {
                 }
             };
             eprintln!("[uidm-daemon] client #{client} crawls {}", req.start);
-            let out = grab::crawl(&req, fetch, wait, &stop, |pages, bytes, found| {
+            // A file's size, for the size filters and duplicates.
+            let size = |url: &str| engine::inspect(url, None, &headers, &net).ok().and_then(|i| i.total);
+            let out = grab::crawl(&req, fetch, size, wait, &stop, |pages, bytes, found| {
                 send(&Outgoing::GrabProgress { pages, bytes, found })
             });
             daemon.grabs.lock().unwrap().remove(&client);

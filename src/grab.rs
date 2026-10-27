@@ -35,6 +35,35 @@ pub struct GrabRequest {
     pub max_bytes: u64,
     /// Wait at least this long between requests, in milliseconds.
     pub delay_ms: u64,
+    /// Explore only pages whose address matches one of these (see
+    /// `pattern_matches`); empty explores every page in reach.
+    #[serde(default)]
+    pub explore_only: Vec<String>,
+    /// Never explore pages whose address matches one of these.
+    #[serde(default)]
+    pub explore_skip: Vec<String>,
+    /// Keep only files whose address matches one of these.
+    #[serde(default)]
+    pub files_only: Vec<String>,
+    /// Never keep files whose address matches one of these.
+    #[serde(default)]
+    pub files_skip: Vec<String>,
+    /// With `same_site`, also explore the start domain's subdomains.
+    #[serde(default)]
+    pub subdomains: bool,
+    /// Do not explore above the start page's folder on its site.
+    #[serde(default)]
+    pub no_parent: bool,
+    /// Keep only files of at least this many bytes. Sizes are asked with a
+    /// request per file; a file whose size is not known is kept.
+    #[serde(default)]
+    pub min_size: Option<u64>,
+    #[serde(default)]
+    pub max_size: Option<u64>,
+    /// List a file once when the same name and size turn up at another
+    /// address.
+    #[serde(default)]
+    pub hide_duplicates: bool,
 }
 
 pub const DEPTH_RANGE: (u32, u32) = (0, 10);
@@ -59,6 +88,15 @@ impl Default for GrabRequest {
             max_pages: 200,
             max_bytes: 50 * 1024 * 1024,
             delay_ms: 1000,
+            explore_only: Vec::new(),
+            explore_skip: Vec::new(),
+            files_only: Vec::new(),
+            files_skip: Vec::new(),
+            subdomains: false,
+            no_parent: false,
+            min_size: None,
+            max_size: None,
+            hide_duplicates: true,
         }
     }
 }
@@ -89,8 +127,55 @@ impl GrabRequest {
         if self.types.is_empty() {
             return Err("Choose at least one file type to keep.".into());
         }
+        if let (Some(lo), Some(hi)) = (self.min_size, self.max_size) {
+            if lo > hi {
+                return Err("The smallest file size is larger than the largest.".into());
+            }
+        }
         Ok(())
     }
+}
+
+/// Whether `url` matches `pattern`, ignoring case: `*` matches any run of
+/// characters, a pattern without a scheme also matches without one, and a
+/// pattern without `*` matches anywhere in the address (`/docs/` keeps
+/// every address with /docs/ in it).
+pub fn pattern_matches(pattern: &str, url: &str) -> bool {
+    let p = pattern.trim().to_ascii_lowercase();
+    let u = url.trim().to_ascii_lowercase();
+    if p.is_empty() {
+        return false;
+    }
+    if !p.contains('*') {
+        return u.contains(&p);
+    }
+    let bare = u.split_once("://").map_or(u.as_str(), |(_, rest)| rest);
+    glob(&p, &u) || (!p.contains("://") && glob(&p, bare))
+}
+
+/// `*` matches any run of characters; the rest must match exactly.
+fn glob(pattern: &str, text: &str) -> bool {
+    let pieces: Vec<&str> = pattern.split('*').collect();
+    let Some(mut rest) = text.strip_prefix(pieces[0]) else {
+        return false;
+    };
+    let last = pieces.len() - 1;
+    for (i, piece) in pieces.iter().enumerate().skip(1) {
+        if i == last {
+            return rest.ends_with(piece);
+        }
+        match rest.find(piece) {
+            Some(at) => rest = &rest[at + piece.len()..],
+            None => return false,
+        }
+    }
+    rest.is_empty()
+}
+
+/// Whether `url` passes an include list (empty passes all) and an exclude
+/// list.
+fn passes(url: &str, only: &[String], skip: &[String]) -> bool {
+    (only.is_empty() || only.iter().any(|p| pattern_matches(p, url))) && !skip.iter().any(|p| pattern_matches(p, url))
 }
 
 /// A file the crawl found.
@@ -101,6 +186,9 @@ pub struct GrabFile {
     pub name: String,
     /// The page that links to it.
     pub page: String,
+    /// Its size, when it was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
 }
 
 /// A fetched page.
@@ -269,12 +357,14 @@ pub struct Outcome {
 }
 
 /// Crawl from `req.start`. `fetch` reads a page (at most `MAX_PAGE_BYTES`);
-/// `wait` sleeps between requests (tests pass a no-op); `progress` hears
-/// pages read, bytes read and files found after each page. `cancel` stops the
+/// `size` asks a file's size, for the size filters and duplicates; `wait`
+/// sleeps between requests (tests pass a no-op); `progress` hears pages
+/// read, bytes read and files found after each page. `cancel` stops the
 /// crawl between requests.
 pub fn crawl(
     req: &GrabRequest,
     mut fetch: impl FnMut(&str) -> Result<Page, String>,
+    mut size: impl FnMut(&str) -> Option<u64>,
     mut wait: impl FnMut(Duration),
     cancel: &AtomicBool,
     mut progress: impl FnMut(u64, u64, usize),
@@ -290,6 +380,15 @@ pub fn crawl(
     };
     start.set_fragment(None);
     let start_host = start.host_str().unwrap_or("").to_ascii_lowercase();
+    // The domain whose subdomains count as the same site: the start host
+    // without a leading www.
+    let domain = start_host.strip_prefix("www.").unwrap_or(&start_host).to_string();
+    // The folder the crawl may not go above.
+    let start_dir = start.path().rsplit_once('/').map_or("/".to_string(), |(dir, _)| format!("{dir}/"));
+    // The files kept so far, by name (as indexes into `out.files`), to spot
+    // duplicates, and those whose size was asked.
+    let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut asked: HashSet<usize> = HashSet::new();
     let types: HashSet<String> = req.types.iter().map(|t| t.trim().trim_start_matches('.').to_ascii_lowercase()).collect();
     let delay = Duration::from_millis(req.delay_ms);
 
@@ -356,24 +455,69 @@ pub fn crawl(
             let (pages, files) = links(&text, &here);
             for file in files {
                 let Some(ext) = url_extension(&file) else { continue };
-                if types.contains(&ext) && seen_files.insert(file.to_string()) {
-                    let name = file
-                        .path_segments()
-                        .and_then(|mut s| s.next_back())
-                        .map(|n| percent_encoding::percent_decode_str(n).decode_utf8_lossy().into_owned())
-                        .unwrap_or_default();
-                    out.files.push(GrabFile {
-                        url: file.to_string(),
-                        name,
-                        page: here.to_string(),
-                    });
+                if !types.contains(&ext) || !passes(file.as_str(), &req.files_only, &req.files_skip) {
+                    continue;
                 }
+                if !seen_files.insert(file.to_string()) {
+                    continue;
+                }
+                let name = file
+                    .path_segments()
+                    .and_then(|mut s| s.next_back())
+                    .map(|n| percent_encoding::percent_decode_str(n).decode_utf8_lossy().into_owned())
+                    .unwrap_or_default();
+                // Ask the size only when a filter needs it, or to compare
+                // with files of the same name kept earlier (whose sizes are
+                // asked then too).
+                let twins = by_name.get(&name).cloned().unwrap_or_default();
+                let compare = req.hide_duplicates && !twins.is_empty();
+                let need = req.min_size.is_some() || req.max_size.is_some() || compare;
+                if need && cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                if compare {
+                    for &i in &twins {
+                        if out.files[i].size.is_none() && asked.insert(i) {
+                            wait(delay);
+                            out.files[i].size = size(&out.files[i].url);
+                        }
+                    }
+                }
+                let known = if need {
+                    wait(delay);
+                    size(file.as_str())
+                } else {
+                    None
+                };
+                if let Some(n) = known {
+                    if req.min_size.is_some_and(|lo| n < lo) || req.max_size.is_some_and(|hi| n > hi) {
+                        continue;
+                    }
+                    if compare && twins.iter().any(|&i| out.files[i].size == Some(n)) {
+                        continue;
+                    }
+                }
+                let at = out.files.len();
+                if need {
+                    asked.insert(at);
+                }
+                by_name.entry(name.clone()).or_default().push(at);
+                out.files.push(GrabFile {
+                    url: file.to_string(),
+                    name,
+                    page: here.to_string(),
+                    size: known,
+                });
             }
             if depth < req.depth {
                 for next in pages {
-                    let same = next.host_str().is_some_and(|h| h.eq_ignore_ascii_case(&start_host));
+                    let host = next.host_str().unwrap_or("").to_ascii_lowercase();
+                    let exact = host == start_host;
+                    let sub = req.subdomains && (host == domain || host.ends_with(&format!(".{domain}")));
+                    let below = !req.no_parent || !exact || next.path().starts_with(&start_dir);
                     let page_like = url_extension(&next).is_none_or(|e| PAGE_EXTENSIONS.contains(&e.as_str()));
-                    if (same || !req.same_site) && page_like && seen_pages.insert(next.to_string()) {
+                    let wanted = passes(next.as_str(), &req.explore_only, &req.explore_skip);
+                    if (exact || sub || !req.same_site) && below && page_like && wanted && seen_pages.insert(next.to_string()) {
                         queue.push_back((next, depth + 1));
                     }
                 }
@@ -500,6 +644,7 @@ Crawl-delay: 2.5
                 fetched.borrow_mut().push(u.to_string());
                 site(u)
             },
+            |_| None,
             |_| *waits.borrow_mut() += 1,
             &AtomicBool::new(false),
             |_, _, _| {},
@@ -517,11 +662,12 @@ Crawl-delay: 2.5
         assert_eq!(*waits.borrow(), fetched.len() - 1, "a wait before every request but the first");
         assert!(out.stopped.unwrap().contains("robots.txt"));
 
-        let deeper = crawl(&request(2), site, |_| {}, &AtomicBool::new(false), |_, _, _| {});
+        let deeper = crawl(&request(2), site, |_| None, |_| {}, &AtomicBool::new(false), |_, _, _| {});
         assert!(deeper.files.iter().any(|f| f.name == "four.pdf"));
         let anywhere = crawl(
             &GrabRequest { same_site: false, ..request(1) },
             site,
+            |_| None,
             |_| {},
             &AtomicBool::new(false),
             |_, _, _| {},
@@ -534,6 +680,7 @@ Crawl-delay: 2.5
         let out = crawl(
             &GrabRequest { max_pages: 2, ..request(3) },
             site,
+            |_| None,
             |_| {},
             &AtomicBool::new(false),
             |_, _, _| {},
@@ -542,13 +689,66 @@ Crawl-delay: 2.5
         assert!(out.stopped.unwrap().contains("2 pages"));
 
         let cancel = AtomicBool::new(false);
-        let out = crawl(&request(3), site, |_| {}, &cancel, |pages, _, _| {
+        let out = crawl(&request(3), site, |_| None, |_| {}, &cancel, |pages, _, _| {
             if pages == 1 {
                 cancel.store(true, Ordering::Relaxed);
             }
         });
         assert_eq!(out.pages, 1);
         assert_eq!(out.stopped.as_deref(), Some("Stopped."));
+    }
+
+    #[test]
+    fn patterns_match_addresses() {
+        assert!(pattern_matches("*/docs/*", "https://s/docs/a.pdf"));
+        assert!(pattern_matches("/docs/", "https://s/docs/a.pdf"), "no * matches anywhere");
+        assert!(!pattern_matches("*/docs/*", "https://s/blog/a.pdf"));
+        assert!(pattern_matches("s/*.PDF", "https://s/x/a.pdf"), "no scheme, any case");
+        assert!(pattern_matches("https://s/*", "https://s/a"));
+        assert!(!pattern_matches("http://s/*", "https://s/a"));
+        assert!(!pattern_matches("", "https://s/a"));
+    }
+
+    #[test]
+    fn filters_narrow_what_is_explored_and_kept() {
+        let none = AtomicBool::new(false);
+        let skip_b = GrabRequest { explore_skip: vec!["*/b/*".into()], ..request(1) };
+        let out = crawl(&skip_b, site, |_| None, |_| {}, &none, |_, _, _| {});
+        assert!(!out.files.iter().any(|f| f.name == "two.pdf"), "/b/ was not explored");
+        let only_one = GrabRequest { files_only: vec!["one".into()], ..request(1) };
+        let names: Vec<String> = crawl(&only_one, site, |_| None, |_| {}, &none, |_, _, _| {}).files.into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["one.pdf"]);
+        let out = crawl(&GrabRequest { start: "https://s/a/".into(), no_parent: true, ..request(2) }, site, |_| None, |_| {}, &none, |_, _, _| {});
+        assert!(out.files.iter().any(|f| f.name == "four.pdf") && !out.files.iter().any(|f| f.name == "two.pdf"), "stays below /a/");
+    }
+
+    #[test]
+    fn sizes_filter_and_hide_duplicates() {
+        let none = AtomicBool::new(false);
+        let sizes = |u: &str| -> Option<u64> {
+            match u.rsplit('/').next()? {
+                "one.pdf" => Some(500),
+                "two.pdf" => Some(5000),
+                "top.pdf" => Some(50),
+                _ => None,
+            }
+        };
+        let req = GrabRequest { min_size: Some(100), max_size: Some(1000), ..request(1) };
+        let names: Vec<String> = crawl(&req, site, sizes, |_| {}, &none, |_, _, _| {}).files.into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["one.pdf", "three x.pdf"], "unknown sizes stay");
+
+        // The same name and size at two addresses shows once.
+        let twice = |url: &str| -> Result<Page, String> {
+            let body = match url {
+                "https://s/" => r#"<a href="/x/a.pdf">1</a><a href="/y/a.pdf">2</a><a href="/z/a.pdf">3</a>"#,
+                _ => return Err("404".into()),
+            };
+            Ok(Page { url: url.into(), content_type: Some("text/html".into()), body: body.as_bytes().to_vec() })
+        };
+        let size = |u: &str| Some(if u.contains("/z/") { 9 } else { 7 });
+        let out = crawl(&request(0), twice, size, |_| {}, &none, |_, _, _| {});
+        let urls: Vec<&str> = out.files.iter().map(|f| f.url.as_str()).collect();
+        assert_eq!(urls, ["https://s/x/a.pdf", "https://s/z/a.pdf"]);
     }
 
     #[test]
