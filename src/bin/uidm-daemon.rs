@@ -1532,6 +1532,45 @@ impl Daemon {
             eprintln!("[uidm-daemon] could not save grabber project {}: {e}", project.name);
         }
     }
+    /// List the files inside zip download `id` on another thread, reading
+    /// the end of the archive with its own request (cookies and all), and
+    /// answer `reply` with `zip_preview`.
+    fn preview_zip(&self, id: u64, reply: Sender<Vec<u8>>) {
+        let entry = self.entry(id);
+        let download = self.hub.requests.lock().unwrap().get(&id).cloned();
+        let answer = move |entries: Vec<uidm::zip::ZipEntry>, error: Option<String>| {
+            if let Ok(frame) = serde_json::to_vec(&Outgoing::ZipPreview { id, entries, error }) {
+                let _ = reply.send(frame);
+            }
+        };
+        let Some(entry) = entry else {
+            return answer(Vec::new(), Some(format!("no download with id {id}")));
+        };
+        let download = download.unwrap_or_else(|| Download {
+            url: entry.url.clone(),
+            ..Download::default()
+        });
+        let req = self.request_for(download);
+        thread::spawn(move || {
+            let total = match entry.total {
+                Some(t) => Ok(t),
+                None => engine::inspect(&req.url, None, &req.headers, &req.net)
+                    .map_err(|e| e.to_string())
+                    .and_then(|i| i.total.ok_or_else(|| "The server does not say how big the file is.".to_string())),
+            };
+            let listed = total.and_then(|total| {
+                uidm::zip::list(total, |a, b| {
+                    engine::fetch_range_bytes(&req.url, &req.headers, &req.net, a, b)
+                        .map_err(|e| format!("The server would not send part of the file: {e}"))
+                })
+            });
+            match listed {
+                Ok(entries) => answer(entries, None),
+                Err(e) => answer(Vec::new(), Some(e)),
+            }
+        });
+    }
+
     /// Ask the browser extension to render `url` in a background tab and
     /// wait for its HTML and final address. `None` without an extension or
     /// an answer in time.
@@ -2603,6 +2642,7 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
                 daemon.show_window();
             }
         }
+        Incoming::PreviewZip { id } => daemon.preview_zip(id, reply.clone()),
         Incoming::Rendered { request, html, url } => {
             if let Some(tx) = daemon.render_waits.lock().unwrap().remove(&request) {
                 let _ = tx.send(html.zip(url));

@@ -760,6 +760,23 @@ pub fn fetch(url: &str, headers: &[(String, String)], net: &NetConfig, limit: u6
     fetch_with(&agent, url, headers, limit)
 }
 
+/// The bytes `start` through `end` (inclusive) of `url`, for a preview.
+/// Fails when the server does not send ranges.
+pub fn fetch_range_bytes(
+    url: &str,
+    headers: &[(String, String)],
+    net: &NetConfig,
+    start: u64,
+    end: u64,
+) -> Result<Vec<u8>, EngineError> {
+    let agent = http::Client::new(net, url)?;
+    let mut body = Vec::new();
+    http::fetch_range(&agent, url, headers, start, end)?
+        .take(end + 1 - start)
+        .read_to_end(&mut body)?;
+    Ok(body)
+}
+
 fn fetch_with(agent: &http::Client, url: &str, headers: &[(String, String)], limit: u64) -> Result<Fetched, EngineError> {
     let (url, content_type, reader) = http::get(agent, url, headers)?;
     let mut body = Vec::new();
@@ -2009,6 +2026,15 @@ mod tests {
             assert!(again < LEN as u64, "only the rest was fetched: {again} bytes");
             assert!(!partial.unwrap().exists());
             fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_preview_reads_just_the_range_it_asks_for() {
+            let data = body(LEN);
+            let server = TestServer::start(data.clone());
+            let tail = fetch_range_bytes(&server.url, &[], &NetConfig::default(), LEN as u64 - 100, LEN as u64 - 1).unwrap();
+            assert_eq!(tail, &data[LEN - 100..]);
+            assert!(server.served.load(Ordering::Relaxed) <= 100, "only the range was sent");
         }
 
         #[test]

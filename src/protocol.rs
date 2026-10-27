@@ -147,6 +147,9 @@ pub enum Incoming {
         #[serde(default)]
         user_agent: Option<String>,
     },
+    /// List the files inside a waiting zip download, reading only the end
+    /// of the archive; answered with `zip_preview`.
+    PreviewZip { id: u64 },
     /// A page as the browser showed it, answering `render_page`: its HTML
     /// after its scripts ran and its address then, or nothing.
     Rendered {
@@ -562,6 +565,15 @@ pub enum Outgoing {
     /// Asks the browser extension for its cookies for `url` (for a site
     /// crawl that signs in with them); it answers with `cookies`.
     CookiesWanted { request: u64, url: String },
+    /// The files inside a zip download, answering `preview_zip`, or why
+    /// they could not be listed.
+    ZipPreview {
+        id: u64,
+        #[serde(default)]
+        entries: Vec<crate::zip::ZipEntry>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Asks the browser extension to open `url` in a background tab, let
     /// its scripts run, and answer with `rendered`.
     RenderPage { request: u64, url: String },

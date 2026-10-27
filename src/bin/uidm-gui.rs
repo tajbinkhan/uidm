@@ -166,6 +166,9 @@ struct Shared {
     picked_links: Option<links::LinksDialog>,
     /// The quota's warning for the status bar, while it matters.
     quota: Option<String>,
+    /// A zip preview the daemon sent: the download and its files, or why
+    /// not.
+    zip_listed: Option<(u64, Result<Vec<uidm::zip::ZipEntry>, String>)>,
     /// Downloads are paused for the quota.
     quota_paused: bool,
 }
@@ -253,6 +256,13 @@ impl Shared {
                 } else {
                     None
                 };
+            }
+            Outgoing::ZipPreview { id, entries, error } => {
+                let result = match error {
+                    Some(e) => Err(e.clone()),
+                    None => Ok(entries.clone()),
+                };
+                self.zip_listed = Some((*id, result));
             }
             Outgoing::PickLinks { page, links, user_agent } => {
                 self.picked_links = Some(links::LinksDialog::new(page.clone(), links.clone(), user_agent.clone()));
@@ -347,6 +357,8 @@ enum Action {
     ShowInFolder(String),
     /// Show Windows' Open with picker for a file.
     OpenWith(String),
+    /// List the files inside a waiting zip download.
+    PreviewZip(u64),
     Reconnect,
     OpenOptions,
     /// Open Options at the Connection tab with a new login for this host.
@@ -477,6 +489,8 @@ struct App {
     connection_dialogs: Vec<u64>,
     /// The link picker, while it is open.
     links: Option<links::LinksDialog>,
+    /// A zip download's preview, asked for or shown.
+    zip_preview: Option<ZipPreview>,
     /// Captured addresses whose save-as dialog was canceled once.
     canceled_once: HashSet<String>,
     /// The offer to stop capturing an address, and its "Don't show again" box.
@@ -489,6 +503,12 @@ struct LimitDialog {
     enabled: bool,
     value: f64,
     unit: SpeedUnit,
+}
+
+/// The files inside a zip download, once the daemon has listed them.
+struct ZipPreview {
+    id: u64,
+    result: Option<Result<Vec<uidm::zip::ZipEntry>, String>>,
 }
 
 /// Downloads about to be removed, and the confirmation's boxes.
@@ -903,6 +923,7 @@ impl App {
                 segments: HashMap::new(),
                 picked_links: None,
                 quota: None,
+                zip_listed: None,
                 quota_paused: false,
             })),
             writer: Arc::new(Mutex::new(None)),
@@ -928,6 +949,7 @@ impl App {
             limit_dialog: None,
             connection_dialogs: Vec::new(),
             links: None,
+            zip_preview: None,
             canceled_once: HashSet::new(),
             exception_offer: None,
         };
@@ -1183,6 +1205,10 @@ impl App {
                 self.shared.lock().unwrap().completed.pop_front();
             }
             Action::OpenWith(path) => win::open_with(&path),
+            Action::PreviewZip(id) => {
+                self.zip_preview = Some(ZipPreview { id, result: None });
+                send(&self.writer, &Incoming::PreviewZip { id });
+            }
             Action::ShowInFolder(path) => {
                 // Explorer parses /select itself, so pass the argument raw with
                 // the path quoted. Windows paths cannot contain a double quote.
@@ -1501,9 +1527,26 @@ impl App {
                     ui.end_row();
 
                     ui.label("Size");
-                    ui.label(match entry.total {
-                        Some(t) => human_bytes(t),
-                        None => "Unknown".to_string(),
+                    ui.horizontal(|ui| {
+                        ui.label(match entry.total {
+                            Some(t) => human_bytes(t),
+                            None => "Unknown".to_string(),
+                        });
+                        // A zip on a server that sends ranges can list its
+                        // files before it downloads.
+                        let zip = draft.filename.trim().to_ascii_lowercase().ends_with(".zip");
+                        if zip && entry.resumable {
+                            let busy = self.zip_preview.as_ref().is_some_and(|p| p.id == entry.id && p.result.is_none());
+                            let preview = ui
+                                .add_enabled(connected && !busy, egui::Button::new("Preview").small())
+                                .on_hover_text("List the files inside, reading only the end of the archive");
+                            if preview.clicked() {
+                                actions.push(Action::PreviewZip(entry.id));
+                            }
+                            if busy {
+                                ui.spinner();
+                            }
+                        }
                     });
                     ui.end_row();
 
@@ -2834,6 +2877,7 @@ impl eframe::App for App {
         self.remove_window(ctx, &rows, connected, &mut actions);
         self.limit_window(ctx, &rows, connected, &mut actions);
         self.exception_window(ctx, connected, &mut actions);
+        self.zip_window(ctx, &rows);
         if let Some(d) = self.shared.lock().unwrap().picked_links.take() {
             self.links = Some(d);
         }
@@ -2881,6 +2925,52 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// The files inside a zip download, once listed.
+    fn zip_window(&mut self, ctx: &egui::Context, rows: &[DownloadEntry]) {
+        if let Some((id, result)) = self.shared.lock().unwrap().zip_listed.take() {
+            if let Some(p) = self.zip_preview.as_mut().filter(|p| p.id == id) {
+                p.result = Some(result);
+            }
+        }
+        let Some(p) = &self.zip_preview else {
+            return;
+        };
+        let Some(result) = &p.result else {
+            return;
+        };
+        let name = rows.iter().find(|e| e.id == p.id).map(display_name).unwrap_or_default();
+        let mut open = true;
+        egui::Window::new(format!("Inside {name}"))
+            .id(egui::Id::new("zip_preview"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| match result {
+                Err(e) => {
+                    ui.colored_label(ui.visuals().warn_fg_color, e);
+                }
+                Ok(entries) => {
+                    let total: u64 = entries.iter().map(|e| e.size).sum();
+                    ui.label(format!("{} files, {} unpacked", entries.len(), human_bytes(total)));
+                    if entries.len() == uidm::zip::MAX_ENTRIES {
+                        ui.weak(format!("Showing the first {}.", uidm::zip::MAX_ENTRIES));
+                    }
+                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        egui::Grid::new("zip_entries").striped(true).num_columns(2).spacing([16.0, 2.0]).show(ui, |ui| {
+                            for e in entries {
+                                ui.add_sized([360.0, 16.0], egui::Label::new(&e.name).truncate());
+                                ui.weak(human_bytes(e.size));
+                                ui.end_row();
+                            }
+                        });
+                    });
+                }
+            });
+        if !open {
+            self.zip_preview = None;
+        }
+    }
+
     /// After the save-as dialog of one captured address is canceled twice:
     /// offer to keep its site, or the address, in the browser from now on.
     fn exception_window(&mut self, ctx: &egui::Context, connected: bool, actions: &mut Vec<Action>) {

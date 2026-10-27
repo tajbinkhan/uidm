@@ -22,6 +22,7 @@
 //! - `grab`: the site grabber's crawler.
 //! - `recycle`: sending files to the Recycle Bin.
 //! - `quota`: counting the bytes downloaded for the download quota.
+//! - `zip`: listing a zip archive's files from its end, for a preview.
 
 pub mod app;
 pub mod batch;
@@ -44,3 +45,4 @@ pub mod registry;
 pub mod scan;
 pub mod settings;
 pub mod state;
+pub mod zip;
