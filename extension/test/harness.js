@@ -21,7 +21,9 @@ function setBrowserProxy(value) {
   proxyValue = value;
 }
 
-function loadWorker() {
+// With `firefox`, load it the way Firefox does: the manifest's helper
+// scripts first, no importScripts, and moz-extension:// pages.
+function loadWorker({ firefox = false } = {}) {
   const sent = [];
   const browserCalls = [];
   const port = {
@@ -34,6 +36,7 @@ function loadWorker() {
       id: "uidm",
       connectNative: () => port,
       getManifest: () => ({ version: "test" }),
+      getURL: (path) => (firefox ? `moz-extension://0b1c/${path}` : `chrome-extension://uidm/${path}`),
       onMessage: event(),
       onInstalled: event(),
       lastError: null,
@@ -70,12 +73,17 @@ function loadWorker() {
     TextEncoder,
     btoa,
   });
-  context.importScripts = (...files) => {
-    for (const file of files) vm.runInContext(fs.readFileSync(path.join(dir, file), "utf8"), context);
-  };
-  vm.runInContext(fs.readFileSync(path.join(dir, "background.js"), "utf8"), context);
+  const run = (file) => vm.runInContext(fs.readFileSync(path.join(dir, file), "utf8"), context);
+  if (firefox) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    manifest.background.scripts.forEach(run);
+  } else {
+    context.importScripts = (...files) => files.forEach(run);
+    run("background.js");
+  }
+  const popupUrl = chrome.runtime.getURL("popup.html");
   const popup = (msg) =>
-    new Promise((resolve) => chrome.runtime.onMessage.fire(msg, { id: "uidm" }, resolve));
+    new Promise((resolve) => chrome.runtime.onMessage.fire(msg, { id: "uidm", url: popupUrl }, resolve));
   // A message from the content script in tab `tabId`, on page `url`.
   const content = (msg, tabId, url = "https://site.net/watch") =>
     new Promise((resolve) => chrome.runtime.onMessage.fire(msg, { id: "uidm", tab: { id: tabId, url }, url }, resolve));

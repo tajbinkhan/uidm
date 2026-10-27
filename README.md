@@ -40,6 +40,31 @@ files or as separate video and audio files.
 To remove everything the script added: `.\install-host.ps1 -Uninstall`.
 Downloaded files are left alone.
 
+### Firefox
+
+The same extension folder loads in Firefox 128 or later, with the ID
+`uidm@uidm.local`. `install-host.ps1` registers UIDM with Firefox as well
+(under `HKCU\Software\Mozilla\NativeMessagingHosts`, with a host manifest
+that names that ID). Until the extension is signed by Mozilla, load it for
+each Firefox session:
+
+1. Open `about:debugging`, choose **This Firefox**, then **Load Temporary
+   Add-on...**, and pick `manifest.json` in the `extension` folder.
+2. In `about:addons`, open UIDM's **Permissions** and allow **Access your
+   data for all websites**. Firefox asks for this separately; without it the
+   video button, the selection button, form downloads and **Download all
+   links** do not work, though plain downloads are still caught.
+
+Known gaps in Firefox:
+
+- Setup does not register UIDM with Firefox yet; use `install-host.ps1`.
+- **Use the browser's proxy** finds nothing, because Firefox reports its
+  proxy settings in another form.
+- A temporary add-on is removed when Firefox closes.
+
+These were checked against a stand-in for the browser API in the extension's
+tests, not in a running Firefox.
+
 ## Use
 
 - **Open the window** from the Start menu (**UIDM**), or run

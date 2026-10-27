@@ -1,6 +1,6 @@
 # Installs UIDM for the current user:
 #   - builds uidm-host, uidm-daemon and uidm-gui if they are missing,
-#   - registers the native-messaging host with Chrome and Edge,
+#   - registers the native-messaging host with Chrome, Edge and Firefox,
 #   - adds a "UIDM" Start menu shortcut for the desktop window.
 #
 #   .\install-host.ps1
@@ -8,12 +8,14 @@
 #   .\install-host.ps1 -ExtensionId <id>   # only if you changed the manifest key
 #
 # The extension's manifest carries a fixed public key, so its ID is always
-# epmjakacaejhdhldkpbjnakhfmjjbhfm and you do not need to pass one.
+# epmjakacaejhdhldkpbjnakhfmjjbhfm and you do not need to pass one. In Firefox
+# it is uidm@uidm.local, from browser_specific_settings in the manifest.
 # Run .\install-host.ps1 -Uninstall to remove the registration and shortcut,
 # the "Start with Windows" entry and the notification registration.
 
 param(
     [string]$ExtensionId = "epmjakacaejhdhldkpbjnakhfmjjbhfm",
+    [string]$FirefoxId = "uidm@uidm.local",
     [switch]$NoShortcut,
     [switch]$Uninstall
 )
@@ -25,6 +27,10 @@ $hostName = "com.uidm.host"
 # Generated per machine, so it lives outside the repo; host\com.uidm.host.json
 # is only a template.
 $manifestPath = Join-Path $env:LOCALAPPDATA "UIDM\com.uidm.host.json"
+# Firefox names allowed extensions by ID instead of by origin, so it gets its
+# own manifest.
+$firefoxManifestPath = Join-Path $env:LOCALAPPDATA "UIDM\com.uidm.host.firefox.json"
+$firefoxKey = "HKCU:\Software\Mozilla\NativeMessagingHosts\$hostName"
 $shortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "UIDM.lnk"
 $registryKeys = @(
     "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName",
@@ -37,7 +43,7 @@ $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $runValue = "UIDM"
 
 if ($Uninstall) {
-    foreach ($key in $registryKeys) {
+    foreach ($key in $registryKeys + $firefoxKey) {
         if (Test-Path $key) { Remove-Item $key -Force; Write-Host "Removed $key" }
     }
     if (Get-ItemProperty -Path $runKey -Name $runValue -ErrorAction SilentlyContinue) {
@@ -45,7 +51,9 @@ if ($Uninstall) {
         Write-Host "Removed the Start with Windows entry"
     }
     if (Test-Path $shortcut) { Remove-Item $shortcut -Force; Write-Host "Removed $shortcut" }
-    if (Test-Path $manifestPath) { Remove-Item $manifestPath -Force; Write-Host "Removed $manifestPath" }
+    foreach ($file in $manifestPath, $firefoxManifestPath) {
+        if (Test-Path $file) { Remove-Item $file -Force; Write-Host "Removed $file" }
+    }
     Write-Host "Done. Your downloaded files were left in place."
     return
 }
@@ -81,6 +89,18 @@ foreach ($key in $registryKeys) {
     Write-Host "Registered $key"
 }
 
+$firefoxManifest = [ordered]@{
+    name               = $hostName
+    description        = $manifest.description
+    type               = "stdio"
+    path               = $manifest.path
+    allowed_extensions = @($FirefoxId)
+}
+$firefoxManifest | ConvertTo-Json -Depth 4 | Set-Content -Path $firefoxManifestPath -Encoding utf8
+New-Item -Path $firefoxKey -Force | Out-Null
+Set-ItemProperty -Path $firefoxKey -Name "(default)" -Value $firefoxManifestPath
+Write-Host "Registered $firefoxKey"
+
 if (-not $NoShortcut) {
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($shortcut)
@@ -96,4 +116,6 @@ Write-Host "Next: load the extension once."
 Write-Host "  1. Open chrome://extensions (or edge://extensions) and turn on Developer mode."
 Write-Host "  2. Click 'Load unpacked' and choose $(Join-Path $root 'extension')."
 Write-Host "  3. Its ID should read $ExtensionId."
+Write-Host "In Firefox, open about:debugging, choose This Firefox, then Load Temporary Add-on,"
+Write-Host "pick $(Join-Path $root 'extension\manifest.json'), and allow it to access all websites."
 Write-Host "Then open UIDM from the Start menu, or just download something in the browser."

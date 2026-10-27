@@ -13,7 +13,10 @@
 // button that content.js shows over playing videos, and collects a page's
 // links for the window's link picker.
 
-importScripts("rules.js", "post.js", "media.js");
+// Chrome runs this as a service worker and it loads its helpers itself;
+// Firefox runs it as a background script after the helpers the manifest
+// lists, and has no importScripts.
+if (typeof importScripts === "function") importScripts("rules.js", "post.js", "media.js");
 
 const HOST = "com.uidm.host";
 const RECONNECT_MIN_MS = 1000;
@@ -653,7 +656,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
   // Content scripts run in web pages; the popup (even opened in a tab) is
   // one of the extension's own pages.
-  const ownPage = String(sender.url || "").startsWith(`chrome-extension://${chrome.runtime.id}/`);
+  // chrome-extension://<id>/ in Chrome and Edge, moz-extension://<uuid>/ in
+  // Firefox.
+  const ownPage = String(sender.url || "").startsWith(chrome.runtime.getURL(""));
   if (sender.tab && !ownPage) return onContentMessage(msg, sender, sendResponse);
   switch (msg.type) {
     case "state":

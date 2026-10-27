@@ -4,7 +4,13 @@
     "version": "0.3.0",
     "description": "Send browser downloads to the UIDM download manager.",
     "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA87gKC+1Ky7lZSk+xj+YTrH8jHZbsXS9hmp4G+s0D77OKPa/dUiTeSgUybBJXQnu97Ig2/DJz32V8YzroLltJBHV2YWc6x9UVVmgVDD4bL7BVAf8PN1pK3Q0IISE7OjQLzq8CgVQq0PbTfgviMUzdNUEI5rYSP74RwrvaJGVL45kGZ7jfbIdm4Z+f1xrGVH0EonbsRDzzKEeZe5WAqq/Zx20d4dNfRcID6kZAfMxumplmXh0kVMFhyki1oapOqqnu8p2HQOrRP2vEfXhM7LlU5g4fL1Bz8GqFBLFVc21/6O0qtAZXvqYrQNb1gPHEgvvuuX5XyllarKpMEZDC7VJRtQIDAQAB",
-    "background": { "service_worker": "background.js" },
+    "background": {
+        "service_worker": "background.js",
+        "scripts": [ "rules.js", "post.js", "media.js", "background.js" ]
+    },
+    "browser_specific_settings": {
+        "gecko": { "id": "uidm@uidm.local", "strict_min_version": "128.0" }
+    },
     "permissions": [ "nativeMessaging", "downloads", "cookies", "contextMenus", "storage", "webRequest", "proxy", "scripting" ],
     "host_permissions": [ "<all_urls>" ],
     "content_scripts": [

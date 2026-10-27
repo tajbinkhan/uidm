@@ -257,3 +257,16 @@ test("the selection button asks for the selection's links only", async () => {
   assert.equal(JSON.stringify(asked), "[true]");
   assert.equal(w.sent.at(-1).op, "pick_links");
 });
+
+test("the worker runs as a Firefox background script", async () => {
+  const w = loadWorker({ firefox: true });
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.port.onMessage.fire({ op: "settings", settings: RULES });
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/a.zip" }));
+  assert.equal(w.sent.find((m) => m.op === "add").url, "https://dl.net/a.zip");
+  // The popup, opened as a tab at moz-extension://, is still the popup.
+  const state = await new Promise((resolve) =>
+    w.chrome.runtime.onMessage.fire({ type: "state" }, { id: "uidm", tab: { id: 9 }, url: "moz-extension://0b1c/popup.html" }, resolve),
+  );
+  assert.equal(state.connected, true);
+});
