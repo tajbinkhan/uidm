@@ -362,6 +362,8 @@ struct Daemon {
     quota_paused: Mutex<Option<(Vec<u64>, HashSet<u64>)>>,
     /// The nearly-reached warning was sent for the current window.
     quota_warned: AtomicBool,
+    /// Crawls waiting for the browser's cookies, by request.
+    cookie_waits: Mutex<HashMap<u64, Sender<Option<String>>>>,
 }
 
 /// A countdown before sleeping, hibernating or shutting down.
@@ -459,6 +461,7 @@ impl Daemon {
             picked_links: Mutex::new(None),
             quota_paused: Mutex::new(None),
             quota_warned: AtomicBool::new(false),
+            cookie_waits: Mutex::new(HashMap::new()),
         };
         (daemon, dirty_rx, notes_rx, wake_rx)
     }
@@ -1352,8 +1355,17 @@ impl Daemon {
                 }
             };
             let headers = [("User-Agent".to_string(), GRABBER_AGENT.to_string())];
+            let cookies = if req.browser_cookies { daemon.browser_cookies(&req.start) } else { None };
+            // The browser's cookies go to the start site's pages only.
+            let page_headers = |url: &str| {
+                let mut h = headers.to_vec();
+                if let Some(c) = cookies.as_ref().filter(|_| grab::on_start_site(&req, url)) {
+                    h.push(("Cookie".to_string(), c.clone()));
+                }
+                h
+            };
             let fetch = |url: &str| {
-                engine::fetch(url, &headers, &net, grab::MAX_PAGE_BYTES)
+                engine::fetch(url, &page_headers(url), &net, grab::MAX_PAGE_BYTES)
                     .map(|f| grab::Page {
                         url: f.url,
                         content_type: f.content_type,
@@ -1370,7 +1382,7 @@ impl Daemon {
             };
             eprintln!("[uidm-daemon] client #{client} crawls {}", req.start);
             // A file's size, for the size filters and duplicates.
-            let size = |url: &str| engine::inspect(url, None, &headers, &net).ok().and_then(|i| i.total);
+            let size = |url: &str| engine::inspect(url, None, &page_headers(url), &net).ok().and_then(|i| i.total);
             let out = grab::crawl(&req, fetch, size, wait, &stop, |pages, bytes, found| {
                 send(&Outgoing::GrabProgress { pages, bytes, found })
             });
@@ -1383,6 +1395,23 @@ impl Daemon {
             });
         });
         Ok(())
+    }
+
+    /// Ask the browser extension for its cookies for `url`, waiting a few
+    /// seconds for the answer. `None` without an extension or cookies.
+    fn browser_cookies(&self, url: &str) -> Option<String> {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let request = NEXT.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = channel();
+        self.cookie_waits.lock().unwrap().insert(request, tx);
+        self.hub.broadcast(&Outgoing::CookiesWanted {
+            request,
+            url: url.to_string(),
+        });
+        let got = rx.recv_timeout(Duration::from_secs(5)).ok().flatten();
+        self.cookie_waits.lock().unwrap().remove(&request);
+        eprintln!("[uidm-daemon] browser cookies for the crawl: {}", if got.is_some() { "found" } else { "none" });
+        got.filter(|c| !c.is_empty())
     }
 
     /// Stop `client`'s crawl, if it has one.
@@ -2421,6 +2450,11 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
                 daemon.show_window();
             }
         }
+        Incoming::Cookies { request, cookies } => {
+            if let Some(tx) = daemon.cookie_waits.lock().unwrap().remove(&request) {
+                let _ = tx.send(cookies);
+            }
+        }
         Incoming::SetSpeedLimit { id, bytes_per_sec } => {
             if let Err(message) = daemon.set_download_limit(id, bytes_per_sec) {
                 send(&Outgoing::Error { message });
@@ -3148,5 +3182,22 @@ mod tests {
         t.daemon.check_quota();
         assert!(t.daemon.quota_paused.lock().unwrap().is_none());
         assert!(t.window_got(|m| matches!(m, Outgoing::Quota { paused: false, .. })));
+    }
+
+    #[test]
+    fn a_crawl_asks_the_browser_for_its_cookies() {
+        let t = setup("crawl_cookies", Duplicate::NewName);
+        let d = Arc::clone(&t.daemon);
+        let asking = thread::spawn(move || d.browser_cookies("https://site.net/"));
+        let request = loop {
+            let frame = t.window.recv_timeout(Duration::from_secs(5)).expect("no cookies_wanted");
+            if let Ok(Outgoing::CookiesWanted { request, url }) = serde_json::from_slice(&frame) {
+                assert_eq!(url, "https://site.net/");
+                break request;
+            }
+        };
+        let tx = t.daemon.cookie_waits.lock().unwrap().remove(&request).unwrap();
+        tx.send(Some("session=abc".into())).unwrap();
+        assert_eq!(asking.join().unwrap().as_deref(), Some("session=abc"));
     }
 }

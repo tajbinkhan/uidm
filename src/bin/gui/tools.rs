@@ -430,6 +430,7 @@ pub struct GrabDialog {
     min_mb: Option<f64>,
     max_mb_file: Option<f64>,
     hide_duplicates: bool,
+    browser_cookies: bool,
     queue: u64,
     start_queue: bool,
     error: Option<String>,
@@ -467,6 +468,7 @@ impl GrabDialog {
             min_mb: d.min_size.map(|b| b as f64 / MB),
             max_mb_file: d.max_size.map(|b| b as f64 / MB),
             hide_duplicates: d.hide_duplicates,
+            browser_cookies: d.browser_cookies,
             queue: MAIN_QUEUE,
             start_queue: false,
             error: None,
@@ -491,6 +493,7 @@ impl GrabDialog {
             min_size: self.min_mb.map(|m| (m * MB).round() as u64),
             max_size: self.max_mb_file.map(|m| (m * MB).round() as u64),
             hide_duplicates: self.hide_duplicates,
+            browser_cookies: self.browser_cookies,
         }
     }
 
@@ -570,6 +573,13 @@ pub fn grab_dialog(
                     ui.end_row();
                     ui.label("");
                     ui.checkbox(&mut d.no_parent, "Do not go above the start page's folder");
+                    ui.end_row();
+                    ui.label("Sign-in");
+                    ui.vertical(|ui| {
+                        ui.checkbox(&mut d.browser_cookies, "Use my browser's sign-in for the start site")
+                            .on_hover_text("Sign in on the site in your browser first. UIDM's extension hands over the site's cookies, which go to that site's pages only.");
+                        ui.weak("A login set in Options > Connection is used when the site asks for one.");
+                    });
                     ui.end_row();
                     ui.label("Keep files of type");
                     ui.add(egui::TextEdit::singleline(&mut d.types).hint_text("pdf, zip").desired_width(240.0));

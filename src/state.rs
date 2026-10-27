@@ -126,6 +126,7 @@ impl DownloadTable {
             | Outgoing::MediaInfo { .. }
             | Outgoing::PickLinks { .. }
             | Outgoing::Quota { .. }
+            | Outgoing::CookiesWanted { .. }
             | Outgoing::GrabProgress { .. }
             | Outgoing::GrabDone { .. } => {}
         }

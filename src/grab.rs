@@ -64,7 +64,15 @@ pub struct GrabRequest {
     /// address.
     #[serde(default)]
     pub hide_duplicates: bool,
+    /// Send the browser's cookies for the start site with its pages, so
+    /// pages behind a sign-in form can be read. The browser extension
+    /// supplies them when the crawl starts.
+    #[serde(default)]
+    pub browser_cookies: bool,
 }
+
+/// Pages a crawl should never open, so it does not sign itself out.
+pub const LOGOUT_PATTERNS: [&str; 5] = ["*logout*", "*logoff*", "*log-out*", "*signout*", "*sign-out*"];
 
 pub const DEPTH_RANGE: (u32, u32) = (0, 10);
 pub const MAX_PAGES_RANGE: (u64, u64) = (1, 10_000);
@@ -89,7 +97,7 @@ impl Default for GrabRequest {
             max_bytes: 50 * 1024 * 1024,
             delay_ms: 1000,
             explore_only: Vec::new(),
-            explore_skip: Vec::new(),
+            explore_skip: LOGOUT_PATTERNS.iter().map(|p| p.to_string()).collect(),
             files_only: Vec::new(),
             files_skip: Vec::new(),
             subdomains: false,
@@ -97,6 +105,7 @@ impl Default for GrabRequest {
             min_size: None,
             max_size: None,
             hide_duplicates: true,
+            browser_cookies: false,
         }
     }
 }
@@ -170,6 +179,18 @@ fn glob(pattern: &str, text: &str) -> bool {
         }
     }
     rest.is_empty()
+}
+
+/// Whether a page at `url` belongs to the start site of `req`, which is
+/// what browser cookies are sent to: the start host, and with `subdomains`
+/// the start domain's other hosts.
+pub fn on_start_site(req: &GrabRequest, url: &str) -> bool {
+    let host = |u: &str| Url::parse(u).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+    let (Some(start), Some(here)) = (host(&req.start), host(url)) else {
+        return false;
+    };
+    let domain = start.strip_prefix("www.").unwrap_or(&start);
+    here == start || (req.subdomains && (here == domain || here.ends_with(&format!(".{domain}"))))
 }
 
 /// Whether `url` passes an include list (empty passes all) and an exclude
@@ -749,6 +770,27 @@ Crawl-delay: 2.5
         let out = crawl(&request(0), twice, size, |_| {}, &none, |_, _, _| {});
         let urls: Vec<&str> = out.files.iter().map(|f| f.url.as_str()).collect();
         assert_eq!(urls, ["https://s/x/a.pdf", "https://s/z/a.pdf"]);
+    }
+
+    #[test]
+    fn logout_pages_are_skipped_by_default() {
+        let out = crawl(&request(1), |u| {
+            if u == "https://s/" {
+                Ok(Page {
+                    url: u.into(),
+                    content_type: Some("text/html".into()),
+                    body: br#"<a href="/account/logout">out</a><a href="/a/">a</a>"#.to_vec(),
+                })
+            } else if u.contains("logout") {
+                panic!("opened the logout page");
+            } else {
+                site(u)
+            }
+        }, |_| None, |_| {}, &AtomicBool::new(false), |_, _, _| {});
+        assert!(out.pages >= 2);
+        assert!(on_start_site(&request(1), "https://s/a/"));
+        assert!(!on_start_site(&request(1), "https://cdn.s/a"));
+        assert!(on_start_site(&GrabRequest { subdomains: true, ..request(1) }, "https://cdn.s/a"));
     }
 
     #[test]

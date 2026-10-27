@@ -147,6 +147,12 @@ pub enum Incoming {
         #[serde(default)]
         user_agent: Option<String>,
     },
+    /// The browser's cookies for a URL, answering `cookies_wanted`.
+    Cookies {
+        request: u64,
+        #[serde(default)]
+        cookies: Option<String>,
+    },
     /// Change a stopped or finished download's link, referrer, description,
     /// login, or (when finished) its file's name and folder.
     SetProperties { id: u64, changes: Properties },
@@ -544,6 +550,9 @@ pub enum Outgoing {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resumes_at: Option<u64>,
     },
+    /// Asks the browser extension for its cookies for `url` (for a site
+    /// crawl that signs in with them); it answers with `cookies`.
+    CookiesWanted { request: u64, url: String },
     /// A crawl's progress: pages read, bytes read and files found so far.
     GrabProgress { pages: u64, bytes: u64, found: usize },
     /// A crawl ended: what it found, and why it stopped early, if it did.

@@ -350,6 +350,12 @@ function onHostMessage(msg) {
     case "refresh_waiting":
       refreshWaiting = msg.id ?? null;
       break;
+    case "cookies_wanted":
+      // A site crawl in UIDM signs in with the browser's cookies.
+      if (isWeb(msg.url)) {
+        cookieHeader(msg.url).then((cookies) => send({ op: "cookies", request: msg.request, cookies: cookies || null }));
+      }
+      break;
     case "media_info": {
       const done = probes.get(msg.request);
       probes.delete(msg.request);

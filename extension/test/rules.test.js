@@ -270,3 +270,12 @@ test("the worker runs as a Firefox background script", async () => {
   );
   assert.equal(state.connected, true);
 });
+
+test("a site crawl gets the browser's cookies for its start page", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.chrome.cookies.getAll = async () => [{ name: "session", value: "abc" }];
+  w.port.onMessage.fire({ op: "cookies_wanted", request: 3, url: "https://site.net/members/" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(JSON.stringify(w.sent.at(-1)), JSON.stringify({ op: "cookies", request: 3, cookies: "session=abc" }));
+});

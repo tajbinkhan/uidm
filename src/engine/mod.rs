@@ -2012,6 +2012,25 @@ mod tests {
         }
 
         #[test]
+        fn pages_for_the_grabber_answer_a_login_request() {
+            let behavior = Behavior {
+                basic_auth: Some("ann:secret".into()),
+                ..Behavior::default()
+            };
+            let server = TestServer::start_with(b"<a href=x.pdf>".to_vec(), behavior);
+            assert!(fetch(&server.url, &[], &NetConfig::default(), 1024).is_err());
+            let net = NetConfig {
+                logins: vec![crate::net::Login {
+                    site: "127.0.0.1".into(),
+                    username: "ann".into(),
+                    password: "secret".into(),
+                }],
+                ..NetConfig::default()
+            };
+            assert_eq!(fetch(&server.url, &[], &net, 1024).unwrap().body, b"<a href=x.pdf>");
+        }
+
+        #[test]
         fn ftp_downloads_in_parallel_ranges() {
             let data = body(LEN);
             let server = crate::engine::ftp::server::start(data.clone(), None);
