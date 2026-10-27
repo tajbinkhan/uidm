@@ -9,6 +9,39 @@
 // through Encrypted Media Extensions is DRM protected: the menu says so and
 // offers nothing.
 
+// The skip and force keys: a link clicked with the skip key held downloads
+// in the browser; one clicked with the force key goes to UIDM instead of
+// opening. The keys come from UIDM's settings, which the worker keeps in
+// storage, so a click is handled at once.
+(() => {
+  let keys = { skip: "none", force: "none" };
+  chrome.storage.local.get("captureKeys").then((s) => s.captureKeys && (keys = s.captureKeys)).catch(() => {});
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.captureKeys && changes.captureKeys.newValue) keys = changes.captureKeys.newValue;
+  });
+  const held = (k, ev) => (k === "alt" && ev.altKey) || (k === "ctrl" && ev.ctrlKey) || (k === "shift" && ev.shiftKey);
+
+  function onClick(ev) {
+    if (ev.button > 1) return;
+    const link = ev.composedPath().find((n) => n instanceof HTMLAnchorElement && n.href);
+    if (!link || !/^https?:/i.test(link.href)) return;
+    if (held(keys.skip, ev)) {
+      chrome.runtime.sendMessage({ type: "link:skip" }).catch(() => {});
+    } else if (held(keys.force, ev)) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      const url = link.href;
+      chrome.runtime
+        .sendMessage({ type: "link:force", url })
+        .then((r) => r && r.ok)
+        .catch(() => false)
+        .then((ok) => ok || location.assign(url));
+    }
+  }
+  document.addEventListener("click", onClick, true);
+  document.addEventListener("auxclick", onClick, true);
+})();
+
 (() => {
   // Frames too small to hold a video (trackers, widgets) are skipped.
   if (window.top !== window && innerWidth < 200) return;

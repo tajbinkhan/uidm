@@ -30,6 +30,30 @@ pub const CAPTURE_MIN_SIZE_MAX_KB: u64 = 10 * 1024 * 1024;
 /// list; its files go straight into the download folder.
 pub const GENERAL: &str = "General";
 
+/// A key held while clicking a link in the browser, to keep the download in
+/// the browser or to send the link to UIDM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureKey {
+    None,
+    Alt,
+    Ctrl,
+    Shift,
+}
+
+impl CaptureKey {
+    pub const ALL: [CaptureKey; 4] = [CaptureKey::None, CaptureKey::Alt, CaptureKey::Ctrl, CaptureKey::Shift];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CaptureKey::None => "No key",
+            CaptureKey::Alt => "Alt",
+            CaptureKey::Ctrl => "Ctrl",
+            CaptureKey::Shift => "Shift",
+        }
+    }
+}
+
 /// How UIDM tells you a download finished or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -297,6 +321,10 @@ pub struct Settings {
     /// Where unfinished downloads are written, a full path; finished files
     /// then move to their real folder. `None` writes them in place.
     pub temp_dir: Option<String>,
+    /// Held while clicking a link, keeps its download in the browser.
+    pub capture_skip_key: CaptureKey,
+    /// Held while clicking a link, sends it to UIDM whatever its type.
+    pub capture_force_key: CaptureKey,
 }
 
 impl Default for Settings {
@@ -340,6 +368,8 @@ impl Default for Settings {
             server_file_date: true,
             manual_user_agent: String::new(),
             temp_dir: None,
+            capture_skip_key: CaptureKey::Alt,
+            capture_force_key: CaptureKey::Ctrl,
         }
     }
 }
@@ -364,6 +394,9 @@ pub const USER_AGENT_PRESETS: [(&str, &str); 3] = [
 impl Settings {
     /// Check every value, returning a message fit to show the user.
     pub fn validate(&self) -> Result<(), String> {
+        if self.capture_skip_key == self.capture_force_key && self.capture_skip_key != CaptureKey::None {
+            return Err("The keys that skip and force capture must differ.".into());
+        }
         if let Some(dir) = self.temp_dir.as_deref().filter(|d| !Path::new(d).is_absolute()) {
             return Err(format!("The temporary folder must be a full path: {dir}"));
         }
@@ -703,6 +736,8 @@ mod tests {
             server_file_date: false,
             manual_user_agent: USER_AGENT_PRESETS[0].1.into(),
             temp_dir: Some("D:\\UIDM temp".into()),
+            capture_skip_key: CaptureKey::Shift,
+            capture_force_key: CaptureKey::None,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

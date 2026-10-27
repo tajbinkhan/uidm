@@ -174,6 +174,19 @@ function onContentMessage(msg, sender, sendResponse) {
     case "video:download":
       downloadMedia(tabId, msg, pageUrl).then((ok) => sendResponse({ ok }));
       return true;
+    case "link:skip":
+      // The skip key was held: the download this click starts stays.
+      skipClick = { time: Date.now() };
+      sendResponse({ ok: true });
+      return false;
+    case "link:force":
+      // The force key was held: the link goes to UIDM whatever it is.
+      if (!connected || !captureEnabled || !isWeb(msg.url)) {
+        sendResponse({ ok: false });
+        return false;
+      }
+      handOff(msg.url, pageUrl).then((ok) => sendResponse({ ok }));
+      return true;
     default:
       return false;
   }
@@ -184,6 +197,8 @@ let captureEnabled = true;
 let rules = null;
 // "Skip next download" in the popup: the next download stays in the browser.
 let skipNext = false;
+// The last link click with the skip key held, as { time }.
+let skipClick = null;
 // A download in UIDM waiting for a new link: the next download from the
 // browser gives it one instead of starting a new download.
 let refreshWaiting = null;
@@ -315,6 +330,11 @@ function onHostMessage(msg) {
       break;
     case "settings":
       rules = msg.settings;
+      // Content scripts read the keys from storage, so a click can be
+      // handled at once without asking the worker.
+      chrome.storage.local.set({
+        captureKeys: { skip: rules.capture_skip_key || "none", force: rules.capture_force_key || "none" },
+      });
       break;
     case "refresh_waiting":
       refreshWaiting = msg.id ?? null;
@@ -429,6 +449,10 @@ chrome.downloads.onCreated.addListener(async (item) => {
   if (!isWeb(url)) return; // blob:, data:, file: only exist in the browser
   if (skipNext) {
     skipNext = false;
+    return;
+  }
+  if (clickApplies(skipClick, Date.now())) {
+    skipClick = null;
     return;
   }
   // A download waiting for a new link takes this one, whatever the capture

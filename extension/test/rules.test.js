@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { extensionOf, siteMatches, downloadType, captureDecision } = require("../rules.js");
+const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies } = require("../rules.js");
 
 const RULES = {
   capture_types: ["zip", "pdf", "exe", "mp4"],
@@ -158,4 +158,42 @@ test("download later from the context menu adds without starting", async () => {
   await w.chrome.contextMenus.onClicked.fire({ menuItemId: "uidm-later-media", srcUrl: "https://dl.net/c.mp4", pageUrl: "https://dl.net/" });
   const adds = w.sent.filter((m) => m.op === "add").map((m) => [m.url, m.start]);
   assert.equal(JSON.stringify(adds), JSON.stringify([["https://dl.net/a.zip", false], ["https://dl.net/b.zip", undefined], ["https://dl.net/c.mp4", false]]));
+});
+
+test("held keys skip or force capture", () => {
+  const keys = { capture_skip_key: "alt", capture_force_key: "ctrl" };
+  assert.equal(keyAction(keys, { alt: true }), "skip");
+  assert.equal(keyAction(keys, { ctrl: true }), "force");
+  assert.equal(keyAction(keys, { shift: true }), "");
+  assert.equal(keyAction(keys, {}), "");
+  assert.equal(keyAction({ capture_skip_key: "none", capture_force_key: "none" }, { alt: true, ctrl: true }), "");
+  assert.equal(keyAction(keys, { alt: true, ctrl: true }), "skip", "skipping wins");
+
+  const jpg = { url: "https://dl.net/a.jpg" };
+  assert.equal(captureDecision(RULES, jpg).capture, false, "no key: jpg is not a captured type");
+  assert.equal(captureDecision(RULES, { ...jpg, key: "force" }).capture, true);
+  const zip = { url: "https://dl.net/a.zip" };
+  assert.equal(captureDecision(RULES, zip).capture, true);
+  assert.equal(captureDecision(RULES, { ...zip, key: "skip" }).capture, false);
+
+  assert.ok(clickApplies({ time: 1000 }, 3000));
+  assert.ok(!clickApplies({ time: 1000 }, 7000), "too long after the click");
+  assert.ok(!clickApplies(null, 1000));
+});
+
+test("the worker keeps a skip-key download and sends a force-key link", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.port.onMessage.fire({ op: "settings", settings: { ...RULES, capture_skip_key: "alt", capture_force_key: "ctrl" } });
+  await w.content({ type: "link:skip" }, 3, "https://dl.net/");
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/a.zip" }));
+  assert.equal(w.browserCalls.length, 0, "the skip click kept it in the browser");
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/b.zip" }));
+  assert.deepEqual(w.browserCalls.map((c) => c[0]), ["cancel"], "only one download is skipped");
+
+  const answer = await w.content({ type: "link:force", url: "https://dl.net/page.html" }, 3, "https://dl.net/");
+  assert.equal(answer.ok, true);
+  const add = w.sent.filter((m) => m.op === "add").at(-1);
+  assert.equal(add.url, "https://dl.net/page.html");
+  assert.equal(add.referrer, "https://dl.net/");
 });

@@ -52,7 +52,7 @@ use uidm::protocol::{
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
-    parse_extensions, Category, Duplicate, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
+    parse_extensions, CaptureKey, Category, Duplicate, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, USER_AGENT_PRESETS,
 };
 use uidm::state::DownloadTable;
@@ -594,6 +594,8 @@ struct OptionsDraft {
     /// Empty writes partial files in place.
     temp_dir: String,
     temp_picked: Picked,
+    capture_skip_key: CaptureKey,
+    capture_force_key: CaptureKey,
     error: Option<String>,
     picked: Picked,
 }
@@ -676,6 +678,8 @@ impl OptionsDraft {
             manual_user_agent: s.manual_user_agent.clone(),
             temp_dir: s.temp_dir.clone().unwrap_or_default(),
             temp_picked: Picked::default(),
+            capture_skip_key: s.capture_skip_key,
+            capture_force_key: s.capture_force_key,
             error: None,
             picked: Picked::default(),
         }
@@ -743,6 +747,8 @@ impl OptionsDraft {
             server_file_date: self.server_file_date,
             manual_user_agent: self.manual_user_agent.trim().to_string(),
             temp_dir: optional(&self.temp_dir),
+            capture_skip_key: self.capture_skip_key,
+            capture_force_key: self.capture_force_key,
         };
         settings.validate()?;
         if let Some(l) = self.logins.iter().find(|l| l.new && l.password.is_empty()) {
@@ -1894,6 +1900,21 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         );
         ui.end_row();
 
+        ui.label("Special keys");
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Hold");
+                key_combo(ui, "skip_key", &mut draft.capture_skip_key);
+                ui.label("while clicking a link to keep its download in the browser");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Hold");
+                key_combo(ui, "force_key", &mut draft.capture_force_key);
+                ui.label("while clicking a link to send it to UIDM, whatever its type");
+            });
+        });
+        ui.end_row();
+
         ui.label("Videos");
         ui.checkbox(&mut draft.video_button, "Show a download button over videos playing in the browser");
         ui.end_row();
@@ -1915,6 +1936,17 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         );
         ui.end_row();
     });
+}
+
+fn key_combo(ui: &mut egui::Ui, id: &str, key: &mut CaptureKey) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(key.label())
+        .width(80.0)
+        .show_ui(ui, |ui| {
+            for k in CaptureKey::ALL {
+                ui.selectable_value(key, k, k.label());
+            }
+        });
 }
 
 fn duplicate_label(d: Duplicate) -> &'static str {

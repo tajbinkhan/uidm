@@ -102,12 +102,34 @@ function downloadType(item) {
   return extensionOf(item.filename) || MIME_EXTENSIONS[mime] || extensionOf(urlPath(item.url));
 }
 
+// What a key held on a link click asks for, by UIDM's `capture_skip_key`
+// and `capture_force_key`: "skip", "force" or "". `keys` is
+// { alt, ctrl, shift }.
+function keyAction(rules, keys) {
+  if (!rules || !keys) return "";
+  const held = (k) => (k === "alt" && keys.alt) || (k === "ctrl" && keys.ctrl) || (k === "shift" && keys.shift);
+  if (held(rules.capture_skip_key)) return "skip";
+  if (held(rules.capture_force_key)) return "force";
+  return "";
+}
+
+// A click with the skip key held keeps the next download in the browser if
+// it starts this soon after (its link may redirect elsewhere first).
+const CLICK_WINDOW_MS = 5000;
+
+function clickApplies(click, now) {
+  return !!click && now - click.time >= 0 && now - click.time <= CLICK_WINDOW_MS;
+}
+
 // Decide whether UIDM takes `item`, a download the browser just reported:
-// { url, referrer, filename, mime, size }. `size` is 0 or missing when the
+// { url, referrer, filename, mime, size, key }. `key` is a held key's
+// action ("skip" or "force"), which overrides every other rule. `size` is 0 or missing when the
 // browser does not know it yet; then only the name and site are checked.
 // `rules` is UIDM's settings, or null before they arrive (take everything).
 // Returns { capture, reason }; `reason` says why a download stays.
 function captureDecision(rules, item) {
+  if (item.key === "skip") return { capture: false, reason: "the skip key was held" };
+  if (item.key === "force") return { capture: true, reason: "" };
   if (!rules) return { capture: true, reason: "" };
 
   for (const site of rules.capture_excluded_sites || []) {
@@ -136,5 +158,5 @@ function captureDecision(rules, item) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision };
+  module.exports = { extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies };
 }
