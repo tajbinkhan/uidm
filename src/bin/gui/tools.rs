@@ -10,7 +10,7 @@ use eframe::egui;
 use uidm::batch::{self, MAX_BATCH};
 use uidm::grab::{self, GrabFile, GrabRequest};
 use uidm::listfile;
-use uidm::protocol::{Download, DownloadEntry};
+use uidm::protocol::{Download, DownloadEntry, DownloadLogin};
 use uidm::queue::{Queue, MAIN_QUEUE};
 
 use super::{browse_button, human_bytes, take_picked, Action, Picked};
@@ -76,6 +76,8 @@ pub struct BatchDialog {
     /// Where to save; empty lets each file's category decide.
     folder: String,
     picked: Picked,
+    /// "Use a login": the user name and password sent with every address.
+    login: Option<(String, String)>,
     loaded: Loaded,
     error: Option<String>,
 }
@@ -92,6 +94,7 @@ impl BatchDialog {
             start: false,
             folder: String::new(),
             picked: Picked::default(),
+            login: None,
             loaded: Loaded::default(),
             error: None,
         }
@@ -272,6 +275,18 @@ pub fn batch_dialog(
                     });
                     ui.end_row();
                 }
+                ui.label(tr("Login"));
+                ui.horizontal(|ui| {
+                    let mut use_login = d.login.is_some();
+                    if ui.checkbox(&mut use_login, tr("Use a login")).changed() {
+                        d.login = use_login.then(Default::default);
+                    }
+                    if let Some((user, password)) = d.login.as_mut() {
+                        ui.add(egui::TextEdit::singleline(user).hint_text(tr("User name")).desired_width(140.0));
+                        ui.add(egui::TextEdit::singleline(password).password(true).hint_text(tr("Password")).desired_width(140.0));
+                    }
+                });
+                ui.end_row();
             });
             if let Some(e) = &d.error {
                 ui.colored_label(ui.visuals().error_fg_color, e);
@@ -286,7 +301,15 @@ pub fn batch_dialog(
                         return;
                     }
                     let folder = (!folder.is_empty()).then(|| folder.to_string());
-                    let items = match (&d.imported, urls) {
+                    let login = d.login.as_ref().map(|(u, p)| DownloadLogin {
+                        username: u.trim().to_string(),
+                        password: Some(p.clone()),
+                    });
+                    if login.as_ref().is_some_and(|l| l.username.is_empty()) {
+                        d.error = Some(tr("Type the user name for the login, or untick Use a login.").into());
+                        return;
+                    }
+                    let mut items = match (&d.imported, urls) {
                         (Some((_, items, _)), _) => items.clone(),
                         (None, Ok((u, _))) => u
                             .into_iter()
@@ -299,6 +322,9 @@ pub fn batch_dialog(
                             .collect(),
                         (None, Err(_)) => return,
                     };
+                    for item in items.iter_mut().filter(|i| i.login.is_none()) {
+                        item.login = login.clone();
+                    }
                     actions.push(Action::AddMany {
                         items,
                         queue: d.queue,

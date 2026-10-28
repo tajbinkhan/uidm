@@ -29,6 +29,8 @@ mod find;
 mod i18n;
 #[path = "gui/links.rs"]
 mod links;
+#[path = "gui/login.rs"]
+mod login;
 #[path = "gui/properties.rs"]
 mod properties;
 #[path = "gui/queues.rs"]
@@ -58,7 +60,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
 use uidm::protocol::{
-    read_message, write_frame, Answer, Download, DownloadEntry, Incoming, Outgoing, Properties, Scan, SegmentInfo, Status,
+    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Scan, SegmentInfo, Status,
 };
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
@@ -174,6 +176,8 @@ struct Shared {
     clipboard: Option<String>,
     /// The tray asked for a batch from the clipboard's links.
     clipboard_batch: bool,
+    /// Downloads that failed for want of a login, to ask for one.
+    login_wanted: VecDeque<u64>,
     /// Each download's connections, from its latest progress.
     segments: HashMap<u64, Vec<SegmentInfo>>,
     /// Links from a page for the link picker, until the window opens it.
@@ -401,14 +405,15 @@ enum Action {
     Reconnect,
     OpenOptions,
     /// Open Options at the Connection tab with a new login for this host.
-    AddLogin(String),
+    /// Ask for the login a failed download's site wants.
+    OpenLogin(u64),
+    /// Add a download as it is (one with a login, from the URL bar).
+    AddDownload(Download),
     SaveSettings(Settings),
     /// Send new settings without the Options dialog (the speed limit toggle).
     QuickSettings(Settings),
     /// Answer a save-as dialog, or start a waiting download.
     Confirm(Answer),
-    /// Add a URL to the main queue without starting it.
-    AddLater(String),
     StartQueue(u64),
     StopQueue(u64),
     SaveQueue(Queue),
@@ -486,6 +491,10 @@ struct App {
     confirm: Option<ConfirmDraft>,
     /// Many downloads waiting for answers before they are added.
     answers: Option<answers::Prompt>,
+    /// The login prompt on screen.
+    login: Option<login::LoginPrompt>,
+    /// The URL bar's login fields while shown: user name and password.
+    add_login: Option<(String, String)>,
     /// "Don't show this dialog again" in the completion dialog.
     hide_completed: bool,
     /// A file whose scan found a threat, waiting for "Open anyway": its path,
@@ -1051,6 +1060,7 @@ impl App {
                 grab_events: VecDeque::new(),
                 clipboard: None,
                 clipboard_batch: false,
+                login_wanted: VecDeque::new(),
                 segments: HashMap::new(),
                 picked_links: None,
                 quota: None,
@@ -1065,6 +1075,8 @@ impl App {
             options: None,
             confirm: None,
             answers: None,
+            login: None,
+            add_login: None,
             hide_completed: false,
             threat_prompt: None,
             tooltip: String::new(),
@@ -1407,20 +1419,14 @@ impl App {
                     self.options = Some(OptionsDraft::new(settings));
                 }
             }
-            Action::AddLogin(host) => {
-                if let Some(settings) = &self.shared.lock().unwrap().settings {
-                    let mut draft = OptionsDraft::new(settings);
-                    draft.tab = OptionsTab::Connection;
-                    if !draft.logins.iter().any(|l| l.site.eq_ignore_ascii_case(&host)) {
-                        draft.logins.push(LoginDraft {
-                            site: host,
-                            username: String::new(),
-                            password: String::new(),
-                            new: true,
-                        });
-                    }
-                    self.options = Some(draft);
+            Action::OpenLogin(id) => {
+                let mut s = self.shared.lock().unwrap();
+                if !s.login_wanted.contains(&id) {
+                    s.login_wanted.push_front(id);
                 }
+            }
+            Action::AddDownload(download) => {
+                send(&self.writer, &Incoming::Add(download));
             }
             Action::SaveSettings(settings) => {
                 {
@@ -1439,16 +1445,6 @@ impl App {
             }
             Action::Confirm(answer) => {
                 send(&self.writer, &Incoming::Confirm(answer));
-            }
-            Action::AddLater(url) => {
-                send(
-                    &self.writer,
-                    &Incoming::Add(Download {
-                        url,
-                        start: Some(false),
-                        ..Download::default()
-                    }),
-                );
             }
             Action::StartQueue(id) => {
                 send(&self.writer, &Incoming::StartQueue { id });
@@ -1637,6 +1633,39 @@ impl App {
         if let Some(url) = offer {
             if !tools::clipboard_offer(ctx, &url, connected, actions) {
                 self.shared.lock().unwrap().clipboard = None;
+            }
+        }
+    }
+
+    /// The login prompt for the oldest download waiting for a login, with
+    /// the others from the same site.
+    fn login_window(&mut self, ctx: &egui::Context, rows: &[DownloadEntry], connected: bool, actions: &mut Vec<Action>) {
+        let settings = self.shared.lock().unwrap().settings.clone();
+        if self.login.is_none() {
+            let queued: Vec<u64> = self.shared.lock().unwrap().login_wanted.drain(..).collect();
+            // Only those still failed for a login.
+            let waiting: Vec<(&DownloadEntry, uidm::engine::LoginWanted)> = queued
+                .iter()
+                .filter_map(|id| rows.iter().find(|e| e.id == *id && e.status == Status::Failed))
+                .filter_map(|e| e.error.as_deref().and_then(uidm::engine::login_wanted).map(|w| (e, w)))
+                .collect();
+            if let Some((first, wanted)) = waiting.first().cloned() {
+                let (same, other): (Vec<_>, Vec<_>) = waiting.iter().partition(|(_, w)| w.host == wanted.host);
+                self.shared.lock().unwrap().login_wanted.extend(other.iter().map(|(e, _)| e.id));
+                let own_site = same.iter().all(|(e, _)| uidm::net::host_of(&e.url).eq_ignore_ascii_case(&wanted.host));
+                let username = settings
+                    .as_ref()
+                    .and_then(|s| s.site_logins.iter().find(|l| l.site.eq_ignore_ascii_case(&wanted.host)))
+                    .map(|l| l.username.clone())
+                    .or_else(|| first.login_user.clone())
+                    .unwrap_or_default();
+                let ids = same.iter().map(|(e, _)| e.id).collect();
+                self.login = Some(login::LoginPrompt::new(ids, wanted, own_site, username));
+            }
+        }
+        if let Some(p) = self.login.as_mut() {
+            if !login::window(ctx, p, settings.as_ref(), connected, actions) {
+                self.login = None;
             }
         }
     }
@@ -2777,6 +2806,13 @@ fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) 
             Outgoing::Quit => std::process::exit(0),
             Outgoing::Updated { item } => item.status == Status::Confirming,
             Outgoing::NameTaken { .. } => true,
+            // A site that wants a login gets the login prompt.
+            Outgoing::Failed { id, error, .. } if uidm::engine::login_wanted(error).is_some() => {
+                if !s.login_wanted.contains(id) {
+                    s.login_wanted.push_back(*id);
+                }
+                true
+            }
             Outgoing::Done { id, .. } if s.dialog_mode() => {
                 s.completed.push_back((*id, false));
                 true
@@ -3007,22 +3043,44 @@ impl eframe::App for App {
                 let input = ui.add(
                     egui::TextEdit::singleline(&mut self.url_input)
                         .hint_text(tr("Paste a download URL"))
-                        .desired_width((ui.available_width() - 300.0).max(120.0)),
+                        .desired_width((ui.available_width() - 360.0).max(120.0)),
                 );
                 let entered = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let url = self.url_input.trim().to_string();
                 let can_add = connected && is_download_url(&url);
+                // The login fields, when filled in, go with it.
+                let login = self.add_login.as_ref().filter(|(u, _)| !u.trim().is_empty()).map(|(u, p)| DownloadLogin {
+                    username: u.trim().to_string(),
+                    password: Some(p.clone()),
+                });
                 let clicked = ui.add_enabled(can_add, egui::Button::new(tr("Download"))).clicked();
                 if can_add && (clicked || entered) {
-                    actions.push(Action::Add(url.clone()));
+                    actions.push(Action::AddDownload(Download {
+                        url: url.clone(),
+                        login: login.clone(),
+                        ..Download::default()
+                    }));
                     self.url_input.clear();
                 }
                 let later = ui
                     .add_enabled(can_add, egui::Button::new(tr("Later")))
                     .on_hover_text(tr("Add it to the main queue without starting it"));
                 if can_add && later.clicked() {
-                    actions.push(Action::AddLater(url));
+                    actions.push(Action::AddDownload(Download {
+                        url,
+                        login,
+                        start: Some(false),
+                        ..Download::default()
+                    }));
                     self.url_input.clear();
+                }
+                let mut with_login = self.add_login.is_some();
+                if ui
+                    .toggle_value(&mut with_login, tr("Login"))
+                    .on_hover_text(tr("Send a user name and password with the address"))
+                    .changed()
+                {
+                    self.add_login = with_login.then(Default::default);
                 }
                 ui.add_enabled_ui(connected, |ui| {
                     ui.menu_button(tr("More"), |ui| {
@@ -3072,6 +3130,15 @@ impl eframe::App for App {
                     actions.push(Action::OpenOptions);
                 }
             });
+            if let Some((user, password)) = self.add_login.as_mut() {
+                ui.horizontal(|ui| {
+                    ui.label(tr("User name"));
+                    ui.add(egui::TextEdit::singleline(user).desired_width(160.0));
+                    ui.label(tr("Password"));
+                    ui.add(egui::TextEdit::singleline(password).password(true).desired_width(160.0));
+                    ui.weak(tr("Used for the addresses you add here until you close it"));
+                });
+            }
             ui.add_space(6.0);
         });
 
@@ -3344,6 +3411,7 @@ impl eframe::App for App {
         });
 
         self.confirm_window(ctx, &rows, connected, &mut actions);
+        self.login_window(ctx, &rows, connected, &mut actions);
         self.completed_window(ctx, connected, &mut actions);
         self.threat_window(ctx, &mut actions);
         self.remove_window(ctx, &rows, connected, &mut actions);
@@ -3948,9 +4016,9 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 }
             }
             Status::Failed | Status::Canceled | Status::Interrupted => {
-                if let Some(host) = e.error.as_deref().and_then(|m| m.strip_prefix("This site needs a login: ")) {
-                    if ui.small_button(tr("Add login")).clicked() {
-                        actions.push(Action::AddLogin(host.to_string()));
+                if e.error.as_deref().and_then(uidm::engine::login_wanted).is_some() {
+                    if ui.small_button(tr("Log in...")).on_hover_text(tr("Give the user name and password the site asks for")).clicked() {
+                        actions.push(Action::OpenLogin(e.id));
                     }
                 }
                 if ui.small_button(tr("New link")).on_hover_text(tr("Give it a fresh download link")).clicked() {

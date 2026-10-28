@@ -226,9 +226,17 @@ tests, not in a running Firefox.
   user name and password; optionally the proxy the browser uses, for
   downloads from the browser. Site logins pair a site with a user name and
   password. When a server asks for a login (HTTP Basic or Digest), UIDM sends
-  the matching one to that site and no other. Without one the download fails
-  with "This site needs a login", and its **Add login** button opens Options
-  with the site filled in.
+  the matching one to that site and no other. Without one (or when the
+  server refuses it) the download stops, and the window asks: **Log in to
+  the site** shows the site and the realm it named, takes a user name and
+  password, and retries the download with them. They stay the download's
+  own login, or with **Save this password** become the site's login in
+  Options (always, when the file is on another site than its link). Other
+  downloads from the same site waiting for a login go with the same answer.
+  **Cancel** leaves it stopped, with a **Log in...** button in its row. A
+  login can also go with an address from the start: **Login** next to the
+  URL bar shows user name and password fields for the addresses added
+  there, and **Add many** has **Use a login** for every address in it.
 - **Download video**: a button appears over a video playing in the browser.
   It lists what the page loaded: direct video and audio files with their
   sizes, and streams (HLS `.m3u8`, DASH `.mpd`) with each quality UIDM read

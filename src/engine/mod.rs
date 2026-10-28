@@ -162,10 +162,11 @@ pub enum Progress {
 pub enum EngineError {
     /// The server answered with an error status.
     Status(u16),
-    /// The server asked for a login and none is set for this host.
-    NeedsLogin(String),
+    /// The server asked for a login and none is set for this host; the
+    /// realm it named, if any.
+    NeedsLogin(String, Option<String>),
     /// The server refused the login set for this host.
-    LoginRejected(String),
+    LoginRejected(String, Option<String>),
     Http(String),
     Tls(String),
     Io(String),
@@ -181,8 +182,10 @@ impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EngineError::Status(code) => write!(f, "server returned HTTP {code}"),
-            EngineError::NeedsLogin(host) => write!(f, "This site needs a login: {host}"),
-            EngineError::LoginRejected(host) => write!(f, "The login for {host} was refused"),
+            EngineError::NeedsLogin(host, realm) => write!(f, "{NEEDS_LOGIN}{host}{}", realm_suffix(realm)),
+            EngineError::LoginRejected(host, realm) => {
+                write!(f, "{LOGIN_FOR}{host}{LOGIN_REFUSED}{}", realm_suffix(realm))
+            }
             EngineError::Http(s) => write!(f, "http error: {s}"),
             EngineError::Tls(s) => write!(f, "tls error: {s}"),
             EngineError::Io(s) => write!(f, "io error: {s}"),
@@ -195,13 +198,49 @@ impl fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
+const NEEDS_LOGIN: &str = "This site needs a login: ";
+const LOGIN_FOR: &str = "The login for ";
+const LOGIN_REFUSED: &str = " was refused";
+const REALM: &str = " (realm: ";
+
+fn realm_suffix(realm: &Option<String>) -> String {
+    realm.as_deref().map_or(String::new(), |r| format!("{REALM}{r})"))
+}
+
+/// A login a download failed for: the site that asked, the realm it named,
+/// and whether a login was sent and refused.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoginWanted {
+    pub host: String,
+    pub realm: Option<String>,
+    pub refused: bool,
+}
+
+/// The login a failed download's `error` says it needs, if that is why it
+/// failed.
+pub fn login_wanted(error: &str) -> Option<LoginWanted> {
+    let (rest, refused) = match error.strip_prefix(NEEDS_LOGIN) {
+        Some(rest) => (rest.to_string(), false),
+        None => {
+            let rest = error.strip_prefix(LOGIN_FOR)?;
+            let (host, after) = rest.split_once(LOGIN_REFUSED)?;
+            (format!("{host}{after}"), true)
+        }
+    };
+    let (host, realm) = match rest.split_once(REALM) {
+        Some((host, realm)) => (host.to_string(), realm.strip_suffix(')').map(str::to_string)),
+        None => (rest, None),
+    };
+    (!host.is_empty() && !host.contains(char::is_whitespace)).then_some(LoginWanted { host, realm, refused })
+}
+
 impl EngineError {
     /// Errors that trying again cannot fix.
     fn is_permanent(&self) -> bool {
         matches!(
             self,
-            EngineError::NeedsLogin(_)
-                | EngineError::LoginRejected(_)
+            EngineError::NeedsLogin(..)
+                | EngineError::LoginRejected(..)
                 | EngineError::Refused(_)
                 | EngineError::NameTaken { .. }
         )
@@ -2346,7 +2385,15 @@ mod tests {
             // No login for this host: a clear error, at once (no retries).
             let start = Instant::now();
             let err = download_err(request(&server.url, &dir, FileExists::Rename));
-            assert_eq!(err, "This site needs a login: 127.0.0.1");
+            assert_eq!(err, "This site needs a login: 127.0.0.1 (realm: files)");
+            assert_eq!(
+                login_wanted(&err),
+                Some(LoginWanted {
+                    host: "127.0.0.1".into(),
+                    realm: Some("files".into()),
+                    refused: false
+                })
+            );
             assert!(start.elapsed() < Duration::from_secs(3), "not retried");
 
             // The wrong password is refused.
@@ -2357,7 +2404,11 @@ mod tests {
                 proxy: None,
                 logins: vec![login("127.0.0.1", "ann", "wrong")],
             });
-            assert_eq!(download_err(req), "The login for 127.0.0.1 was refused");
+            let err = download_err(req);
+            assert_eq!(err, "The login for 127.0.0.1 was refused (realm: files)");
+            assert!(login_wanted(&err).is_some_and(|w| w.refused && w.host == "127.0.0.1"));
+            assert_eq!(login_wanted("server returned HTTP 404"), None);
+            assert_eq!(login_wanted("This site needs a login: ftp.example.com").map(|w| w.realm), Some(None));
 
             // The right one downloads every range, each answering its own 401.
             let mut req = request(&server.url, &dir, FileExists::Rename);
