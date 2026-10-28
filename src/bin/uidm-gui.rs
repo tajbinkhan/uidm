@@ -56,7 +56,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
 use uidm::protocol::{
-    read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Properties, Scan, SegmentInfo, Status,
+    read_message, write_frame, Answer, Download, DownloadEntry, Incoming, Outgoing, Properties, Scan, SegmentInfo, Status,
 };
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
@@ -402,18 +402,7 @@ enum Action {
     /// Send new settings without the Options dialog (the speed limit toggle).
     QuickSettings(Settings),
     /// Answer a save-as dialog, or start a waiting download.
-    Confirm {
-        id: u64,
-        filename: Option<String>,
-        folder: Option<String>,
-        start: bool,
-        queue: Option<u64>,
-        /// What to do if the file name is taken; the setting decides when
-        /// missing.
-        file_exists: Option<FileExists>,
-        /// For a duplicate address, what to do about the other download.
-        duplicate: Option<Duplicate>,
-    },
+    Confirm(Answer),
     /// Add a URL to the main queue without starting it.
     AddLater(String),
     StartQueue(u64),
@@ -609,6 +598,37 @@ struct ConfirmDraft {
     when_taken: FileExists,
     /// For a duplicate address, what to do about the other download.
     duplicate: Duplicate,
+    /// The category it is saved and listed under.
+    category: String,
+    description: String,
+    /// The category being added with "+", if its editor is open.
+    new_category: Option<NewCategory>,
+}
+
+/// A category added from the save-as dialog.
+#[derive(Default)]
+struct NewCategory {
+    name: String,
+    extensions: String,
+    /// Empty means a folder named after it inside the download folder.
+    folder: String,
+    picked: Picked,
+    error: Option<String>,
+}
+
+impl NewCategory {
+    /// The settings with this category added, checked as Options would.
+    fn add_to(&self, settings: &Settings) -> Result<Settings, String> {
+        let mut new = settings.clone();
+        let folder = self.folder.trim();
+        new.categories.push(Category {
+            extensions: parse_extensions(&self.extensions),
+            folder: (!folder.is_empty()).then(|| folder.to_string()),
+            ..Category::new(self.name.trim(), &[])
+        });
+        new.validate()?;
+        Ok(new)
+    }
 }
 
 /// Units the speed limit can be entered in.
@@ -1353,27 +1373,8 @@ impl App {
             Action::QuickSettings(settings) => {
                 send(&self.writer, &Incoming::SetSettings { settings });
             }
-            Action::Confirm {
-                id,
-                filename,
-                folder,
-                start,
-                queue,
-                file_exists,
-                duplicate,
-            } => {
-                send(
-                    &self.writer,
-                    &Incoming::Confirm {
-                        id,
-                        filename,
-                        folder,
-                        start,
-                        queue,
-                        file_exists,
-                        duplicate,
-                    },
-                );
+            Action::Confirm(answer) => {
+                send(&self.writer, &Incoming::Confirm(answer));
             }
             Action::AddLater(url) => {
                 send(
@@ -1562,15 +1563,23 @@ impl App {
             self.confirm = None;
             return;
         };
+        let (queue_list, loaded) = {
+            let s = self.shared.lock().unwrap();
+            (s.queues.clone(), s.settings.clone())
+        };
+        let settings = loaded.clone().unwrap_or_default();
+        let ask = settings.file_exists == FileExists::Ask;
         if self.confirm.as_ref().map(|c| c.id) != Some(entry.id) {
             let path = entry.path.as_deref().map(Path::new);
+            let filename = path
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| display_name(entry));
             self.confirm = Some(ConfirmDraft {
                 id: entry.id,
                 later_queue: MAIN_QUEUE,
-                filename: path
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| display_name(entry)),
+                category: settings.listed_under(entry.category.as_deref(), &filename, &entry.url).to_string(),
+                filename,
                 folder: path
                     .and_then(|p| p.parent())
                     .map(|p| p.display().to_string())
@@ -1578,6 +1587,8 @@ impl App {
                 picked: Picked::default(),
                 when_taken: FileExists::Rename,
                 duplicate: Duplicate::NewName,
+                description: entry.description.clone().unwrap_or_default(),
+                new_category: None,
             });
         }
         let Some(draft) = self.confirm.as_mut() else {
@@ -1585,11 +1596,6 @@ impl App {
         };
         take_picked(&draft.picked, &mut draft.folder);
         let waiting = rows.iter().filter(|e| e.status == Status::Confirming).count();
-        let (queue_list, ask) = {
-            let s = self.shared.lock().unwrap();
-            let ask = s.settings.as_ref().is_some_and(|s| s.file_exists == FileExists::Ask);
-            (s.queues.clone(), ask)
-        };
         // Another download with the same address, which the dialog asks
         // about. A running one cannot be replaced.
         let other = entry.duplicate_of.and_then(|o| rows.iter().find(|e| e.id == o));
@@ -1651,6 +1657,36 @@ impl App {
                     });
                     ui.end_row();
 
+                    ui.label(tr("Category"));
+                    ui.add_enabled_ui(replaced.is_none(), |ui| {
+                        ui.horizontal(|ui| {
+                            let before = draft.category.clone();
+                            egui::ComboBox::from_id_salt("confirm_category")
+                                .selected_text(&draft.category)
+                                .width(200.0)
+                                .show_ui(ui, |ui| {
+                                    for c in &settings.categories {
+                                        ui.selectable_value(&mut draft.category, c.name.clone(), &c.name);
+                                    }
+                                    ui.selectable_value(&mut draft.category, GENERAL.to_string(), GENERAL);
+                                });
+                            // Picking a category moves the file to its folder.
+                            if draft.category != before {
+                                draft.folder = settings.category_folder(&draft.category).display().to_string();
+                            }
+                            let add = ui
+                                .add_enabled(connected && loaded.is_some() && draft.new_category.is_none(), egui::Button::new("+"))
+                                .on_hover_text(tr("Add a category"));
+                            if add.clicked() {
+                                draft.new_category = Some(NewCategory {
+                                    extensions: uidm::settings::extension_of(draft.filename.trim()).unwrap_or_default(),
+                                    ..NewCategory::default()
+                                });
+                            }
+                        });
+                    });
+                    ui.end_row();
+
                     ui.label(tr("Save to"));
                     ui.add_enabled_ui(replaced.is_none(), |ui| {
                         ui.horizontal(|ui| {
@@ -1658,6 +1694,14 @@ impl App {
                             browse_button(ui, tr("Save to"), &draft.folder, &draft.picked);
                         });
                     });
+                    ui.end_row();
+
+                    ui.label(tr("Description"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.description)
+                            .hint_text(tr("A note shown in the list"))
+                            .desired_width(360.0),
+                    );
                     ui.end_row();
                 });
                 if let Some(old) = other {
@@ -1731,14 +1775,23 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(connected, |ui| {
-                        let answer = |start: bool| Action::Confirm {
-                            id: draft.id,
-                            filename: Some(draft.filename.trim().to_string()),
-                            folder: Some(draft.folder.trim().to_string()),
-                            start,
-                            queue: Some(draft.later_queue),
-                            file_exists: taken.then_some(draft.when_taken),
-                            duplicate: other.map(|_| draft.duplicate),
+                        // The category goes with it only when it is not the one
+                        // the file's type gives anyway.
+                        let by_type = settings.category_name(&name, &entry.url);
+                        let category = (!draft.category.eq_ignore_ascii_case(by_type)).then(|| draft.category.clone());
+                        let description = draft.description.trim();
+                        let answer = |start: bool| {
+                            Action::Confirm(Answer {
+                                id: draft.id,
+                                filename: Some(draft.filename.trim().to_string()),
+                                folder: Some(draft.folder.trim().to_string()),
+                                start,
+                                queue: Some(draft.later_queue),
+                                file_exists: taken.then_some(draft.when_taken),
+                                duplicate: other.map(|_| draft.duplicate),
+                                category: category.clone(),
+                                description: (!description.is_empty()).then(|| description.to_string()),
+                            })
                         };
                         if other.is_some() && draft.duplicate == Duplicate::Existing {
                             if ui.button(tr("OK")).clicked() {
@@ -1758,6 +1811,63 @@ impl App {
                     });
                 });
             });
+
+        // The category editor "+" opened, over the dialog. The new category
+        // is saved to the settings at once and chosen for this download.
+        let Some(new) = draft.new_category.as_mut() else {
+            return;
+        };
+        take_picked(&new.picked, &mut new.folder);
+        let (mut added, mut close) = (None, false);
+        egui::Window::new(tr("New category"))
+            .id(egui::Id::new("confirm_new_category"))
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                egui::Grid::new("new_category_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                    ui.label(tr("Name"));
+                    ui.add(egui::TextEdit::singleline(&mut new.name).desired_width(240.0));
+                    ui.end_row();
+
+                    ui.label(tr("File types"));
+                    ui.add(egui::TextEdit::singleline(&mut new.extensions).hint_text("zip, rar").desired_width(240.0));
+                    ui.end_row();
+
+                    ui.label(tr("Folder"));
+                    ui.horizontal(|ui| {
+                        let hint = trf!("Download folder\\{name}", name = new.name.trim());
+                        ui.add(egui::TextEdit::singleline(&mut new.folder).hint_text(hint).desired_width(240.0));
+                        browse_button(ui, tr("Category folder"), &new.folder, &new.picked);
+                    });
+                    ui.end_row();
+                });
+                if let Some(err) = &new.error {
+                    ui.colored_label(ui.visuals().error_fg_color, err);
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(connected, egui::Button::new(tr("OK"))).clicked() {
+                        match loaded.as_ref().map_or(Err(tr("not connected to the UIDM daemon").to_string()), |s| new.add_to(s)) {
+                            Ok(s) => added = Some(s),
+                            Err(e) => new.error = Some(e),
+                        }
+                    }
+                    if ui.button(tr("Cancel")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if let Some(s) = added {
+            draft.category = new.name.trim().to_string();
+            draft.folder = s.category_folder(&draft.category).display().to_string();
+            actions.push(Action::QuickSettings(s));
+            close = true;
+        }
+        if close {
+            draft.new_category = None;
+        }
     }
 
     /// Draw the Options dialog while it is open.
@@ -2879,7 +2989,7 @@ impl eframe::App for App {
         let category = |e: &DownloadEntry| -> String {
             settings
                 .as_ref()
-                .map_or(GENERAL, |s| s.category_name(&display_name(e), &e.url))
+                .map_or(GENERAL, |s| s.listed_under(e.category.as_deref(), &display_name(e), &e.url))
                 .to_string()
         };
         let queue_list = self.shared.lock().unwrap().queues.clone();
@@ -3641,15 +3751,7 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                     actions.push(Action::OpenRefresh(e.id));
                 }
                 if ui.small_button(tr("Start")).clicked() {
-                    actions.push(Action::Confirm {
-                        id: e.id,
-                        filename: None,
-                        folder: None,
-                        start: true,
-                        queue: None,
-                        file_exists: None,
-                        duplicate: None,
-                    });
+                    actions.push(Action::Confirm(Answer::start(e.id)));
                 }
                 queue_menu(ui, e, row.queues, actions);
                 if ui.small_button(tr("Remove")).clicked() {

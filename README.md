@@ -107,8 +107,12 @@ tests, not in a running Firefox.
   downloads.
 
 - **A save-as dialog** opens for each new download, with its real name and
-  size, and the folder its category picks. Change the name or folder, then
-  **Start download**, **Download later** (it waits in the list with a
+  size, its category, and the folder that category picks. Picking another
+  category moves the file to that category's folder and lists the download
+  under it whatever its type; **+** next to the list adds a category on the
+  spot (saved to Options) and picks it. A **Description** typed here is kept
+  with the download and shows in the list and in Properties. Change the name
+  or folder, then **Start download**, **Download later** (it waits in the list with a
   **Start** button) or **Cancel**. If the window is closed, UIDM opens it; if
   no window shows up within 20 seconds, the download starts as proposed.
   Options can turn the dialog off.

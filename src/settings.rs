@@ -702,6 +702,17 @@ impl Settings {
         self.category_of(filename, url).map_or(GENERAL, |c| c.name.as_str())
     }
 
+    /// The category a download is listed under: the one `chosen` for it in
+    /// the save-as dialog while that category still exists, otherwise the
+    /// one `filename` from `url` belongs to.
+    pub fn listed_under<'a>(&'a self, chosen: Option<&str>, filename: &str, url: &str) -> &'a str {
+        match chosen {
+            Some(c) if c.trim().eq_ignore_ascii_case(GENERAL) => GENERAL,
+            Some(c) => self.category(c).map_or_else(|| self.category_name(filename, url), |c| c.name.as_str()),
+            None => self.category_name(filename, url),
+        }
+    }
+
     /// The connection limit for `host`, if a server limit covers it: the
     /// most specific matching entry wins.
     pub fn server_limit(&self, host: &str) -> Option<usize> {
@@ -724,35 +735,44 @@ impl Settings {
 
     /// Where new downloads from `url` go, by category.
     pub fn folders_for(&self, url: &str) -> Folders {
-        let base = self.download_dir();
         Folders {
-            categories: self
-                .categories
-                .iter()
-                .map(|c| {
-                    let dir = match (&c.last_folder, &c.folder) {
-                        (Some(last), _) if c.remember_folder => PathBuf::from(last),
-                        (_, Some(f)) => PathBuf::from(f),
-                        _ => base.join(c.name.trim()),
-                    };
-                    (c.clone(), dir)
-                })
-                .collect(),
-            default: base,
+            categories: self.categories.iter().map(|c| (c.clone(), self.folder_of(c))).collect(),
+            default: self.download_dir(),
             host: host_of(url),
         }
     }
 
-    /// Remember `folder` as the last one chosen for the category of
-    /// `filename` from `url`, if that category remembers its folder.
-    /// Returns whether anything changed.
-    pub fn remember_folder(&mut self, filename: &str, url: &str, folder: &Path) -> bool {
-        let Some(ext) = extension_of(filename) else {
-            return false;
-        };
-        let host = host_of(url);
+    /// Where new files of category `c` go: the folder last chosen for it in
+    /// the save-as dialog when it remembers one, its own folder, or a folder
+    /// named after it inside the download folder.
+    fn folder_of(&self, c: &Category) -> PathBuf {
+        match (&c.last_folder, &c.folder) {
+            (Some(last), _) if c.remember_folder => PathBuf::from(last),
+            (_, Some(f)) => PathBuf::from(f),
+            _ => self.download_dir().join(c.name.trim()),
+        }
+    }
+
+    /// The category named `name`, ignoring case.
+    pub fn category(&self, name: &str) -> Option<&Category> {
+        self.categories.iter().find(|c| c.name.trim().eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// Where new files of the category named `name` go; `General`, and a
+    /// name no category has, give the download folder.
+    pub fn category_folder(&self, name: &str) -> PathBuf {
+        match self.category(name) {
+            Some(c) => self.folder_of(c),
+            None => self.download_dir(),
+        }
+    }
+
+    /// Remember `folder` as the last one chosen for the category named
+    /// `category`, if that category remembers its folder. Returns whether
+    /// anything changed.
+    pub fn remember_folder(&mut self, category: &str, folder: &Path) -> bool {
         let folder = folder.display().to_string();
-        match self.categories.iter_mut().find(|c| c.takes(&ext, &host)) {
+        match self.categories.iter_mut().find(|c| c.name.trim().eq_ignore_ascii_case(category.trim())) {
             Some(c) if c.remember_folder && c.last_folder.as_deref() != Some(folder.as_str()) => {
                 c.last_folder = Some(folder);
                 true
@@ -1126,11 +1146,33 @@ mod tests {
     fn a_category_remembers_the_last_folder_chosen() {
         let mut s = Settings::default();
         let chosen = std::env::temp_dir().join("uidm-chosen");
-        assert!(!s.remember_folder("a.zip", "https://x/a.zip", &chosen), "off by default");
+        assert!(!s.remember_folder("Compressed", &chosen), "off by default");
         s.categories[0].remember_folder = true;
-        assert!(s.remember_folder("a.zip", "https://x/a.zip", &chosen));
+        assert!(s.remember_folder("compressed", &chosen));
         assert_eq!(s.folders().for_name("b.zip"), chosen);
-        assert!(!s.remember_folder("b.zip", "https://x/b.zip", &chosen), "unchanged");
+        assert_eq!(s.category_folder("Compressed"), chosen);
+        assert!(!s.remember_folder("Compressed", &chosen), "unchanged");
+    }
+
+    #[test]
+    fn a_chosen_category_wins_while_it_exists() {
+        let s = Settings::default();
+        assert_eq!(s.listed_under(None, "a.zip", "https://x/a.zip"), "Compressed");
+        assert_eq!(s.listed_under(Some("music"), "a.zip", "https://x/a.zip"), "Music");
+        assert_eq!(s.listed_under(Some("General"), "a.zip", "https://x/a.zip"), GENERAL);
+        assert_eq!(s.listed_under(Some("Gone"), "a.zip", "https://x/a.zip"), "Compressed");
+    }
+
+    #[test]
+    fn each_category_has_a_folder() {
+        let mut s = Settings::default();
+        let base = std::env::temp_dir().join("uidm-base");
+        s.download_dir = Some(base.display().to_string());
+        s.categories[1].folder = Some("D:\\Docs".into());
+        assert_eq!(s.category_folder("Music"), base.join("Music"));
+        assert_eq!(s.category_folder("documents"), PathBuf::from("D:\\Docs"));
+        assert_eq!(s.category_folder(GENERAL), base);
+        assert_eq!(s.category_folder("No such"), base);
     }
 
     #[test]

@@ -60,7 +60,7 @@ use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
 use uidm::protocol::{
-    read_message, write_frame, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Status,
+    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Status,
 };
 use uidm::settings::{self, Duplicate, FileExists, Folders, Settings, SPEED_LIMIT_RANGE_KBPS};
 use uidm::notify::{self, Sound, Toast};
@@ -221,6 +221,7 @@ impl Hub {
                     let before = e.clone();
                     e.referrer = e.referrer.take().or(d.referrer);
                     e.description = e.description.take().or(d.description);
+                    e.category = e.category.take().or(d.category);
                     e.login_user = e.login_user.take().or(d.login.map(|l| l.username));
                     e.speed_limit = e.speed_limit.or(d.speed_limit);
                     e.from_browser = e.from_browser || d.user_agent.is_some();
@@ -1088,7 +1089,13 @@ impl Daemon {
                     .unwrap()
                     .get(&id)
                     .map_or((true, None), |d| (d.start != Some(false), d.queue));
-                if let Err(e) = daemon.confirm(id, None, None, start, queue, fallback, None) {
+                let answer = Answer {
+                    start,
+                    queue,
+                    file_exists: fallback,
+                    ..Answer::start(id)
+                };
+                if let Err(e) = daemon.confirm(answer) {
                     eprintln!("[uidm-daemon] could not start #{id}: {e}");
                 }
             }
@@ -1818,18 +1825,22 @@ impl Daemon {
     /// `file_exists`, when given, decides what happens if the name is taken,
     /// now and on later starts. For a download asked about as a duplicate,
     /// `duplicate` decides what happens to the other download first (a new
-    /// name when missing).
-    #[allow(clippy::too_many_arguments)]
-    fn confirm(
-        self: &Arc<Self>,
-        id: u64,
-        mut filename: Option<String>,
-        mut folder: Option<String>,
-        start: bool,
-        queue: Option<u64>,
-        mut file_exists: Option<FileExists>,
-        duplicate: Option<Duplicate>,
-    ) -> Result<(), String> {
+    /// name when missing). A category and description, when given, are kept
+    /// with it.
+    fn confirm(self: &Arc<Self>, answer: Answer) -> Result<(), String> {
+        let Answer {
+            id,
+            mut filename,
+            mut folder,
+            start,
+            queue,
+            mut file_exists,
+            duplicate,
+            category,
+            description,
+        } = answer;
+        let category = category.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+        let description = description.map(|d| d.trim().to_string());
         let other = self.entry(id).and_then(|e| e.duplicate_of).and_then(|o| self.entry(o));
         if let Some(old) = other {
             let choice = duplicate.unwrap_or(Duplicate::NewName);
@@ -1851,6 +1862,12 @@ impl Daemon {
                 return Err(format!("download {id} is not waiting to be started"));
             }
             e.duplicate_of = None;
+            if let Some(c) = &category {
+                e.category = Some(c.clone());
+            }
+            if let Some(d) = &description {
+                e.description = Some(d.clone()).filter(|d| !d.is_empty());
+            }
             if filename.is_none() && folder.is_none() {
                 // Keep whatever the download already has: a chosen file, a
                 // partial file, or nothing yet.
@@ -1887,25 +1904,30 @@ impl Daemon {
             let path = Path::new(path);
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let mut settings = self.settings.lock().unwrap().clone();
+            let chosen = item.category.clone().unwrap_or_else(|| settings.category_name(&name, &item.url).to_string());
             if let Some(dir) = path.parent() {
-                if settings.remember_folder(&name, &item.url, dir) {
+                if settings.remember_folder(&chosen, dir) {
                     if let Err(e) = self.set_settings(settings) {
                         eprintln!("[uidm-daemon] could not remember the folder: {e}");
                     }
                 }
             }
         }
-        if file_exists.is_some() {
-            self.hub
-                .requests
-                .lock()
-                .unwrap()
-                .entry(id)
-                .or_insert_with(|| Download {
-                    url: item.url.clone(),
-                    ..Download::default()
-                })
-                .file_exists = file_exists;
+        if file_exists.is_some() || category.is_some() || description.is_some() {
+            let mut requests = self.hub.requests.lock().unwrap();
+            let request = requests.entry(id).or_insert_with(|| Download {
+                url: item.url.clone(),
+                ..Download::default()
+            });
+            if file_exists.is_some() {
+                request.file_exists = file_exists;
+            }
+            if category.is_some() {
+                request.category = category;
+            }
+            if description.is_some() {
+                request.description = item.description.clone();
+            }
         }
         if start {
             return self.dispatch(id);
@@ -1990,9 +2012,11 @@ impl Daemon {
                 referrer: entry.referrer.clone(),
                 ..Download::default()
             });
-        // The new entry keeps the old one's description and speed limit.
+        // The new entry keeps the old one's description, category and speed
+        // limit.
         let download = Download {
             description: entry.description.clone(),
+            category: entry.category.clone(),
             speed_limit: entry.speed_limit,
             ..download
         };
@@ -2053,6 +2077,7 @@ impl Daemon {
             ..Download::default()
         });
         download.description = entry.description.clone();
+        download.category = entry.category.clone();
         download.speed_limit = entry.speed_limit;
         // Only a download that started has a file of its own; a proposed
         // path may be somebody else's.
@@ -2700,18 +2725,13 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             eprintln!("[uidm-daemon] cancel #{id}");
             daemon.cancel(id);
         }
-        Incoming::Confirm {
-            id,
-            filename,
-            folder,
-            start,
-            queue,
-            file_exists,
-            duplicate,
-        } => match daemon.confirm(id, filename, folder, start, queue, file_exists, duplicate) {
-            Ok(()) => eprintln!("[uidm-daemon] confirm #{id} (start: {start})"),
-            Err(message) => send(&Outgoing::Error { message }),
-        },
+        Incoming::Confirm(answer) => {
+            let (id, start) = (answer.id, answer.start);
+            match daemon.confirm(answer) {
+                Ok(()) => eprintln!("[uidm-daemon] confirm #{id} (start: {start})"),
+                Err(message) => send(&Outgoing::Error { message }),
+            }
+        }
         Incoming::Retry { id } => match daemon.retry(id) {
             Ok((new_id, url)) => {
                 eprintln!("[uidm-daemon] retry #{id} as #{new_id}");
@@ -3269,7 +3289,10 @@ mod tests {
         let asked = t.wait(new, Status::Confirming);
         assert_eq!(asked.duplicate_of, Some(old));
         t.daemon
-            .confirm(new, None, None, true, None, None, Some(Duplicate::Existing))
+            .confirm(Answer {
+                duplicate: Some(Duplicate::Existing),
+                ..Answer::start(new)
+            })
             .unwrap();
         assert!(t.daemon.entry(new).is_none(), "the new download was not added");
         assert!(t.window_got(|m| matches!(m, Outgoing::ShowDone { id } if *id == old)));
@@ -3277,7 +3300,7 @@ mod tests {
         // No answer about the duplicate means a new name.
         let again = t.add(&url);
         t.wait(again, Status::Confirming);
-        t.daemon.confirm(again, None, None, true, None, None, None).unwrap();
+        t.daemon.confirm(Answer::start(again)).unwrap();
         let done = t.wait(again, Status::Done);
         assert_eq!(done.path.map(PathBuf::from), Some(t.dir.join("f (1).bin")));
         assert_eq!(done.duplicate_of, None);
@@ -3292,7 +3315,11 @@ mod tests {
         let new = t.add(&url);
         t.wait(new, Status::Confirming);
         t.daemon
-            .confirm(new, Some("ignored.bin".into()), None, true, None, None, Some(Duplicate::Overwrite))
+            .confirm(Answer {
+                filename: Some("ignored.bin".into()),
+                duplicate: Some(Duplicate::Overwrite),
+                ..Answer::start(new)
+            })
             .unwrap();
         let done = t.wait(new, Status::Done);
         assert_eq!(done.path.map(PathBuf::from), Some(path.clone()));
@@ -3534,11 +3561,49 @@ mod tests {
         });
         let chosen = t.dir.join("chosen");
         t.daemon
-            .confirm(id, Some("a.zip".into()), Some(chosen.display().to_string()), false, None, None, None)
+            .confirm(Answer {
+                filename: Some("a.zip".into()),
+                folder: Some(chosen.display().to_string()),
+                start: false,
+                ..Answer::start(id)
+            })
             .unwrap();
         let s = t.daemon.settings.lock().unwrap().clone();
         assert_eq!(s.categories[0].last_folder.as_deref(), Some(chosen.display().to_string().as_str()));
         assert_eq!(s.folders().for_name("b.zip"), chosen);
+    }
+
+    #[test]
+    fn the_save_as_dialog_keeps_a_category_and_description() {
+        let t = setup("category", Duplicate::NewName);
+        t.daemon.settings.lock().unwrap().categories[2].remember_folder = true;
+        let (id, _) = t.daemon.add_later(Download {
+            url: "https://x/a.zip".into(),
+            ..Download::default()
+        });
+        let chosen = t.dir.join("tunes");
+        t.daemon
+            .confirm(Answer {
+                filename: Some("a.zip".into()),
+                folder: Some(chosen.display().to_string()),
+                start: false,
+                category: Some(" Music ".into()),
+                description: Some(" the album ".into()),
+                ..Answer::start(id)
+            })
+            .unwrap();
+        let e = t.daemon.entry(id).unwrap();
+        assert_eq!(e.category.as_deref(), Some("Music"));
+        assert_eq!(e.description.as_deref(), Some("the album"));
+        // The chosen category, not the file's type, remembers the folder.
+        let s = t.daemon.settings.lock().unwrap().clone();
+        assert_eq!(s.categories[2].last_folder.as_deref(), Some(chosen.display().to_string().as_str()));
+        assert_eq!(s.categories[0].last_folder, None);
+        // A retry keeps both.
+        let (again, _) = t.daemon.retry(id).unwrap();
+        let e = t.daemon.entry(again).unwrap();
+        assert_eq!(e.category.as_deref(), Some("Music"));
+        assert_eq!(e.description.as_deref(), Some("the album"));
     }
 
     #[test]
