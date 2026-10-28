@@ -97,6 +97,16 @@ impl BatchDialog {
         }
     }
 
+    /// The dialog with `urls` in its list, such as every link on the
+    /// clipboard.
+    pub fn with_list(urls: &[String]) -> Self {
+        BatchDialog {
+            source: Source::List,
+            list: urls.join("\n"),
+            ..BatchDialog::new()
+        }
+    }
+
     /// The dialog for downloads imported from `name`.
     pub fn imported(name: String, items: Vec<Download>, rejected: usize) -> Self {
         BatchDialog {

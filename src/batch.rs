@@ -200,6 +200,47 @@ pub fn clipboard_link(text: &str, types: &[String]) -> Option<String> {
     wanted.then(|| url.to_string())
 }
 
+/// Every http, https or ftp address in `text`, once each and in order:
+/// copied lines, a web page's text, or addresses in quotes or brackets.
+/// Punctuation that ends a sentence is not taken as part of an address.
+pub fn links_in(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut urls = Vec::new();
+    let separators = |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | '|');
+    for word in text.split(separators) {
+        // An address may follow other text, as in `link:https://...`.
+        let lower = word.to_ascii_lowercase();
+        let Some(start) = ["https://", "http://", "ftp://"].iter().filter_map(|p| lower.find(p)).min() else {
+            continue;
+        };
+        let mut url = &word[start..];
+        // A bracket that closes one opened before the address is not its
+        // own, nor is a full stop or comma at the end of a sentence.
+        loop {
+            let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+            let trimmed = match trimmed.strip_suffix(')') {
+                Some(t) if !t.contains('(') => t,
+                _ => trimmed,
+            };
+            let trimmed = match trimmed.strip_suffix(']') {
+                Some(t) if !t.contains('[') => t,
+                _ => trimmed,
+            };
+            if trimmed.len() == url.len() {
+                break;
+            }
+            url = trimmed;
+        }
+        if url.len() > 4096 || url::Url::parse(url).ok().and_then(|u| u.host_str().map(|_| ())).is_none() {
+            continue;
+        }
+        if seen.insert(url.to_string()) {
+            urls.push(url.to_string());
+        }
+    }
+    urls
+}
+
 /// Whether `s` starts like an address UIDM can download: http, https or ftp.
 pub fn is_download_url(s: &str) -> bool {
     is_web_url(s) || s.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("ftp://"))
@@ -214,6 +255,25 @@ pub fn is_web_url(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_are_found_anywhere_in_copied_text() {
+        let text = "Files:\n  https://x.com/a.zip, and (https://x.com/b.zip).\n\
+                    <a href=\"ftp://f.net/c.iso\">c</a> https://x.com/a.zip\n\
+                    see https://en.wikipedia.org/wiki/Zip_(file_format) or link:http://y.org/d.pdf!\n\
+                    not a link: https:// nor www.x.com/e.zip";
+        assert_eq!(
+            links_in(text),
+            [
+                "https://x.com/a.zip",
+                "https://x.com/b.zip",
+                "ftp://f.net/c.iso",
+                "https://en.wikipedia.org/wiki/Zip_(file_format)",
+                "http://y.org/d.pdf",
+            ]
+        );
+        assert!(links_in("nothing here").is_empty());
+    }
 
     #[test]
     fn padded_numbers() {

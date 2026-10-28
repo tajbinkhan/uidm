@@ -410,6 +410,8 @@ pub struct Settings {
     /// Offer to download links copied to the clipboard whose file type is
     /// one of `capture_types`.
     pub clipboard_monitor: bool,
+    /// Download such links at once instead of offering them.
+    pub clipboard_start: bool,
     /// Show a download button over videos playing in the browser.
     pub video_button: bool,
     /// Sites that get no video button, such as `*.example.com`.
@@ -511,6 +513,7 @@ impl Default for Settings {
             use_browser_proxy: false,
             site_logins: Vec::new(),
             clipboard_monitor: false,
+            clipboard_start: false,
             video_button: true,
             video_button_excluded_sites: Vec::new(),
             ffmpeg_path: String::new(),
@@ -1024,6 +1027,7 @@ mod tests {
                 password: None,
             }],
             clipboard_monitor: true,
+            clipboard_start: true,
             video_button: false,
             video_button_excluded_sites: vec!["video.example.com".into()],
             ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".into(),

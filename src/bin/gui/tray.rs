@@ -18,6 +18,7 @@ use crate::i18n::tr;
 pub enum Command {
     Open,
     AddFromClipboard,
+    BatchFromClipboard,
     PauseAll,
     ResumeAll,
     ToggleSpeedLimit,
@@ -35,6 +36,7 @@ struct Tray {
 
 const OPEN: &str = "Open UIDM";
 const ADD: &str = "Add URL from clipboard";
+const ADD_BATCH: &str = "Add batch download from clipboard";
 const PAUSE: &str = "Pause all";
 const RESUME: &str = "Resume all";
 const SPEED_LIMIT: &str = "Speed limit";
@@ -56,6 +58,7 @@ pub fn install(
 ) -> Result<(), String> {
     let open = MenuItem::new(tr(OPEN), true, None);
     let add = MenuItem::new(tr(ADD), true, None);
+    let add_batch = MenuItem::new(tr(ADD_BATCH), true, None);
     let pause = MenuItem::new(tr(PAUSE), true, None);
     let resume = MenuItem::new(tr(RESUME), true, None);
     let speed_limit = CheckMenuItem::new(tr(SPEED_LIMIT), true, false, None);
@@ -64,12 +67,13 @@ pub fn install(
     let menu = Menu::new();
     let separator = PredefinedMenuItem::separator();
     let separator2 = PredefinedMenuItem::separator();
-    menu.append_items(&[&open, &add, &drop_target, &separator, &pause, &resume, &speed_limit, &separator2, &exit])
+    menu.append_items(&[&open, &add, &add_batch, &drop_target, &separator, &pause, &resume, &speed_limit, &separator2, &exit])
         .map_err(|e| e.to_string())?;
 
     let ids: Vec<(MenuId, Command)> = vec![
         (open.id().clone(), Command::Open),
         (add.id().clone(), Command::AddFromClipboard),
+        (add_batch.id().clone(), Command::BatchFromClipboard),
         (pause.id().clone(), Command::PauseAll),
         (resume.id().clone(), Command::ResumeAll),
         (speed_limit.id().clone(), Command::ToggleSpeedLimit),
@@ -105,7 +109,7 @@ pub fn install(
             icon,
             speed_limit,
             drop_target,
-            items: vec![(open, OPEN), (add, ADD), (pause, PAUSE), (resume, RESUME), (exit, EXIT)],
+            items: vec![(open, OPEN), (add, ADD), (add_batch, ADD_BATCH), (pause, PAUSE), (resume, RESUME), (exit, EXIT)],
         })
     });
     Ok(())

@@ -174,7 +174,7 @@ tests, not in a running Firefox.
 - **The tray icon** keeps UIDM at hand. Closing the window hides it there;
   click the icon to bring it back. Its tooltip shows how many downloads run
   and how fast, and its menu has **Open UIDM**, **Add URL from clipboard**,
-  **Pause all**, **Resume all**, **Speed limit** and **Exit**. Exit closes the
+  **Add batch download from clipboard**, **Pause all**, **Resume all**, **Speed limit** and **Exit**. Exit closes the
   window; downloads keep going and the daemon stops on its own once idle.
   **Pause all** stops every queued and running download, keeping its partial
   file; **Resume all** starts them again, along with any interrupted ones.
@@ -237,8 +237,12 @@ tests, not in a running Firefox.
   and add them to a queue.
 - **Clipboard** (off by default; **Options > Browser capture**): copying a
   link whose file type is on the capture list brings up a small **Download
-  the copied link?** prompt with **Download** and **Ignore**. Nothing starts
-  without a click, and the same link is not offered twice in a row.
+  the copied link?** prompt with **Download** and **Ignore**, and the same
+  link is not offered twice in a row. **Start downloading it at once** skips
+  the prompt: the link is added as a pasted one is, save-as dialog included.
+  **More > Add batch download from clipboard** (also in the tray menu) opens
+  **Add many** with every http, https and ftp link in the copied text, of any
+  file type, to check and add.
 - **Options** (top right of the window) has five tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
   10), a total speed limit, what to do when a file name is taken or an

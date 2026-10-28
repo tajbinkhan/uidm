@@ -170,6 +170,8 @@ struct Shared {
     grab_events: VecDeque<GrabEvent>,
     /// A copied link to offer to download.
     clipboard: Option<String>,
+    /// The tray asked for a batch from the clipboard's links.
+    clipboard_batch: bool,
     /// Each download's connections, from its latest progress.
     segments: HashMap<u64, Vec<SegmentInfo>>,
     /// Links from a page for the link picker, until the window opens it.
@@ -439,6 +441,8 @@ enum Action {
         start_queue: bool,
     },
     OpenBatch,
+    /// Open the Batch dialog with every link on the clipboard.
+    BatchFromClipboard,
     /// Pick a list file to import.
     OpenImport,
     OpenExport,
@@ -743,6 +747,7 @@ struct OptionsDraft {
     /// One site per line.
     capture_excluded_sites: String,
     clipboard_monitor: bool,
+    clipboard_start: bool,
     video_button: bool,
     /// One site per line.
     video_button_excluded_sites: String,
@@ -860,6 +865,7 @@ impl OptionsDraft {
             capture_min_size_kb: s.capture_min_size_kb,
             capture_excluded_sites: s.capture_excluded_sites.join("\n"),
             clipboard_monitor: s.clipboard_monitor,
+            clipboard_start: s.clipboard_start,
             video_button: s.video_button,
             video_button_excluded_sites: s.video_button_excluded_sites.join("\n"),
             ffmpeg_path: s.ffmpeg_path.clone(),
@@ -962,6 +968,7 @@ impl OptionsDraft {
             capture_min_size_kb: self.capture_min_size_kb,
             capture_excluded_sites: sites(&self.capture_excluded_sites),
             clipboard_monitor: self.clipboard_monitor,
+            clipboard_start: self.clipboard_start,
             video_button: self.video_button,
             video_button_excluded_sites: sites(&self.video_button_excluded_sites),
             ffmpeg_path: self.ffmpeg_path.trim().to_string(),
@@ -1029,6 +1036,7 @@ impl App {
                 notice: None,
                 grab_events: VecDeque::new(),
                 clipboard: None,
+                clipboard_batch: false,
                 segments: HashMap::new(),
                 picked_links: None,
                 quota: None,
@@ -1081,6 +1089,7 @@ impl App {
     /// which costs nothing, and reads the text only when it changes.
     fn watch_clipboard(&self) {
         let shared = Arc::clone(&self.shared);
+        let writer = Arc::clone(&self.writer);
         let ctx = self.ctx.clone();
         thread::spawn(move || {
             let mut seen = win::clipboard_sequence();
@@ -1092,8 +1101,8 @@ impl App {
                     continue;
                 }
                 seen = now;
-                let types = match &shared.lock().unwrap().settings {
-                    Some(s) if s.clipboard_monitor => s.capture_types.clone(),
+                let (types, start) = match &shared.lock().unwrap().settings {
+                    Some(s) if s.clipboard_monitor => (s.capture_types.clone(), s.clipboard_start),
                     _ => continue,
                 };
                 let Some(text) = win::clipboard_text() else { continue };
@@ -1102,6 +1111,11 @@ impl App {
                     continue;
                 }
                 last_offered = Some(url.clone());
+                // Started at once, it goes the way a pasted link does, save-as
+                // dialog and all; only the offer is skipped.
+                if start && send(&writer, &Incoming::Add(Download { url: url.clone(), ..Download::default() })) {
+                    continue;
+                }
                 shared.lock().unwrap().clipboard = Some(url);
                 win::show();
                 ctx.request_repaint();
@@ -1134,6 +1148,10 @@ impl App {
                             Some(tr("The clipboard holds no http or https link.").into());
                         win::show();
                     }
+                }
+                tray::Command::BatchFromClipboard => {
+                    shared.lock().unwrap().clipboard_batch = true;
+                    win::show();
                 }
                 tray::Command::PauseAll => {
                     send(&writer, &Incoming::PauseAll);
@@ -1511,6 +1529,14 @@ impl App {
                 }
             }
             Action::OpenBatch => self.batch = Some(tools::BatchDialog::new()),
+            Action::BatchFromClipboard => {
+                let links = uidm::batch::links_in(&win::clipboard_text().unwrap_or_default());
+                if links.is_empty() {
+                    self.shared.lock().unwrap().last_error = Some(tr("The clipboard holds no http, https or ftp links.").into());
+                } else {
+                    self.batch = Some(tools::BatchDialog::with_list(&links));
+                }
+            }
             Action::OpenImport => tools::pick_text_file(&self.ctx, tr("Import a download list"), &self.import),
             Action::OpenExport => self.export = Some(tools::ExportDialog::new(!self.selected.is_empty())),
             Action::OpenGrabber => {
@@ -1572,6 +1598,9 @@ impl App {
             if !tools::grab_dialog(ctx, d, &queue_list, connected, actions) {
                 self.grabber = None;
             }
+        }
+        if std::mem::take(&mut self.shared.lock().unwrap().clipboard_batch) {
+            actions.push(Action::BatchFromClipboard);
         }
         let offer = self.shared.lock().unwrap().clipboard.clone();
         if let Some(url) = offer {
@@ -2605,10 +2634,16 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.end_row();
 
         ui.label(tr("Clipboard"));
-        ui.checkbox(
-            &mut draft.clipboard_monitor,
-            tr("Offer to download links I copy whose file type is listed above"),
-        );
+        ui.vertical(|ui| {
+            ui.checkbox(
+                &mut draft.clipboard_monitor,
+                tr("Watch for links I copy whose file type is listed above"),
+            );
+            ui.add_enabled_ui(draft.clipboard_monitor, |ui| {
+                ui.radio_value(&mut draft.clipboard_start, false, tr("Offer to download each one"));
+                ui.radio_value(&mut draft.clipboard_start, true, tr("Start downloading it at once"));
+            });
+        });
         ui.end_row();
     });
 }
@@ -2929,6 +2964,14 @@ impl eframe::App for App {
                     ui.menu_button(tr("More"), |ui| {
                         if ui.button(tr("Add many...")).on_hover_text(tr("From a URL pattern or a list")).clicked() {
                             actions.push(Action::OpenBatch);
+                            ui.close_menu();
+                        }
+                        if ui
+                            .button(tr("Add batch download from clipboard"))
+                            .on_hover_text(tr("Every link in the copied text, to tick and add"))
+                            .clicked()
+                        {
+                            actions.push(Action::BatchFromClipboard);
                             ui.close_menu();
                         }
                         if ui.button(tr("Site grabber...")).on_hover_text(tr("Find the files a site links to")).clicked() {
