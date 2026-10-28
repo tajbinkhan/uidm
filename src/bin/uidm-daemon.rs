@@ -1281,10 +1281,12 @@ impl Daemon {
         self.hub.publish(&Outgoing::Removed { id });
     }
 
-    /// Add `download` to a queue (the main one unless it names another)
-    /// without starting it or opening a connection.
+    /// Add `download` to a queue (the one it names, else the one Download
+    /// later goes to, else the main one) without starting it or opening a
+    /// connection.
     fn add_later(&self, download: Download) -> (u64, String) {
-        let queue = self.queue_or_main(download.queue);
+        let later = self.settings.lock().unwrap().later_queue;
+        let queue = self.queue_or_main(download.queue.or(later));
         let (id, url) = self.stage(download);
         let _ = self.hub.update_queue(queue, |q| {
             q.order.push(id);
@@ -1826,7 +1828,7 @@ impl Daemon {
     /// now and on later starts. For a download asked about as a duplicate,
     /// `duplicate` decides what happens to the other download first (a new
     /// name when missing). A category and description, when given, are kept
-    /// with it.
+    /// with it. The dialog's "remember" boxes change the settings.
     fn confirm(self: &Arc<Self>, answer: Answer) -> Result<(), String> {
         let Answer {
             id,
@@ -1838,12 +1840,24 @@ impl Daemon {
             duplicate,
             category,
             description,
+            remember_folder,
+            remember_duplicate,
+            remember_queue,
         } = answer;
         let category = category.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
         let description = description.map(|d| d.trim().to_string());
         let other = self.entry(id).and_then(|e| e.duplicate_of).and_then(|o| self.entry(o));
         if let Some(old) = other {
             let choice = duplicate.unwrap_or(Duplicate::NewName);
+            if remember_duplicate {
+                let mut settings = self.settings.lock().unwrap().clone();
+                if settings.if_duplicate != choice {
+                    settings.if_duplicate = choice;
+                    if let Err(e) = self.set_settings(settings) {
+                        eprintln!("[uidm-daemon] could not remember the duplicate choice: {e}");
+                    }
+                }
+            }
             let mut download = self.hub.requests.lock().unwrap().get(&id).cloned().unwrap_or_default();
             if let Some((kept, _)) = self.settle_duplicate(&mut download, &old, choice) {
                 eprintln!("[uidm-daemon] #{id} duplicates #{}; using #{kept} instead", old.id);
@@ -1899,18 +1913,28 @@ impl Daemon {
             e.status = Status::Waiting;
             Ok(())
         })?;
-        // A category that remembers its folder keeps the one chosen here.
-        if let (Some(_), Some(path)) = (folder.as_deref().map(str::trim).filter(|f| !f.is_empty()), item.path.as_deref()) {
-            let path = Path::new(path);
+        let mut settings = self.settings.lock().unwrap().clone();
+        let mut changed = false;
+        if let Some(path) = item.path.as_deref().map(Path::new) {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let mut settings = self.settings.lock().unwrap().clone();
             let chosen = item.category.clone().unwrap_or_else(|| settings.category_name(&name, &item.url).to_string());
-            if let Some(dir) = path.parent() {
-                if settings.remember_folder(&chosen, dir) {
-                    if let Err(e) = self.set_settings(settings) {
-                        eprintln!("[uidm-daemon] could not remember the folder: {e}");
-                    }
-                }
+            if let Some(on) = remember_folder {
+                changed |= settings.set_remember_folder(&chosen, on);
+            }
+            // A category that remembers its folder keeps the one chosen here.
+            let picked = remember_folder == Some(true) || folder.as_deref().is_some_and(|f| !f.trim().is_empty());
+            if let (true, Some(dir)) = (picked, path.parent()) {
+                changed |= settings.remember_folder(&chosen, dir);
+            }
+        }
+        if remember_queue && !start {
+            let later = Some(queue.unwrap_or(MAIN_QUEUE));
+            changed |= settings.later_queue != later;
+            settings.later_queue = later;
+        }
+        if changed {
+            if let Err(e) = self.set_settings(settings) {
+                eprintln!("[uidm-daemon] could not remember the dialog's choices: {e}");
             }
         }
         if file_exists.is_some() || category.is_some() || description.is_some() {
@@ -1933,7 +1957,8 @@ impl Daemon {
             return self.dispatch(id);
         }
         if self.hub.queue_of(id).is_none() {
-            self.move_to_queue(item.id, queue.unwrap_or(MAIN_QUEUE), None)?;
+            let later = self.settings.lock().unwrap().later_queue;
+            self.move_to_queue(item.id, self.queue_or_main(queue.or(later)), None)?;
         }
         Ok(())
     }
@@ -3604,6 +3629,55 @@ mod tests {
         let e = t.daemon.entry(again).unwrap();
         assert_eq!(e.category.as_deref(), Some("Music"));
         assert_eq!(e.description.as_deref(), Some("the album"));
+    }
+
+    #[test]
+    fn the_save_as_dialog_remembers_its_choices() {
+        let t = setup("remember_choices", Duplicate::Ask);
+        let queue = t.daemon.save_queue(Queue::new(0, "Night")).unwrap();
+
+        // "Remember this path" for General, and "Don't ask me again" for the
+        // queue of a download added for later.
+        let (id, _) = t.daemon.add_later(Download {
+            url: "https://x/notes.xyz".into(),
+            ..Download::default()
+        });
+        let chosen = t.dir.join("misc");
+        t.daemon
+            .confirm(Answer {
+                folder: Some(chosen.display().to_string()),
+                filename: Some("notes.xyz".into()),
+                start: false,
+                queue: Some(queue),
+                remember_folder: Some(true),
+                remember_queue: true,
+                ..Answer::start(id)
+            })
+            .unwrap();
+        let s = t.daemon.settings.lock().unwrap().clone();
+        assert!(s.general_remember_folder);
+        assert_eq!(s.folders().for_name("other.xyz"), chosen);
+        assert_eq!(s.later_queue, Some(queue));
+        // Download later now goes to that queue without being told.
+        let (later, _) = t.daemon.add_later(Download {
+            url: "https://x/more.xyz".into(),
+            ..Download::default()
+        });
+        assert_eq!(t.daemon.hub.queue_of(later), Some(queue));
+
+        // "Remember my selection" for an address already in the list.
+        let url = serve();
+        let old = t.finished(&url, &t.dir.join("twice.bin"));
+        let again = t.add(&url);
+        assert_eq!(t.wait(again, Status::Confirming).duplicate_of, Some(old));
+        t.daemon
+            .confirm(Answer {
+                duplicate: Some(Duplicate::NewName),
+                remember_duplicate: true,
+                ..Answer::start(again)
+            })
+            .unwrap();
+        assert_eq!(t.daemon.settings.lock().unwrap().if_duplicate, Duplicate::NewName);
     }
 
     #[test]

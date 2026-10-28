@@ -343,6 +343,14 @@ pub struct Settings {
     pub if_duplicate: Duplicate,
     /// Show a save-as dialog for each new download before it starts.
     pub ask_where_to_save: bool,
+    /// New `General` files go to the folder last chosen for them in the
+    /// save-as dialog, as a category's can.
+    pub general_remember_folder: bool,
+    /// That folder, once one was chosen.
+    pub general_last_folder: Option<String>,
+    /// The queue "Download later" puts downloads in without asking; `None`
+    /// asks in the save-as dialog.
+    pub later_queue: Option<u64>,
     /// File types and their folders. Files of no listed type are `General`.
     pub categories: Vec<Category>,
     /// Extensions the browser extension takes from the browser. Empty means
@@ -473,6 +481,9 @@ impl Default for Settings {
             file_exists: FileExists::Rename,
             if_duplicate: Duplicate::Ask,
             ask_where_to_save: true,
+            general_remember_folder: false,
+            general_last_folder: None,
+            later_queue: None,
             categories: default_categories(),
             capture_types: default_capture_types(),
             capture_min_size_kb: 0,
@@ -737,8 +748,17 @@ impl Settings {
     pub fn folders_for(&self, url: &str) -> Folders {
         Folders {
             categories: self.categories.iter().map(|c| (c.clone(), self.folder_of(c))).collect(),
-            default: self.download_dir(),
+            default: self.general_folder(),
             host: host_of(url),
+        }
+    }
+
+    /// Where new `General` files go: the folder last chosen for them when
+    /// they remember one, otherwise the download folder.
+    fn general_folder(&self) -> PathBuf {
+        match &self.general_last_folder {
+            Some(last) if self.general_remember_folder => PathBuf::from(last),
+            _ => self.download_dir(),
         }
     }
 
@@ -759,26 +779,49 @@ impl Settings {
     }
 
     /// Where new files of the category named `name` go; `General`, and a
-    /// name no category has, give the download folder.
+    /// name no category has, are General's folder.
     pub fn category_folder(&self, name: &str) -> PathBuf {
         match self.category(name) {
             Some(c) => self.folder_of(c),
-            None => self.download_dir(),
+            None => self.general_folder(),
+        }
+    }
+
+    /// Whether the category named `name` (or `General`) keeps the folder
+    /// last chosen for it.
+    pub fn remembers_folder(&self, name: &str) -> bool {
+        match self.category(name) {
+            Some(c) => c.remember_folder,
+            None => self.general_remember_folder,
         }
     }
 
     /// Remember `folder` as the last one chosen for the category named
-    /// `category`, if that category remembers its folder. Returns whether
-    /// anything changed.
+    /// `category` (`General`, or a name no category has, for General), if
+    /// it remembers its folder. Returns whether anything changed.
     pub fn remember_folder(&mut self, category: &str, folder: &Path) -> bool {
         let folder = folder.display().to_string();
-        match self.categories.iter_mut().find(|c| c.name.trim().eq_ignore_ascii_case(category.trim())) {
-            Some(c) if c.remember_folder && c.last_folder.as_deref() != Some(folder.as_str()) => {
-                c.last_folder = Some(folder);
-                true
-            }
-            _ => false,
+        let (remember, last) = match self.categories.iter_mut().find(|c| c.name.trim().eq_ignore_ascii_case(category.trim())) {
+            Some(c) => (c.remember_folder, &mut c.last_folder),
+            None => (self.general_remember_folder, &mut self.general_last_folder),
+        };
+        if !remember || last.as_deref() == Some(folder.as_str()) {
+            return false;
         }
+        *last = Some(folder);
+        true
+    }
+
+    /// Turn remembering the last folder on or off for the category named
+    /// `category` (or General). Returns whether anything changed.
+    pub fn set_remember_folder(&mut self, category: &str, on: bool) -> bool {
+        let flag = match self.categories.iter_mut().find(|c| c.name.trim().eq_ignore_ascii_case(category.trim())) {
+            Some(c) => &mut c.remember_folder,
+            None => &mut self.general_remember_folder,
+        };
+        let changed = *flag != on;
+        *flag = on;
+        changed
     }
 
     /// ffmpeg.exe: the one set in Options if it exists, otherwise the first
@@ -947,6 +990,9 @@ mod tests {
             file_exists: FileExists::Overwrite,
             if_duplicate: Duplicate::Existing,
             ask_where_to_save: false,
+            general_remember_folder: true,
+            general_last_folder: Some("D:\\Misc".into()),
+            later_queue: Some(4),
             categories: vec![Category::new("Books", &["epub"])],
             capture_types: vec!["zip".into()],
             capture_min_size_kb: 100,
@@ -1173,6 +1219,24 @@ mod tests {
         assert_eq!(s.category_folder("documents"), PathBuf::from("D:\\Docs"));
         assert_eq!(s.category_folder(GENERAL), base);
         assert_eq!(s.category_folder("No such"), base);
+    }
+
+    #[test]
+    fn general_can_remember_its_folder_too() {
+        let mut s = Settings::default();
+        let base = std::env::temp_dir().join("uidm-base");
+        s.download_dir = Some(base.display().to_string());
+        let chosen = std::env::temp_dir().join("uidm-general");
+        assert!(!s.remember_folder(GENERAL, &chosen), "off by default");
+        assert!(s.set_remember_folder(GENERAL, true));
+        assert!(s.remembers_folder(GENERAL));
+        assert!(s.remember_folder(GENERAL, &chosen));
+        assert_eq!(s.folders().for_name("notes.xyz"), chosen);
+        assert_eq!(s.category_folder(GENERAL), chosen);
+        // The other categories keep their folders inside the download folder.
+        assert_eq!(s.folders().for_name("a.zip"), base.join("Compressed"));
+        assert!(s.set_remember_folder(GENERAL, false));
+        assert_eq!(s.folders().for_name("notes.xyz"), base);
     }
 
     #[test]

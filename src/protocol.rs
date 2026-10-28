@@ -187,8 +187,8 @@ pub struct Answer {
     pub folder: Option<String>,
     #[serde(default = "yes")]
     pub start: bool,
-    /// With `start` false, the queue it waits in (the main queue when
-    /// missing).
+    /// With `start` false, the queue it waits in; missing uses the queue
+    /// Download later is set to, else the main queue.
     #[serde(default)]
     pub queue: Option<u64>,
     /// What to do if the file name is taken (rename or overwrite); the
@@ -207,6 +207,18 @@ pub struct Answer {
     /// A note about it; missing keeps the one it has, empty clears it.
     #[serde(default)]
     pub description: Option<String>,
+    /// "Remember this path": turn keeping the last chosen folder on (and
+    /// keep this one) or off for its category; missing leaves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remember_folder: Option<bool>,
+    /// "Remember my selection": make `duplicate` the setting for every
+    /// address already in the list.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remember_duplicate: bool,
+    /// "Don't ask me again": with `start` false, make `queue` the one
+    /// "Download later" uses without asking.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remember_queue: bool,
 }
 
 impl Answer {
@@ -222,6 +234,9 @@ impl Answer {
             duplicate: None,
             category: None,
             description: None,
+            remember_folder: None,
+            remember_duplicate: false,
+            remember_queue: false,
         }
     }
 }

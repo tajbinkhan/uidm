@@ -478,6 +478,8 @@ struct App {
     options: Option<OptionsDraft>,
     /// The save-as dialog for the oldest `confirming` download.
     confirm: Option<ConfirmDraft>,
+    /// "Don't show this dialog again" in the completion dialog.
+    hide_completed: bool,
     /// A file whose scan found a threat, waiting for "Open anyway": its path,
     /// name and the scanner's words.
     threat_prompt: Option<(String, String, String)>,
@@ -603,6 +605,12 @@ struct ConfirmDraft {
     description: String,
     /// The category being added with "+", if its editor is open.
     new_category: Option<NewCategory>,
+    /// "Remember this path for <category>".
+    remember_folder: bool,
+    /// "Remember my selection" for a duplicate address.
+    remember_duplicate: bool,
+    /// "Don't ask me again" for the Download later queue.
+    remember_queue: bool,
 }
 
 /// A category added from the save-as dialog.
@@ -724,6 +732,11 @@ struct OptionsDraft {
     file_exists: FileExists,
     if_duplicate: Duplicate,
     ask_where_to_save: bool,
+    general_remember_folder: bool,
+    /// Kept as it is; only the save-as dialog changes it.
+    general_last_folder: Option<String>,
+    /// The queue Download later uses without asking; `None` asks.
+    later_queue: Option<u64>,
     categories: Vec<CategoryDraft>,
     capture_types: String,
     capture_min_size_kb: u64,
@@ -827,6 +840,9 @@ impl OptionsDraft {
             file_exists: s.file_exists,
             if_duplicate: s.if_duplicate,
             ask_where_to_save: s.ask_where_to_save,
+            general_remember_folder: s.general_remember_folder,
+            general_last_folder: s.general_last_folder.clone(),
+            later_queue: s.later_queue,
             categories: s
                 .categories
                 .iter()
@@ -922,6 +938,9 @@ impl OptionsDraft {
             file_exists: self.file_exists,
             if_duplicate: self.if_duplicate,
             ask_where_to_save: self.ask_where_to_save,
+            general_remember_folder: self.general_remember_folder,
+            general_last_folder: self.general_last_folder.clone().filter(|_| self.general_remember_folder),
+            later_queue: self.later_queue,
             categories: self
                 .categories
                 .iter()
@@ -1023,6 +1042,7 @@ impl App {
             url_input: String::new(),
             options: None,
             confirm: None,
+            hide_completed: false,
             threat_prompt: None,
             tooltip: String::new(),
             appearance: None,
@@ -1313,7 +1333,18 @@ impl App {
                 open_file(&path);
             }
             Action::DismissCompleted => {
-                self.shared.lock().unwrap().completed.pop_front();
+                let mut s = self.shared.lock().unwrap();
+                s.completed.pop_front();
+                // "Don't show this dialog again": Windows notifications from
+                // now on, and the dialogs still waiting go too.
+                if std::mem::take(&mut self.hide_completed) {
+                    s.completed.clear();
+                    if let Some(mut settings) = s.settings.clone() {
+                        settings.notify = Notify::Toast;
+                        drop(s);
+                        send(&self.writer, &Incoming::SetSettings { settings });
+                    }
+                }
             }
             Action::OpenWith(path) => win::open_with(&path),
             Action::OpenAbout => self.about = Some(false),
@@ -1575,10 +1606,14 @@ impl App {
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| display_name(entry));
+            let category = settings.listed_under(entry.category.as_deref(), &filename, &entry.url).to_string();
             self.confirm = Some(ConfirmDraft {
                 id: entry.id,
                 later_queue: MAIN_QUEUE,
-                category: settings.listed_under(entry.category.as_deref(), &filename, &entry.url).to_string(),
+                remember_folder: settings.remembers_folder(&category),
+                remember_duplicate: false,
+                remember_queue: false,
+                category,
                 filename,
                 folder: path
                     .and_then(|p| p.parent())
@@ -1673,6 +1708,7 @@ impl App {
                             // Picking a category moves the file to its folder.
                             if draft.category != before {
                                 draft.folder = settings.category_folder(&draft.category).display().to_string();
+                                draft.remember_folder = settings.remembers_folder(&draft.category);
                             }
                             let add = ui
                                 .add_enabled(connected && loaded.is_some() && draft.new_category.is_none(), egui::Button::new("+"))
@@ -1694,6 +1730,17 @@ impl App {
                             browse_button(ui, tr("Save to"), &draft.folder, &draft.picked);
                         });
                     });
+                    ui.end_row();
+
+                    ui.label("");
+                    ui.add_enabled(
+                        replaced.is_none(),
+                        egui::Checkbox::new(
+                            &mut draft.remember_folder,
+                            trf!("Remember this path for {category}", category = draft.category),
+                        ),
+                    )
+                    .on_hover_text(tr("New files of this category go to the folder last chosen for it"));
                     ui.end_row();
 
                     ui.label(tr("Description"));
@@ -1740,6 +1787,8 @@ impl App {
                     if let Some(path) = replaced {
                         ui.weak(trf!("{path} will be overwritten.", path = path));
                     }
+                    ui.checkbox(&mut draft.remember_duplicate, tr("Remember my selection"))
+                        .on_hover_text(tr("Answer the same way for every address already in the list; Options can change it"));
                 }
                 if taken {
                     ui.add_space(4.0);
@@ -1756,7 +1805,9 @@ impl App {
                 if waiting > 1 {
                     ui.weak(trf!("{count} more downloads are waiting after this one.", count = waiting - 1));
                 }
-                if queue_list.len() > 1 {
+                // Unless Download later has a queue of its own, ask which.
+                let later_set = settings.later_queue.is_some_and(|id| queue_list.iter().any(|q| q.id == id));
+                if queue_list.len() > 1 && !later_set {
                     ui.horizontal(|ui| {
                         ui.label(tr("Download later in"));
                         let name = queue_list
@@ -1770,6 +1821,8 @@ impl App {
                                     ui.selectable_value(&mut draft.later_queue, q.id, &q.name);
                                 }
                             });
+                        ui.checkbox(&mut draft.remember_queue, tr("Don't ask me again"))
+                            .on_hover_text(tr("Download later uses this queue from now on; Options can change it"));
                     });
                 }
                 ui.add_space(8.0);
@@ -1780,17 +1833,23 @@ impl App {
                         let by_type = settings.category_name(&name, &entry.url);
                         let category = (!draft.category.eq_ignore_ascii_case(by_type)).then(|| draft.category.clone());
                         let description = draft.description.trim();
+                        let remember_folder = (replaced.is_none()
+                            && draft.remember_folder != settings.remembers_folder(&draft.category))
+                        .then_some(draft.remember_folder);
                         let answer = |start: bool| {
                             Action::Confirm(Answer {
                                 id: draft.id,
                                 filename: Some(draft.filename.trim().to_string()),
                                 folder: Some(draft.folder.trim().to_string()),
                                 start,
-                                queue: Some(draft.later_queue),
+                                queue: (!later_set).then_some(draft.later_queue),
                                 file_exists: taken.then_some(draft.when_taken),
                                 duplicate: other.map(|_| draft.duplicate),
                                 category: category.clone(),
                                 description: (!description.is_empty()).then(|| description.to_string()),
+                                remember_folder,
+                                remember_duplicate: other.is_some() && draft.remember_duplicate,
+                                remember_queue: !start && !later_set && draft.remember_queue,
                             })
                         };
                         if other.is_some() && draft.duplicate == Duplicate::Existing {
@@ -1862,6 +1921,7 @@ impl App {
         if let Some(s) = added {
             draft.category = new.name.trim().to_string();
             draft.folder = s.category_folder(&draft.category).display().to_string();
+            draft.remember_folder = false;
             actions.push(Action::QuickSettings(s));
             close = true;
         }
@@ -1875,6 +1935,7 @@ impl App {
         // Pick up the daemon's answer to a save.
         let result = self.shared.lock().unwrap().save_result.take();
         let saving = self.shared.lock().unwrap().saving;
+        let queues = self.shared.lock().unwrap().queues.clone();
         let Some(draft) = self.options.as_mut() else {
             return;
         };
@@ -1912,7 +1973,7 @@ impl App {
                 });
                 ui.separator();
                 match draft.tab {
-                    OptionsTab::General => general_tab(ui, draft),
+                    OptionsTab::General => general_tab(ui, draft, &queues),
                     OptionsTab::Categories => categories_tab(ui, draft),
                     OptionsTab::Capture => capture_tab(ui, draft),
                     OptionsTab::Notifications => notifications_tab(ui, draft),
@@ -1957,7 +2018,7 @@ fn theme_label(t: uidm::settings::Theme) -> &'static str {
     }
 }
 
-fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
     egui::Grid::new("options").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label(tr("Download folder"));
         ui.horizontal(|ui| {
@@ -2065,6 +2126,19 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 
         ui.label("");
         ui.checkbox(&mut draft.ask_where_to_save, tr("Ask where to save each new download"));
+        ui.end_row();
+
+        ui.label(tr("Download later puts files in"));
+        let later = draft
+            .later_queue
+            .and_then(|id| queues.iter().find(|q| q.id == id))
+            .map_or(tr("The queue chosen in the save-as dialog"), |q| q.name.as_str());
+        egui::ComboBox::from_id_salt("later_queue_option").selected_text(later).show_ui(ui, |ui| {
+            ui.selectable_value(&mut draft.later_queue, None, tr("The queue chosen in the save-as dialog"));
+            for q in queues {
+                ui.selectable_value(&mut draft.later_queue, Some(q.id), &q.name);
+            }
+        });
         ui.end_row();
 
         ui.label("");
@@ -2416,6 +2490,11 @@ fn categories_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         draft.categories.remove(i);
     }
     ui.add_space(4.0);
+    ui.checkbox(
+        &mut draft.general_remember_folder,
+        trf!("Save new \"{general}\" files to the folder last chosen for them", general = GENERAL),
+    );
+    ui.add_space(4.0);
     if ui.button(tr("Add category")).clicked() {
         draft.categories.push(CategoryDraft {
             name: String::new(),
@@ -2694,6 +2773,8 @@ impl App {
                 if waiting > 1 {
                     ui.weak(trf!("{count} more after this one.", count = waiting - 1));
                 }
+                ui.checkbox(&mut self.hide_completed, tr("Don't show this dialog again"))
+                    .on_hover_text(tr("Show a Windows notification instead; Options > When done can bring the dialog back"));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if failed {

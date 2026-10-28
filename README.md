@@ -115,7 +115,14 @@ tests, not in a running Firefox.
   or folder, then **Start download**, **Download later** (it waits in the list with a
   **Start** button) or **Cancel**. If the window is closed, UIDM opens it; if
   no window shows up within 20 seconds, the download starts as proposed.
-  Options can turn the dialog off.
+  Options can turn the dialog off. **Remember this path for <category>**
+  sends the category's new files to the folder last chosen for it, General
+  included (the categories' **Last folder** box in Options, and the box under
+  them for General). With more than one queue, the dialog asks which one
+  **Download later** uses; **Don't ask me again** makes that queue the
+  answer for the dialog, **Later** and the browser's **Download later with
+  UIDM** alike, until **Download later puts files in** in Options changes
+  it.
 - **When a file name is taken**, UIDM saves the new file as `name (1).ext`
   by default. Options (**If the file exists**) can make it overwrite the old
   file instead, or ask. With **Ask me**, the save-as dialog says the name is
@@ -130,7 +137,8 @@ tests, not in a running Firefox.
   the new one overwrites its file; not while the old one is running) or
   **Don't add it** (a finished one shows its completion dialog again, a
   stopped one resumes, a running one is left alone). Options (**If the
-  address is in the list**) can make one of these the answer every time.
+  address is in the list**) can make one of these the answer every time, and
+  so can **Remember my selection** in the dialog.
   Addresses match ignoring `#fragments` and the case of the host. Form
   downloads and streams are never treated as duplicates. **Add many**,
   imports and the site grabber skip addresses already in the list, unless the
@@ -176,7 +184,8 @@ tests, not in a running Firefox.
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still
   appears if the window is not running), or nothing, and can play a sound for
-  each. Canceled downloads are never announced.
+  each. The dialog's **Don't show this dialog again** goes back to
+  notifications. Canceled downloads are never announced.
 - **Virus scan** (off by default) checks each finished file with Microsoft
   Defender or a scanner command you set, with `{path}` where the file goes.
   The list shows **No threat found**, **Threat found** or **Scan failed**,
