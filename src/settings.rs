@@ -343,6 +343,15 @@ pub struct Settings {
     pub if_duplicate: Duplicate,
     /// Show a save-as dialog for each new download before it starts.
     pub ask_where_to_save: bool,
+    /// File types (lowercase extensions) that start at once without the
+    /// save-as dialog, even when it is on.
+    pub auto_start_types: Vec<String>,
+    /// Start downloading while the save-as dialog is open, keeping what was
+    /// fetched when it is answered.
+    pub start_while_asking: bool,
+    /// New downloads only join the Download later queue; nothing starts
+    /// until it is started.
+    pub add_only: bool,
     /// New `General` files go to the folder last chosen for them in the
     /// save-as dialog, as a category's can.
     pub general_remember_folder: bool,
@@ -483,6 +492,9 @@ impl Default for Settings {
             file_exists: FileExists::Rename,
             if_duplicate: Duplicate::Ask,
             ask_where_to_save: true,
+            auto_start_types: Vec::new(),
+            start_while_asking: false,
+            add_only: false,
             general_remember_folder: false,
             general_last_folder: None,
             later_queue: None,
@@ -637,6 +649,7 @@ impl Settings {
         }
 
         check_extensions("The captured file types", &self.capture_types)?;
+        check_extensions("The file types that start without asking", &self.auto_start_types)?;
         if self.capture_min_size_kb > CAPTURE_MIN_SIZE_MAX_KB {
             return Err("The minimum size to capture is too large.".to_string());
         }
@@ -725,6 +738,11 @@ impl Settings {
             Some(c) => self.category(c).map_or_else(|| self.category_name(filename, url), |c| c.name.as_str()),
             None => self.category_name(filename, url),
         }
+    }
+
+    /// Whether a file named `filename` starts without the save-as dialog.
+    pub fn starts_without_asking(&self, filename: &str) -> bool {
+        extension_of(filename).is_some_and(|e| self.auto_start_types.contains(&e))
     }
 
     /// The connection limit for `host`, if a server limit covers it: the
@@ -993,6 +1011,9 @@ mod tests {
             file_exists: FileExists::Overwrite,
             if_duplicate: Duplicate::Existing,
             ask_where_to_save: false,
+            auto_start_types: vec!["exe".into()],
+            start_while_asking: true,
+            add_only: true,
             general_remember_folder: true,
             general_last_folder: Some("D:\\Misc".into()),
             later_queue: Some(4),

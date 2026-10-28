@@ -740,6 +740,10 @@ struct OptionsDraft {
     file_exists: FileExists,
     if_duplicate: Duplicate,
     ask_where_to_save: bool,
+    /// Comma-separated.
+    auto_start_types: String,
+    start_while_asking: bool,
+    add_only: bool,
     general_remember_folder: bool,
     /// Kept as it is; only the save-as dialog changes it.
     general_last_folder: Option<String>,
@@ -849,6 +853,9 @@ impl OptionsDraft {
             file_exists: s.file_exists,
             if_duplicate: s.if_duplicate,
             ask_where_to_save: s.ask_where_to_save,
+            auto_start_types: s.auto_start_types.join(", "),
+            start_while_asking: s.start_while_asking,
+            add_only: s.add_only,
             general_remember_folder: s.general_remember_folder,
             general_last_folder: s.general_last_folder.clone(),
             later_queue: s.later_queue,
@@ -948,6 +955,9 @@ impl OptionsDraft {
             file_exists: self.file_exists,
             if_duplicate: self.if_duplicate,
             ask_where_to_save: self.ask_where_to_save,
+            auto_start_types: parse_extensions(&self.auto_start_types),
+            start_while_asking: self.start_while_asking,
+            add_only: self.add_only,
             general_remember_folder: self.general_remember_folder,
             general_last_folder: self.general_last_folder.clone().filter(|_| self.general_remember_folder),
             later_queue: self.later_queue,
@@ -1736,6 +1746,10 @@ impl App {
                             Some(t) => human_bytes(t),
                             None => tr("Unknown").to_string(),
                         });
+                        // Started early, while this dialog is open.
+                        if entry.done > 0 {
+                            ui.weak(trf!("{done} downloaded so far", done = human_bytes(entry.done)));
+                        }
                         // A zip on a server that sends ranges can list its
                         // files before it downloads.
                         let zip = draft.filename.trim().to_ascii_lowercase().ends_with(".zip");
@@ -2186,8 +2200,25 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
             });
         ui.end_row();
 
-        ui.label("");
-        ui.checkbox(&mut draft.ask_where_to_save, tr("Ask where to save each new download"));
+        ui.label(tr("New downloads"));
+        ui.vertical(|ui| {
+            ui.checkbox(&mut draft.add_only, tr("Only add them to the Download later queue, without starting them"));
+            ui.add_enabled_ui(!draft.add_only, |ui| {
+                ui.checkbox(&mut draft.ask_where_to_save, tr("Ask where to save each new download"));
+                ui.add_enabled_ui(draft.ask_where_to_save, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Start these types without asking"));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.auto_start_types)
+                                .hint_text(tr("none, or exe, msi"))
+                                .desired_width(180.0),
+                        );
+                    });
+                    ui.checkbox(&mut draft.start_while_asking, tr("Start downloading while the save-as dialog is open"))
+                        .on_hover_text(tr("For servers that can resume. What it fetched is kept when you answer, in the folder you choose."));
+                });
+            });
+        });
         ui.end_row();
 
         ui.label(tr("Download later puts files in"));

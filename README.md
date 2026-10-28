@@ -115,7 +115,18 @@ tests, not in a running Firefox.
   or folder, then **Start download**, **Download later** (it waits in the list with a
   **Start** button) or **Cancel**. If the window is closed, UIDM opens it; if
   no window shows up within 20 seconds, the download starts as proposed.
-  Options can turn the dialog off. **Remember this path for <category>**
+  Options can turn the dialog off, or skip it for some file types
+  (**Start these types without asking**, such as `exe, msi`; the type is
+  checked again once the server names the file). **Start downloading while
+  the save-as dialog is open** fetches the file while you decide, into a
+  folder of its own (`UIDM early` in the Windows temporary folder), and the
+  dialog shows how much has come. Answering keeps those bytes: a finished
+  file moves to the name and folder chosen, and an unfinished one carries on
+  from where it got to (and **Download later** keeps it to carry on later).
+  Only files the server sends in ranges start early; canceling drops what
+  was fetched. **Only add them to the Download later queue, without
+  starting them** makes every new download wait in that queue, without the
+  dialog, until the queue or the download is started. **Remember this path for <category>**
   sends the category's new files to the folder last chosen for it, General
   included (the categories' **Last folder** box in Options, and the box under
   them for General). With more than one queue, the dialog asks which one
