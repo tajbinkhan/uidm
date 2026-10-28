@@ -289,6 +289,10 @@ pub struct Download {
     /// the setting decides when missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_exists: Option<FileExists>,
+    /// What to do when its address is already in the list, answered when it
+    /// was added; the setting decides when missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<Duplicate>,
     /// A note about the download, shown in the list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

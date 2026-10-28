@@ -140,10 +140,21 @@ tests, not in a running Firefox.
   address is in the list**) can make one of these the answer every time, and
   so can **Remember my selection** in the dialog.
   Addresses match ignoring `#fragments` and the case of the host. Form
-  downloads and streams are never treated as duplicates. **Add many**,
-  imports and the site grabber skip addresses already in the list, unless the
-  setting adds them with a new name or replaces stopped ones. If no window
+  downloads and streams are never treated as duplicates. If no window
   answers within 20 seconds, the download is added with a new name.
+- **Adding many at once** (**Add many**, imports, the link picker and the
+  site grabber) asks one question at a time, before anything is added, about
+  each address already in the list (while that setting is **Ask me**: add it
+  again, with a new name if needed, or leave it out) and each file name
+  already taken in its folder (while **If the file exists** is **Ask me**:
+  overwrite it, or save with a numbered name). Each question has **Yes**,
+  **Yes to all**, **No** and **No to all**; the "to all" answers cover the
+  rest of that kind of question in this batch only, and **Cancel** adds none.
+  Under the other settings nothing is asked: addresses in the list are
+  skipped unless the setting adds them with a new name or replaces stopped
+  ones, and taken names follow the setting. A scheduled grabber run never
+  asks. The name checked is the one the address gives; a server that names
+  the file otherwise is still asked about in the save-as dialog.
 - **Categories** sort downloads by file type into their own folders:
   Compressed, Documents, Music, Programs and Video go into folders of those
   names inside the download folder, and everything else (**General**) goes

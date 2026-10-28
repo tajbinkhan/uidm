@@ -1171,7 +1171,7 @@ impl Daemon {
     /// `Ask` even when that dialog is off.
     fn add(self: &Arc<Self>, mut download: Download) -> (u64, String) {
         if let Some(old) = self.duplicate_of(&download) {
-            let choice = self.settings.lock().unwrap().if_duplicate;
+            let choice = download.duplicate.unwrap_or(self.settings.lock().unwrap().if_duplicate);
             eprintln!("[uidm-daemon] {} is already in the list as #{} ({choice:?})", download.url, old.id);
             if choice == Duplicate::Ask {
                 return self.ask(download, Some(old.id));
@@ -1330,8 +1330,9 @@ impl Daemon {
 
     /// Add `items` to wait in `queue`, announcing the queue once rather than
     /// once per download. Items that are not web addresses are skipped, and
-    /// so are those already in the list unless the duplicate setting says to
-    /// add them (with a new name, or in place of a stopped download). Returns
+    /// so are those already in the list unless their own answer or the
+    /// duplicate setting says to add them (with a new name, or in place of a
+    /// stopped download). Returns
     /// how many were added and how many were skipped as duplicates.
     fn add_many(self: &Arc<Self>, items: Vec<Download>, queue: Option<u64>) -> (usize, usize) {
         let queue = self.queue_or_main(queue);
@@ -1343,6 +1344,7 @@ impl Daemon {
                 continue;
             }
             if let Some(old) = self.duplicate_of(&d) {
+                let choice = d.duplicate.unwrap_or(choice);
                 let add = match choice {
                     Duplicate::NewName => true,
                     Duplicate::Overwrite => old.status.is_terminal(),
@@ -3370,6 +3372,13 @@ mod tests {
         let t = setup("many_new_name", Duplicate::NewName);
         t.finished(&url, &t.dir.join("f.bin"));
         assert_eq!(t.daemon.add_many(items(&[&url]), None), (1, 0));
+
+        // An item's own answer wins over the setting.
+        let t = setup("many_answered", Duplicate::Ask);
+        t.finished(&url, &t.dir.join("f.bin"));
+        let mut answered = items(&[&url]);
+        answered[0].duplicate = Some(Duplicate::NewName);
+        assert_eq!(t.daemon.add_many(answered, None), (1, 0));
     }
 
     #[test]

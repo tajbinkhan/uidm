@@ -15,6 +15,8 @@
 
 #![windows_subsystem = "windows"]
 
+#[path = "gui/answers.rs"]
+mod answers;
 #[path = "gui/columns.rs"]
 mod columns;
 #[path = "gui/connections.rs"]
@@ -482,6 +484,8 @@ struct App {
     options: Option<OptionsDraft>,
     /// The save-as dialog for the oldest `confirming` download.
     confirm: Option<ConfirmDraft>,
+    /// Many downloads waiting for answers before they are added.
+    answers: Option<answers::Prompt>,
     /// "Don't show this dialog again" in the completion dialog.
     hide_completed: bool,
     /// A file whose scan found a threat, waiting for "Open anyway": its path,
@@ -1050,6 +1054,7 @@ impl App {
             url_input: String::new(),
             options: None,
             confirm: None,
+            answers: None,
             hide_completed: false,
             threat_prompt: None,
             tooltip: String::new(),
@@ -1522,10 +1527,15 @@ impl App {
                 queue,
                 start_queue,
             } => {
-                send(&self.writer, &Incoming::AddMany { items, queue: Some(queue) });
-                // Sent after on the same connection, so it starts with them.
-                if start_queue {
-                    send(&self.writer, &Incoming::StartQueue { id: queue });
+                // Addresses in the list and taken names may need answers
+                // first, when Options says to ask.
+                let (rows, settings) = {
+                    let s = self.shared.lock().unwrap();
+                    (s.table.entries().cloned().collect::<Vec<_>>(), s.settings.clone().unwrap_or_default())
+                };
+                match answers::Prompt::new(items, queue, start_queue, &rows, &settings) {
+                    Ok(prompt) => self.answers = Some(prompt),
+                    Err(items) => self.add_many(items, queue, start_queue),
                 }
             }
             Action::OpenBatch => self.batch = Some(tools::BatchDialog::new()),
@@ -1602,11 +1612,34 @@ impl App {
         if std::mem::take(&mut self.shared.lock().unwrap().clipboard_batch) {
             actions.push(Action::BatchFromClipboard);
         }
+        if let Some(p) = self.answers.as_mut() {
+            match answers::window(ctx, p) {
+                Some(true) => {
+                    let p = self.answers.take().unwrap();
+                    let (queue, start_queue) = (p.queue, p.start_queue);
+                    self.add_many(p.into_items(), queue, start_queue);
+                }
+                Some(false) => self.answers = None,
+                None => {}
+            }
+        }
         let offer = self.shared.lock().unwrap().clipboard.clone();
         if let Some(url) = offer {
             if !tools::clipboard_offer(ctx, &url, connected, actions) {
                 self.shared.lock().unwrap().clipboard = None;
             }
+        }
+    }
+
+    /// Add `items` to wait in `queue`, and maybe start it.
+    fn add_many(&self, items: Vec<Download>, queue: u64, start_queue: bool) {
+        if items.is_empty() {
+            return;
+        }
+        send(&self.writer, &Incoming::AddMany { items, queue: Some(queue) });
+        // Sent after on the same connection, so it starts with them.
+        if start_queue {
+            send(&self.writer, &Incoming::StartQueue { id: queue });
         }
     }
 
