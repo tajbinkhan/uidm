@@ -243,6 +243,15 @@ tests, not in a running Firefox.
   **More > Add batch download from clipboard** (also in the tray menu) opens
   **Add many** with every http, https and ftp link in the copied text, of any
   file type, to check and add.
+- **Download all links with UIDM** (the browser's menu on a page or a text
+  selection, and the button over a selection) lists the links in the window
+  to tick: filters hide web pages, images, repeated links, or keep some file
+  types, and **Edit...** changes a link's address. The ticked files go to a
+  queue, saved to each one's category folder, all to **one category** (listed
+  under it and saved to its folder), or to one folder. **Rename** names them
+  by a pattern in list order: `photo_*` gives `photo_01.jpg`, `photo_02.jpg`
+  and so on (the number is padded to the count, each file keeps its type
+  unless the pattern names one).
 - **Options** (top right of the window) has five tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
   10), a total speed limit, what to do when a file name is taken or an

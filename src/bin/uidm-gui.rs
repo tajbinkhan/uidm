@@ -3292,7 +3292,8 @@ impl eframe::App for App {
             self.links = Some(d);
         }
         if let Some(d) = self.links.as_mut() {
-            if !links::dialog(ctx, d, &queue_list, connected, &mut actions) {
+            let settings = settings.clone().unwrap_or_default();
+            if !links::dialog(ctx, d, &queue_list, &settings, connected, &mut actions) {
                 self.links = None;
             }
         }
