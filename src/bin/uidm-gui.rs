@@ -719,6 +719,7 @@ struct OptionsDraft {
     confirm_remove: bool,
     remove_deletes_files: bool,
     server_file_date: bool,
+    resume_ignores_date: bool,
     manual_user_agent: String,
     /// Empty writes partial files in place.
     temp_dir: String,
@@ -830,6 +831,7 @@ impl OptionsDraft {
             confirm_remove: s.confirm_remove,
             remove_deletes_files: s.remove_deletes_files,
             server_file_date: s.server_file_date,
+            resume_ignores_date: s.resume_ignores_date,
             manual_user_agent: s.manual_user_agent.clone(),
             temp_dir: s.temp_dir.clone().unwrap_or_default(),
             temp_picked: Picked::default(),
@@ -927,6 +929,7 @@ impl OptionsDraft {
             confirm_remove: self.confirm_remove,
             remove_deletes_files: self.remove_deletes_files,
             server_file_date: self.server_file_date,
+            resume_ignores_date: self.resume_ignores_date,
             manual_user_agent: self.manual_user_agent.trim().to_string(),
             temp_dir: optional(&self.temp_dir),
             capture_skip_key: self.capture_skip_key,
@@ -1956,6 +1959,11 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 
         ui.label("");
         ui.checkbox(&mut draft.resume_at_startup, tr("Resume unfinished downloads at startup"));
+        ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut draft.resume_ignores_date, tr("Ignore file modification time changes when resuming"))
+            .on_hover_text(tr("For servers that report a new date on every request. The size, and the ETag when the server sends one, must still match."));
         ui.end_row();
 
         ui.label("");

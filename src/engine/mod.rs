@@ -94,6 +94,9 @@ pub struct DownloadRequest {
     pub speed_limit: Option<u64>,
     /// Give the finished file the server's `Last-Modified` date.
     pub server_date: bool,
+    /// Resume a partial file even if the server's `Last-Modified` changed,
+    /// as long as its size (and ETag, when it sends one) did not.
+    pub ignore_date: bool,
     /// Where partial files are written until they are complete; `None`
     /// writes them in place.
     pub temp_dir: Option<PathBuf>,
@@ -862,9 +865,10 @@ pub fn partial_files(partial: &Path) -> Vec<PathBuf> {
 
 /// Whether the partial file at `output` can be continued from the file
 /// `found` describes: the same size, and the same ETag or Last-Modified when
-/// both sides have one. A missing partial file or sidecar has nothing to keep,
-/// so anything fits. The error says why not, for the user.
-pub fn partial_matches(output: &Path, found: &Inspection) -> Result<(), String> {
+/// both sides have one (`ignore_date` skips the Last-Modified check). A
+/// missing partial file or sidecar has nothing to keep, so anything fits. The
+/// error says why not, for the user.
+pub fn partial_matches(output: &Path, found: &Inspection, ignore_date: bool) -> Result<(), String> {
     let Ok(m) = Manifest::load(&Manifest::sidecar_path(output)) else {
         return Ok(());
     };
@@ -879,7 +883,7 @@ pub fn partial_matches(output: &Path, found: &Inspection) -> Result<(), String> 
             mb(total),
             mb(m.total)
         )),
-        Some(total) if !m.matches(total, found.etag.as_deref(), found.last_modified.as_deref()) => Err(
+        Some(total) if !m.matches(total, found.etag.as_deref(), found.last_modified.as_deref(), ignore_date) => Err(
             "The file at the new link has changed since the download started (its ETag or date differs).".into(),
         ),
         Some(_) if !found.resumable => {
@@ -998,13 +1002,13 @@ fn pick_free_path(
             // A partial copy in the temporary folder resumes; a stale one
             // starts over.
             let work = work_file(req, &path);
-            if work != path && !(work.is_file() && sidecar_matches(&Manifest::sidecar_path(&work), probe)) {
+            if work != path && !(work.is_file() && sidecar_matches(&Manifest::sidecar_path(&work), probe, req.ignore_date)) {
                 let _ = fs::remove_file(Manifest::sidecar_path(&work));
             }
             let _ = fs::remove_file(&sidecar);
             return Ok(path);
         }
-        if sidecar_matches(&sidecar, probe) {
+        if sidecar_matches(&sidecar, probe, req.ignore_date) {
             return Ok(path);
         }
         if req.file_exists == FileExists::Overwrite && path.is_file() {
@@ -1038,14 +1042,14 @@ pub fn numbered_name(filename: &str, n: u32) -> String {
 }
 
 /// Whether `sidecar` describes a partial copy of the file the probe found.
-fn sidecar_matches(sidecar: &Path, probe: &http::Probe) -> bool {
+fn sidecar_matches(sidecar: &Path, probe: &http::Probe, ignore_date: bool) -> bool {
     let (true, Some(total)) = (probe.resumable, probe.total) else {
         return false;
     };
     match Manifest::load(sidecar) {
         Ok(m) => {
             !m.segments.is_empty()
-                && m.matches(total, probe.etag.as_deref(), probe.last_modified.as_deref())
+                && m.matches(total, probe.etag.as_deref(), probe.last_modified.as_deref(), ignore_date)
         }
         Err(_) => false,
     }
@@ -1149,7 +1153,7 @@ fn run_segmented(
         Ok(m)
             if output.is_file()
                 && !m.segments.is_empty()
-                && m.matches(total, probe.etag.as_deref(), probe.last_modified.as_deref()) =>
+                && m.matches(total, probe.etag.as_deref(), probe.last_modified.as_deref(), req.ignore_date) =>
         {
             m
         }
@@ -1663,6 +1667,7 @@ mod tests {
                 ffmpeg: None,
                 speed_limit: None,
                 server_date: false,
+                ignore_date: false,
                 temp_dir: None,
                 reuse_partial: None,
                 host_limit: None,
@@ -1755,6 +1760,44 @@ mod tests {
             // Only the probe byte and the missing half came over the wire.
             assert_eq!(server.served.load(Ordering::Relaxed), 1 + (LEN - half) as u64);
             fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_new_server_date_restarts_unless_told_to_ignore_it() {
+            let data = body(LEN);
+            let half = LEN / 2;
+            for ignore_date in [false, true] {
+                let server = TestServer::start_with(
+                    data.clone(),
+                    Behavior {
+                        last_modified: Some("Tue, 02 Jan 2024 00:00:00 GMT".into()),
+                        ..Behavior::default()
+                    },
+                );
+                let dir = temp_dir(if ignore_date { "date_ignored" } else { "date_checked" });
+                let partial = dir.join("report.pdf");
+                let mut on_disk = data[..half].to_vec();
+                on_disk.resize(LEN, 0);
+                fs::write(&partial, &on_disk).unwrap();
+                // Saved by a run that saw no ETag and an older date.
+                let mut m = Manifest::new(
+                    server.url.clone(),
+                    LEN as u64,
+                    None,
+                    Some("Mon, 01 Jan 2024 00:00:00 GMT".into()),
+                    &split(LEN as u64, 2),
+                );
+                m.segments[0].done = m.segments[0].len();
+                m.save(&Manifest::sidecar_path(&partial)).unwrap();
+
+                let mut req = request(&server.url, &dir, FileExists::Overwrite);
+                req.ignore_date = ignore_date;
+                assert_eq!(download(|_| {}, req), partial);
+                assert_eq!(fs::read(&partial).unwrap(), data);
+                let sent = if ignore_date { 1 + (LEN - half) } else { 1 + LEN };
+                assert_eq!(server.served.load(Ordering::Relaxed), sent as u64, "ignore_date {ignore_date}");
+                fs::remove_dir_all(&dir).ok();
+            }
         }
 
         #[test]
@@ -2458,17 +2501,17 @@ mod tests {
 
             let found = inspect(&server.url, None, &[], &NetConfig::default()).unwrap();
             assert_eq!(found.etag.as_deref(), Some("\"v1\""));
-            assert_eq!(partial_matches(&partial, &found), Ok(()));
+            assert_eq!(partial_matches(&partial, &found, false), Ok(()));
 
             let other_size = Inspection { total: Some(LEN as u64 + 1), ..found.clone() };
-            assert!(partial_matches(&partial, &other_size).unwrap_err().contains("2.0 MB file"));
+            assert!(partial_matches(&partial, &other_size, false).unwrap_err().contains("2.0 MB file"));
             let changed = Inspection { etag: Some("\"v2\"".into()), ..found.clone() };
-            assert!(partial_matches(&partial, &changed).unwrap_err().contains("changed"));
+            assert!(partial_matches(&partial, &changed, false).unwrap_err().contains("changed"));
             let unknown = Inspection { total: None, ..found.clone() };
-            assert!(partial_matches(&partial, &unknown).is_err());
+            assert!(partial_matches(&partial, &unknown, false).is_err());
 
             // Nothing on disk: nothing to keep, any link fits.
-            assert_eq!(partial_matches(&dir.join("none.bin"), &other_size), Ok(()));
+            assert_eq!(partial_matches(&dir.join("none.bin"), &other_size, false), Ok(()));
             fs::remove_dir_all(&dir).ok();
         }
 

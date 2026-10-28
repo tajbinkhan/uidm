@@ -417,6 +417,9 @@ pub struct Settings {
     /// Give a finished file the modified date the server reports for it
     /// (`Last-Modified`) instead of the time it was written.
     pub server_file_date: bool,
+    /// Resume a partial download even when the server reports a new
+    /// modification date for the file; its size must still match.
+    pub resume_ignores_date: bool,
     /// The User-Agent sent for downloads not started from the browser (added
     /// by hand, in a batch, from a list or by the grabber). Empty sends the
     /// default.
@@ -503,6 +506,7 @@ impl Default for Settings {
             confirm_remove: true,
             remove_deletes_files: false,
             server_file_date: true,
+            resume_ignores_date: false,
             manual_user_agent: String::new(),
             temp_dir: None,
             capture_skip_key: CaptureKey::Alt,
@@ -960,6 +964,7 @@ mod tests {
             confirm_remove: false,
             remove_deletes_files: true,
             server_file_date: false,
+            resume_ignores_date: true,
             manual_user_agent: USER_AGENT_PRESETS[0].1.into(),
             temp_dir: Some("D:\\UIDM temp".into()),
             capture_skip_key: CaptureKey::Shift,

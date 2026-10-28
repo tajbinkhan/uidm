@@ -2118,7 +2118,8 @@ impl Daemon {
                 let req = self.request_for(download.clone());
                 let found = engine::inspect(&download.url, None, &req.headers, &req.net)
                     .map_err(|e| format!("could not reach the new link: {e}"))?;
-                if let Err(reason) = engine::partial_matches(Path::new(path), &found) {
+                let ignore_date = self.settings.lock().unwrap().resume_ignores_date;
+                if let Err(reason) = engine::partial_matches(Path::new(path), &found, ignore_date) {
                     return Ok(Some(reason));
                 }
             }

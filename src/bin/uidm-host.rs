@@ -123,6 +123,7 @@ fn run_cli(args: &[String]) -> i32 {
             ffmpeg: None,
             speed_limit: None,
             server_date: true,
+            ignore_date: false,
             temp_dir: None,
             reuse_partial: None,
             host_limit: None,

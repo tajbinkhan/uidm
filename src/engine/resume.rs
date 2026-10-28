@@ -86,14 +86,19 @@ impl Manifest {
 
     /// Decide whether a loaded manifest still describes the same remote file
     /// probed now. A changed total, ETag, or Last-Modified means the partial
-    /// bytes are stale and the download must restart.
-    pub fn matches(&self, total: u64, etag: Option<&str>, last_modified: Option<&str>) -> bool {
+    /// bytes are stale and the download must restart. With `ignore_date`, a
+    /// changed Last-Modified alone is not taken as a new file, for servers
+    /// that report a new date on every request.
+    pub fn matches(&self, total: u64, etag: Option<&str>, last_modified: Option<&str>, ignore_date: bool) -> bool {
         if self.total != total {
             return false;
         }
         match (self.etag.as_deref(), etag) {
             (Some(a), Some(b)) => return a == b,
             _ => {}
+        }
+        if ignore_date {
+            return true;
         }
         match (self.last_modified.as_deref(), last_modified) {
             (Some(a), Some(b)) => a == b,
@@ -164,12 +169,23 @@ mod tests {
     #[test]
     fn matches_rejects_changed_size_or_etag() {
         let m = sample();
-        assert!(m.matches(1000, Some("\"abc\""), None));
-        assert!(!m.matches(2000, Some("\"abc\""), None));
-        assert!(!m.matches(1000, Some("\"zzz\""), None));
+        assert!(m.matches(1000, Some("\"abc\""), None, false));
+        assert!(!m.matches(2000, Some("\"abc\""), None, false));
+        assert!(!m.matches(1000, Some("\"zzz\""), None, false));
         // No etag to compare, same size: trusted.
         let no_etag = Manifest::new("u".into(), 1000, None, None, &[]);
-        assert!(no_etag.matches(1000, None, None));
+        assert!(no_etag.matches(1000, None, None, false));
+    }
+
+    #[test]
+    fn ignoring_the_date_still_checks_the_size_and_etag() {
+        let dated = Manifest::new("u".into(), 1000, None, Some("Mon, 01 Jan 2024 00:00:00 GMT".into()), &[]);
+        let later = Some("Tue, 02 Jan 2024 00:00:00 GMT");
+        assert!(!dated.matches(1000, None, later, false));
+        assert!(dated.matches(1000, None, later, true));
+        assert!(!dated.matches(2000, None, later, true));
+        let tagged = sample();
+        assert!(!tagged.matches(1000, Some("\"zzz\""), later, true));
     }
 
     #[test]

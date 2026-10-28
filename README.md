@@ -382,7 +382,10 @@ Given an `add`, the engine:
    download reads the sidecar and refetches only the missing bytes of each
    segment. The sidecar is checked against the server's ETag, Last-Modified and
    size, so stale bytes are never stitched onto a changed file, and it is
-   deleted on success.
+   deleted on success. Some servers report a new Last-Modified on every
+   request; for them, **Options > General > Ignore file modification time
+   changes when resuming** drops the date check, keeping the size and ETag
+   checks.
 4. Retries a segment that fails with exponential backoff (400 ms doubling to a
    10 s ceiling, up to 5 times), resuming from that segment's own cursor.
 
