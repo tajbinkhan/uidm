@@ -4016,10 +4016,10 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 }
             }
             Status::Failed | Status::Canceled | Status::Interrupted => {
-                if e.error.as_deref().and_then(uidm::engine::login_wanted).is_some() {
-                    if ui.small_button(tr("Log in...")).on_hover_text(tr("Give the user name and password the site asks for")).clicked() {
-                        actions.push(Action::OpenLogin(e.id));
-                    }
+                if e.error.as_deref().and_then(uidm::engine::login_wanted).is_some()
+                    && ui.small_button(tr("Log in...")).on_hover_text(tr("Give the user name and password the site asks for")).clicked()
+                {
+                    actions.push(Action::OpenLogin(e.id));
                 }
                 if ui.small_button(tr("New link")).on_hover_text(tr("Give it a fresh download link")).clicked() {
                     actions.push(Action::OpenRefresh(e.id));

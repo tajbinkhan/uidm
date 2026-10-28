@@ -435,8 +435,10 @@ mod tests {
         let links = vec![link("https://x.net/a.zip", false), link("https://x.net/b.pdf", false)];
         let mut d = LinksDialog::new("https://x.net/".into(), links, None);
         d.target = Target::Category("Music".into());
-        let mut settings = Settings::default();
-        settings.download_dir = Some(r"D:\dl".into());
+        let settings = Settings {
+            download_dir: Some(r"D:\dl".into()),
+            ..Settings::default()
+        };
         let items = d.downloads(&settings).unwrap();
         for item in &items {
             assert_eq!(item.category.as_deref(), Some("Music"));
