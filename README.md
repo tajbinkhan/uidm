@@ -188,9 +188,10 @@ tests, not in a running Firefox.
   earlier than the start). **Start again every** N hours M minutes starts
   it again that long after each start, until the stop time (or midnight
   without one); the last start is saved, so a restart keeps the rhythm.
-  Grabber projects have the same choice. The queue's header shows its next run. If UIDM was
-  not running at the start time, the queue starts as soon as it is, while the
-  time window is still open.
+  Grabber projects have the same choice. The queue's header shows its next
+  run. If UIDM was not running at the start time, the queue starts as soon
+  as it is, while the time window is still open. The Queues dialog says so
+  next to a schedule until **Don't show this again** hides the note.
 - **When a queue is done**, UIDM can do nothing, exit, or put the computer to
   sleep, hibernate or shut it down, per queue or for the current run only.
   Sleeping, hibernating and shutting down wait for a 60-second countdown in

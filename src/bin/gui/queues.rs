@@ -196,6 +196,8 @@ pub struct QueuesDialog {
     draft: QueueDraft,
     /// A new queue just saved, to select once the daemon lists it.
     pending_name: Option<String>,
+    /// Say that a schedule only runs while UIDM does, until dismissed.
+    pub schedule_note: bool,
 }
 
 impl QueuesDialog {
@@ -208,11 +210,13 @@ impl QueuesDialog {
                 selected: q.id,
                 draft: QueueDraft::from(q),
                 pending_name: None,
+                schedule_note: false,
             },
             None => QueuesDialog {
                 selected: 0,
                 draft: QueueDraft::new_queue(),
                 pending_name: None,
+                schedule_note: false,
             },
         }
     }
@@ -378,6 +382,17 @@ fn form(
             ui.label("");
             ui.weak(tr("Times are this computer's. A stop time earlier than the start is the next day."));
             ui.end_row();
+
+            if d.schedule_note {
+                ui.label("");
+                ui.vertical(|ui| {
+                    ui.label(tr("UIDM must be running at the start time for the schedule to start this queue. If it starts later, the queue starts then, while its time is still open. Start with Windows (Options > General) keeps it running."));
+                    if ui.add_enabled(connected, egui::Button::new(tr("Don't show this again")).small()).clicked() {
+                        actions.push(Action::HideScheduleNote);
+                    }
+                });
+                ui.end_row();
+            }
         }
     });
 
