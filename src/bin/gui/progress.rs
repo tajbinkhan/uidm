@@ -1,10 +1,12 @@
 //! A download's own window, after IDM's download progress dialog: its
 //! address, status, size, speed, time left and whether it can resume, with
 //! Pause or Resume and Cancel. "Show details" adds the Connections dialog's
-//! bar and table, and a second tab holds its speed limit.
+//! bar and table. Two more tabs hold its speed limit and what to do once it
+//! finishes; Options can hide them.
 
 use eframe::egui;
-use uidm::protocol::{DownloadEntry, SegmentInfo, Status};
+use uidm::protocol::{DownloadEntry, OnDone, SegmentInfo, Status};
+use uidm::queue::WhenDone;
 use uidm::settings::SPEED_LIMIT_RANGE_KBPS;
 
 use crate::i18n::{tr, trf};
@@ -12,9 +14,16 @@ use crate::i18n::{tr, trf};
 use super::{columns, connections, display_name, human_bytes, human_duration, theme, Action};
 
 #[derive(Clone, Copy, PartialEq)]
-enum Tab {
+pub enum Tab {
     Status,
     SpeedLimit,
+    OnDone,
+}
+
+/// The tabs Options shows besides the status.
+pub struct Tabs {
+    pub speed_limit: bool,
+    pub on_done: bool,
 }
 
 pub struct ProgressWindow {
@@ -25,6 +34,8 @@ pub struct ProgressWindow {
     /// The Speed limit tab's fields: whether it is on, and KB/s.
     limit_on: bool,
     limit_kbps: u64,
+    /// The When done tab's choices, sent as they change.
+    on_done: OnDone,
 }
 
 impl ProgressWindow {
@@ -35,6 +46,7 @@ impl ProgressWindow {
             details: false,
             limit_on: e.speed_limit.is_some(),
             limit_kbps: e.speed_limit.map_or(512, |b| (b / 1024).max(1)),
+            on_done: e.on_done.unwrap_or_default(),
         }
     }
 }
@@ -73,14 +85,14 @@ pub fn window(
     entry: Option<&DownloadEntry>,
     segments: Option<&[SegmentInfo]>,
     speed: Option<f64>,
-    speed_tab: bool,
+    tabs: &Tabs,
     connected: bool,
     actions: &mut Vec<Action>,
 ) -> bool {
     let Some(e) = entry.filter(|e| e.status != Status::Done) else {
         return false;
     };
-    if !speed_tab {
+    if (w.tab == Tab::SpeedLimit && !tabs.speed_limit) || (w.tab == Tab::OnDone && !tabs.on_done) {
         w.tab = Tab::Status;
     }
     let running = speed.filter(|s| *s > 0.0 && e.status == Status::Downloading);
@@ -96,16 +108,22 @@ pub fn window(
         .open(&mut open)
         .resizable(false)
         .show(ctx, |ui| {
-            if speed_tab {
+            if tabs.speed_limit || tabs.on_done {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut w.tab, Tab::Status, tr("Download status"));
-                    ui.selectable_value(&mut w.tab, Tab::SpeedLimit, tr("Speed limit"));
+                    if tabs.speed_limit {
+                        ui.selectable_value(&mut w.tab, Tab::SpeedLimit, tr("Speed limit"));
+                    }
+                    if tabs.on_done {
+                        ui.selectable_value(&mut w.tab, Tab::OnDone, tr("When done"));
+                    }
                 });
                 ui.separator();
             }
             match w.tab {
                 Tab::Status => status_tab(ui, e, fraction, running),
                 Tab::SpeedLimit => limit_tab(ui, w, e, running, connected, actions),
+                Tab::OnDone => done_tab(ui, w, connected, actions),
             }
             ui.add_space(6.0);
             let bar = egui::ProgressBar::new(fraction.unwrap_or(0.0)).desired_width(480.0);
@@ -231,7 +249,38 @@ fn limit_tab(
             actions.push(Action::SetSpeedLimit(e.id, wanted));
         }
         if ui.button(tr("Hide tab")).on_hover_text(tr("Options > General can show it again")).clicked() {
-            actions.push(Action::HideSpeedTab);
+            actions.push(Action::HideProgressTab(Tab::SpeedLimit));
         }
     });
+}
+
+fn done_tab(ui: &mut egui::Ui, w: &mut ProgressWindow, connected: bool, actions: &mut Vec<Action>) {
+    let before = w.on_done;
+    ui.add_enabled_ui(connected, |ui| on_done_fields(ui, &mut w.on_done));
+    if w.on_done != before {
+        actions.push(Action::SetOnDone(w.id, Some(w.on_done)));
+    }
+    ui.add_space(4.0);
+    if ui.button(tr("Hide tab")).on_hover_text(tr("Options > General can show it again")).clicked() {
+        actions.push(Action::HideProgressTab(Tab::OnDone));
+    }
+}
+
+/// What one download does once it finishes. Properties shows these too.
+pub fn on_done_fields(ui: &mut egui::Ui, on_done: &mut OnDone) {
+    ui.checkbox(&mut on_done.dialog, tr("Show the completion dialog"))
+        .on_hover_text(tr("For this download, whatever Options > When done says"));
+    ui.horizontal(|ui| {
+        ui.label(tr("Then"));
+        egui::ComboBox::from_id_salt("on_done_then")
+            .selected_text(tr(on_done.then.label()))
+            .show_ui(ui, |ui| {
+                for action in WhenDone::ALL {
+                    ui.selectable_value(&mut on_done.then, action, tr(action.label()));
+                }
+            });
+    });
+    if on_done.then.needs_countdown() {
+        ui.weak(tr("A 60-second countdown comes first, which Cancel stops."));
+    }
 }

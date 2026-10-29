@@ -478,6 +478,8 @@ pub struct Settings {
     pub progress_on_start: bool,
     /// The download window has a Speed limit tab.
     pub progress_speed_tab: bool,
+    /// The download window has a When done tab.
+    pub progress_done_tab: bool,
     pub theme: Theme,
     /// The window's text size, in percent; everything in it scales along.
     pub text_size: u32,
@@ -555,6 +557,7 @@ impl Default for Settings {
             drop_target: false,
             progress_on_start: false,
             progress_speed_tab: true,
+            progress_done_tab: true,
             theme: Theme::System,
             text_size: 100,
             language: String::new(),
@@ -1083,6 +1086,7 @@ mod tests {
             drop_target: true,
             progress_on_start: true,
             progress_speed_tab: false,
+            progress_done_tab: false,
             theme: Theme::Dark,
             text_size: 125,
             language: "de".into(),

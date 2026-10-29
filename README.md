@@ -208,9 +208,14 @@ tests, not in a running Firefox.
   **Pause** or **Resume** and **Cancel** (which stops it and closes the
   window; the download stays in the list). **Show details** adds the
   connection bars and table from **More > Connections...**, and the **Speed
-  limit** tab sets the download's own limit. **Options > General** can open
-  the window whenever a download starts and hide the Speed limit tab (as can
-  its **Hide tab** button). The window closes when the download finishes.
+  limit** tab sets the download's own limit. The **When done** tab (also in
+  **Properties**) sets what happens once this download finishes: show the
+  completion dialog whatever Options says, then exit UIDM, sleep, hibernate
+  or shut down (after the same 60-second countdown a queue uses). It runs
+  once, after the virus scan, and not for a download that fails.
+  **Options > General** can open the window whenever a download starts and
+  hide either tab (as can its **Hide tab** button). The window closes when
+  the download finishes.
 - **When a download ends**, UIDM shows a Windows notification: **Open** and
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still

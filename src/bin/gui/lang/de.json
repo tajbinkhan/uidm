@@ -658,5 +658,13 @@
   "Transfer rate: {speed}": "Übertragungsrate: {speed}",
   "Apply": "Übernehmen",
   "Hide tab": "Registerkarte ausblenden",
-  "Options > General can show it again": "Optionen > Allgemein kann sie wieder anzeigen"
+  "Options > General can show it again": "Optionen > Allgemein kann sie wieder anzeigen",
+  "Show its When done tab": "Registerkarte Nach Abschluss anzeigen",
+  "Show the completion dialog": "Abschlussdialog anzeigen",
+  "For this download, whatever Options > When done says": "Für diesen Download, unabhängig von Optionen > Nach Abschluss",
+  "Then": "Danach",
+  "A 60-second countdown comes first, which Cancel stops.": "Vorher läuft ein 60-Sekunden-Countdown, den Abbrechen stoppt.",
+  "When it finishes": "Wenn er fertig ist",
+  "Download finished": "Download abgeschlossen",
+  "{name} has finished downloading.": "{name} ist fertig heruntergeladen."
 }

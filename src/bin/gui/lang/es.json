@@ -658,5 +658,13 @@
   "Transfer rate: {speed}": "Velocidad de transferencia: {speed}",
   "Apply": "Aplicar",
   "Hide tab": "Ocultar pestaña",
-  "Options > General can show it again": "Opciones > General puede volver a mostrarla"
+  "Options > General can show it again": "Opciones > General puede volver a mostrarla",
+  "Show its When done tab": "Mostrar su pestaña Al terminar",
+  "Show the completion dialog": "Mostrar el diálogo de finalización",
+  "For this download, whatever Options > When done says": "Para esta descarga, diga lo que diga Opciones > Al terminar",
+  "Then": "Después",
+  "A 60-second countdown comes first, which Cancel stops.": "Antes hay una cuenta atrás de 60 segundos, que Cancelar detiene.",
+  "When it finishes": "Al terminar",
+  "Download finished": "Descarga terminada",
+  "{name} has finished downloading.": "{name} ha terminado de descargarse."
 }

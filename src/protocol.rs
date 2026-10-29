@@ -164,6 +164,12 @@ pub enum Incoming {
         #[serde(default)]
         bytes_per_sec: Option<u64>,
     },
+    /// Set or clear what one unfinished download does once it finishes.
+    SetOnDone {
+        id: u64,
+        #[serde(default)]
+        on_done: Option<OnDone>,
+    },
     /// Ask for the current settings; answered with `settings`.
     GetSettings,
     /// Replace the settings. Invalid values are refused with `error`; valid
@@ -501,6 +507,23 @@ pub struct DownloadEntry {
     /// The browser extension took it from the browser.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_browser: bool,
+    /// What to do once it finishes, if anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_done: Option<OnDone>,
+}
+
+/// What to do once one download finishes, set from its window or
+/// Properties. It runs once, after the virus scan if there is one, and is
+/// then cleared. A download that fails does none of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct OnDone {
+    /// Show the completion dialog for it, whatever Options > When done says.
+    #[serde(default)]
+    pub dialog: bool,
+    /// Then exit UIDM, or sleep, hibernate or shut down after the usual
+    /// countdown.
+    #[serde(default)]
+    pub then: WhenDone,
 }
 
 /// A message from the daemon to a client.
@@ -575,15 +598,20 @@ pub enum Outgoing {
     /// Every queue, in order: a reply to `list`, and sent to every client when
     /// one changes.
     Queues { items: Vec<Queue> },
-    /// A finished queue will put the computer to sleep, hibernate it or shut
-    /// it down in `seconds` unless someone sends `cancel_countdown`.
+    /// A finished queue or download will put the computer to sleep,
+    /// hibernate it or shut it down in `seconds` unless someone sends
+    /// `cancel_countdown`.
     Countdown {
         action: WhenDone,
         seconds: u32,
+        /// The queue's name; empty when one download asked for it.
         queue: String,
+        /// The finished download's file name, when one download asked for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
     },
     CountdownCanceled,
-    /// A finished queue asked UIDM to exit: windows close.
+    /// A finished queue or download asked UIDM to exit: windows close.
     Quit,
     /// Which download waits for a new link from the browser, if any. Sent to
     /// every client when it changes, and after `downloads` in a `list` reply.

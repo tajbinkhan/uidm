@@ -62,7 +62,8 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
 use uidm::protocol::{
-    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Scan, SegmentInfo, Status,
+    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, OnDone, Outgoing, Properties, Scan, SegmentInfo,
+    Status,
 };
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
@@ -161,9 +162,10 @@ struct Shared {
     completed: VecDeque<(u64, bool)>,
     /// The daemon's queues, the main queue first.
     queues: Vec<Queue>,
-    /// A countdown before a finished queue sleeps or shuts down: the action,
-    /// when it happens, and the queue's name.
-    countdown: Option<(WhenDone, Instant, String)>,
+    /// A countdown before a finished queue or download sleeps or shuts down:
+    /// the action, when it happens, the queue's name, and the download's
+    /// file name when one download asked for it.
+    countdown: Option<(WhenDone, Instant, String, Option<String>)>,
     /// The download waiting for a new link from the browser, if any.
     refresh_waiting: Option<u64>,
     /// The daemon's answer that a new link is for another file: the
@@ -232,9 +234,14 @@ impl Shared {
         self.table.apply(msg);
         match msg {
             Outgoing::Queues { items } => self.queues = items.clone(),
-            Outgoing::Countdown { action, seconds, queue } => {
+            Outgoing::Countdown {
+                action,
+                seconds,
+                queue,
+                file,
+            } => {
                 let deadline = Instant::now() + Duration::from_secs(*seconds as u64);
-                self.countdown = Some((*action, deadline, queue.clone()));
+                self.countdown = Some((*action, deadline, queue.clone(), file.clone()));
             }
             Outgoing::CountdownCanceled => self.countdown = None,
             Outgoing::RefreshWaiting { id } => self.refresh_waiting = *id,
@@ -467,8 +474,10 @@ enum Action {
     OpenConnections(u64),
     /// Open a download's own window with its status, Pause and Cancel.
     OpenProgress(u64),
-    /// Turn off the download window's Speed limit tab.
-    HideSpeedTab,
+    /// Turn off one of the download window's tabs.
+    HideProgressTab(progress::Tab),
+    /// Set or clear what a download does once it finishes.
+    SetOnDone(u64, Option<OnDone>),
     /// Open the speed limit dialog for a download.
     OpenSpeedLimit(u64),
     /// Set or clear a download's own limit, in bytes per second.
@@ -807,6 +816,7 @@ struct OptionsDraft {
     drop_target: bool,
     progress_on_start: bool,
     progress_speed_tab: bool,
+    progress_done_tab: bool,
     theme: uidm::settings::Theme,
     text_size: u32,
     /// Empty follows Windows.
@@ -924,6 +934,7 @@ impl OptionsDraft {
             drop_target: s.drop_target,
             progress_on_start: s.progress_on_start,
             progress_speed_tab: s.progress_speed_tab,
+            progress_done_tab: s.progress_done_tab,
             theme: s.theme,
             text_size: s.text_size,
             language: s.language.clone(),
@@ -1043,6 +1054,7 @@ impl OptionsDraft {
             drop_target: self.drop_target,
             progress_on_start: self.progress_on_start,
             progress_speed_tab: self.progress_speed_tab,
+            progress_done_tab: self.progress_done_tab,
             theme: self.theme,
             text_size: self.text_size,
             language: self.language.clone(),
@@ -1503,14 +1515,19 @@ impl App {
                     self.progress_windows.push(progress::ProgressWindow::new(&e));
                 }
             }
-            Action::HideSpeedTab => {
+            Action::HideProgressTab(tab) => {
                 let settings = self.shared.lock().unwrap().settings.clone();
-                if let Some(s) = settings {
-                    self.perform(Action::QuickSettings(Settings {
-                        progress_speed_tab: false,
-                        ..s
-                    }));
+                if let Some(mut s) = settings {
+                    match tab {
+                        progress::Tab::SpeedLimit => s.progress_speed_tab = false,
+                        progress::Tab::OnDone => s.progress_done_tab = false,
+                        progress::Tab::Status => return,
+                    }
+                    self.perform(Action::QuickSettings(s));
                 }
+            }
+            Action::SetOnDone(id, on_done) => {
+                send(&self.writer, &Incoming::SetOnDone { id, on_done });
             }
             Action::OpenSpeedLimit(id) => {
                 let entry = self.shared.lock().unwrap().table.get(id).cloned();
@@ -2329,6 +2346,7 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
             ui.checkbox(&mut draft.progress_on_start, tr("Open it when a download starts"))
                 .on_hover_text(tr("Double-clicking a download's name opens it at any time"));
             ui.checkbox(&mut draft.progress_speed_tab, tr("Show its Speed limit tab"));
+            ui.checkbox(&mut draft.progress_done_tab, tr("Show its When done tab"));
         });
         ui.end_row();
 
@@ -2855,7 +2873,8 @@ fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) 
                 }
                 true
             }
-            Outgoing::Done { id, .. } if s.dialog_mode() => {
+            // Options, or the download itself, can ask for the dialog.
+            Outgoing::Done { id, .. } if s.dialog_mode() || s.table.get(*id).and_then(|e| e.on_done).is_some_and(|o| o.dialog) => {
                 s.completed.push_back((*id, false));
                 true
             }
@@ -3480,11 +3499,14 @@ impl eframe::App for App {
         if settings.as_ref().is_some_and(|s| s.progress_on_start) {
             actions.extend(started.into_iter().map(Action::OpenProgress));
         }
-        let speed_tab = settings.as_ref().is_none_or(|s| s.progress_speed_tab);
+        let tabs = progress::Tabs {
+            speed_limit: settings.as_ref().is_none_or(|s| s.progress_speed_tab),
+            on_done: settings.as_ref().is_none_or(|s| s.progress_done_tab),
+        };
         self.progress_windows.retain_mut(|w| {
             let entry = rows.iter().find(|e| e.id == w.id);
             let segments = segments.get(&w.id).map(Vec::as_slice);
-            progress::window(ctx, w, entry, segments, speeds.get(&w.id).copied(), speed_tab, connected, &mut actions)
+            progress::window(ctx, w, entry, segments, speeds.get(&w.id).copied(), &tabs, connected, &mut actions)
         });
         self.refresh_window(ctx, &rows, connected, &mut actions);
         self.tool_windows(ctx, &rows, connected, &mut actions);
@@ -3494,9 +3516,9 @@ impl eframe::App for App {
             }
         }
         let countdown = self.shared.lock().unwrap().countdown.clone();
-        if let Some((action, deadline, queue)) = countdown {
+        if let Some((action, deadline, queue, file)) = countdown {
             if Instant::now() < deadline {
-                queues::countdown(ctx, action, deadline, &queue, connected, &mut actions);
+                queues::countdown(ctx, action, deadline, &queue, file.as_deref(), connected, &mut actions);
             } else {
                 self.shared.lock().unwrap().countdown = None;
             }

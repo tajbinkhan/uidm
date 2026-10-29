@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use eframe::egui;
-use uidm::protocol::{DownloadEntry, DownloadLogin, Properties, Status};
+use uidm::protocol::{DownloadEntry, DownloadLogin, OnDone, Properties, Status};
 
 use crate::i18n::{tr, trf};
 
@@ -25,6 +25,10 @@ pub struct PropertiesDialog {
     /// The values the dialog opened with, to send only what changed.
     original: [String; 6],
     had_login: bool,
+    /// What it does once it finishes, and what that was when the dialog
+    /// opened.
+    on_done: OnDone,
+    had_on_done: OnDone,
     picked: Picked,
 }
 
@@ -54,6 +58,8 @@ impl PropertiesDialog {
             folder,
             use_login: e.login_user.is_some(),
             had_login: e.login_user.is_some(),
+            on_done: e.on_done.unwrap_or_default(),
+            had_on_done: e.on_done.unwrap_or_default(),
             username,
             password: String::new(),
             picked: Picked::default(),
@@ -205,13 +211,26 @@ pub fn dialog(
                     }
                 });
             });
+            if !done {
+                ui.separator();
+                ui.strong(tr("When it finishes"));
+                super::progress::on_done_fields(ui, &mut d.on_done);
+            }
             ui.add_space(8.0);
-            let changes = d.changes(done);
+            let changes = Some(d.changes(done)).filter(|c| !is_empty(c));
+            let on_done = (!done && d.on_done != d.had_on_done).then_some(d.on_done);
             let login_ok = !d.use_login || !d.username.trim().is_empty();
             ui.horizontal(|ui| {
-                let can_save = connected && stopped && login_ok && !is_empty(&changes);
+                // Its choices for when it finishes can change while it runs.
+                let can_save =
+                    connected && (changes.is_some() || on_done.is_some()) && (changes.is_none() || (stopped && login_ok));
                 if ui.add_enabled(can_save, egui::Button::new(tr("Save"))).clicked() {
-                    actions.push(Action::SetProperties { id: d.id, changes });
+                    if let Some(changes) = changes {
+                        actions.push(Action::SetProperties { id: d.id, changes });
+                    }
+                    if let Some(on_done) = on_done {
+                        actions.push(Action::SetOnDone(d.id, Some(on_done)));
+                    }
                     close = true;
                 }
                 if ui.button(tr("Close")).clicked() {
@@ -249,6 +268,7 @@ mod tests {
             speed_limit: None,
             partial: None,
             from_browser: false,
+            on_done: None,
         }
     }
 

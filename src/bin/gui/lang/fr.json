@@ -658,5 +658,13 @@
   "Transfer rate: {speed}": "Débit : {speed}",
   "Apply": "Appliquer",
   "Hide tab": "Masquer l'onglet",
-  "Options > General can show it again": "Options > Général peut l'afficher à nouveau"
+  "Options > General can show it again": "Options > Général peut l'afficher à nouveau",
+  "Show its When done tab": "Afficher son onglet À la fin",
+  "Show the completion dialog": "Afficher la boîte de dialogue de fin",
+  "For this download, whatever Options > When done says": "Pour ce téléchargement, quel que soit le réglage dans Options > À la fin",
+  "Then": "Ensuite",
+  "A 60-second countdown comes first, which Cancel stops.": "Un compte à rebours de 60 secondes précède, qu'Annuler arrête.",
+  "When it finishes": "À la fin du téléchargement",
+  "Download finished": "Téléchargement terminé",
+  "{name} has finished downloading.": "{name} a fini de se télécharger."
 }

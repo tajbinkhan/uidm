@@ -383,11 +383,13 @@ fn form(
 }
 
 /// The countdown before a power action, with Cancel. Repaints itself.
+/// `file` names the download that asked for it, when not a queue.
 pub fn countdown(
     ctx: &egui::Context,
     action: WhenDone,
     deadline: Instant,
     queue: &str,
+    file: Option<&str>,
     connected: bool,
     actions: &mut Vec<Action>,
 ) {
@@ -398,13 +400,17 @@ pub fn countdown(
         WhenDone::ShutDown => trf!("This computer will shut down in {seconds} seconds.", seconds = left),
         _ => trf!("This computer will continue in {seconds} seconds.", seconds = left),
     };
-    egui::Window::new(tr("Queue finished"))
+    let title = if file.is_some() { tr("Download finished") } else { tr("Queue finished") };
+    egui::Window::new(title)
         .id(egui::Id::new("countdown"))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.label(trf!("The queue \"{queue}\" is done.", queue = queue));
+            ui.label(match file {
+                Some(name) => trf!("{name} has finished downloading.", name = name),
+                None => trf!("The queue \"{queue}\" is done.", queue = queue),
+            });
             ui.heading(message);
             ui.add_space(8.0);
             if ui.add_enabled(connected, egui::Button::new(tr("Cancel"))).clicked() {
