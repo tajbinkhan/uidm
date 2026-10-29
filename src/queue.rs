@@ -71,7 +71,15 @@ pub struct Schedule {
     /// Run once, on this date (`YYYY-MM-DD`), instead of on `days`.
     #[serde(default)]
     pub date: Option<String>,
+    /// Start again this many minutes after the last start, until the run's
+    /// stop time (or midnight without one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_minutes: Option<u32>,
 }
+
+/// Longest gap "start again every" allows, in minutes: 99 hours 59 minutes,
+/// as IDM's fields hold.
+pub const REPEAT_MAX_MINUTES: u32 = 99 * 60 + 59;
 
 /// A queue as saved and as sent to clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +108,10 @@ pub struct Queue {
     /// The day of the scheduled run last started, so it starts only once.
     #[serde(default)]
     pub last_scheduled_day: Option<i64>,
+    /// When the schedule last started it, in minutes since 1970 local time,
+    /// for starting it again every so often.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_scheduled_start: Option<i64>,
     /// Whether the current run was started by the schedule (and so is stopped
     /// by it).
     #[serde(default)]
@@ -132,6 +144,7 @@ impl Queue {
             when_done_once: None,
             retries: 0,
             last_scheduled_day: None,
+            last_scheduled_start: None,
             started_by_schedule: false,
             open_when_done: None,
             start_on_launch: false,
@@ -175,11 +188,12 @@ pub struct Moment {
 }
 
 impl Moment {
-    fn total(self) -> i64 {
+    /// Minutes since 1970-01-01 00:00.
+    pub fn total(self) -> i64 {
         self.day * 1440 + self.minute as i64
     }
 
-    fn from_total(total: i64) -> Self {
+    pub fn from_total(total: i64) -> Self {
         Moment {
             day: total.div_euclid(1440),
             minute: total.rem_euclid(1440) as u32,
@@ -288,6 +302,11 @@ impl Schedule {
                 return Err("The stop time must differ from the start time.".to_string());
             }
         }
+        if let Some(every) = self.repeat_minutes {
+            if !(1..=REPEAT_MAX_MINUTES).contains(&every) {
+                return Err("Start again every 1 minute to 99 hours 59 minutes.".to_string());
+            }
+        }
         match &self.date {
             Some(date) => {
                 parse_date(date).ok_or_else(|| format!("\"{date}\" is not a date. Use YYYY-MM-DD."))?;
@@ -340,6 +359,36 @@ impl Schedule {
         })
     }
 
+    /// The day of the run to start at `now`, if one is due. `last_day` and
+    /// `last_start` are the day and time (minutes since 1970) the schedule
+    /// last started it. Each run starts once at its start time and, with
+    /// `repeat_minutes`, again that long after each start while it is open.
+    pub fn due(&self, now: Moment, last_day: Option<i64>, last_start: Option<i64>) -> Option<i64> {
+        let day = self.open_run(now)?;
+        let Some(every) = self.repeat_minutes else {
+            return (last_day != Some(day)).then_some(day);
+        };
+        let opened = day * 1440 + self.start_minute()? as i64;
+        let next = match last_start {
+            Some(last) if last >= opened => last + every as i64,
+            _ => opened,
+        };
+        (now.total() >= next).then_some(day)
+    }
+
+    /// When it next starts by itself after `now`, counting a repeat after
+    /// `last_start` (minutes since 1970).
+    pub fn next_run(&self, now: Moment, last_start: Option<i64>) -> Option<Moment> {
+        if let (Some(every), Some(day)) = (self.repeat_minutes, self.open_run(now)) {
+            let opened = day * 1440 + self.start_minute()? as i64;
+            let again = last_start.filter(|last| *last >= opened).map(|last| Moment::from_total(last + every as i64));
+            if let Some(again) = again.filter(|m| self.end_of_run(day).is_some_and(|end| *m < end)) {
+                return Some(again);
+            }
+        }
+        self.next_start(now)
+    }
+
     /// The next start after `now`, within the coming week (or on the date).
     pub fn next_start(&self, now: Moment) -> Option<Moment> {
         let start = self.start_minute()? as i64;
@@ -366,6 +415,7 @@ mod tests {
             stop: Some("07:00".into()),
             days: days.to_vec(),
             date: None,
+            repeat_minutes: None,
         }
     }
 
@@ -421,6 +471,7 @@ mod tests {
             stop: Some("17:30".into()),
             days: vec![0, 1, 2, 3, 4],
             date: None,
+            repeat_minutes: None,
         };
         assert!(s.open_run(at("2026-10-28", "12:00")).is_some());
         assert!(s.open_run(at("2026-10-28", "17:30")).is_none());
@@ -444,11 +495,51 @@ mod tests {
             stop: None,
             days: vec![],
             date: Some("2026-12-24".into()),
+            repeat_minutes: None,
         };
         assert_eq!(once.next_start(at("2026-12-20", "10:00")), Some(at("2026-12-24", "02:00")));
         assert_eq!(once.next_start(at("2026-12-24", "02:00")), None);
         assert!(once.open_run(at("2026-12-24", "10:00")).is_some());
         assert!(once.open_run(at("2026-12-25", "01:00")).is_none());
+    }
+
+    #[test]
+    fn a_run_starts_once_without_a_repeat() {
+        let s = nightly(&[0]);
+        let monday = parse_date("2026-10-26").unwrap();
+        assert_eq!(s.due(at("2026-10-26", "23:00"), None, None), Some(monday));
+        assert_eq!(s.due(at("2026-10-27", "03:00"), Some(monday), None), None);
+        assert_eq!(s.due(at("2026-10-26", "22:00"), None, None), None, "not open yet");
+    }
+
+    #[test]
+    fn a_repeat_counts_from_the_last_start() {
+        // Weekdays 09:00 to 17:00, again every 2 hours 30 minutes.
+        let s = Schedule {
+            start: "09:00".into(),
+            stop: Some("17:00".into()),
+            days: vec![0, 1, 2, 3, 4],
+            date: None,
+            repeat_minutes: Some(150),
+        };
+        let wednesday = parse_date("2026-10-28").unwrap();
+        let started = |time| Some(at("2026-10-28", time).total());
+        assert_eq!(s.due(at("2026-10-28", "09:00"), None, None), Some(wednesday));
+        assert_eq!(s.due(at("2026-10-28", "11:29"), Some(wednesday), started("09:00")), None);
+        assert_eq!(s.due(at("2026-10-28", "11:30"), Some(wednesday), started("09:00")), Some(wednesday));
+        // A start that came late, say because the queue still ran, moves
+        // the next one along.
+        assert_eq!(s.due(at("2026-10-28", "13:00"), Some(wednesday), started("11:45")), None);
+        assert_eq!(s.due(at("2026-10-28", "14:15"), Some(wednesday), started("11:45")), Some(wednesday));
+        assert_eq!(s.due(at("2026-10-28", "17:00"), Some(wednesday), started("14:15")), None, "the run closed");
+        // The next day starts at its start time, whatever ran before.
+        let thursday = parse_date("2026-10-29").unwrap();
+        assert_eq!(s.due(at("2026-10-29", "09:00"), Some(wednesday), started("16:45")), Some(thursday));
+
+        assert_eq!(s.next_run(at("2026-10-28", "10:00"), started("09:00")), Some(at("2026-10-28", "11:30")));
+        // A repeat past the stop time gives way to the next day's start.
+        assert_eq!(s.next_run(at("2026-10-28", "16:00"), started("15:00")), Some(at("2026-10-29", "09:00")));
+        assert_eq!(s.next_run(at("2026-10-28", "08:00"), None), Some(at("2026-10-28", "09:00")));
     }
 
     #[test]
@@ -473,6 +564,11 @@ mod tests {
         assert!(bad(|s| s.stop = Some("23:00".into())));
         assert!(bad(|s| s.stop = Some("x".into())));
         assert!(bad(|s| s.date = Some("2026-02-30".into())));
+        assert!(bad(|s| s.repeat_minutes = Some(0)));
+        assert!(bad(|s| s.repeat_minutes = Some(REPEAT_MAX_MINUTES + 1)));
+        let mut every = nightly(&[0]);
+        every.repeat_minutes = Some(90);
+        assert!(every.validate().is_ok());
 
         let mut q = Queue::new(2, "Night");
         assert!(q.validate().is_ok());

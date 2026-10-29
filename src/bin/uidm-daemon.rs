@@ -668,6 +668,7 @@ impl Daemon {
                 // A new schedule may start today even if the old one ran. A
                 // run in progress keeps its day, so its stop time still holds.
                 q.last_scheduled_day = None;
+                q.last_scheduled_start = None;
             }
             q.name = name;
             q.max_concurrent = edited.max_concurrent;
@@ -712,6 +713,7 @@ impl Daemon {
             q.started_by_schedule = scheduled_day.is_some();
             if scheduled_day.is_some() {
                 q.last_scheduled_day = scheduled_day;
+                q.last_scheduled_start = Some(queue::local_now().total());
             }
             Ok(())
         })?;
@@ -760,8 +762,8 @@ impl Daemon {
             let Some(schedule) = &q.schedule else {
                 continue;
             };
-            if let Some(day) = schedule.open_run(now) {
-                if q.last_scheduled_day != Some(day) && !q.running {
+            if let Some(day) = schedule.due(now, q.last_scheduled_day, q.last_scheduled_start) {
+                if !q.running {
                     eprintln!("[uidm-daemon] schedule starts queue {}", q.name);
                     let _ = self.start_queue(q.id, Some(day));
                 }
@@ -1636,14 +1638,19 @@ impl Daemon {
             let Ok(mut project) = grab::Project::load(&dir, &name) else {
                 continue;
             };
-            let Some(day) = project.schedule.as_ref().and_then(|s| s.open_run(now)) else {
+            let due = project
+                .schedule
+                .as_ref()
+                .and_then(|s| s.due(now, project.last_scheduled_day, project.last_scheduled_start));
+            let Some(day) = due else {
                 continue;
             };
-            if project.last_scheduled_day == Some(day) || !self.grab_runs.lock().unwrap().insert(name.clone()) {
+            if !self.grab_runs.lock().unwrap().insert(name.clone()) {
                 continue;
             }
             // Saved first, so a restart does not start the same run again.
             project.last_scheduled_day = Some(day);
+            project.last_scheduled_start = Some(now.total());
             if let Err(e) = project.save(&dir) {
                 eprintln!("[uidm-daemon] could not save grabber project {name}: {e}");
             }

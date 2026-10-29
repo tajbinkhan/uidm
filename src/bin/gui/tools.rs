@@ -503,11 +503,15 @@ pub struct GrabDialog {
     sched_by_date: bool,
     sched_days: [bool; 7],
     sched_date: String,
+    sched_repeat: bool,
+    sched_repeat_hours: u32,
+    sched_repeat_minutes: u32,
     /// A scheduled run adds new finds to `sched_queue`.
     download_new: bool,
     sched_queue: u64,
-    /// What earlier runs found and the last run's day, kept as they are.
-    kept: (Vec<String>, Option<i64>),
+    /// What earlier runs found and the last run's day and start time, kept
+    /// as they are.
+    kept: (Vec<String>, Option<i64>, Option<i64>),
 }
 
 /// Patterns typed one per line or separated by spaces.
@@ -540,6 +544,7 @@ impl GrabDialog {
                 (0u8..7).filter(|d| self.sched_days[*d as usize]).collect()
             },
             date: self.sched_by_date.then(|| self.sched_date.trim().to_string()),
+            repeat_minutes: super::queues::repeat_value(self.sched_repeat, self.sched_repeat_hours, self.sched_repeat_minutes),
         });
         if let Some(s) = &schedule {
             s.validate()?;
@@ -554,6 +559,7 @@ impl GrabDialog {
             queue: self.sched_queue,
             seen: self.kept.0.clone(),
             last_scheduled_day: self.kept.1,
+            last_scheduled_start: self.kept.2,
         })
     }
 
@@ -568,6 +574,7 @@ impl GrabDialog {
             d.sched_stop = s.stop.clone().unwrap_or_else(|| "06:00".into());
             d.sched_by_date = s.date.is_some();
             d.sched_date = s.date.clone().unwrap_or_default();
+            (d.sched_repeat, d.sched_repeat_hours, d.sched_repeat_minutes) = super::queues::repeat_split(s.repeat_minutes);
             d.sched_days = [false; 7];
             for day in &s.days {
                 if let Some(slot) = d.sched_days.get_mut(*day as usize) {
@@ -577,7 +584,7 @@ impl GrabDialog {
         }
         d.download_new = p.download_new;
         d.sched_queue = p.queue;
-        d.kept = (p.seen.clone(), p.last_scheduled_day);
+        d.kept = (p.seen.clone(), p.last_scheduled_day, p.last_scheduled_start);
         if !p.files.is_empty() {
             let mut checked = p.checked;
             checked.resize(p.files.len(), true);
@@ -630,9 +637,12 @@ impl GrabDialog {
             sched_by_date: false,
             sched_days: [true; 7],
             sched_date: String::new(),
+            sched_repeat: false,
+            sched_repeat_hours: 2,
+            sched_repeat_minutes: 0,
             download_new: false,
             sched_queue: MAIN_QUEUE,
-            kept: (Vec::new(), None),
+            kept: (Vec::new(), None, None),
         }
     }
 
@@ -922,6 +932,12 @@ fn grab_body(
                         ui.checkbox(&mut d.sched_has_stop, tr("stop at"));
                         ui.add_enabled(d.sched_has_stop, egui::TextEdit::singleline(&mut d.sched_stop).desired_width(50.0));
                     });
+                    super::queues::repeat_fields(
+                        ui,
+                        &mut d.sched_repeat,
+                        &mut d.sched_repeat_hours,
+                        &mut d.sched_repeat_minutes,
+                    );
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut d.sched_by_date, false, tr("Every"));
                         ui.add_enabled_ui(!d.sched_by_date, |ui| {

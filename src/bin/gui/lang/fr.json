@@ -672,5 +672,8 @@
   "Sleep now": "Mettre en veille maintenant",
   "Hibernate now": "Mettre en veille prolongée maintenant",
   "Shut down now": "Arrêter maintenant",
-  "IDM export file (.ef2): addresses and referrers, for IDM to import": "Fichier d'exportation IDM (.ef2) : adresses et référents, à importer dans IDM"
+  "IDM export file (.ef2): addresses and referrers, for IDM to import": "Fichier d'exportation IDM (.ef2) : adresses et référents, à importer dans IDM",
+  "Start again every": "Relancer toutes les",
+  "minutes": "minutes",
+  "Counted from the last start, until the stop time (or midnight without one)": "Compté depuis le dernier démarrage, jusqu'à l'heure d'arrêt (ou minuit sans elle)"
 }
