@@ -671,5 +671,6 @@
   "Shut down even if a program asks to save its work first; unsaved work is lost": "Auch herunterfahren, wenn ein Programm erst seine Arbeit speichern will; Ungespeichertes geht verloren",
   "Sleep now": "Jetzt Energie sparen",
   "Hibernate now": "Jetzt Ruhezustand",
-  "Shut down now": "Jetzt herunterfahren"
+  "Shut down now": "Jetzt herunterfahren",
+  "IDM export file (.ef2): addresses and referrers, for IDM to import": "IDM-Exportdatei (.ef2): Adressen und Referrer, zum Import in IDM"
 }

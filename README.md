@@ -272,9 +272,12 @@ tests, not in a running Firefox.
 - **More > Import list... / Export list...** move the list to another
   computer or a backup: tick downloads in the list's first column to export
   only those, or export all, as a UIDM list (`.json`, with names, folders,
-  sizes and status) or plain text (one address per line). Imports read
-  either and add everything waiting, so nothing starts by itself. Exports
-  never hold cookies, headers or passwords.
+  sizes and status), plain text (one address per line) or an IDM export
+  file (`.ef2`, with referrers, which IDM's **Import > From IDM export
+  file** reads). Imports read any of them and add everything waiting, so
+  nothing starts by itself. An IDM export file brings each download's
+  referrer, cookies, user agent and form data, and a login if it has one.
+  Exports never hold cookies, headers or passwords.
 - **More > Site grabber...** crawls a site from a start page, as many links
   deep as you say, on the same site or not, and lists the files of the types
   you want (PDFs, say) with the page each was found on. It obeys

@@ -1,21 +1,27 @@
 //! Exporting the download list to a file and importing it again, to move it
 //! to another computer or keep a backup.
 //!
-//! Two formats:
+//! Three formats:
 //!
 //! - text: one URL per line;
 //! - JSON: `{"uidm_list": 1, "items": [...]}`, each item with its URL, file
-//!   name, folder, size, status, referrer and description.
+//!   name, folder, size, status, referrer and description;
+//! - IDM export files (`.ef2`), for moving between IDM and UIDM: each
+//!   download between a `<` line and a `>` line, its URL first, then
+//!   `referer:`, `cookie:`, `pd:` (a form's POST body) and `User-Agent:`
+//!   lines where IDM had them.
 //!
-//! Neither ever holds cookies, request headers or passwords: they are built
-//! from the list entries, which have none.
+//! Exports never hold cookies, request headers or passwords: they are built
+//! from the list entries, which have none. An imported IDM file can bring
+//! its cookies, user agent, form body and a login with its downloads.
 
 use std::path::Path;
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::batch;
-use crate::protocol::{Download, DownloadEntry, Status};
+use crate::protocol::{Download, DownloadEntry, DownloadLogin, Status};
 
 /// The version written in a JSON export.
 pub const FORMAT_VERSION: u32 = 1;
@@ -79,12 +85,98 @@ pub fn export_json(entries: &[&DownloadEntry]) -> String {
     serde_json::to_string_pretty(&list).unwrap_or_default()
 }
 
-/// The downloads in an exported file, in either format, each set to wait
-/// rather than start. Items without a web address, and repeats, are left out;
-/// so is a folder that is not a full path. Also returns how many items were
-/// left out for not being web addresses.
+/// `entries` as an IDM export file, which IDM's Tasks > Import > From IDM
+/// export file reads: each URL and its referrer.
+pub fn export_ef2(entries: &[&DownloadEntry]) -> String {
+    let mut out = String::new();
+    for e in entries {
+        out.push_str("<\r\n");
+        out.push_str(&e.url);
+        out.push_str("\r\n");
+        if let Some(r) = &e.referrer {
+            out.push_str(&format!("referer: {r}\r\n"));
+        }
+        out.push_str(">\r\n");
+    }
+    out
+}
+
+/// Whether `text` (with its byte order mark and leading blank lines gone)
+/// is an IDM export file.
+fn is_ef2(text: &str) -> bool {
+    text.lines().next().is_some_and(|l| l.trim() == "<")
+}
+
+/// The downloads in an IDM export file. Besides the lines IDM writes, it
+/// takes `username:` and `password:`, which some files have. Unknown lines
+/// are skipped.
+fn parse_ef2(text: &str) -> Vec<Download> {
+    let mut items = Vec::new();
+    let mut current: Option<Download> = None;
+    for line in text.lines().map(str::trim) {
+        match line {
+            "<" => {
+                current = Some(Download {
+                    start: Some(false),
+                    ..Download::default()
+                });
+            }
+            ">" => items.extend(current.take().filter(|d| !d.url.is_empty())),
+            "" => {}
+            _ => {
+                let Some(d) = current.as_mut() else {
+                    continue;
+                };
+                if d.url.is_empty() {
+                    d.url = line.to_string();
+                    continue;
+                }
+                let Some((key, value)) = line.split_once(':') else {
+                    continue;
+                };
+                let value = value.trim();
+                if value.is_empty() {
+                    continue;
+                }
+                match key.trim().to_ascii_lowercase().as_str() {
+                    "referer" => d.referrer = Some(value.to_string()).filter(|r| batch::is_web_url(r)),
+                    "cookie" => d.cookies = Some(value.to_string()),
+                    "user-agent" => d.user_agent = Some(value.to_string()),
+                    "pd" => {
+                        d.method = Some("POST".into());
+                        d.body = Some(base64::engine::general_purpose::STANDARD.encode(value));
+                        d.headers
+                            .insert("Content-Type".into(), "application/x-www-form-urlencoded".into());
+                    }
+                    "username" => {
+                        d.login.get_or_insert_with(DownloadLogin::default).username = value.to_string();
+                    }
+                    "password" => {
+                        d.login.get_or_insert_with(DownloadLogin::default).password = Some(value.to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    // A password alone is no login.
+    for d in &mut items {
+        if d.login.as_ref().is_some_and(|l| l.username.is_empty()) {
+            d.login = None;
+        }
+    }
+    items
+}
+
+/// The downloads in an exported file, in any of the formats, each set to
+/// wait rather than start. Items without a web address, and repeats, are
+/// left out; so is a folder that is not a full path. Also returns how many
+/// items were left out for not being web addresses.
 pub fn import(text: &str) -> Result<(Vec<Download>, usize), String> {
     let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+    if is_ef2(trimmed) {
+        return keep_valid(parse_ef2(trimmed));
+    }
     if !trimmed.starts_with('{') {
         let (urls, rejected) = batch::parse_list(text)?;
         let items = urls
@@ -102,27 +194,37 @@ pub fn import(text: &str) -> Result<(Vec<Download>, usize), String> {
     if list.uidm_list > FORMAT_VERSION {
         return Err("This list was written by a newer UIDM.".into());
     }
+    keep_valid(
+        list.items
+            .into_iter()
+            .map(|item| Download {
+                url: item.url,
+                filename: item.filename.filter(|n| !n.trim().is_empty()),
+                folder: item.folder.filter(|f| Path::new(f).is_absolute()),
+                referrer: item.referrer.filter(|r| batch::is_web_url(r)),
+                description: item.description.filter(|d| !d.trim().is_empty()),
+                start: Some(false),
+                ..Download::default()
+            })
+            .collect(),
+    )
+}
+
+/// `candidates` without repeats and without those whose URL is not a web
+/// address, and how many of those there were. Too many is an error.
+fn keep_valid(candidates: Vec<Download>) -> Result<(Vec<Download>, usize), String> {
     let mut seen = std::collections::HashSet::new();
     let mut items = Vec::new();
     let mut rejected = 0;
-    for item in list.items {
-        let url = item.url.trim().to_string();
-        if !batch::is_download_url(&url) || url.contains(char::is_whitespace) {
+    for mut d in candidates {
+        d.url = d.url.trim().to_string();
+        if !batch::is_download_url(&d.url) || d.url.contains(char::is_whitespace) {
             rejected += 1;
             continue;
         }
-        if !seen.insert(url.clone()) {
-            continue;
+        if seen.insert(d.url.clone()) {
+            items.push(d);
         }
-        items.push(Download {
-            url,
-            filename: item.filename.filter(|n| !n.trim().is_empty()),
-            folder: item.folder.filter(|f| Path::new(f).is_absolute()),
-            referrer: item.referrer.filter(|r| batch::is_web_url(r)),
-            description: item.description.filter(|d| !d.trim().is_empty()),
-            start: Some(false),
-            ..Download::default()
-        });
     }
     if items.len() > batch::MAX_BATCH {
         return Err(format!(
@@ -235,5 +337,52 @@ mod tests {
         assert_eq!(items[1].filename, None);
         assert!(import("{not json").is_err());
         assert!(import(r#"{"uidm_list":9,"items":[]}"#).is_err());
+    }
+
+    /// An export file as IDM 6.43 writes one, with a login some files carry.
+    const EF2: &str = "\u{feff}<\r\nhttps://example.com/files/a.zip\r\nreferer: https://example.com/files/\r\n\
+        cookie: session=abc; theme=dark\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n>\r\n\
+        <\r\nhttps://example.com/form/report.pdf\r\npd: id=7&kind=full\r\nusername: me\r\npassword: secret\r\n>\r\n\
+        <\r\njavascript:void(0)\r\n>\r\n\
+        <\r\nhttps://example.com/files/a.zip\r\n>\r\n";
+
+    #[test]
+    fn idm_files_bring_their_request() {
+        let (items, rejected) = import(EF2).unwrap();
+        assert_eq!(rejected, 1, "not a web address");
+        assert_eq!(items.len(), 2, "the repeat is left out");
+        let a = &items[0];
+        assert_eq!(a.url, "https://example.com/files/a.zip");
+        assert_eq!(a.referrer.as_deref(), Some("https://example.com/files/"));
+        assert_eq!(a.cookies.as_deref(), Some("session=abc; theme=dark"));
+        assert_eq!(a.user_agent.as_deref(), Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"));
+        assert_eq!((a.method.as_deref(), a.login.as_ref()), (None, None));
+        assert_eq!(a.start, Some(false), "nothing starts on import");
+
+        let form = &items[1];
+        assert_eq!(form.method.as_deref(), Some("POST"));
+        let body = base64::engine::general_purpose::STANDARD.decode(form.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body, b"id=7&kind=full");
+        assert_eq!(form.headers.get("Content-Type").map(String::as_str), Some("application/x-www-form-urlencoded"));
+        let login = form.login.as_ref().unwrap();
+        assert_eq!((login.username.as_str(), login.password.as_deref()), ("me", Some("secret")));
+    }
+
+    #[test]
+    fn ef2_round_trip() {
+        let mut a = entry(1, "https://x/a.zip", Some(r"C:\dl\a.zip"), Status::Done);
+        a.referrer = Some("https://x/downloads".into());
+        a.login_user = Some("me".into());
+        let b = entry(2, "https://x/b.iso", None, Status::Failed);
+        let text = export_ef2(&[&a, &b]);
+        assert_eq!(
+            text,
+            "<\r\nhttps://x/a.zip\r\nreferer: https://x/downloads\r\n>\r\n<\r\nhttps://x/b.iso\r\n>\r\n"
+        );
+        let (items, _) = import(&text).unwrap();
+        let urls: Vec<&str> = items.iter().map(|d| d.url.as_str()).collect();
+        assert_eq!(urls, ["https://x/a.zip", "https://x/b.iso"]);
+        assert_eq!(items[0].referrer.as_deref(), Some("https://x/downloads"));
+        assert!(items.iter().all(|d| d.login.is_none() && d.cookies.is_none()), "no secrets leave");
     }
 }
