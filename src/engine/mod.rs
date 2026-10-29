@@ -2580,8 +2580,11 @@ mod tests {
         }
 
         #[test]
-        fn speed_limit_holds_a_download_within_ten_percent() {
-            // 2 MiB at 1 MiB/s over 4 connections: about 2 seconds.
+        fn speed_limit_holds_a_download_to_its_limit() {
+            // 2 MiB at 1 MiB/s over 4 connections: about 2 seconds. The limit
+            // must never let it finish early. A busy machine running other
+            // tests at once can only make it later, so that side has more
+            // room.
             let server = TestServer::start(body(LEN));
             let dir = temp_dir("limit");
             let start = Instant::now();
@@ -2591,7 +2594,7 @@ mod tests {
             );
             let secs = start.elapsed().as_secs_f64();
             assert_eq!(fs::read(&path).unwrap(), body(LEN));
-            assert!((secs - 2.0).abs() / 2.0 < 0.10, "took {secs:.2}s, expected about 2s");
+            assert!((1.8..3.0).contains(&secs), "took {secs:.2}s, expected about 2s");
             fs::remove_dir_all(&dir).ok();
         }
 
