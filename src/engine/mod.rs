@@ -1831,7 +1831,9 @@ mod tests {
 
                 let mut req = request(&server.url, &dir, FileExists::Overwrite);
                 req.ignore_date = ignore_date;
-                assert_eq!(download(|_| {}, req), partial);
+                // No splitting ranges midway, which can fetch a few bytes
+                // twice and throw the count off.
+                assert_eq!(download(|e| e.set_resplit(false), req), partial);
                 assert_eq!(fs::read(&partial).unwrap(), data);
                 let sent = if ignore_date { 1 + (LEN - half) } else { 1 + LEN };
                 assert_eq!(server.served.load(Ordering::Relaxed), sent as u64, "ignore_date {ignore_date}");
