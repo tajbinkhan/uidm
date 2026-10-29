@@ -672,5 +672,10 @@
   "Sleep now": "Suspender ahora",
   "Hibernate now": "Hibernar ahora",
   "Shut down now": "Apagar ahora",
-  "IDM export file (.ef2): addresses and referrers, for IDM to import": "Archivo de exportación de IDM (.ef2): direcciones y referentes, para importarlo en IDM"
+  "IDM export file (.ef2): addresses and referrers, for IDM to import": "Archivo de exportación de IDM (.ef2): direcciones y referentes, para importarlo en IDM",
+  "Start again every": "Volver a empezar cada",
+  "minutes": "minutos",
+  "Counted from the last start, until the stop time (or midnight without one)": "Contado desde el último inicio, hasta la hora de parada (o medianoche si no hay)",
+  "The downloads waiting in": "Las descargas que esperan en",
+  "UIDM must be running at the start time for the schedule to start this queue. If it starts later, the queue starts then, while its time is still open. Start with Windows (Options > General) keeps it running.": "UIDM debe estar en ejecución a la hora de inicio para que la programación inicie esta cola. Si se inicia más tarde, la cola empieza entonces, mientras su horario siga abierto. Iniciar con Windows (Opciones > General) lo mantiene en ejecución."
 }

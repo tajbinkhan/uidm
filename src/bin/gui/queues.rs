@@ -25,7 +25,35 @@ pub fn next_run(q: &Queue) -> Option<String> {
             _ => tr("running").to_string(),
         });
     }
-    s.next_start(now).map(|m| m.display())
+    s.next_run(now, q.last_scheduled_start).map(|m| m.display())
+}
+
+/// "Start again every N hours M minutes" for a queue's or a grabber
+/// project's schedule.
+pub fn repeat_fields(ui: &mut egui::Ui, on: &mut bool, hours: &mut u32, minutes: &mut u32) {
+    ui.horizontal(|ui| {
+        ui.checkbox(on, tr("Start again every"));
+        ui.add_enabled_ui(*on, |ui| {
+            ui.add(egui::DragValue::new(hours).range(0..=99));
+            ui.label(tr("hours"));
+            ui.add(egui::DragValue::new(minutes).range(0..=59));
+            ui.label(tr("minutes"));
+        });
+    })
+    .response
+    .on_hover_text(tr("Counted from the last start, until the stop time (or midnight without one)"));
+}
+
+/// The fields of `repeat_fields` as a schedule's `repeat_minutes`; 0 is
+/// left for validation to refuse.
+pub fn repeat_value(on: bool, hours: u32, minutes: u32) -> Option<u32> {
+    on.then_some(hours * 60 + minutes)
+}
+
+/// `repeat_minutes` split for `repeat_fields`, two hours when there is none.
+pub fn repeat_split(repeat: Option<u32>) -> (bool, u32, u32) {
+    let every = repeat.unwrap_or(120);
+    (repeat.is_some(), every / 60, every % 60)
 }
 
 /// The strip above a queue's downloads: its state, Start or Stop, what
@@ -93,6 +121,9 @@ pub struct QueueDraft {
     by_date: bool,
     days: [bool; 7],
     date: String,
+    repeat: bool,
+    repeat_hours: u32,
+    repeat_minutes: u32,
     error: Option<String>,
 }
 
@@ -103,6 +134,7 @@ impl QueueDraft {
 
     fn from(q: &Queue) -> Self {
         let s = q.schedule.clone();
+        let (repeat, repeat_hours, repeat_minutes) = repeat_split(s.as_ref().and_then(|s| s.repeat_minutes));
         let mut days = [false; 7];
         for d in s.as_ref().map(|s| s.days.clone()).unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6]) {
             if let Some(slot) = days.get_mut(d as usize) {
@@ -125,6 +157,9 @@ impl QueueDraft {
             by_date: s.as_ref().is_some_and(|s| s.date.is_some()),
             days,
             date: s.as_ref().and_then(|s| s.date.clone()).unwrap_or_default(),
+            repeat,
+            repeat_hours,
+            repeat_minutes,
             error: None,
         }
     }
@@ -147,6 +182,7 @@ impl QueueDraft {
                 (0u8..7).filter(|d| self.days[*d as usize]).collect()
             },
             date: self.by_date.then(|| self.date.trim().to_string()),
+            repeat_minutes: repeat_value(self.repeat, self.repeat_hours, self.repeat_minutes),
         });
         q.validate()?;
         Ok(q)
@@ -160,6 +196,8 @@ pub struct QueuesDialog {
     draft: QueueDraft,
     /// A new queue just saved, to select once the daemon lists it.
     pending_name: Option<String>,
+    /// Say that a schedule only runs while UIDM does, until dismissed.
+    pub schedule_note: bool,
 }
 
 impl QueuesDialog {
@@ -172,11 +210,13 @@ impl QueuesDialog {
                 selected: q.id,
                 draft: QueueDraft::from(q),
                 pending_name: None,
+                schedule_note: false,
             },
             None => QueuesDialog {
                 selected: 0,
                 draft: QueueDraft::new_queue(),
                 pending_name: None,
+                schedule_note: false,
             },
         }
     }
@@ -306,6 +346,10 @@ fn form(
             });
             ui.end_row();
 
+            ui.label("");
+            repeat_fields(ui, &mut draft.repeat, &mut draft.repeat_hours, &mut draft.repeat_minutes);
+            ui.end_row();
+
             ui.label(tr("Run"));
             ui.vertical(|ui| {
                 ui.radio_value(&mut draft.by_date, false, tr("On these days"));
@@ -338,6 +382,17 @@ fn form(
             ui.label("");
             ui.weak(tr("Times are this computer's. A stop time earlier than the start is the next day."));
             ui.end_row();
+
+            if d.schedule_note {
+                ui.label("");
+                ui.vertical(|ui| {
+                    ui.label(tr("UIDM must be running at the start time for the schedule to start this queue. If it starts later, the queue starts then, while its time is still open. Start with Windows (Options > General) keeps it running."));
+                    if ui.add_enabled(connected, egui::Button::new(tr("Don't show this again")).small()).clicked() {
+                        actions.push(Action::HideScheduleNote);
+                    }
+                });
+                ui.end_row();
+            }
         }
     });
 
@@ -458,6 +513,7 @@ mod tests {
             stop: Some("07:00".into()),
             days: vec![0, 4],
             date: None,
+            repeat_minutes: Some(150),
         });
         let back = QueueDraft::from(&q).to_queue().unwrap();
         assert_eq!(back.schedule, q.schedule);

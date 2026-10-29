@@ -480,6 +480,8 @@ enum Action {
     HideProgressTab(progress::Tab),
     /// Set or clear what a download does once it finishes.
     SetOnDone(u64, Option<OnDone>),
+    /// Stop showing the note that a queue's schedule needs UIDM running.
+    HideScheduleNote,
     /// Open the speed limit dialog for a download.
     OpenSpeedLimit(u64),
     /// Set or clear a download's own limit, in bytes per second.
@@ -819,6 +821,8 @@ struct OptionsDraft {
     progress_on_start: bool,
     progress_speed_tab: bool,
     progress_done_tab: bool,
+    /// Kept as it is; only the Queues dialog changes it.
+    schedule_note_hidden: bool,
     theme: uidm::settings::Theme,
     text_size: u32,
     /// Empty follows Windows.
@@ -937,6 +941,7 @@ impl OptionsDraft {
             progress_on_start: s.progress_on_start,
             progress_speed_tab: s.progress_speed_tab,
             progress_done_tab: s.progress_done_tab,
+            schedule_note_hidden: s.schedule_note_hidden,
             theme: s.theme,
             text_size: s.text_size,
             language: s.language.clone(),
@@ -1057,6 +1062,7 @@ impl OptionsDraft {
             progress_on_start: self.progress_on_start,
             progress_speed_tab: self.progress_speed_tab,
             progress_done_tab: self.progress_done_tab,
+            schedule_note_hidden: self.schedule_note_hidden,
             theme: self.theme,
             text_size: self.text_size,
             language: self.language.clone(),
@@ -1528,6 +1534,15 @@ impl App {
                     self.perform(Action::QuickSettings(s));
                 }
             }
+            Action::HideScheduleNote => {
+                let settings = self.shared.lock().unwrap().settings.clone();
+                if let Some(s) = settings {
+                    self.perform(Action::QuickSettings(Settings {
+                        schedule_note_hidden: true,
+                        ..s
+                    }));
+                }
+            }
             Action::SetOnDone(id, on_done) => {
                 send(&self.writer, &Incoming::SetOnDone { id, on_done });
             }
@@ -1610,7 +1625,13 @@ impl App {
                 }
             }
             Action::OpenImport => tools::pick_text_file(&self.ctx, tr("Import a download list"), &self.import),
-            Action::OpenExport => self.export = Some(tools::ExportDialog::new(!self.selected.is_empty())),
+            Action::OpenExport => {
+                let queue = match self.filter {
+                    Filter::Queue(id) => Some(id),
+                    _ => None,
+                };
+                self.export = Some(tools::ExportDialog::new(!self.selected.is_empty(), queue));
+            }
             Action::OpenGrabber => {
                 if self.grabber.is_none() {
                     self.grabber = Some(tools::GrabDialog::new());
@@ -1652,7 +1673,7 @@ impl App {
         }
         self.selected.retain(|id| rows.iter().any(|e| e.id == *id));
         if let Some(d) = self.export.as_mut() {
-            if !tools::export_dialog(ctx, d, rows, &self.selected) {
+            if !tools::export_dialog(ctx, d, rows, &self.selected, &queue_list) {
                 self.export = None;
             }
         }
@@ -3516,6 +3537,7 @@ impl eframe::App for App {
         self.refresh_window(ctx, &rows, connected, &mut actions);
         self.tool_windows(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.queues_dialog.as_mut() {
+            d.schedule_note = !settings.as_ref().is_some_and(|s| s.schedule_note_hidden);
             if !queues::dialog(ctx, d, &queue_list, connected, &mut actions) {
                 self.queues_dialog = None;
             }

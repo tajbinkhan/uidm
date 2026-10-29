@@ -185,9 +185,13 @@ tests, not in a running Firefox.
   once, retries for failed downloads, and what to do when it is done.
 - **Scheduler**: a queue can start at a set time on chosen days of the week,
   or once on a date, and optionally stop at a set time (the next morning if
-  earlier than the start). The queue's header shows its next run. If UIDM was
-  not running at the start time, the queue starts as soon as it is, while the
-  time window is still open.
+  earlier than the start). **Start again every** N hours M minutes starts
+  it again that long after each start, until the stop time (or midnight
+  without one); the last start is saved, so a restart keeps the rhythm.
+  Grabber projects have the same choice. The queue's header shows its next
+  run. If UIDM was not running at the start time, the queue starts as soon
+  as it is, while the time window is still open. The Queues dialog says so
+  next to a schedule until **Don't show this again** hides the note.
 - **When a queue is done**, UIDM can do nothing, exit, or put the computer to
   sleep, hibernate or shut it down, per queue or for the current run only.
   Sleeping, hibernating and shutting down wait for a 60-second countdown in
@@ -271,7 +275,8 @@ tests, not in a running Firefox.
   optionally starting the queue.
 - **More > Import list... / Export list...** move the list to another
   computer or a backup: tick downloads in the list's first column to export
-  only those, or export all, as a UIDM list (`.json`, with names, folders,
+  only those, pick a queue to export the downloads waiting in it (in its
+  order), or export all, as a UIDM list (`.json`, with names, folders,
   sizes and status), plain text (one address per line) or an IDM export
   file (`.ef2`, with referrers, which IDM's **Import > From IDM export
   file** reads). Imports read any of them and add everything waiting, so

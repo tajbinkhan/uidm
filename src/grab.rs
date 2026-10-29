@@ -553,6 +553,10 @@ pub struct Project {
     /// The day of the scheduled run last started, so it starts only once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_scheduled_day: Option<i64>,
+    /// When the schedule last started it, in minutes since 1970 local time,
+    /// for starting it again every so often.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_scheduled_start: Option<i64>,
 }
 
 fn main_queue() -> u64 {
@@ -1080,6 +1084,7 @@ Crawl-delay: 2.5
             queue: crate::queue::MAIN_QUEUE,
             seen: Vec::new(),
             last_scheduled_day: None,
+            last_scheduled_start: None,
         };
         p.save(&dir).unwrap();
         assert_eq!(Project::load(&dir, "Docs: manuals").unwrap(), p);
