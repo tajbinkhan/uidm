@@ -202,6 +202,15 @@ tests, not in a running Firefox.
   file; **Resume all** starts them again, along with any interrupted ones.
 - **Start with Windows** (in Options) starts UIDM hidden in the tray when you
   sign in, ready for the browser.
+- **The download window** (double-click a download's name, or **More >
+  Download window**) shows its address, status, size, how much is in, the
+  transfer rate, the time left and whether the server lets it resume, with
+  **Pause** or **Resume** and **Cancel** (which stops it and closes the
+  window; the download stays in the list). **Show details** adds the
+  connection bars and table from **More > Connections...**, and the **Speed
+  limit** tab sets the download's own limit. **Options > General** can open
+  the window whenever a download starts and hide the Speed limit tab (as can
+  its **Hide tab** button). The window closes when the download finishes.
 - **When a download ends**, UIDM shows a Windows notification: **Open** and
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still
