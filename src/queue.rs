@@ -111,6 +111,9 @@ pub struct Queue {
     /// Start it whenever UIDM starts.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub start_on_launch: bool,
+    /// Shutting down when done closes programs that would hold it up.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_close: bool,
 }
 
 pub const QUEUE_CONCURRENCY_RANGE: (usize, usize) = (1, 10);
@@ -132,6 +135,7 @@ impl Queue {
             started_by_schedule: false,
             open_when_done: None,
             start_on_launch: false,
+            force_close: false,
         }
     }
 

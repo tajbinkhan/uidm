@@ -60,7 +60,8 @@ use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
 use uidm::protocol::{
-    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Status,
+    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, OnDone, Outgoing, Properties,
+    Status,
 };
 use uidm::settings::{self, Duplicate, FileExists, Folders, Settings, SPEED_LIMIT_RANGE_KBPS};
 use uidm::notify::{self, Sound, Toast};
@@ -467,6 +468,9 @@ struct Daemon {
 struct Countdown {
     action: WhenDone,
     queue: String,
+    /// The download's file name, when one download asked for it.
+    file: Option<String>,
+    force_close: bool,
     deadline: Instant,
     canceled: Arc<AtomicBool>,
 }
@@ -851,11 +855,11 @@ impl Daemon {
                 attempts.remove(d);
             }
         }
-        let Ok((name, action, open)) = self.hub.update_queue(id, |q| {
+        let Ok((name, action, open, force_close)) = self.hub.update_queue(id, |q| {
             q.running = false;
             q.started_by_schedule = false;
             let action = q.when_done_once.take().unwrap_or(q.when_done);
-            Ok((q.name.clone(), action, q.open_when_done.clone()))
+            Ok((q.name.clone(), action, q.open_when_done.clone(), q.force_close))
         }) else {
             return;
         };
@@ -864,41 +868,73 @@ impl Daemon {
             if let Some(file) = open {
                 open_after_run(&file);
             }
-            self.when_done(action, &name);
+            self.when_done(action, &name, None, force_close);
         }
     }
 
-    /// Do what a finished queue asks.
-    fn when_done(&self, action: WhenDone, queue: &str) {
+    /// Do what a finished queue, or with `file` one finished download, asks.
+    fn when_done(&self, action: WhenDone, queue: &str, file: Option<&str>, force_close: bool) {
         match action {
             WhenDone::Nothing => {}
             WhenDone::Exit => {
-                eprintln!("[uidm-daemon] queue {queue} done: exiting");
+                eprintln!("[uidm-daemon] {} done: exiting", file.unwrap_or(queue));
                 self.hub.broadcast(&Outgoing::Quit);
                 self.save_history();
                 // Other downloads may still run; the idle monitor ends the
                 // daemon once they are done and every window has closed.
             }
-            _ => self.start_countdown(action, queue),
+            _ => self.start_countdown(action, queue, file, force_close),
         }
     }
 
-    fn start_countdown(&self, action: WhenDone, queue: &str) {
+    /// Run what download `id` asked to happen once it finished, then clear
+    /// it so downloading it again does not repeat it.
+    fn after_download(&self, id: u64) {
+        let mut then = OnDone::default();
+        let cleared = self.hub.update(id, |e| {
+            if e.status != Status::Done {
+                return Err("not finished".into());
+            }
+            then = e.on_done.take().ok_or_else(|| "nothing to do".to_string())?;
+            Ok(())
+        });
+        if let Ok(e) = cleared {
+            let name = e.path.as_deref().and_then(|p| Path::new(p).file_name()).map(|n| n.to_string_lossy().into_owned());
+            self.when_done(then.then, "", Some(name.as_deref().unwrap_or(&e.url)), then.force_close);
+        }
+    }
+
+    /// Set or clear what download `id` does once it finishes.
+    fn set_on_done(&self, id: u64, on_done: Option<OnDone>) -> Result<(), String> {
+        self.hub.update(id, |e| {
+            if e.status == Status::Done {
+                return Err("This download has already finished.".into());
+            }
+            e.on_done = on_done.filter(|o| *o != OnDone::default());
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    fn start_countdown(&self, action: WhenDone, queue: &str, file: Option<&str>, force_close: bool) {
         let canceled = Arc::new(AtomicBool::new(false));
         let deadline = Instant::now() + Duration::from_secs(COUNTDOWN_SECS as u64);
         if let Some(old) = self.countdown.lock().unwrap().replace(Countdown {
             action,
             queue: queue.to_string(),
+            file: file.map(str::to_string),
+            force_close,
             deadline,
             canceled: Arc::clone(&canceled),
         }) {
             old.canceled.store(true, Ordering::Relaxed);
         }
-        eprintln!("[uidm-daemon] queue {queue} done: {} in {COUNTDOWN_SECS}s", action.label());
+        eprintln!("[uidm-daemon] {} done: {} in {COUNTDOWN_SECS}s", file.unwrap_or(queue), action.label());
         self.hub.broadcast(&Outgoing::Countdown {
             action,
             seconds: COUNTDOWN_SECS,
             queue: queue.to_string(),
+            file: file.map(str::to_string),
         });
         self.show_window();
         // Save now: the machine may go away when the countdown ends.
@@ -913,15 +949,18 @@ impl Daemon {
             if canceled.load(Ordering::Relaxed) {
                 return;
             }
-            if std::env::var_os(POWER_DRY_RUN_ENV).is_some() {
-                eprintln!("[uidm-daemon] dry run: would {}", action.label());
-                return;
-            }
-            eprintln!("[uidm-daemon] {}", action.label());
-            if let Err(e) = power::perform(action) {
-                eprintln!("[uidm-daemon] could not {}: {e}", action.label());
-            }
+            power_off(action, force_close);
         });
+    }
+
+    /// End the countdown early and carry out its action now.
+    fn countdown_now(&self) {
+        let Some(c) = self.countdown.lock().unwrap().take() else {
+            return;
+        };
+        c.canceled.store(true, Ordering::Relaxed);
+        self.hub.broadcast(&Outgoing::CountdownCanceled);
+        power_off(c.action, c.force_close);
     }
 
     fn cancel_countdown(&self) {
@@ -944,6 +983,7 @@ impl Daemon {
             action: c.action,
             seconds: c.deadline.saturating_duration_since(Instant::now()).as_secs() as u32,
             queue: c.queue.clone(),
+            file: c.file.clone(),
         })
     }
 
@@ -1134,7 +1174,10 @@ impl Daemon {
                     let _ = daemon.hub.notes.send(Note::Scanned(id));
                 });
             }
-            Note::Finished(id) | Note::Scanned(id) => self.notify(id, false, &settings),
+            Note::Finished(id) | Note::Scanned(id) => {
+                self.notify(id, false, &settings);
+                self.after_download(id);
+            }
             Note::Failed(id) => {
                 thread::sleep(FAILED_GRACE);
                 if self.entry(id).is_some_and(|e| e.status == Status::Failed) {
@@ -1192,7 +1235,11 @@ impl Daemon {
         if !failed && settings.sound_on_done {
             notify::play(Sound::Done);
         }
+        // A download that asked for the completion dialog gets it, or a
+        // notification in its place when no window is open.
+        let dialog = !failed && entry.on_done.is_some_and(|o| o.dialog);
         let toast = match settings.notify {
+            _ if dialog => !self.hub.window_open(),
             Notify::Off => false,
             Notify::Toast => true,
             // An open window shows its own dialog.
@@ -3067,6 +3114,7 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             }
         }
         Incoming::CancelCountdown => daemon.cancel_countdown(),
+        Incoming::CountdownNow => daemon.countdown_now(),
         Incoming::RefreshLink { id, download, restart } => {
             let url = download.as_ref().map(|d| d.url.clone()).unwrap_or_default();
             if let Some(d) = &download {
@@ -3122,6 +3170,11 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
         }
         Incoming::SetSpeedLimit { id, bytes_per_sec } => {
             if let Err(message) = daemon.set_download_limit(id, bytes_per_sec) {
+                send(&Outgoing::Error { message });
+            }
+        }
+        Incoming::SetOnDone { id, on_done } => {
+            if let Err(message) = daemon.set_on_done(id, on_done) {
                 send(&Outgoing::Error { message });
             }
         }
@@ -3340,6 +3393,18 @@ fn save_page(req: &GrabRequest, m: &grab::Mirror, page: &grab::Page) {
         .and_then(|()| uidm::settings::write_atomic(&here, out.as_bytes()));
     if let Err(e) = written {
         eprintln!("[uidm-daemon] could not save {}: {e}", here.display());
+    }
+}
+
+/// Sleep, hibernate or shut down now, unless a test asked for a dry run.
+fn power_off(action: WhenDone, force_close: bool) {
+    if std::env::var_os(POWER_DRY_RUN_ENV).is_some() {
+        eprintln!("[uidm-daemon] dry run: would {}", action.label());
+        return;
+    }
+    eprintln!("[uidm-daemon] {}", action.label());
+    if let Err(e) = power::perform(action, force_close) {
+        eprintln!("[uidm-daemon] could not {}: {e}", action.label());
     }
 }
 
@@ -3928,6 +3993,50 @@ mod tests {
         t.daemon.cancel(new_id);
         t.daemon.set_download_limit(new_id, None).unwrap();
         assert_eq!(t.daemon.entry(new_id).unwrap().speed_limit, None);
+    }
+
+    #[test]
+    fn a_download_does_what_it_asked_once_finished() {
+        let t = setup("on_done", Duplicate::NewName);
+        let id = t.failed("https://x/a.bin");
+        let asked = OnDone {
+            dialog: true,
+            then: WhenDone::Nothing,
+            force_close: false,
+        };
+        t.daemon.set_on_done(id, Some(asked)).unwrap();
+        assert_eq!(t.daemon.entry(id).unwrap().on_done, Some(asked));
+        t.daemon.after_download(id);
+        assert_eq!(t.daemon.entry(id).unwrap().on_done, Some(asked), "a failed download keeps it for its retry");
+
+        t.daemon
+            .hub
+            .update(id, |e| {
+                e.status = Status::Done;
+                Ok(())
+            })
+            .unwrap();
+        assert!(t.daemon.set_on_done(id, None).is_err(), "too late once finished");
+        t.daemon.after_download(id);
+        assert_eq!(t.daemon.entry(id).unwrap().on_done, None, "it runs once");
+    }
+
+    #[test]
+    fn choosing_nothing_clears_the_choice() {
+        let t = setup("on_done_clear", Duplicate::NewName);
+        let id = t.failed("https://x/a.bin");
+        t.daemon
+            .set_on_done(
+                id,
+                Some(OnDone {
+                    dialog: false,
+                    then: WhenDone::ShutDown,
+                    force_close: true,
+                }),
+            )
+            .unwrap();
+        t.daemon.set_on_done(id, Some(OnDone::default())).unwrap();
+        assert_eq!(t.daemon.entry(id).unwrap().on_done, None);
     }
 
     #[test]

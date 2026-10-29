@@ -31,6 +31,8 @@ mod i18n;
 mod links;
 #[path = "gui/login.rs"]
 mod login;
+#[path = "gui/progress.rs"]
+mod progress;
 #[path = "gui/properties.rs"]
 mod properties;
 #[path = "gui/queues.rs"]
@@ -60,7 +62,8 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
 use uidm::protocol::{
-    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Scan, SegmentInfo, Status,
+    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, OnDone, Outgoing, Properties, Scan, SegmentInfo,
+    Status,
 };
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
@@ -159,9 +162,10 @@ struct Shared {
     completed: VecDeque<(u64, bool)>,
     /// The daemon's queues, the main queue first.
     queues: Vec<Queue>,
-    /// A countdown before a finished queue sleeps or shuts down: the action,
-    /// when it happens, and the queue's name.
-    countdown: Option<(WhenDone, Instant, String)>,
+    /// A countdown before a finished queue or download sleeps or shuts down:
+    /// the action, when it happens, the queue's name, and the download's
+    /// file name when one download asked for it.
+    countdown: Option<(WhenDone, Instant, String, Option<String>)>,
     /// The download waiting for a new link from the browser, if any.
     refresh_waiting: Option<u64>,
     /// The daemon's answer that a new link is for another file: the
@@ -180,6 +184,8 @@ struct Shared {
     login_wanted: VecDeque<u64>,
     /// Each download's connections, from its latest progress.
     segments: HashMap<u64, Vec<SegmentInfo>>,
+    /// Downloads that just started, for opening their window.
+    started: Vec<u64>,
     /// Links from a page for the link picker, until the window opens it.
     picked_links: Option<links::LinksDialog>,
     /// The quota's warning for the status bar, while it matters.
@@ -228,9 +234,14 @@ impl Shared {
         self.table.apply(msg);
         match msg {
             Outgoing::Queues { items } => self.queues = items.clone(),
-            Outgoing::Countdown { action, seconds, queue } => {
+            Outgoing::Countdown {
+                action,
+                seconds,
+                queue,
+                file,
+            } => {
                 let deadline = Instant::now() + Duration::from_secs(*seconds as u64);
-                self.countdown = Some((*action, deadline, queue.clone()));
+                self.countdown = Some((*action, deadline, queue.clone(), file.clone()));
             }
             Outgoing::CountdownCanceled => self.countdown = None,
             Outgoing::RefreshWaiting { id } => self.refresh_waiting = *id,
@@ -256,6 +267,7 @@ impl Shared {
             }
             Outgoing::Started { id, .. } => {
                 self.segments.remove(id);
+                self.started.push(*id);
             }
             Outgoing::Quota {
                 used,
@@ -427,6 +439,8 @@ enum Action {
     /// What a queue does when this run ends, this time only.
     SetQueueOnce(u64, Option<WhenDone>),
     CancelCountdown,
+    /// Sleep, hibernate or shut down without waiting for the countdown.
+    CountdownNow,
     /// Open the New link dialog for a download.
     OpenRefresh(u64),
     /// Give a download this new link; `restart` starts over even if it is for
@@ -460,6 +474,12 @@ enum Action {
     Select(u64, bool),
     OpenProperties(u64),
     OpenConnections(u64),
+    /// Open a download's own window with its status, Pause and Cancel.
+    OpenProgress(u64),
+    /// Turn off one of the download window's tabs.
+    HideProgressTab(progress::Tab),
+    /// Set or clear what a download does once it finishes.
+    SetOnDone(u64, Option<OnDone>),
     /// Open the speed limit dialog for a download.
     OpenSpeedLimit(u64),
     /// Set or clear a download's own limit, in bytes per second.
@@ -535,6 +555,8 @@ struct App {
     limit_dialog: Option<LimitDialog>,
     /// Downloads whose Connections dialog is open.
     connection_dialogs: Vec<u64>,
+    /// Open download windows, one per download.
+    progress_windows: Vec<progress::ProgressWindow>,
     /// The link picker, while it is open.
     links: Option<links::LinksDialog>,
     /// A zip download's preview, asked for or shown.
@@ -794,6 +816,9 @@ struct OptionsDraft {
     quota_hours: u64,
     check_updates: bool,
     drop_target: bool,
+    progress_on_start: bool,
+    progress_speed_tab: bool,
+    progress_done_tab: bool,
     theme: uidm::settings::Theme,
     text_size: u32,
     /// Empty follows Windows.
@@ -909,6 +934,9 @@ impl OptionsDraft {
             quota_hours: s.quota_hours,
             check_updates: s.check_updates,
             drop_target: s.drop_target,
+            progress_on_start: s.progress_on_start,
+            progress_speed_tab: s.progress_speed_tab,
+            progress_done_tab: s.progress_done_tab,
             theme: s.theme,
             text_size: s.text_size,
             language: s.language.clone(),
@@ -1026,6 +1054,9 @@ impl OptionsDraft {
             quota_hours: self.quota_hours,
             check_updates: self.check_updates,
             drop_target: self.drop_target,
+            progress_on_start: self.progress_on_start,
+            progress_speed_tab: self.progress_speed_tab,
+            progress_done_tab: self.progress_done_tab,
             theme: self.theme,
             text_size: self.text_size,
             language: self.language.clone(),
@@ -1062,6 +1093,7 @@ impl App {
                 clipboard_batch: false,
                 login_wanted: VecDeque::new(),
                 segments: HashMap::new(),
+                started: Vec::new(),
                 picked_links: None,
                 quota: None,
                 zip_listed: None,
@@ -1097,6 +1129,7 @@ impl App {
             remove_prompt: None,
             limit_dialog: None,
             connection_dialogs: Vec::new(),
+            progress_windows: Vec::new(),
             links: None,
             zip_preview: None,
             about: None,
@@ -1478,6 +1511,26 @@ impl App {
                     self.connection_dialogs.push(id);
                 }
             }
+            Action::OpenProgress(id) => {
+                let entry = self.shared.lock().unwrap().table.get(id).cloned();
+                if let Some(e) = entry.filter(|e| e.status != Status::Done && !self.progress_windows.iter().any(|w| w.id == id)) {
+                    self.progress_windows.push(progress::ProgressWindow::new(&e));
+                }
+            }
+            Action::HideProgressTab(tab) => {
+                let settings = self.shared.lock().unwrap().settings.clone();
+                if let Some(mut s) = settings {
+                    match tab {
+                        progress::Tab::SpeedLimit => s.progress_speed_tab = false,
+                        progress::Tab::OnDone => s.progress_done_tab = false,
+                        progress::Tab::Status => return,
+                    }
+                    self.perform(Action::QuickSettings(s));
+                }
+            }
+            Action::SetOnDone(id, on_done) => {
+                send(&self.writer, &Incoming::SetOnDone { id, on_done });
+            }
             Action::OpenSpeedLimit(id) => {
                 let entry = self.shared.lock().unwrap().table.get(id).cloned();
                 if let Some(e) = entry {
@@ -1523,6 +1576,9 @@ impl App {
             }
             Action::CancelCountdown => {
                 send(&self.writer, &Incoming::CancelCountdown);
+            }
+            Action::CountdownNow => {
+                send(&self.writer, &Incoming::CountdownNow);
             }
             Action::OpenQueues(select) => {
                 let list = self.shared.lock().unwrap().queues.clone();
@@ -2290,6 +2346,15 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
             .on_hover_text(tr("Drag it to move it, double-click it to open UIDM, right-click it to close it"));
         ui.end_row();
 
+        ui.label(tr("Download window"));
+        ui.vertical(|ui| {
+            ui.checkbox(&mut draft.progress_on_start, tr("Open it when a download starts"))
+                .on_hover_text(tr("Double-clicking a download's name opens it at any time"));
+            ui.checkbox(&mut draft.progress_speed_tab, tr("Show its Speed limit tab"));
+            ui.checkbox(&mut draft.progress_done_tab, tr("Show its When done tab"));
+        });
+        ui.end_row();
+
         ui.label("");
         ui.checkbox(&mut draft.check_updates, tr("Look for a newer UIDM on GitHub once a week"))
             .on_hover_text(tr("Only a notice with a link; nothing is downloaded or installed"));
@@ -2813,7 +2878,8 @@ fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) 
                 }
                 true
             }
-            Outgoing::Done { id, .. } if s.dialog_mode() => {
+            // Options, or the download itself, can ask for the dialog.
+            Outgoing::Done { id, .. } if s.dialog_mode() || s.table.get(*id).and_then(|e| e.on_done).is_some_and(|o| o.dialog) => {
                 s.completed.push_back((*id, false));
                 true
             }
@@ -3434,6 +3500,19 @@ impl eframe::App for App {
             let entry = rows.iter().find(|e| e.id == *id);
             connections::dialog(ctx, *id, entry, segments.get(id).map(Vec::as_slice))
         });
+        let started = std::mem::take(&mut self.shared.lock().unwrap().started);
+        if settings.as_ref().is_some_and(|s| s.progress_on_start) {
+            actions.extend(started.into_iter().map(Action::OpenProgress));
+        }
+        let tabs = progress::Tabs {
+            speed_limit: settings.as_ref().is_none_or(|s| s.progress_speed_tab),
+            on_done: settings.as_ref().is_none_or(|s| s.progress_done_tab),
+        };
+        self.progress_windows.retain_mut(|w| {
+            let entry = rows.iter().find(|e| e.id == w.id);
+            let segments = segments.get(&w.id).map(Vec::as_slice);
+            progress::window(ctx, w, entry, segments, speeds.get(&w.id).copied(), &tabs, connected, &mut actions)
+        });
         self.refresh_window(ctx, &rows, connected, &mut actions);
         self.tool_windows(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.queues_dialog.as_mut() {
@@ -3442,9 +3521,9 @@ impl eframe::App for App {
             }
         }
         let countdown = self.shared.lock().unwrap().countdown.clone();
-        if let Some((action, deadline, queue)) = countdown {
+        if let Some((action, deadline, queue, file)) = countdown {
             if Instant::now() < deadline {
-                queues::countdown(ctx, action, deadline, &queue, connected, &mut actions);
+                queues::countdown(ctx, action, deadline, &queue, file.as_deref(), connected, &mut actions);
             } else {
                 self.shared.lock().unwrap().countdown = None;
             }
@@ -3972,7 +4051,7 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
         actions.push(Action::Select(e.id, ticked));
     }
     for column in row.columns {
-        draw_cell(ui, *column, e, row);
+        draw_cell(ui, *column, e, row, actions);
     }
     ui.horizontal(|ui| {
         if let Some((queue, i, len)) = row.place {
@@ -4075,6 +4154,12 @@ fn row_menu(ui: &mut egui::Ui, e: &DownloadEntry, connected: bool, actions: &mut
                 }
             }
         }
+        if e.status != Status::Done
+            && ui.button(tr("Download window")).on_hover_text(tr("Its status, speed and time left, with Pause and Cancel")).clicked()
+        {
+            actions.push(Action::OpenProgress(e.id));
+            ui.close_menu();
+        }
         if ui.button(tr("Connections...")).on_hover_text(tr("Each connection's range and progress")).clicked() {
             actions.push(Action::OpenConnections(e.id));
             ui.close_menu();
@@ -4098,7 +4183,7 @@ fn row_menu(ui: &mut egui::Ui, e: &DownloadEntry, connected: bool, actions: &mut
 }
 
 /// One cell of a download's row.
-fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row) {
+fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row, actions: &mut Vec<Action>) {
     // A stream counts segments; its size is only known once fetched.
     let parts = e.parts.filter(|[_, all]| *all > 0);
     let running = row.speed.filter(|s| *s > 0.0 && e.status == Status::Downloading);
@@ -4117,8 +4202,17 @@ fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row) {
                         name = name.background_color(selection.bg_fill).color(selection.stroke.color);
                     }
                     let label = ui
-                        .add(egui::Label::new(name).truncate())
+                        .add(egui::Label::new(name).truncate().sense(egui::Sense::click()))
                         .on_hover_text(e.path.as_deref().unwrap_or(&e.url));
+                    // Like IDM: a finished file opens, anything else shows
+                    // its download window.
+                    if label.double_clicked() {
+                        actions.push(if e.status == Status::Done {
+                            Action::Open(e.id)
+                        } else {
+                            Action::OpenProgress(e.id)
+                        });
+                    }
                     if row.scroll {
                         label.scroll_to_me(Some(egui::Align::Center));
                     }

@@ -26,7 +26,7 @@ pub fn pick_text_file(ctx: &egui::Context, title: &'static str, slot: &Loaded) {
     thread::spawn(move || {
         let Some(path) = rfd::FileDialog::new()
             .set_title(title)
-            .add_filter(tr("Lists"), &["txt", "json"])
+            .add_filter(tr("Lists"), &["txt", "json", "ef2"])
             .add_filter(tr("All files"), &["*"])
             .pick_file()
         else {
@@ -340,10 +340,19 @@ pub fn batch_dialog(
     open && !close
 }
 
+/// A file format the Export dialog writes.
+#[derive(Clone, Copy, PartialEq)]
+enum ExportFormat {
+    Json,
+    Text,
+    /// IDM's export file.
+    Ef2,
+}
+
 /// The Export dialog.
 pub struct ExportDialog {
     selected_only: bool,
-    json: bool,
+    format: ExportFormat,
     result: Arc<Mutex<Option<Result<String, String>>>>,
     message: Option<Result<String, String>>,
 }
@@ -352,7 +361,7 @@ impl ExportDialog {
     pub fn new(any_selected: bool) -> Self {
         ExportDialog {
             selected_only: any_selected,
-            json: true,
+            format: ExportFormat::Json,
             result: Arc::default(),
             message: None,
         }
@@ -388,8 +397,9 @@ pub fn export_dialog(
                 ui.radio_value(&mut d.selected_only, true, trf!("The ticked downloads ({count})", count = selected.len()));
             });
             ui.add_space(6.0);
-            ui.radio_value(&mut d.json, true, tr("UIDM list (.json): addresses, file names, folders and status"));
-            ui.radio_value(&mut d.json, false, tr("Text (.txt): one address per line"));
+            ui.radio_value(&mut d.format, ExportFormat::Json, tr("UIDM list (.json): addresses, file names, folders and status"));
+            ui.radio_value(&mut d.format, ExportFormat::Text, tr("Text (.txt): one address per line"));
+            ui.radio_value(&mut d.format, ExportFormat::Ef2, tr("IDM export file (.ef2): addresses and referrers, for IDM to import"));
             ui.add_space(4.0);
             ui.weak(tr("Exports never include cookies, request headers or passwords."));
             if let Some(m) = &d.message {
@@ -401,10 +411,10 @@ pub fn export_dialog(
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.add_enabled(!picked.is_empty(), egui::Button::new(tr("Save as..."))).clicked() {
-                    let (text, ext, default) = if d.json {
-                        (listfile::export_json(&picked), "json", "downloads.json")
-                    } else {
-                        (listfile::export_text(&picked), "txt", "downloads.txt")
+                    let (text, ext, default) = match d.format {
+                        ExportFormat::Json => (listfile::export_json(&picked), "json", "downloads.json"),
+                        ExportFormat::Text => (listfile::export_text(&picked), "txt", "downloads.txt"),
+                        ExportFormat::Ef2 => (listfile::export_ef2(&picked), "ef2", "downloads.ef2"),
                     };
                     let count = picked.len();
                     let (slot, ctx) = (Arc::clone(&d.result), ui.ctx().clone());

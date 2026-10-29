@@ -191,8 +191,10 @@ tests, not in a running Firefox.
 - **When a queue is done**, UIDM can do nothing, exit, or put the computer to
   sleep, hibernate or shut it down, per queue or for the current run only.
   Sleeping, hibernating and shutting down wait for a 60-second countdown in
-  the window, which **Cancel** stops. Failed downloads count as finished,
-  unless the queue retries them.
+  the window, which **Cancel** stops and **Shut down now** (or **Sleep
+  now**, **Hibernate now**) skips. **Force apps to close** shuts down even
+  when a program asks to save its work first. Failed downloads count as
+  finished, unless the queue retries them.
 - **The tray icon** keeps UIDM at hand. Closing the window hides it there;
   click the icon to bring it back. Its tooltip shows how many downloads run
   and how fast, and its menu has **Open UIDM**, **Add URL from clipboard**,
@@ -202,6 +204,20 @@ tests, not in a running Firefox.
   file; **Resume all** starts them again, along with any interrupted ones.
 - **Start with Windows** (in Options) starts UIDM hidden in the tray when you
   sign in, ready for the browser.
+- **The download window** (double-click a download's name, or **More >
+  Download window**) shows its address, status, size, how much is in, the
+  transfer rate, the time left and whether the server lets it resume, with
+  **Pause** or **Resume** and **Cancel** (which stops it and closes the
+  window; the download stays in the list). **Show details** adds the
+  connection bars and table from **More > Connections...**, and the **Speed
+  limit** tab sets the download's own limit. The **When done** tab (also in
+  **Properties**) sets what happens once this download finishes: show the
+  completion dialog whatever Options says, then exit UIDM, sleep, hibernate
+  or shut down (after the same 60-second countdown a queue uses). It runs
+  once, after the virus scan, and not for a download that fails.
+  **Options > General** can open the window whenever a download starts and
+  hide either tab (as can its **Hide tab** button). The window closes when
+  the download finishes.
 - **When a download ends**, UIDM shows a Windows notification: **Open** and
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still
@@ -256,9 +272,12 @@ tests, not in a running Firefox.
 - **More > Import list... / Export list...** move the list to another
   computer or a backup: tick downloads in the list's first column to export
   only those, or export all, as a UIDM list (`.json`, with names, folders,
-  sizes and status) or plain text (one address per line). Imports read
-  either and add everything waiting, so nothing starts by itself. Exports
-  never hold cookies, headers or passwords.
+  sizes and status), plain text (one address per line) or an IDM export
+  file (`.ef2`, with referrers, which IDM's **Import > From IDM export
+  file** reads). Imports read any of them and add everything waiting, so
+  nothing starts by itself. An IDM export file brings each download's
+  referrer, cookies, user agent and form data, and a login if it has one.
+  Exports never hold cookies, headers or passwords.
 - **More > Site grabber...** crawls a site from a start page, as many links
   deep as you say, on the same site or not, and lists the files of the types
   you want (PDFs, say) with the page each was found on. It obeys

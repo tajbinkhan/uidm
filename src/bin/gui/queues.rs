@@ -84,6 +84,7 @@ pub struct QueueDraft {
     when_done: WhenDone,
     /// Empty opens nothing.
     open_when_done: String,
+    force_close: bool,
     start_on_launch: bool,
     scheduled: bool,
     start: String,
@@ -115,6 +116,7 @@ impl QueueDraft {
             retries: q.retries,
             when_done: q.when_done,
             open_when_done: q.open_when_done.clone().unwrap_or_default(),
+            force_close: q.force_close,
             start_on_launch: q.start_on_launch,
             scheduled: s.is_some(),
             start: s.as_ref().map_or("23:00".into(), |s| s.start.clone()),
@@ -134,6 +136,7 @@ impl QueueDraft {
         q.retries = self.retries;
         q.when_done = self.when_done;
         q.open_when_done = Some(self.open_when_done.trim().to_string()).filter(|f| !f.is_empty());
+        q.force_close = self.force_close && self.when_done == WhenDone::ShutDown;
         q.start_on_launch = self.start_on_launch;
         q.schedule = self.scheduled.then(|| Schedule {
             start: self.start.trim().to_string(),
@@ -264,6 +267,13 @@ fn form(
             });
         ui.end_row();
 
+        if draft.when_done == WhenDone::ShutDown {
+            ui.label("");
+            ui.checkbox(&mut draft.force_close, tr("Force apps to close"))
+                .on_hover_text(tr("Shut down even if a program asks to save its work first; unsaved work is lost"));
+            ui.end_row();
+        }
+
         ui.label(tr("Then open"));
         ui.add(
             egui::TextEdit::singleline(&mut draft.open_when_done)
@@ -383,11 +393,13 @@ fn form(
 }
 
 /// The countdown before a power action, with Cancel. Repaints itself.
+/// `file` names the download that asked for it, when not a queue.
 pub fn countdown(
     ctx: &egui::Context,
     action: WhenDone,
     deadline: Instant,
     queue: &str,
+    file: Option<&str>,
     connected: bool,
     actions: &mut Vec<Action>,
 ) {
@@ -398,18 +410,32 @@ pub fn countdown(
         WhenDone::ShutDown => trf!("This computer will shut down in {seconds} seconds.", seconds = left),
         _ => trf!("This computer will continue in {seconds} seconds.", seconds = left),
     };
-    egui::Window::new(tr("Queue finished"))
+    let title = if file.is_some() { tr("Download finished") } else { tr("Queue finished") };
+    egui::Window::new(title)
         .id(egui::Id::new("countdown"))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.label(trf!("The queue \"{queue}\" is done.", queue = queue));
+            ui.label(match file {
+                Some(name) => trf!("{name} has finished downloading.", name = name),
+                None => trf!("The queue \"{queue}\" is done.", queue = queue),
+            });
             ui.heading(message);
             ui.add_space(8.0);
-            if ui.add_enabled(connected, egui::Button::new(tr("Cancel"))).clicked() {
-                actions.push(Action::CancelCountdown);
-            }
+            ui.horizontal(|ui| {
+                let now = match action {
+                    WhenDone::Sleep => tr("Sleep now"),
+                    WhenDone::Hibernate => tr("Hibernate now"),
+                    _ => tr("Shut down now"),
+                };
+                if ui.add_enabled(connected, egui::Button::new(now)).clicked() {
+                    actions.push(Action::CountdownNow);
+                }
+                if ui.add_enabled(connected, egui::Button::new(tr("Cancel"))).clicked() {
+                    actions.push(Action::CancelCountdown);
+                }
+            });
         });
     ctx.request_repaint_after(std::time::Duration::from_millis(250));
 }

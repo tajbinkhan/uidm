@@ -178,6 +178,7 @@ mod tests {
             speed_limit: None,
             partial: None,
             from_browser: false,
+            on_done: None,
         }
     }
 

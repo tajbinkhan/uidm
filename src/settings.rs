@@ -473,6 +473,13 @@ pub struct Settings {
     pub last_update_check: u64,
     /// Show the drop target, a small window that takes dragged links.
     pub drop_target: bool,
+    /// Open a download's window, with its status, Pause and Cancel, when it
+    /// starts.
+    pub progress_on_start: bool,
+    /// The download window has a Speed limit tab.
+    pub progress_speed_tab: bool,
+    /// The download window has a When done tab.
+    pub progress_done_tab: bool,
     pub theme: Theme,
     /// The window's text size, in percent; everything in it scales along.
     pub text_size: u32,
@@ -548,6 +555,9 @@ impl Default for Settings {
             check_updates: true,
             last_update_check: 0,
             drop_target: false,
+            progress_on_start: false,
+            progress_speed_tab: true,
+            progress_done_tab: true,
             theme: Theme::System,
             text_size: 100,
             language: String::new(),
@@ -1074,6 +1084,9 @@ mod tests {
             check_updates: false,
             last_update_check: 1_700_000_000,
             drop_target: true,
+            progress_on_start: true,
+            progress_speed_tab: false,
+            progress_done_tab: false,
             theme: Theme::Dark,
             text_size: 125,
             language: "de".into(),

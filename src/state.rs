@@ -192,6 +192,7 @@ fn blank(id: u64, url: &str, status: Status) -> DownloadEntry {
         speed_limit: None,
         partial: None,
         from_browser: false,
+        on_done: None,
     }
 }
 
