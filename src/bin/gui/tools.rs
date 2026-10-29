@@ -349,18 +349,35 @@ enum ExportFormat {
     Ef2,
 }
 
+/// Which downloads the Export dialog writes.
+#[derive(Clone, Copy, PartialEq)]
+enum ExportScope {
+    All,
+    Ticked,
+    /// The downloads waiting in `ExportDialog::queue`, in its order.
+    Queue,
+}
+
 /// The Export dialog.
 pub struct ExportDialog {
-    selected_only: bool,
+    scope: ExportScope,
+    queue: u64,
     format: ExportFormat,
     result: Arc<Mutex<Option<Result<String, String>>>>,
     message: Option<Result<String, String>>,
 }
 
 impl ExportDialog {
-    pub fn new(any_selected: bool) -> Self {
+    /// Starts on the ticked downloads if any, else on `queue` (the queue
+    /// the list shows) if given.
+    pub fn new(any_selected: bool, queue: Option<u64>) -> Self {
         ExportDialog {
-            selected_only: any_selected,
+            scope: match (any_selected, queue) {
+                (true, _) => ExportScope::Ticked,
+                (false, Some(_)) => ExportScope::Queue,
+                (false, None) => ExportScope::All,
+            },
+            queue: queue.unwrap_or(MAIN_QUEUE),
             format: ExportFormat::Json,
             result: Arc::default(),
             message: None,
@@ -374,14 +391,20 @@ pub fn export_dialog(
     d: &mut ExportDialog,
     rows: &[DownloadEntry],
     selected: &HashSet<u64>,
+    queues: &[Queue],
 ) -> bool {
     if let Some(r) = d.result.lock().unwrap().take() {
         d.message = Some(r);
     }
-    let picked: Vec<&DownloadEntry> = rows
-        .iter()
-        .filter(|e| !d.selected_only || selected.contains(&e.id))
-        .collect();
+    let in_queue = |id: u64| -> Vec<&DownloadEntry> {
+        let order = queues.iter().find(|q| q.id == id).map_or(&[][..], |q| q.order.as_slice());
+        order.iter().filter_map(|i| rows.iter().find(|e| e.id == *i)).collect()
+    };
+    let picked: Vec<&DownloadEntry> = match d.scope {
+        ExportScope::All => rows.iter().collect(),
+        ExportScope::Ticked => rows.iter().filter(|e| selected.contains(&e.id)).collect(),
+        ExportScope::Queue => in_queue(d.queue),
+    };
     let mut open = true;
     let mut close = false;
     egui::Window::new(tr("Export the list"))
@@ -392,9 +415,14 @@ pub fn export_dialog(
         .min_width(420.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.radio_value(&mut d.selected_only, false, trf!("All downloads ({count})", count = rows.len()));
+            ui.radio_value(&mut d.scope, ExportScope::All, trf!("All downloads ({count})", count = rows.len()));
             ui.add_enabled_ui(!selected.is_empty(), |ui| {
-                ui.radio_value(&mut d.selected_only, true, trf!("The ticked downloads ({count})", count = selected.len()));
+                ui.radio_value(&mut d.scope, ExportScope::Ticked, trf!("The ticked downloads ({count})", count = selected.len()));
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut d.scope, ExportScope::Queue, tr("The downloads waiting in"));
+                queue_combo(ui, "export_queue", &mut d.queue, queues);
+                ui.weak(format!("({})", in_queue(d.queue).len()));
             });
             ui.add_space(6.0);
             ui.radio_value(&mut d.format, ExportFormat::Json, tr("UIDM list (.json): addresses, file names, folders and status"));

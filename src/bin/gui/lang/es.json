@@ -675,5 +675,6 @@
   "IDM export file (.ef2): addresses and referrers, for IDM to import": "Archivo de exportación de IDM (.ef2): direcciones y referentes, para importarlo en IDM",
   "Start again every": "Volver a empezar cada",
   "minutes": "minutos",
-  "Counted from the last start, until the stop time (or midnight without one)": "Contado desde el último inicio, hasta la hora de parada (o medianoche si no hay)"
+  "Counted from the last start, until the stop time (or midnight without one)": "Contado desde el último inicio, hasta la hora de parada (o medianoche si no hay)",
+  "The downloads waiting in": "Las descargas que esperan en"
 }

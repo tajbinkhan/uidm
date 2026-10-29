@@ -1610,7 +1610,13 @@ impl App {
                 }
             }
             Action::OpenImport => tools::pick_text_file(&self.ctx, tr("Import a download list"), &self.import),
-            Action::OpenExport => self.export = Some(tools::ExportDialog::new(!self.selected.is_empty())),
+            Action::OpenExport => {
+                let queue = match self.filter {
+                    Filter::Queue(id) => Some(id),
+                    _ => None,
+                };
+                self.export = Some(tools::ExportDialog::new(!self.selected.is_empty(), queue));
+            }
             Action::OpenGrabber => {
                 if self.grabber.is_none() {
                     self.grabber = Some(tools::GrabDialog::new());
@@ -1652,7 +1658,7 @@ impl App {
         }
         self.selected.retain(|id| rows.iter().any(|e| e.id == *id));
         if let Some(d) = self.export.as_mut() {
-            if !tools::export_dialog(ctx, d, rows, &self.selected) {
+            if !tools::export_dialog(ctx, d, rows, &self.selected, &queue_list) {
                 self.export = None;
             }
         }

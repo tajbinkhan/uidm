@@ -274,7 +274,8 @@ tests, not in a running Firefox.
   optionally starting the queue.
 - **More > Import list... / Export list...** move the list to another
   computer or a backup: tick downloads in the list's first column to export
-  only those, or export all, as a UIDM list (`.json`, with names, folders,
+  only those, pick a queue to export the downloads waiting in it (in its
+  order), or export all, as a UIDM list (`.json`, with names, folders,
   sizes and status), plain text (one address per line) or an IDM export
   file (`.ef2`, with referrers, which IDM's **Import > From IDM export
   file** reads). Imports read any of them and add everything waiting, so
