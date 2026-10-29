@@ -636,6 +636,7 @@ mod tests {
                 ffmpeg: None,
                 speed_limit: None,
                 server_date: false,
+                ignore_date: false,
                 temp_dir: None,
                 reuse_partial: None,
                 host_limit: None,

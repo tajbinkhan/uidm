@@ -343,6 +343,23 @@ pub struct Settings {
     pub if_duplicate: Duplicate,
     /// Show a save-as dialog for each new download before it starts.
     pub ask_where_to_save: bool,
+    /// File types (lowercase extensions) that start at once without the
+    /// save-as dialog, even when it is on.
+    pub auto_start_types: Vec<String>,
+    /// Start downloading while the save-as dialog is open, keeping what was
+    /// fetched when it is answered.
+    pub start_while_asking: bool,
+    /// New downloads only join the Download later queue; nothing starts
+    /// until it is started.
+    pub add_only: bool,
+    /// New `General` files go to the folder last chosen for them in the
+    /// save-as dialog, as a category's can.
+    pub general_remember_folder: bool,
+    /// That folder, once one was chosen.
+    pub general_last_folder: Option<String>,
+    /// The queue "Download later" puts downloads in without asking; `None`
+    /// asks in the save-as dialog.
+    pub later_queue: Option<u64>,
     /// File types and their folders. Files of no listed type are `General`.
     pub categories: Vec<Category>,
     /// Extensions the browser extension takes from the browser. Empty means
@@ -402,6 +419,8 @@ pub struct Settings {
     /// Offer to download links copied to the clipboard whose file type is
     /// one of `capture_types`.
     pub clipboard_monitor: bool,
+    /// Download such links at once instead of offering them.
+    pub clipboard_start: bool,
     /// Show a download button over videos playing in the browser.
     pub video_button: bool,
     /// Sites that get no video button, such as `*.example.com`.
@@ -417,6 +436,9 @@ pub struct Settings {
     /// Give a finished file the modified date the server reports for it
     /// (`Last-Modified`) instead of the time it was written.
     pub server_file_date: bool,
+    /// Resume a partial download even when the server reports a new
+    /// modification date for the file; its size must still match.
+    pub resume_ignores_date: bool,
     /// The User-Agent sent for downloads not started from the browser (added
     /// by hand, in a batch, from a list or by the grabber). Empty sends the
     /// default.
@@ -470,6 +492,12 @@ impl Default for Settings {
             file_exists: FileExists::Rename,
             if_duplicate: Duplicate::Ask,
             ask_where_to_save: true,
+            auto_start_types: Vec::new(),
+            start_while_asking: false,
+            add_only: false,
+            general_remember_folder: false,
+            general_last_folder: None,
+            later_queue: None,
             categories: default_categories(),
             capture_types: default_capture_types(),
             capture_min_size_kb: 0,
@@ -497,12 +525,14 @@ impl Default for Settings {
             use_browser_proxy: false,
             site_logins: Vec::new(),
             clipboard_monitor: false,
+            clipboard_start: false,
             video_button: true,
             video_button_excluded_sites: Vec::new(),
             ffmpeg_path: String::new(),
             confirm_remove: true,
             remove_deletes_files: false,
             server_file_date: true,
+            resume_ignores_date: false,
             manual_user_agent: String::new(),
             temp_dir: None,
             capture_skip_key: CaptureKey::Alt,
@@ -619,6 +649,7 @@ impl Settings {
         }
 
         check_extensions("The captured file types", &self.capture_types)?;
+        check_extensions("The file types that start without asking", &self.auto_start_types)?;
         if self.capture_min_size_kb > CAPTURE_MIN_SIZE_MAX_KB {
             return Err("The minimum size to capture is too large.".to_string());
         }
@@ -698,6 +729,22 @@ impl Settings {
         self.category_of(filename, url).map_or(GENERAL, |c| c.name.as_str())
     }
 
+    /// The category a download is listed under: the one `chosen` for it in
+    /// the save-as dialog while that category still exists, otherwise the
+    /// one `filename` from `url` belongs to.
+    pub fn listed_under<'a>(&'a self, chosen: Option<&str>, filename: &str, url: &str) -> &'a str {
+        match chosen {
+            Some(c) if c.trim().eq_ignore_ascii_case(GENERAL) => GENERAL,
+            Some(c) => self.category(c).map_or_else(|| self.category_name(filename, url), |c| c.name.as_str()),
+            None => self.category_name(filename, url),
+        }
+    }
+
+    /// Whether a file named `filename` starts without the save-as dialog.
+    pub fn starts_without_asking(&self, filename: &str) -> bool {
+        extension_of(filename).is_some_and(|e| self.auto_start_types.contains(&e))
+    }
+
     /// The connection limit for `host`, if a server limit covers it: the
     /// most specific matching entry wins.
     pub fn server_limit(&self, host: &str) -> Option<usize> {
@@ -720,41 +767,82 @@ impl Settings {
 
     /// Where new downloads from `url` go, by category.
     pub fn folders_for(&self, url: &str) -> Folders {
-        let base = self.download_dir();
         Folders {
-            categories: self
-                .categories
-                .iter()
-                .map(|c| {
-                    let dir = match (&c.last_folder, &c.folder) {
-                        (Some(last), _) if c.remember_folder => PathBuf::from(last),
-                        (_, Some(f)) => PathBuf::from(f),
-                        _ => base.join(c.name.trim()),
-                    };
-                    (c.clone(), dir)
-                })
-                .collect(),
-            default: base,
+            categories: self.categories.iter().map(|c| (c.clone(), self.folder_of(c))).collect(),
+            default: self.general_folder(),
             host: host_of(url),
         }
     }
 
-    /// Remember `folder` as the last one chosen for the category of
-    /// `filename` from `url`, if that category remembers its folder.
-    /// Returns whether anything changed.
-    pub fn remember_folder(&mut self, filename: &str, url: &str, folder: &Path) -> bool {
-        let Some(ext) = extension_of(filename) else {
-            return false;
-        };
-        let host = host_of(url);
-        let folder = folder.display().to_string();
-        match self.categories.iter_mut().find(|c| c.takes(&ext, &host)) {
-            Some(c) if c.remember_folder && c.last_folder.as_deref() != Some(folder.as_str()) => {
-                c.last_folder = Some(folder);
-                true
-            }
-            _ => false,
+    /// Where new `General` files go: the folder last chosen for them when
+    /// they remember one, otherwise the download folder.
+    fn general_folder(&self) -> PathBuf {
+        match &self.general_last_folder {
+            Some(last) if self.general_remember_folder => PathBuf::from(last),
+            _ => self.download_dir(),
         }
+    }
+
+    /// Where new files of category `c` go: the folder last chosen for it in
+    /// the save-as dialog when it remembers one, its own folder, or a folder
+    /// named after it inside the download folder.
+    fn folder_of(&self, c: &Category) -> PathBuf {
+        match (&c.last_folder, &c.folder) {
+            (Some(last), _) if c.remember_folder => PathBuf::from(last),
+            (_, Some(f)) => PathBuf::from(f),
+            _ => self.download_dir().join(c.name.trim()),
+        }
+    }
+
+    /// The category named `name`, ignoring case.
+    pub fn category(&self, name: &str) -> Option<&Category> {
+        self.categories.iter().find(|c| c.name.trim().eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// Where new files of the category named `name` go; `General`, and a
+    /// name no category has, are General's folder.
+    pub fn category_folder(&self, name: &str) -> PathBuf {
+        match self.category(name) {
+            Some(c) => self.folder_of(c),
+            None => self.general_folder(),
+        }
+    }
+
+    /// Whether the category named `name` (or `General`) keeps the folder
+    /// last chosen for it.
+    pub fn remembers_folder(&self, name: &str) -> bool {
+        match self.category(name) {
+            Some(c) => c.remember_folder,
+            None => self.general_remember_folder,
+        }
+    }
+
+    /// Remember `folder` as the last one chosen for the category named
+    /// `category` (`General`, or a name no category has, for General), if
+    /// it remembers its folder. Returns whether anything changed.
+    pub fn remember_folder(&mut self, category: &str, folder: &Path) -> bool {
+        let folder = folder.display().to_string();
+        let (remember, last) = match self.categories.iter_mut().find(|c| c.name.trim().eq_ignore_ascii_case(category.trim())) {
+            Some(c) => (c.remember_folder, &mut c.last_folder),
+            None => (self.general_remember_folder, &mut self.general_last_folder),
+        };
+        if !remember || last.as_deref() == Some(folder.as_str()) {
+            return false;
+        }
+        *last = Some(folder);
+        true
+    }
+
+    /// Turn remembering the last folder on or off for the category named
+    /// `category` (or General). Returns whether anything changed.
+    pub fn set_remember_folder(&mut self, category: &str, on: bool) -> bool {
+        let flag = match self.categories.iter_mut().find(|c| c.name.trim().eq_ignore_ascii_case(category.trim())) {
+            Some(c) => &mut c.remember_folder,
+            None => &mut self.general_remember_folder,
+        };
+        let changed = *flag != on;
+        *flag = on;
+        changed
     }
 
     /// ffmpeg.exe: the one set in Options if it exists, otherwise the first
@@ -923,6 +1011,12 @@ mod tests {
             file_exists: FileExists::Overwrite,
             if_duplicate: Duplicate::Existing,
             ask_where_to_save: false,
+            auto_start_types: vec!["exe".into()],
+            start_while_asking: true,
+            add_only: true,
+            general_remember_folder: true,
+            general_last_folder: Some("D:\\Misc".into()),
+            later_queue: Some(4),
             categories: vec![Category::new("Books", &["epub"])],
             capture_types: vec!["zip".into()],
             capture_min_size_kb: 100,
@@ -954,12 +1048,14 @@ mod tests {
                 password: None,
             }],
             clipboard_monitor: true,
+            clipboard_start: true,
             video_button: false,
             video_button_excluded_sites: vec!["video.example.com".into()],
             ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".into(),
             confirm_remove: false,
             remove_deletes_files: true,
             server_file_date: false,
+            resume_ignores_date: true,
             manual_user_agent: USER_AGENT_PRESETS[0].1.into(),
             temp_dir: Some("D:\\UIDM temp".into()),
             capture_skip_key: CaptureKey::Shift,
@@ -1121,11 +1217,51 @@ mod tests {
     fn a_category_remembers_the_last_folder_chosen() {
         let mut s = Settings::default();
         let chosen = std::env::temp_dir().join("uidm-chosen");
-        assert!(!s.remember_folder("a.zip", "https://x/a.zip", &chosen), "off by default");
+        assert!(!s.remember_folder("Compressed", &chosen), "off by default");
         s.categories[0].remember_folder = true;
-        assert!(s.remember_folder("a.zip", "https://x/a.zip", &chosen));
+        assert!(s.remember_folder("compressed", &chosen));
         assert_eq!(s.folders().for_name("b.zip"), chosen);
-        assert!(!s.remember_folder("b.zip", "https://x/b.zip", &chosen), "unchanged");
+        assert_eq!(s.category_folder("Compressed"), chosen);
+        assert!(!s.remember_folder("Compressed", &chosen), "unchanged");
+    }
+
+    #[test]
+    fn a_chosen_category_wins_while_it_exists() {
+        let s = Settings::default();
+        assert_eq!(s.listed_under(None, "a.zip", "https://x/a.zip"), "Compressed");
+        assert_eq!(s.listed_under(Some("music"), "a.zip", "https://x/a.zip"), "Music");
+        assert_eq!(s.listed_under(Some("General"), "a.zip", "https://x/a.zip"), GENERAL);
+        assert_eq!(s.listed_under(Some("Gone"), "a.zip", "https://x/a.zip"), "Compressed");
+    }
+
+    #[test]
+    fn each_category_has_a_folder() {
+        let mut s = Settings::default();
+        let base = std::env::temp_dir().join("uidm-base");
+        s.download_dir = Some(base.display().to_string());
+        s.categories[1].folder = Some("D:\\Docs".into());
+        assert_eq!(s.category_folder("Music"), base.join("Music"));
+        assert_eq!(s.category_folder("documents"), PathBuf::from("D:\\Docs"));
+        assert_eq!(s.category_folder(GENERAL), base);
+        assert_eq!(s.category_folder("No such"), base);
+    }
+
+    #[test]
+    fn general_can_remember_its_folder_too() {
+        let mut s = Settings::default();
+        let base = std::env::temp_dir().join("uidm-base");
+        s.download_dir = Some(base.display().to_string());
+        let chosen = std::env::temp_dir().join("uidm-general");
+        assert!(!s.remember_folder(GENERAL, &chosen), "off by default");
+        assert!(s.set_remember_folder(GENERAL, true));
+        assert!(s.remembers_folder(GENERAL));
+        assert!(s.remember_folder(GENERAL, &chosen));
+        assert_eq!(s.folders().for_name("notes.xyz"), chosen);
+        assert_eq!(s.category_folder(GENERAL), chosen);
+        // The other categories keep their folders inside the download folder.
+        assert_eq!(s.folders().for_name("a.zip"), base.join("Compressed"));
+        assert!(s.set_remember_folder(GENERAL, false));
+        assert_eq!(s.folders().for_name("notes.xyz"), base);
     }
 
     #[test]

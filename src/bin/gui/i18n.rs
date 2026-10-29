@@ -117,11 +117,13 @@ mod tests {
     /// The sources the window's strings come from.
     const SOURCES: &[&str] = &[
         include_str!("../uidm-gui.rs"),
+        include_str!("answers.rs"),
         include_str!("columns.rs"),
         include_str!("connections.rs"),
         include_str!("droptarget.rs"),
         include_str!("find.rs"),
         include_str!("links.rs"),
+        include_str!("login.rs"),
         include_str!("properties.rs"),
         include_str!("queues.rs"),
         include_str!("tools.rs"),

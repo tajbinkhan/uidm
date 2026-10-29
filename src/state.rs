@@ -187,6 +187,7 @@ fn blank(id: u64, url: &str, status: Status) -> DownloadEntry {
         referrer: None,
         last_try: None,
         description: None,
+        category: None,
         login_user: None,
         speed_limit: None,
         partial: None,

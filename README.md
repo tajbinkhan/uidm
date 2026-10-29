@@ -107,11 +107,33 @@ tests, not in a running Firefox.
   downloads.
 
 - **A save-as dialog** opens for each new download, with its real name and
-  size, and the folder its category picks. Change the name or folder, then
-  **Start download**, **Download later** (it waits in the list with a
+  size, its category, and the folder that category picks. Picking another
+  category moves the file to that category's folder and lists the download
+  under it whatever its type; **+** next to the list adds a category on the
+  spot (saved to Options) and picks it. A **Description** typed here is kept
+  with the download and shows in the list and in Properties. Change the name
+  or folder, then **Start download**, **Download later** (it waits in the list with a
   **Start** button) or **Cancel**. If the window is closed, UIDM opens it; if
   no window shows up within 20 seconds, the download starts as proposed.
-  Options can turn the dialog off.
+  Options can turn the dialog off, or skip it for some file types
+  (**Start these types without asking**, such as `exe, msi`; the type is
+  checked again once the server names the file). **Start downloading while
+  the save-as dialog is open** fetches the file while you decide, into a
+  folder of its own (`UIDM early` in the Windows temporary folder), and the
+  dialog shows how much has come. Answering keeps those bytes: a finished
+  file moves to the name and folder chosen, and an unfinished one carries on
+  from where it got to (and **Download later** keeps it to carry on later).
+  Only files the server sends in ranges start early; canceling drops what
+  was fetched. **Only add them to the Download later queue, without
+  starting them** makes every new download wait in that queue, without the
+  dialog, until the queue or the download is started. **Remember this path for <category>**
+  sends the category's new files to the folder last chosen for it, General
+  included (the categories' **Last folder** box in Options, and the box under
+  them for General). With more than one queue, the dialog asks which one
+  **Download later** uses; **Don't ask me again** makes that queue the
+  answer for the dialog, **Later** and the browser's **Download later with
+  UIDM** alike, until **Download later puts files in** in Options changes
+  it.
 - **When a file name is taken**, UIDM saves the new file as `name (1).ext`
   by default. Options (**If the file exists**) can make it overwrite the old
   file instead, or ask. With **Ask me**, the save-as dialog says the name is
@@ -126,12 +148,24 @@ tests, not in a running Firefox.
   the new one overwrites its file; not while the old one is running) or
   **Don't add it** (a finished one shows its completion dialog again, a
   stopped one resumes, a running one is left alone). Options (**If the
-  address is in the list**) can make one of these the answer every time.
+  address is in the list**) can make one of these the answer every time, and
+  so can **Remember my selection** in the dialog.
   Addresses match ignoring `#fragments` and the case of the host. Form
-  downloads and streams are never treated as duplicates. **Add many**,
-  imports and the site grabber skip addresses already in the list, unless the
-  setting adds them with a new name or replaces stopped ones. If no window
+  downloads and streams are never treated as duplicates. If no window
   answers within 20 seconds, the download is added with a new name.
+- **Adding many at once** (**Add many**, imports, the link picker and the
+  site grabber) asks one question at a time, before anything is added, about
+  each address already in the list (while that setting is **Ask me**: add it
+  again, with a new name if needed, or leave it out) and each file name
+  already taken in its folder (while **If the file exists** is **Ask me**:
+  overwrite it, or save with a numbered name). Each question has **Yes**,
+  **Yes to all**, **No** and **No to all**; the "to all" answers cover the
+  rest of that kind of question in this batch only, and **Cancel** adds none.
+  Under the other settings nothing is asked: addresses in the list are
+  skipped unless the setting adds them with a new name or replaces stopped
+  ones, and taken names follow the setting. A scheduled grabber run never
+  asks. The name checked is the one the address gives; a server that names
+  the file otherwise is still asked about in the save-as dialog.
 - **Categories** sort downloads by file type into their own folders:
   Compressed, Documents, Music, Programs and Video go into folders of those
   names inside the download folder, and everything else (**General**) goes
@@ -162,7 +196,7 @@ tests, not in a running Firefox.
 - **The tray icon** keeps UIDM at hand. Closing the window hides it there;
   click the icon to bring it back. Its tooltip shows how many downloads run
   and how fast, and its menu has **Open UIDM**, **Add URL from clipboard**,
-  **Pause all**, **Resume all**, **Speed limit** and **Exit**. Exit closes the
+  **Add batch download from clipboard**, **Pause all**, **Resume all**, **Speed limit** and **Exit**. Exit closes the
   window; downloads keep going and the daemon stops on its own once idle.
   **Pause all** stops every queued and running download, keeping its partial
   file; **Resume all** starts them again, along with any interrupted ones.
@@ -172,7 +206,8 @@ tests, not in a running Firefox.
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still
   appears if the window is not running), or nothing, and can play a sound for
-  each. Canceled downloads are never announced.
+  each. The dialog's **Don't show this dialog again** goes back to
+  notifications. Canceled downloads are never announced.
 - **Virus scan** (off by default) checks each finished file with Microsoft
   Defender or a scanner command you set, with `{path}` where the file goes.
   The list shows **No threat found**, **Threat found** or **Scan failed**,
@@ -191,9 +226,17 @@ tests, not in a running Firefox.
   user name and password; optionally the proxy the browser uses, for
   downloads from the browser. Site logins pair a site with a user name and
   password. When a server asks for a login (HTTP Basic or Digest), UIDM sends
-  the matching one to that site and no other. Without one the download fails
-  with "This site needs a login", and its **Add login** button opens Options
-  with the site filled in.
+  the matching one to that site and no other. Without one (or when the
+  server refuses it) the download stops, and the window asks: **Log in to
+  the site** shows the site and the realm it named, takes a user name and
+  password, and retries the download with them. They stay the download's
+  own login, or with **Save this password** become the site's login in
+  Options (always, when the file is on another site than its link). Other
+  downloads from the same site waiting for a login go with the same answer.
+  **Cancel** leaves it stopped, with a **Log in...** button in its row. A
+  login can also go with an address from the start: **Login** next to the
+  URL bar shows user name and password fields for the addresses added
+  there, and **Add many** has **Use a login** for every address in it.
 - **Download video**: a button appears over a video playing in the browser.
   It lists what the page loaded: direct video and audio files with their
   sizes, and streams (HLS `.m3u8`, DASH `.mpd`) with each quality UIDM read
@@ -224,8 +267,21 @@ tests, not in a running Firefox.
   and add them to a queue.
 - **Clipboard** (off by default; **Options > Browser capture**): copying a
   link whose file type is on the capture list brings up a small **Download
-  the copied link?** prompt with **Download** and **Ignore**. Nothing starts
-  without a click, and the same link is not offered twice in a row.
+  the copied link?** prompt with **Download** and **Ignore**, and the same
+  link is not offered twice in a row. **Start downloading it at once** skips
+  the prompt: the link is added as a pasted one is, save-as dialog included.
+  **More > Add batch download from clipboard** (also in the tray menu) opens
+  **Add many** with every http, https and ftp link in the copied text, of any
+  file type, to check and add.
+- **Download all links with UIDM** (the browser's menu on a page or a text
+  selection, and the button over a selection) lists the links in the window
+  to tick: filters hide web pages, images, repeated links, or keep some file
+  types, and **Edit...** changes a link's address. The ticked files go to a
+  queue, saved to each one's category folder, all to **one category** (listed
+  under it and saved to its folder), or to one folder. **Rename** names them
+  by a pattern in list order: `photo_*` gives `photo_01.jpg`, `photo_02.jpg`
+  and so on (the number is padded to the count, each file keeps its type
+  unless the pattern names one).
 - **Options** (top right of the window) has five tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
   10), a total speed limit, what to do when a file name is taken or an
@@ -382,7 +438,10 @@ Given an `add`, the engine:
    download reads the sidecar and refetches only the missing bytes of each
    segment. The sidecar is checked against the server's ETag, Last-Modified and
    size, so stale bytes are never stitched onto a changed file, and it is
-   deleted on success.
+   deleted on success. Some servers report a new Last-Modified on every
+   request; for them, **Options > General > Ignore file modification time
+   changes when resuming** drops the date check, keeping the size and ETag
+   checks.
 4. Retries a segment that fails with exponential backoff (400 ms doubling to a
    10 s ceiling, up to 5 times), resuming from that segment's own cursor.
 

@@ -15,6 +15,8 @@
 
 #![windows_subsystem = "windows"]
 
+#[path = "gui/answers.rs"]
+mod answers;
 #[path = "gui/columns.rs"]
 mod columns;
 #[path = "gui/connections.rs"]
@@ -27,6 +29,8 @@ mod find;
 mod i18n;
 #[path = "gui/links.rs"]
 mod links;
+#[path = "gui/login.rs"]
+mod login;
 #[path = "gui/properties.rs"]
 mod properties;
 #[path = "gui/queues.rs"]
@@ -56,7 +60,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::ipc;
 use uidm::protocol::{
-    read_message, write_frame, Download, DownloadEntry, Incoming, Outgoing, Properties, Scan, SegmentInfo, Status,
+    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Scan, SegmentInfo, Status,
 };
 use uidm::grab::{GrabFile, GrabRequest};
 use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
@@ -170,6 +174,10 @@ struct Shared {
     grab_events: VecDeque<GrabEvent>,
     /// A copied link to offer to download.
     clipboard: Option<String>,
+    /// The tray asked for a batch from the clipboard's links.
+    clipboard_batch: bool,
+    /// Downloads that failed for want of a login, to ask for one.
+    login_wanted: VecDeque<u64>,
     /// Each download's connections, from its latest progress.
     segments: HashMap<u64, Vec<SegmentInfo>>,
     /// Links from a page for the link picker, until the window opens it.
@@ -397,25 +405,15 @@ enum Action {
     Reconnect,
     OpenOptions,
     /// Open Options at the Connection tab with a new login for this host.
-    AddLogin(String),
+    /// Ask for the login a failed download's site wants.
+    OpenLogin(u64),
+    /// Add a download as it is (one with a login, from the URL bar).
+    AddDownload(Download),
     SaveSettings(Settings),
     /// Send new settings without the Options dialog (the speed limit toggle).
     QuickSettings(Settings),
     /// Answer a save-as dialog, or start a waiting download.
-    Confirm {
-        id: u64,
-        filename: Option<String>,
-        folder: Option<String>,
-        start: bool,
-        queue: Option<u64>,
-        /// What to do if the file name is taken; the setting decides when
-        /// missing.
-        file_exists: Option<FileExists>,
-        /// For a duplicate address, what to do about the other download.
-        duplicate: Option<Duplicate>,
-    },
-    /// Add a URL to the main queue without starting it.
-    AddLater(String),
+    Confirm(Answer),
     StartQueue(u64),
     StopQueue(u64),
     SaveQueue(Queue),
@@ -450,6 +448,8 @@ enum Action {
         start_queue: bool,
     },
     OpenBatch,
+    /// Open the Batch dialog with every link on the clipboard.
+    BatchFromClipboard,
     /// Pick a list file to import.
     OpenImport,
     OpenExport,
@@ -489,6 +489,14 @@ struct App {
     options: Option<OptionsDraft>,
     /// The save-as dialog for the oldest `confirming` download.
     confirm: Option<ConfirmDraft>,
+    /// Many downloads waiting for answers before they are added.
+    answers: Option<answers::Prompt>,
+    /// The login prompt on screen.
+    login: Option<login::LoginPrompt>,
+    /// The URL bar's login fields while shown: user name and password.
+    add_login: Option<(String, String)>,
+    /// "Don't show this dialog again" in the completion dialog.
+    hide_completed: bool,
     /// A file whose scan found a threat, waiting for "Open anyway": its path,
     /// name and the scanner's words.
     threat_prompt: Option<(String, String, String)>,
@@ -609,6 +617,43 @@ struct ConfirmDraft {
     when_taken: FileExists,
     /// For a duplicate address, what to do about the other download.
     duplicate: Duplicate,
+    /// The category it is saved and listed under.
+    category: String,
+    description: String,
+    /// The category being added with "+", if its editor is open.
+    new_category: Option<NewCategory>,
+    /// "Remember this path for <category>".
+    remember_folder: bool,
+    /// "Remember my selection" for a duplicate address.
+    remember_duplicate: bool,
+    /// "Don't ask me again" for the Download later queue.
+    remember_queue: bool,
+}
+
+/// A category added from the save-as dialog.
+#[derive(Default)]
+struct NewCategory {
+    name: String,
+    extensions: String,
+    /// Empty means a folder named after it inside the download folder.
+    folder: String,
+    picked: Picked,
+    error: Option<String>,
+}
+
+impl NewCategory {
+    /// The settings with this category added, checked as Options would.
+    fn add_to(&self, settings: &Settings) -> Result<Settings, String> {
+        let mut new = settings.clone();
+        let folder = self.folder.trim();
+        new.categories.push(Category {
+            extensions: parse_extensions(&self.extensions),
+            folder: (!folder.is_empty()).then(|| folder.to_string()),
+            ..Category::new(self.name.trim(), &[])
+        });
+        new.validate()?;
+        Ok(new)
+    }
 }
 
 /// Units the speed limit can be entered in.
@@ -704,12 +749,22 @@ struct OptionsDraft {
     file_exists: FileExists,
     if_duplicate: Duplicate,
     ask_where_to_save: bool,
+    /// Comma-separated.
+    auto_start_types: String,
+    start_while_asking: bool,
+    add_only: bool,
+    general_remember_folder: bool,
+    /// Kept as it is; only the save-as dialog changes it.
+    general_last_folder: Option<String>,
+    /// The queue Download later uses without asking; `None` asks.
+    later_queue: Option<u64>,
     categories: Vec<CategoryDraft>,
     capture_types: String,
     capture_min_size_kb: u64,
     /// One site per line.
     capture_excluded_sites: String,
     clipboard_monitor: bool,
+    clipboard_start: bool,
     video_button: bool,
     /// One site per line.
     video_button_excluded_sites: String,
@@ -719,6 +774,7 @@ struct OptionsDraft {
     confirm_remove: bool,
     remove_deletes_files: bool,
     server_file_date: bool,
+    resume_ignores_date: bool,
     manual_user_agent: String,
     /// Empty writes partial files in place.
     temp_dir: String,
@@ -806,6 +862,12 @@ impl OptionsDraft {
             file_exists: s.file_exists,
             if_duplicate: s.if_duplicate,
             ask_where_to_save: s.ask_where_to_save,
+            auto_start_types: s.auto_start_types.join(", "),
+            start_while_asking: s.start_while_asking,
+            add_only: s.add_only,
+            general_remember_folder: s.general_remember_folder,
+            general_last_folder: s.general_last_folder.clone(),
+            later_queue: s.later_queue,
             categories: s
                 .categories
                 .iter()
@@ -823,6 +885,7 @@ impl OptionsDraft {
             capture_min_size_kb: s.capture_min_size_kb,
             capture_excluded_sites: s.capture_excluded_sites.join("\n"),
             clipboard_monitor: s.clipboard_monitor,
+            clipboard_start: s.clipboard_start,
             video_button: s.video_button,
             video_button_excluded_sites: s.video_button_excluded_sites.join("\n"),
             ffmpeg_path: s.ffmpeg_path.clone(),
@@ -830,6 +893,7 @@ impl OptionsDraft {
             confirm_remove: s.confirm_remove,
             remove_deletes_files: s.remove_deletes_files,
             server_file_date: s.server_file_date,
+            resume_ignores_date: s.resume_ignores_date,
             manual_user_agent: s.manual_user_agent.clone(),
             temp_dir: s.temp_dir.clone().unwrap_or_default(),
             temp_picked: Picked::default(),
@@ -900,6 +964,12 @@ impl OptionsDraft {
             file_exists: self.file_exists,
             if_duplicate: self.if_duplicate,
             ask_where_to_save: self.ask_where_to_save,
+            auto_start_types: parse_extensions(&self.auto_start_types),
+            start_while_asking: self.start_while_asking,
+            add_only: self.add_only,
+            general_remember_folder: self.general_remember_folder,
+            general_last_folder: self.general_last_folder.clone().filter(|_| self.general_remember_folder),
+            later_queue: self.later_queue,
             categories: self
                 .categories
                 .iter()
@@ -921,12 +991,14 @@ impl OptionsDraft {
             capture_min_size_kb: self.capture_min_size_kb,
             capture_excluded_sites: sites(&self.capture_excluded_sites),
             clipboard_monitor: self.clipboard_monitor,
+            clipboard_start: self.clipboard_start,
             video_button: self.video_button,
             video_button_excluded_sites: sites(&self.video_button_excluded_sites),
             ffmpeg_path: self.ffmpeg_path.trim().to_string(),
             confirm_remove: self.confirm_remove,
             remove_deletes_files: self.remove_deletes_files,
             server_file_date: self.server_file_date,
+            resume_ignores_date: self.resume_ignores_date,
             manual_user_agent: self.manual_user_agent.trim().to_string(),
             temp_dir: optional(&self.temp_dir),
             capture_skip_key: self.capture_skip_key,
@@ -987,6 +1059,8 @@ impl App {
                 notice: None,
                 grab_events: VecDeque::new(),
                 clipboard: None,
+                clipboard_batch: false,
+                login_wanted: VecDeque::new(),
                 segments: HashMap::new(),
                 picked_links: None,
                 quota: None,
@@ -1000,6 +1074,10 @@ impl App {
             url_input: String::new(),
             options: None,
             confirm: None,
+            answers: None,
+            login: None,
+            add_login: None,
+            hide_completed: false,
             threat_prompt: None,
             tooltip: String::new(),
             appearance: None,
@@ -1038,6 +1116,7 @@ impl App {
     /// which costs nothing, and reads the text only when it changes.
     fn watch_clipboard(&self) {
         let shared = Arc::clone(&self.shared);
+        let writer = Arc::clone(&self.writer);
         let ctx = self.ctx.clone();
         thread::spawn(move || {
             let mut seen = win::clipboard_sequence();
@@ -1049,8 +1128,8 @@ impl App {
                     continue;
                 }
                 seen = now;
-                let types = match &shared.lock().unwrap().settings {
-                    Some(s) if s.clipboard_monitor => s.capture_types.clone(),
+                let (types, start) = match &shared.lock().unwrap().settings {
+                    Some(s) if s.clipboard_monitor => (s.capture_types.clone(), s.clipboard_start),
                     _ => continue,
                 };
                 let Some(text) = win::clipboard_text() else { continue };
@@ -1059,6 +1138,11 @@ impl App {
                     continue;
                 }
                 last_offered = Some(url.clone());
+                // Started at once, it goes the way a pasted link does, save-as
+                // dialog and all; only the offer is skipped.
+                if start && send(&writer, &Incoming::Add(Download { url: url.clone(), ..Download::default() })) {
+                    continue;
+                }
                 shared.lock().unwrap().clipboard = Some(url);
                 win::show();
                 ctx.request_repaint();
@@ -1091,6 +1175,10 @@ impl App {
                             Some(tr("The clipboard holds no http or https link.").into());
                         win::show();
                     }
+                }
+                tray::Command::BatchFromClipboard => {
+                    shared.lock().unwrap().clipboard_batch = true;
+                    win::show();
                 }
                 tray::Command::PauseAll => {
                     send(&writer, &Incoming::PauseAll);
@@ -1290,7 +1378,18 @@ impl App {
                 open_file(&path);
             }
             Action::DismissCompleted => {
-                self.shared.lock().unwrap().completed.pop_front();
+                let mut s = self.shared.lock().unwrap();
+                s.completed.pop_front();
+                // "Don't show this dialog again": Windows notifications from
+                // now on, and the dialogs still waiting go too.
+                if std::mem::take(&mut self.hide_completed) {
+                    s.completed.clear();
+                    if let Some(mut settings) = s.settings.clone() {
+                        settings.notify = Notify::Toast;
+                        drop(s);
+                        send(&self.writer, &Incoming::SetSettings { settings });
+                    }
+                }
             }
             Action::OpenWith(path) => win::open_with(&path),
             Action::OpenAbout => self.about = Some(false),
@@ -1320,20 +1419,14 @@ impl App {
                     self.options = Some(OptionsDraft::new(settings));
                 }
             }
-            Action::AddLogin(host) => {
-                if let Some(settings) = &self.shared.lock().unwrap().settings {
-                    let mut draft = OptionsDraft::new(settings);
-                    draft.tab = OptionsTab::Connection;
-                    if !draft.logins.iter().any(|l| l.site.eq_ignore_ascii_case(&host)) {
-                        draft.logins.push(LoginDraft {
-                            site: host,
-                            username: String::new(),
-                            password: String::new(),
-                            new: true,
-                        });
-                    }
-                    self.options = Some(draft);
+            Action::OpenLogin(id) => {
+                let mut s = self.shared.lock().unwrap();
+                if !s.login_wanted.contains(&id) {
+                    s.login_wanted.push_front(id);
                 }
+            }
+            Action::AddDownload(download) => {
+                send(&self.writer, &Incoming::Add(download));
             }
             Action::SaveSettings(settings) => {
                 {
@@ -1350,37 +1443,8 @@ impl App {
             Action::QuickSettings(settings) => {
                 send(&self.writer, &Incoming::SetSettings { settings });
             }
-            Action::Confirm {
-                id,
-                filename,
-                folder,
-                start,
-                queue,
-                file_exists,
-                duplicate,
-            } => {
-                send(
-                    &self.writer,
-                    &Incoming::Confirm {
-                        id,
-                        filename,
-                        folder,
-                        start,
-                        queue,
-                        file_exists,
-                        duplicate,
-                    },
-                );
-            }
-            Action::AddLater(url) => {
-                send(
-                    &self.writer,
-                    &Incoming::Add(Download {
-                        url,
-                        start: Some(false),
-                        ..Download::default()
-                    }),
-                );
+            Action::Confirm(answer) => {
+                send(&self.writer, &Incoming::Confirm(answer));
             }
             Action::StartQueue(id) => {
                 send(&self.writer, &Incoming::StartQueue { id });
@@ -1469,13 +1533,26 @@ impl App {
                 queue,
                 start_queue,
             } => {
-                send(&self.writer, &Incoming::AddMany { items, queue: Some(queue) });
-                // Sent after on the same connection, so it starts with them.
-                if start_queue {
-                    send(&self.writer, &Incoming::StartQueue { id: queue });
+                // Addresses in the list and taken names may need answers
+                // first, when Options says to ask.
+                let (rows, settings) = {
+                    let s = self.shared.lock().unwrap();
+                    (s.table.entries().cloned().collect::<Vec<_>>(), s.settings.clone().unwrap_or_default())
+                };
+                match answers::Prompt::new(items, queue, start_queue, &rows, &settings) {
+                    Ok(prompt) => self.answers = Some(prompt),
+                    Err(items) => self.add_many(items, queue, start_queue),
                 }
             }
             Action::OpenBatch => self.batch = Some(tools::BatchDialog::new()),
+            Action::BatchFromClipboard => {
+                let links = uidm::batch::links_in(&win::clipboard_text().unwrap_or_default());
+                if links.is_empty() {
+                    self.shared.lock().unwrap().last_error = Some(tr("The clipboard holds no http, https or ftp links.").into());
+                } else {
+                    self.batch = Some(tools::BatchDialog::with_list(&links));
+                }
+            }
             Action::OpenImport => tools::pick_text_file(&self.ctx, tr("Import a download list"), &self.import),
             Action::OpenExport => self.export = Some(tools::ExportDialog::new(!self.selected.is_empty())),
             Action::OpenGrabber => {
@@ -1538,11 +1615,70 @@ impl App {
                 self.grabber = None;
             }
         }
+        if std::mem::take(&mut self.shared.lock().unwrap().clipboard_batch) {
+            actions.push(Action::BatchFromClipboard);
+        }
+        if let Some(p) = self.answers.as_mut() {
+            match answers::window(ctx, p) {
+                Some(true) => {
+                    let p = self.answers.take().unwrap();
+                    let (queue, start_queue) = (p.queue, p.start_queue);
+                    self.add_many(p.into_items(), queue, start_queue);
+                }
+                Some(false) => self.answers = None,
+                None => {}
+            }
+        }
         let offer = self.shared.lock().unwrap().clipboard.clone();
         if let Some(url) = offer {
             if !tools::clipboard_offer(ctx, &url, connected, actions) {
                 self.shared.lock().unwrap().clipboard = None;
             }
+        }
+    }
+
+    /// The login prompt for the oldest download waiting for a login, with
+    /// the others from the same site.
+    fn login_window(&mut self, ctx: &egui::Context, rows: &[DownloadEntry], connected: bool, actions: &mut Vec<Action>) {
+        let settings = self.shared.lock().unwrap().settings.clone();
+        if self.login.is_none() {
+            let queued: Vec<u64> = self.shared.lock().unwrap().login_wanted.drain(..).collect();
+            // Only those still failed for a login.
+            let waiting: Vec<(&DownloadEntry, uidm::engine::LoginWanted)> = queued
+                .iter()
+                .filter_map(|id| rows.iter().find(|e| e.id == *id && e.status == Status::Failed))
+                .filter_map(|e| e.error.as_deref().and_then(uidm::engine::login_wanted).map(|w| (e, w)))
+                .collect();
+            if let Some((first, wanted)) = waiting.first().cloned() {
+                let (same, other): (Vec<_>, Vec<_>) = waiting.iter().partition(|(_, w)| w.host == wanted.host);
+                self.shared.lock().unwrap().login_wanted.extend(other.iter().map(|(e, _)| e.id));
+                let own_site = same.iter().all(|(e, _)| uidm::net::host_of(&e.url).eq_ignore_ascii_case(&wanted.host));
+                let username = settings
+                    .as_ref()
+                    .and_then(|s| s.site_logins.iter().find(|l| l.site.eq_ignore_ascii_case(&wanted.host)))
+                    .map(|l| l.username.clone())
+                    .or_else(|| first.login_user.clone())
+                    .unwrap_or_default();
+                let ids = same.iter().map(|(e, _)| e.id).collect();
+                self.login = Some(login::LoginPrompt::new(ids, wanted, own_site, username));
+            }
+        }
+        if let Some(p) = self.login.as_mut() {
+            if !login::window(ctx, p, settings.as_ref(), connected, actions) {
+                self.login = None;
+            }
+        }
+    }
+
+    /// Add `items` to wait in `queue`, and maybe start it.
+    fn add_many(&self, items: Vec<Download>, queue: u64, start_queue: bool) {
+        if items.is_empty() {
+            return;
+        }
+        send(&self.writer, &Incoming::AddMany { items, queue: Some(queue) });
+        // Sent after on the same connection, so it starts with them.
+        if start_queue {
+            send(&self.writer, &Incoming::StartQueue { id: queue });
         }
     }
 
@@ -1559,15 +1695,27 @@ impl App {
             self.confirm = None;
             return;
         };
+        let (queue_list, loaded) = {
+            let s = self.shared.lock().unwrap();
+            (s.queues.clone(), s.settings.clone())
+        };
+        let settings = loaded.clone().unwrap_or_default();
+        let ask = settings.file_exists == FileExists::Ask;
         if self.confirm.as_ref().map(|c| c.id) != Some(entry.id) {
             let path = entry.path.as_deref().map(Path::new);
+            let filename = path
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| display_name(entry));
+            let category = settings.listed_under(entry.category.as_deref(), &filename, &entry.url).to_string();
             self.confirm = Some(ConfirmDraft {
                 id: entry.id,
                 later_queue: MAIN_QUEUE,
-                filename: path
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| display_name(entry)),
+                remember_folder: settings.remembers_folder(&category),
+                remember_duplicate: false,
+                remember_queue: false,
+                category,
+                filename,
                 folder: path
                     .and_then(|p| p.parent())
                     .map(|p| p.display().to_string())
@@ -1575,6 +1723,8 @@ impl App {
                 picked: Picked::default(),
                 when_taken: FileExists::Rename,
                 duplicate: Duplicate::NewName,
+                description: entry.description.clone().unwrap_or_default(),
+                new_category: None,
             });
         }
         let Some(draft) = self.confirm.as_mut() else {
@@ -1582,11 +1732,6 @@ impl App {
         };
         take_picked(&draft.picked, &mut draft.folder);
         let waiting = rows.iter().filter(|e| e.status == Status::Confirming).count();
-        let (queue_list, ask) = {
-            let s = self.shared.lock().unwrap();
-            let ask = s.settings.as_ref().is_some_and(|s| s.file_exists == FileExists::Ask);
-            (s.queues.clone(), ask)
-        };
         // Another download with the same address, which the dialog asks
         // about. A running one cannot be replaced.
         let other = entry.duplicate_of.and_then(|o| rows.iter().find(|e| e.id == o));
@@ -1630,6 +1775,10 @@ impl App {
                             Some(t) => human_bytes(t),
                             None => tr("Unknown").to_string(),
                         });
+                        // Started early, while this dialog is open.
+                        if entry.done > 0 {
+                            ui.weak(trf!("{done} downloaded so far", done = human_bytes(entry.done)));
+                        }
                         // A zip on a server that sends ranges can list its
                         // files before it downloads.
                         let zip = draft.filename.trim().to_ascii_lowercase().ends_with(".zip");
@@ -1648,6 +1797,37 @@ impl App {
                     });
                     ui.end_row();
 
+                    ui.label(tr("Category"));
+                    ui.add_enabled_ui(replaced.is_none(), |ui| {
+                        ui.horizontal(|ui| {
+                            let before = draft.category.clone();
+                            egui::ComboBox::from_id_salt("confirm_category")
+                                .selected_text(&draft.category)
+                                .width(200.0)
+                                .show_ui(ui, |ui| {
+                                    for c in &settings.categories {
+                                        ui.selectable_value(&mut draft.category, c.name.clone(), &c.name);
+                                    }
+                                    ui.selectable_value(&mut draft.category, GENERAL.to_string(), GENERAL);
+                                });
+                            // Picking a category moves the file to its folder.
+                            if draft.category != before {
+                                draft.folder = settings.category_folder(&draft.category).display().to_string();
+                                draft.remember_folder = settings.remembers_folder(&draft.category);
+                            }
+                            let add = ui
+                                .add_enabled(connected && loaded.is_some() && draft.new_category.is_none(), egui::Button::new("+"))
+                                .on_hover_text(tr("Add a category"));
+                            if add.clicked() {
+                                draft.new_category = Some(NewCategory {
+                                    extensions: uidm::settings::extension_of(draft.filename.trim()).unwrap_or_default(),
+                                    ..NewCategory::default()
+                                });
+                            }
+                        });
+                    });
+                    ui.end_row();
+
                     ui.label(tr("Save to"));
                     ui.add_enabled_ui(replaced.is_none(), |ui| {
                         ui.horizontal(|ui| {
@@ -1655,6 +1835,25 @@ impl App {
                             browse_button(ui, tr("Save to"), &draft.folder, &draft.picked);
                         });
                     });
+                    ui.end_row();
+
+                    ui.label("");
+                    ui.add_enabled(
+                        replaced.is_none(),
+                        egui::Checkbox::new(
+                            &mut draft.remember_folder,
+                            trf!("Remember this path for {category}", category = draft.category),
+                        ),
+                    )
+                    .on_hover_text(tr("New files of this category go to the folder last chosen for it"));
+                    ui.end_row();
+
+                    ui.label(tr("Description"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.description)
+                            .hint_text(tr("A note shown in the list"))
+                            .desired_width(360.0),
+                    );
                     ui.end_row();
                 });
                 if let Some(old) = other {
@@ -1693,6 +1892,8 @@ impl App {
                     if let Some(path) = replaced {
                         ui.weak(trf!("{path} will be overwritten.", path = path));
                     }
+                    ui.checkbox(&mut draft.remember_duplicate, tr("Remember my selection"))
+                        .on_hover_text(tr("Answer the same way for every address already in the list; Options can change it"));
                 }
                 if taken {
                     ui.add_space(4.0);
@@ -1709,7 +1910,9 @@ impl App {
                 if waiting > 1 {
                     ui.weak(trf!("{count} more downloads are waiting after this one.", count = waiting - 1));
                 }
-                if queue_list.len() > 1 {
+                // Unless Download later has a queue of its own, ask which.
+                let later_set = settings.later_queue.is_some_and(|id| queue_list.iter().any(|q| q.id == id));
+                if queue_list.len() > 1 && !later_set {
                     ui.horizontal(|ui| {
                         ui.label(tr("Download later in"));
                         let name = queue_list
@@ -1723,19 +1926,36 @@ impl App {
                                     ui.selectable_value(&mut draft.later_queue, q.id, &q.name);
                                 }
                             });
+                        ui.checkbox(&mut draft.remember_queue, tr("Don't ask me again"))
+                            .on_hover_text(tr("Download later uses this queue from now on; Options can change it"));
                     });
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(connected, |ui| {
-                        let answer = |start: bool| Action::Confirm {
-                            id: draft.id,
-                            filename: Some(draft.filename.trim().to_string()),
-                            folder: Some(draft.folder.trim().to_string()),
-                            start,
-                            queue: Some(draft.later_queue),
-                            file_exists: taken.then_some(draft.when_taken),
-                            duplicate: other.map(|_| draft.duplicate),
+                        // The category goes with it only when it is not the one
+                        // the file's type gives anyway.
+                        let by_type = settings.category_name(&name, &entry.url);
+                        let category = (!draft.category.eq_ignore_ascii_case(by_type)).then(|| draft.category.clone());
+                        let description = draft.description.trim();
+                        let remember_folder = (replaced.is_none()
+                            && draft.remember_folder != settings.remembers_folder(&draft.category))
+                        .then_some(draft.remember_folder);
+                        let answer = |start: bool| {
+                            Action::Confirm(Answer {
+                                id: draft.id,
+                                filename: Some(draft.filename.trim().to_string()),
+                                folder: Some(draft.folder.trim().to_string()),
+                                start,
+                                queue: (!later_set).then_some(draft.later_queue),
+                                file_exists: taken.then_some(draft.when_taken),
+                                duplicate: other.map(|_| draft.duplicate),
+                                category: category.clone(),
+                                description: (!description.is_empty()).then(|| description.to_string()),
+                                remember_folder,
+                                remember_duplicate: other.is_some() && draft.remember_duplicate,
+                                remember_queue: !start && !later_set && draft.remember_queue,
+                            })
                         };
                         if other.is_some() && draft.duplicate == Duplicate::Existing {
                             if ui.button(tr("OK")).clicked() {
@@ -1755,6 +1975,64 @@ impl App {
                     });
                 });
             });
+
+        // The category editor "+" opened, over the dialog. The new category
+        // is saved to the settings at once and chosen for this download.
+        let Some(new) = draft.new_category.as_mut() else {
+            return;
+        };
+        take_picked(&new.picked, &mut new.folder);
+        let (mut added, mut close) = (None, false);
+        egui::Window::new(tr("New category"))
+            .id(egui::Id::new("confirm_new_category"))
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                egui::Grid::new("new_category_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                    ui.label(tr("Name"));
+                    ui.add(egui::TextEdit::singleline(&mut new.name).desired_width(240.0));
+                    ui.end_row();
+
+                    ui.label(tr("File types"));
+                    ui.add(egui::TextEdit::singleline(&mut new.extensions).hint_text("zip, rar").desired_width(240.0));
+                    ui.end_row();
+
+                    ui.label(tr("Folder"));
+                    ui.horizontal(|ui| {
+                        let hint = trf!("Download folder\\{name}", name = new.name.trim());
+                        ui.add(egui::TextEdit::singleline(&mut new.folder).hint_text(hint).desired_width(240.0));
+                        browse_button(ui, tr("Category folder"), &new.folder, &new.picked);
+                    });
+                    ui.end_row();
+                });
+                if let Some(err) = &new.error {
+                    ui.colored_label(ui.visuals().error_fg_color, err);
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(connected, egui::Button::new(tr("OK"))).clicked() {
+                        match loaded.as_ref().map_or(Err(tr("not connected to the UIDM daemon").to_string()), |s| new.add_to(s)) {
+                            Ok(s) => added = Some(s),
+                            Err(e) => new.error = Some(e),
+                        }
+                    }
+                    if ui.button(tr("Cancel")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if let Some(s) = added {
+            draft.category = new.name.trim().to_string();
+            draft.folder = s.category_folder(&draft.category).display().to_string();
+            draft.remember_folder = false;
+            actions.push(Action::QuickSettings(s));
+            close = true;
+        }
+        if close {
+            draft.new_category = None;
+        }
     }
 
     /// Draw the Options dialog while it is open.
@@ -1762,6 +2040,7 @@ impl App {
         // Pick up the daemon's answer to a save.
         let result = self.shared.lock().unwrap().save_result.take();
         let saving = self.shared.lock().unwrap().saving;
+        let queues = self.shared.lock().unwrap().queues.clone();
         let Some(draft) = self.options.as_mut() else {
             return;
         };
@@ -1799,7 +2078,7 @@ impl App {
                 });
                 ui.separator();
                 match draft.tab {
-                    OptionsTab::General => general_tab(ui, draft),
+                    OptionsTab::General => general_tab(ui, draft, &queues),
                     OptionsTab::Categories => categories_tab(ui, draft),
                     OptionsTab::Capture => capture_tab(ui, draft),
                     OptionsTab::Notifications => notifications_tab(ui, draft),
@@ -1844,7 +2123,7 @@ fn theme_label(t: uidm::settings::Theme) -> &'static str {
     }
 }
 
-fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
     egui::Grid::new("options").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label(tr("Download folder"));
         ui.horizontal(|ui| {
@@ -1950,12 +2229,47 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
             });
         ui.end_row();
 
-        ui.label("");
-        ui.checkbox(&mut draft.ask_where_to_save, tr("Ask where to save each new download"));
+        ui.label(tr("New downloads"));
+        ui.vertical(|ui| {
+            ui.checkbox(&mut draft.add_only, tr("Only add them to the Download later queue, without starting them"));
+            ui.add_enabled_ui(!draft.add_only, |ui| {
+                ui.checkbox(&mut draft.ask_where_to_save, tr("Ask where to save each new download"));
+                ui.add_enabled_ui(draft.ask_where_to_save, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Start these types without asking"));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.auto_start_types)
+                                .hint_text(tr("none, or exe, msi"))
+                                .desired_width(180.0),
+                        );
+                    });
+                    ui.checkbox(&mut draft.start_while_asking, tr("Start downloading while the save-as dialog is open"))
+                        .on_hover_text(tr("For servers that can resume. What it fetched is kept when you answer, in the folder you choose."));
+                });
+            });
+        });
+        ui.end_row();
+
+        ui.label(tr("Download later puts files in"));
+        let later = draft
+            .later_queue
+            .and_then(|id| queues.iter().find(|q| q.id == id))
+            .map_or(tr("The queue chosen in the save-as dialog"), |q| q.name.as_str());
+        egui::ComboBox::from_id_salt("later_queue_option").selected_text(later).show_ui(ui, |ui| {
+            ui.selectable_value(&mut draft.later_queue, None, tr("The queue chosen in the save-as dialog"));
+            for q in queues {
+                ui.selectable_value(&mut draft.later_queue, Some(q.id), &q.name);
+            }
+        });
         ui.end_row();
 
         ui.label("");
         ui.checkbox(&mut draft.resume_at_startup, tr("Resume unfinished downloads at startup"));
+        ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut draft.resume_ignores_date, tr("Ignore file modification time changes when resuming"))
+            .on_hover_text(tr("For servers that report a new date on every request. The size, and the ETag when the server sends one, must still match."));
         ui.end_row();
 
         ui.label("");
@@ -2298,6 +2612,11 @@ fn categories_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         draft.categories.remove(i);
     }
     ui.add_space(4.0);
+    ui.checkbox(
+        &mut draft.general_remember_folder,
+        trf!("Save new \"{general}\" files to the folder last chosen for them", general = GENERAL),
+    );
+    ui.add_space(4.0);
     if ui.button(tr("Add category")).clicked() {
         draft.categories.push(CategoryDraft {
             name: String::new(),
@@ -2408,10 +2727,16 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.end_row();
 
         ui.label(tr("Clipboard"));
-        ui.checkbox(
-            &mut draft.clipboard_monitor,
-            tr("Offer to download links I copy whose file type is listed above"),
-        );
+        ui.vertical(|ui| {
+            ui.checkbox(
+                &mut draft.clipboard_monitor,
+                tr("Watch for links I copy whose file type is listed above"),
+            );
+            ui.add_enabled_ui(draft.clipboard_monitor, |ui| {
+                ui.radio_value(&mut draft.clipboard_start, false, tr("Offer to download each one"));
+                ui.radio_value(&mut draft.clipboard_start, true, tr("Start downloading it at once"));
+            });
+        });
         ui.end_row();
     });
 }
@@ -2481,6 +2806,13 @@ fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) 
             Outgoing::Quit => std::process::exit(0),
             Outgoing::Updated { item } => item.status == Status::Confirming,
             Outgoing::NameTaken { .. } => true,
+            // A site that wants a login gets the login prompt.
+            Outgoing::Failed { id, error, .. } if uidm::engine::login_wanted(error).is_some() => {
+                if !s.login_wanted.contains(id) {
+                    s.login_wanted.push_back(*id);
+                }
+                true
+            }
             Outgoing::Done { id, .. } if s.dialog_mode() => {
                 s.completed.push_back((*id, false));
                 true
@@ -2576,6 +2908,8 @@ impl App {
                 if waiting > 1 {
                     ui.weak(trf!("{count} more after this one.", count = waiting - 1));
                 }
+                ui.checkbox(&mut self.hide_completed, tr("Don't show this dialog again"))
+                    .on_hover_text(tr("Show a Windows notification instead; Options > When done can bring the dialog back"));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if failed {
@@ -2709,27 +3043,57 @@ impl eframe::App for App {
                 let input = ui.add(
                     egui::TextEdit::singleline(&mut self.url_input)
                         .hint_text(tr("Paste a download URL"))
-                        .desired_width((ui.available_width() - 300.0).max(120.0)),
+                        .desired_width((ui.available_width() - 360.0).max(120.0)),
                 );
                 let entered = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let url = self.url_input.trim().to_string();
                 let can_add = connected && is_download_url(&url);
+                // The login fields, when filled in, go with it.
+                let login = self.add_login.as_ref().filter(|(u, _)| !u.trim().is_empty()).map(|(u, p)| DownloadLogin {
+                    username: u.trim().to_string(),
+                    password: Some(p.clone()),
+                });
                 let clicked = ui.add_enabled(can_add, egui::Button::new(tr("Download"))).clicked();
                 if can_add && (clicked || entered) {
-                    actions.push(Action::Add(url.clone()));
+                    actions.push(Action::AddDownload(Download {
+                        url: url.clone(),
+                        login: login.clone(),
+                        ..Download::default()
+                    }));
                     self.url_input.clear();
                 }
                 let later = ui
                     .add_enabled(can_add, egui::Button::new(tr("Later")))
                     .on_hover_text(tr("Add it to the main queue without starting it"));
                 if can_add && later.clicked() {
-                    actions.push(Action::AddLater(url));
+                    actions.push(Action::AddDownload(Download {
+                        url,
+                        login,
+                        start: Some(false),
+                        ..Download::default()
+                    }));
                     self.url_input.clear();
+                }
+                let mut with_login = self.add_login.is_some();
+                if ui
+                    .toggle_value(&mut with_login, tr("Login"))
+                    .on_hover_text(tr("Send a user name and password with the address"))
+                    .changed()
+                {
+                    self.add_login = with_login.then(Default::default);
                 }
                 ui.add_enabled_ui(connected, |ui| {
                     ui.menu_button(tr("More"), |ui| {
                         if ui.button(tr("Add many...")).on_hover_text(tr("From a URL pattern or a list")).clicked() {
                             actions.push(Action::OpenBatch);
+                            ui.close_menu();
+                        }
+                        if ui
+                            .button(tr("Add batch download from clipboard"))
+                            .on_hover_text(tr("Every link in the copied text, to tick and add"))
+                            .clicked()
+                        {
+                            actions.push(Action::BatchFromClipboard);
                             ui.close_menu();
                         }
                         if ui.button(tr("Site grabber...")).on_hover_text(tr("Find the files a site links to")).clicked() {
@@ -2766,6 +3130,15 @@ impl eframe::App for App {
                     actions.push(Action::OpenOptions);
                 }
             });
+            if let Some((user, password)) = self.add_login.as_mut() {
+                ui.horizontal(|ui| {
+                    ui.label(tr("User name"));
+                    ui.add(egui::TextEdit::singleline(user).desired_width(160.0));
+                    ui.label(tr("Password"));
+                    ui.add(egui::TextEdit::singleline(password).password(true).desired_width(160.0));
+                    ui.weak(tr("Used for the addresses you add here until you close it"));
+                });
+            }
             ui.add_space(6.0);
         });
 
@@ -2871,7 +3244,7 @@ impl eframe::App for App {
         let category = |e: &DownloadEntry| -> String {
             settings
                 .as_ref()
-                .map_or(GENERAL, |s| s.category_name(&display_name(e), &e.url))
+                .map_or(GENERAL, |s| s.listed_under(e.category.as_deref(), &display_name(e), &e.url))
                 .to_string()
         };
         let queue_list = self.shared.lock().unwrap().queues.clone();
@@ -3038,6 +3411,7 @@ impl eframe::App for App {
         });
 
         self.confirm_window(ctx, &rows, connected, &mut actions);
+        self.login_window(ctx, &rows, connected, &mut actions);
         self.completed_window(ctx, connected, &mut actions);
         self.threat_window(ctx, &mut actions);
         self.remove_window(ctx, &rows, connected, &mut actions);
@@ -3050,7 +3424,8 @@ impl eframe::App for App {
             self.links = Some(d);
         }
         if let Some(d) = self.links.as_mut() {
-            if !links::dialog(ctx, d, &queue_list, connected, &mut actions) {
+            let settings = settings.clone().unwrap_or_default();
+            if !links::dialog(ctx, d, &queue_list, &settings, connected, &mut actions) {
                 self.links = None;
             }
         }
@@ -3633,15 +4008,7 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                     actions.push(Action::OpenRefresh(e.id));
                 }
                 if ui.small_button(tr("Start")).clicked() {
-                    actions.push(Action::Confirm {
-                        id: e.id,
-                        filename: None,
-                        folder: None,
-                        start: true,
-                        queue: None,
-                        file_exists: None,
-                        duplicate: None,
-                    });
+                    actions.push(Action::Confirm(Answer::start(e.id)));
                 }
                 queue_menu(ui, e, row.queues, actions);
                 if ui.small_button(tr("Remove")).clicked() {
@@ -3649,10 +4016,10 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
                 }
             }
             Status::Failed | Status::Canceled | Status::Interrupted => {
-                if let Some(host) = e.error.as_deref().and_then(|m| m.strip_prefix("This site needs a login: ")) {
-                    if ui.small_button(tr("Add login")).clicked() {
-                        actions.push(Action::AddLogin(host.to_string()));
-                    }
+                if e.error.as_deref().and_then(uidm::engine::login_wanted).is_some()
+                    && ui.small_button(tr("Log in...")).on_hover_text(tr("Give the user name and password the site asks for")).clicked()
+                {
+                    actions.push(Action::OpenLogin(e.id));
                 }
                 if ui.small_button(tr("New link")).on_hover_text(tr("Give it a fresh download link")).clicked() {
                     actions.push(Action::OpenRefresh(e.id));

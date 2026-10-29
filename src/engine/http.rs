@@ -154,11 +154,12 @@ impl Client {
                 let asked = resp.get_url().to_string();
                 let host = net::host_of(&asked);
                 let challenges: Vec<String> = resp.all("www-authenticate").iter().map(|h| h.to_string()).collect();
-                let login = net::find_login(&self.logins, &host).ok_or_else(|| EngineError::NeedsLogin(host.clone()))?;
-                let auth = net::authorization(&challenges, login, method, &asked, &cnonce())
-                    .ok_or_else(|| EngineError::NeedsLogin(host.clone()))?;
+                let realm = net::realm(&challenges);
+                let needs = || EngineError::NeedsLogin(host.clone(), realm.clone());
+                let login = net::find_login(&self.logins, &host).ok_or_else(needs)?;
+                let auth = net::authorization(&challenges, login, method, &asked, &cnonce()).ok_or_else(needs)?;
                 match build(&asked, Some(&auth)) {
-                    Err(ureq::Error::Status(401, _)) => Err(EngineError::LoginRejected(host)),
+                    Err(ureq::Error::Status(401, _)) => Err(EngineError::LoginRejected(host, realm)),
                     other => other.map_err(map_ureq),
                 }
             }

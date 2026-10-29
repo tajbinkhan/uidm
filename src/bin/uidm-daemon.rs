@@ -60,7 +60,7 @@ use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
 use uidm::ipc::{self, Handshake, AUTH_TIMEOUT, DAEMON_ADDR, DAEMON_LABEL, HOST_LABEL};
 use uidm::protocol::{
-    read_message, write_frame, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Status,
+    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, Outgoing, Properties, Status,
 };
 use uidm::settings::{self, Duplicate, FileExists, Folders, Settings, SPEED_LIMIT_RANGE_KBPS};
 use uidm::notify::{self, Sound, Toast};
@@ -82,6 +82,11 @@ const HISTORY_DEBOUNCE: Duration = Duration::from_secs(1);
 /// How long a download waits for a window to show its save-as dialog before
 /// it starts with the proposed name and folder.
 const CONFIRM_FALLBACK: Duration = Duration::from_secs(20);
+/// How long answering a save-as dialog waits for the download it started
+/// early to stop, before starting over without its bytes.
+const EARLY_STOP_WAIT: Duration = Duration::from_secs(15);
+/// The folder early downloads are written in, inside the temporary folder.
+const EARLY_FOLDER: &str = "UIDM early";
 /// A failure is announced after this long, so a download the browser
 /// extension takes back (and removes) right away is not announced at all.
 const FAILED_GRACE: Duration = Duration::from_secs(1);
@@ -131,6 +136,24 @@ struct Hub {
     /// Rows that are conversions, not downloads: their progress is not
     /// received bytes.
     uncounted: Mutex<HashSet<u64>>,
+    /// Downloads started while their save-as dialog is open, by the engine
+    /// id they run under, which clients never see.
+    early: Mutex<HashMap<u64, Early>>,
+}
+
+/// A download started while its save-as dialog is open, into a folder of
+/// its own, until the dialog is answered.
+struct Early {
+    /// The download in the list it is for.
+    real: u64,
+    /// Its folder.
+    dir: PathBuf,
+    /// The file it writes, once started.
+    file: Option<PathBuf>,
+    /// How it ended: finished (with its file), or stopped or failed.
+    end: Option<Option<PathBuf>>,
+    /// Nobody waits for it: once it ends it goes, with its folder.
+    discard: bool,
 }
 
 /// A page the browser rendered for a crawl: its HTML and its address then.
@@ -221,6 +244,7 @@ impl Hub {
                     let before = e.clone();
                     e.referrer = e.referrer.take().or(d.referrer);
                     e.description = e.description.take().or(d.description);
+                    e.category = e.category.take().or(d.category);
                     e.login_user = e.login_user.take().or(d.login.map(|l| l.username));
                     e.speed_limit = e.speed_limit.or(d.speed_limit);
                     e.from_browser = e.from_browser || d.user_agent.is_some();
@@ -256,6 +280,58 @@ impl Hub {
 
     /// Whether a client other than a window is connected: the browser
     /// extension, through its host.
+    /// Keep the events of an early download (one started while its save-as
+    /// dialog is open) from the clients: its progress shows on the download
+    /// waiting in the dialog instead. Returns whether `p` was one.
+    fn early_event(&self, p: &Progress) -> bool {
+        let id = match p {
+            Progress::Started { id, .. }
+            | Progress::Advanced { id, .. }
+            | Progress::Finished { id, .. }
+            | Progress::Failed { id, .. }
+            | Progress::Canceled { id, .. }
+            | Progress::NameTaken { id, .. } => *id,
+        };
+        let mut early = self.early.lock().unwrap();
+        let Some(e) = early.get_mut(&id) else {
+            return false;
+        };
+        let real = e.real;
+        let mut shown = None;
+        match p {
+            Progress::Started { path, partial, total, .. } => {
+                e.file = Some(partial.clone().unwrap_or_else(|| path.clone()));
+                shown = Some((0, *total));
+            }
+            Progress::Advanced { done, total, .. } => shown = Some((*done, *total)),
+            Progress::Finished { path, .. } => e.end = Some(Some(path.clone())),
+            Progress::Failed { .. } | Progress::Canceled { .. } | Progress::NameTaken { .. } => e.end = Some(None),
+        }
+        if e.discard && e.end.is_some() {
+            if let Some(gone) = early.remove(&id) {
+                let _ = std::fs::remove_dir_all(gone.dir);
+            }
+            return true;
+        }
+        drop(early);
+        if let Some((done, total)) = shown {
+            let _ = self.update(real, |e| {
+                if e.status != Status::Confirming {
+                    return Err("answered".into());
+                }
+                e.done = done;
+                e.total = total.or(e.total);
+                Ok(())
+            });
+        }
+        true
+    }
+
+    /// The engine id of download `real`'s early download, if it has one.
+    fn early_of(&self, real: u64) -> Option<u64> {
+        self.early.lock().unwrap().iter().find(|(_, e)| e.real == real).map(|(id, _)| *id)
+    }
+
     fn extension_connected(&self) -> bool {
         let windows = self.windows.lock().unwrap().len();
         self.clients.lock().unwrap().len() > windows
@@ -454,11 +530,16 @@ impl Daemon {
             held: Mutex::new(HashSet::new()),
             quota: Mutex::new(paths.quota.as_deref().map(Usage::load).unwrap_or_default()),
             uncounted: Mutex::new(HashSet::new()),
+            early: Mutex::new(HashMap::new()),
             wake,
         });
         let events = Arc::clone(&hub);
         let engine = Engine::new(
-            Arc::new(move |p: Progress| events.publish(&progress_to_outgoing(p))),
+            Arc::new(move |p: Progress| {
+                if !events.early_event(&p) {
+                    events.publish(&progress_to_outgoing(p));
+                }
+            }),
             settings.max_concurrent,
         );
         engine.set_speed_limit(settings.speed_limit_bytes());
@@ -1088,7 +1169,13 @@ impl Daemon {
                     .unwrap()
                     .get(&id)
                     .map_or((true, None), |d| (d.start != Some(false), d.queue));
-                if let Err(e) = daemon.confirm(id, None, None, start, queue, fallback, None) {
+                let answer = Answer {
+                    start,
+                    queue,
+                    file_exists: fallback,
+                    ..Answer::start(id)
+                };
+                if let Err(e) = daemon.confirm(answer) {
                     eprintln!("[uidm-daemon] could not start #{id}: {e}");
                 }
             }
@@ -1158,13 +1245,15 @@ impl Daemon {
         }
     }
 
-    /// Take a new download: ask where to save it when the settings say so,
-    /// otherwise queue it at once. If its address is already in the list, the
-    /// duplicate setting decides first, asking in the save-as dialog under
-    /// `Ask` even when that dialog is off.
+    /// Take a new download: ask where to save it when the settings say so
+    /// (unless its type starts without asking), otherwise queue it at once,
+    /// or only add it to the Download later queue when the settings say
+    /// that. If its address is already in the list, the duplicate setting
+    /// decides first, asking in the save-as dialog under `Ask` even when
+    /// that dialog is off.
     fn add(self: &Arc<Self>, mut download: Download) -> (u64, String) {
         if let Some(old) = self.duplicate_of(&download) {
-            let choice = self.settings.lock().unwrap().if_duplicate;
+            let choice = download.duplicate.unwrap_or(self.settings.lock().unwrap().if_duplicate);
             eprintln!("[uidm-daemon] {} is already in the list as #{} ({choice:?})", download.url, old.id);
             if choice == Duplicate::Ask {
                 return self.ask(download, Some(old.id));
@@ -1173,10 +1262,12 @@ impl Daemon {
                 return kept;
             }
         }
-        if download.start == Some(false) {
+        let settings = self.settings.lock().unwrap().clone();
+        if download.start == Some(false) || (download.start.is_none() && settings.add_only) {
             return self.add_later(download);
         }
-        if download.ask.unwrap_or(self.settings.lock().unwrap().ask_where_to_save) {
+        let name = engine::Inspection::unprobed(&download.url, download.filename.as_deref()).filename;
+        if download.ask.unwrap_or(settings.ask_where_to_save && !settings.starts_without_asking(&name)) {
             self.ask(download, None)
         } else {
             self.start(download, None)
@@ -1274,10 +1365,12 @@ impl Daemon {
         self.hub.publish(&Outgoing::Removed { id });
     }
 
-    /// Add `download` to a queue (the main one unless it names another)
-    /// without starting it or opening a connection.
+    /// Add `download` to a queue (the one it names, else the one Download
+    /// later goes to, else the main one) without starting it or opening a
+    /// connection.
     fn add_later(&self, download: Download) -> (u64, String) {
-        let queue = self.queue_or_main(download.queue);
+        let later = self.settings.lock().unwrap().later_queue;
+        let queue = self.queue_or_main(download.queue.or(later));
         let (id, url) = self.stage(download);
         let _ = self.hub.update_queue(queue, |q| {
             q.order.push(id);
@@ -1321,8 +1414,9 @@ impl Daemon {
 
     /// Add `items` to wait in `queue`, announcing the queue once rather than
     /// once per download. Items that are not web addresses are skipped, and
-    /// so are those already in the list unless the duplicate setting says to
-    /// add them (with a new name, or in place of a stopped download). Returns
+    /// so are those already in the list unless their own answer or the
+    /// duplicate setting says to add them (with a new name, or in place of a
+    /// stopped download). Returns
     /// how many were added and how many were skipped as duplicates.
     fn add_many(self: &Arc<Self>, items: Vec<Download>, queue: Option<u64>) -> (usize, usize) {
         let queue = self.queue_or_main(queue);
@@ -1334,6 +1428,7 @@ impl Daemon {
                 continue;
             }
             if let Some(old) = self.duplicate_of(&d) {
+                let choice = d.duplicate.unwrap_or(choice);
                 let add = match choice {
                     Duplicate::NewName => true,
                     Duplicate::Overwrite => old.status.is_terminal(),
@@ -1793,11 +1888,15 @@ impl Daemon {
             let path = req.folders.for_name(&found.filename).join(&found.filename);
             // The other one may have been removed while this was probed.
             let duplicate_of = duplicate_of.filter(|o| daemon.status(*o).is_some());
+            let settings = daemon.settings.lock().unwrap().clone();
+            // A type that starts without asking, known only now from the
+            // server's name for the file, skips the dialog after all.
+            let auto = duplicate_of.is_none() && download.ask != Some(true) && settings.starts_without_asking(&found.filename);
             let asked = daemon.hub.update(id, |e| {
                 if e.status != Status::Queued {
                     return Err("no longer queued".into());
                 }
-                e.status = Status::Confirming;
+                e.status = if auto { Status::Waiting } else { Status::Confirming };
                 e.path = Some(path.display().to_string());
                 e.total = found.total;
                 e.resumable = found.resumable;
@@ -1807,9 +1906,156 @@ impl Daemon {
             if asked.is_err() {
                 return; // canceled while being probed
             }
+            if auto {
+                if let Err(e) = daemon.dispatch(id) {
+                    eprintln!("[uidm-daemon] could not start #{id}: {e}");
+                }
+                return;
+            }
+            // Only a file the server sends in ranges can be stopped and
+            // carried on elsewhere once the dialog is answered.
+            let plain = uidm::app::post_body(&download).is_none() && download.media.is_none();
+            if settings.start_while_asking && duplicate_of.is_none() && plain && found.resumable && found.total.is_some() {
+                daemon.start_early(id, download.clone(), &found.filename);
+            }
             daemon.await_answer(id, None);
         });
         (id, url)
+    }
+
+    /// Start download `id` while its save-as dialog is open, under an engine
+    /// id of its own (whose events clients never see) and into a folder of
+    /// its own. Answering the dialog keeps what it fetched: see
+    /// `settle_early`.
+    fn start_early(&self, id: u64, download: Download, filename: &str) {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(EARLY_FOLDER).join(format!("{}-{n}", std::process::id()));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("[uidm-daemon] could not start #{id} early: {e}");
+            return;
+        }
+        let mut req = self.request_for(download);
+        req.folders = Folders::fixed(dir.clone());
+        req.filename = Some(filename.to_string());
+        req.file_exists = FileExists::Overwrite;
+        req.temp_dir = None;
+        req.server_date = false;
+        let shadow = self.engine.reserve_id();
+        self.hub.early.lock().unwrap().insert(
+            shadow,
+            Early {
+                real: id,
+                dir,
+                file: None,
+                end: None,
+                discard: false,
+            },
+        );
+        eprintln!("[uidm-daemon] #{id} starts early while its dialog is open");
+        self.engine.enqueue_as(shadow, req);
+    }
+
+    /// Stop the early download `shadow` and wait for it, returning how it
+    /// ended. `None` if it did not stop in time; its events
+    /// stay hidden, and its folder goes when UIDM next starts.
+    fn stop_early(&self, shadow: u64) -> Option<Early> {
+        self.engine.cancel(shadow);
+        let deadline = Instant::now() + EARLY_STOP_WAIT;
+        loop {
+            {
+                let mut early = self.hub.early.lock().unwrap();
+                if early.get(&shadow).is_some_and(|e| e.end.is_some()) {
+                    return early.remove(&shadow);
+                }
+                if Instant::now() >= deadline {
+                    if let Some(e) = early.get_mut(&shadow) {
+                        e.real = 0;
+                        e.discard = true;
+                    }
+                    return None;
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Download `id`'s dialog was answered: stop its early download and put
+    /// what it fetched at the file the answer chose (a free name there,
+    /// unless the answer or setting overwrites). A finished file moves there
+    /// and the download is done; a partial one becomes the download's own
+    /// partial file, so starting it carries on from there. Returns whether
+    /// it finished.
+    fn settle_early(&self, id: u64, shadow: u64) -> bool {
+        let Some(early) = self.stop_early(shadow) else {
+            return false;
+        };
+        let entry = self.entry(id);
+        let path = entry.as_ref().and_then(|e| e.path.as_deref()).map(PathBuf::from);
+        let overwrite = {
+            let asked = self.hub.requests.lock().unwrap().get(&id).and_then(|d| d.file_exists);
+            asked.unwrap_or(self.settings.lock().unwrap().file_exists) == FileExists::Overwrite
+        };
+        let mut kept = false;
+        match (entry, path, early.end, early.file) {
+            (Some(e), Some(path), Some(Some(finished)), _) => {
+                let to = free_path(&path, overwrite);
+                match move_file(&finished, &to) {
+                    Ok(()) => {
+                        eprintln!("[uidm-daemon] #{id} finished while its dialog was open");
+                        self.hub.leave_queues(id);
+                        self.hub.publish(&Outgoing::Done {
+                            id,
+                            url: e.url,
+                            path: to.display().to_string(),
+                            note: None,
+                        });
+                        let _ = std::fs::remove_dir_all(&early.dir);
+                        return true;
+                    }
+                    Err(err) => eprintln!("[uidm-daemon] could not keep #{id}'s early download: {err}"),
+                }
+            }
+            (Some(_), Some(path), _, Some(partial)) if partial.is_file() && engine::sidecar_path(&partial).is_file() => {
+                let to = free_path(&path, overwrite);
+                kept = self
+                    .hub
+                    .update(id, |e| {
+                        e.path = Some(to.display().to_string());
+                        e.partial = Some(partial.display().to_string());
+                        e.connections = e.connections.max(1);
+                        Ok(())
+                    })
+                    .is_ok();
+            }
+            _ => {}
+        }
+        if !kept {
+            let _ = std::fs::remove_dir_all(&early.dir);
+        }
+        false
+    }
+
+    /// Stop download `id`'s early download, if it has one, and drop what it
+    /// fetched once it has stopped.
+    fn discard_early(&self, id: u64) {
+        let Some(shadow) = self.hub.early_of(id) else {
+            return;
+        };
+        let mut early = self.hub.early.lock().unwrap();
+        let ended = early.get(&shadow).is_some_and(|e| e.end.is_some());
+        if ended {
+            if let Some(gone) = early.remove(&shadow) {
+                let _ = std::fs::remove_dir_all(gone.dir);
+            }
+            return;
+        }
+        if let Some(e) = early.get_mut(&shadow) {
+            e.real = 0;
+            e.discard = true;
+        }
+        drop(early);
+        self.engine.cancel(shadow);
     }
 
     /// Answer the save-as dialog of a `confirming` download, or start a
@@ -1818,21 +2064,37 @@ impl Daemon {
     /// `file_exists`, when given, decides what happens if the name is taken,
     /// now and on later starts. For a download asked about as a duplicate,
     /// `duplicate` decides what happens to the other download first (a new
-    /// name when missing).
-    #[allow(clippy::too_many_arguments)]
-    fn confirm(
-        self: &Arc<Self>,
-        id: u64,
-        mut filename: Option<String>,
-        mut folder: Option<String>,
-        start: bool,
-        queue: Option<u64>,
-        mut file_exists: Option<FileExists>,
-        duplicate: Option<Duplicate>,
-    ) -> Result<(), String> {
+    /// name when missing). A category and description, when given, are kept
+    /// with it. The dialog's "remember" boxes change the settings.
+    fn confirm(self: &Arc<Self>, answer: Answer) -> Result<(), String> {
+        let Answer {
+            id,
+            mut filename,
+            mut folder,
+            start,
+            queue,
+            mut file_exists,
+            duplicate,
+            category,
+            description,
+            remember_folder,
+            remember_duplicate,
+            remember_queue,
+        } = answer;
+        let category = category.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+        let description = description.map(|d| d.trim().to_string());
         let other = self.entry(id).and_then(|e| e.duplicate_of).and_then(|o| self.entry(o));
         if let Some(old) = other {
             let choice = duplicate.unwrap_or(Duplicate::NewName);
+            if remember_duplicate {
+                let mut settings = self.settings.lock().unwrap().clone();
+                if settings.if_duplicate != choice {
+                    settings.if_duplicate = choice;
+                    if let Err(e) = self.set_settings(settings) {
+                        eprintln!("[uidm-daemon] could not remember the duplicate choice: {e}");
+                    }
+                }
+            }
             let mut download = self.hub.requests.lock().unwrap().get(&id).cloned().unwrap_or_default();
             if let Some((kept, _)) = self.settle_duplicate(&mut download, &old, choice) {
                 eprintln!("[uidm-daemon] #{id} duplicates #{}; using #{kept} instead", old.id);
@@ -1851,6 +2113,12 @@ impl Daemon {
                 return Err(format!("download {id} is not waiting to be started"));
             }
             e.duplicate_of = None;
+            if let Some(c) = &category {
+                e.category = Some(c.clone());
+            }
+            if let Some(d) = &description {
+                e.description = Some(d.clone()).filter(|d| !d.is_empty());
+            }
             if filename.is_none() && folder.is_none() {
                 // Keep whatever the download already has: a chosen file, a
                 // partial file, or nothing yet.
@@ -1882,36 +2150,72 @@ impl Daemon {
             e.status = Status::Waiting;
             Ok(())
         })?;
-        // A category that remembers its folder keeps the one chosen here.
-        if let (Some(_), Some(path)) = (folder.as_deref().map(str::trim).filter(|f| !f.is_empty()), item.path.as_deref()) {
-            let path = Path::new(path);
+        let mut settings = self.settings.lock().unwrap().clone();
+        let mut changed = false;
+        if let Some(path) = item.path.as_deref().map(Path::new) {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let mut settings = self.settings.lock().unwrap().clone();
-            if let Some(dir) = path.parent() {
-                if settings.remember_folder(&name, &item.url, dir) {
-                    if let Err(e) = self.set_settings(settings) {
-                        eprintln!("[uidm-daemon] could not remember the folder: {e}");
-                    }
-                }
+            let chosen = item.category.clone().unwrap_or_else(|| settings.category_name(&name, &item.url).to_string());
+            if let Some(on) = remember_folder {
+                changed |= settings.set_remember_folder(&chosen, on);
+            }
+            // A category that remembers its folder keeps the one chosen here.
+            let picked = remember_folder == Some(true) || folder.as_deref().is_some_and(|f| !f.trim().is_empty());
+            if let (true, Some(dir)) = (picked, path.parent()) {
+                changed |= settings.remember_folder(&chosen, dir);
             }
         }
-        if file_exists.is_some() {
-            self.hub
-                .requests
-                .lock()
-                .unwrap()
-                .entry(id)
-                .or_insert_with(|| Download {
-                    url: item.url.clone(),
-                    ..Download::default()
-                })
-                .file_exists = file_exists;
+        if remember_queue && !start {
+            let later = Some(queue.unwrap_or(MAIN_QUEUE));
+            changed |= settings.later_queue != later;
+            settings.later_queue = later;
         }
+        if changed {
+            if let Err(e) = self.set_settings(settings) {
+                eprintln!("[uidm-daemon] could not remember the dialog's choices: {e}");
+            }
+        }
+        if file_exists.is_some() || category.is_some() || description.is_some() {
+            let mut requests = self.hub.requests.lock().unwrap();
+            let request = requests.entry(id).or_insert_with(|| Download {
+                url: item.url.clone(),
+                ..Download::default()
+            });
+            if file_exists.is_some() {
+                request.file_exists = file_exists;
+            }
+            if category.is_some() {
+                request.category = category;
+            }
+            if description.is_some() {
+                request.description = item.description.clone();
+            }
+        }
+        // A download started early stops first, so its bytes can move to
+        // the file chosen, which takes a moment.
+        if let Some(shadow) = self.hub.early_of(id) {
+            let daemon = Arc::clone(self);
+            thread::spawn(move || {
+                if daemon.settle_early(id, shadow) {
+                    return;
+                }
+                if let Err(e) = daemon.start_or_wait(id, start, queue) {
+                    eprintln!("[uidm-daemon] could not go on with #{id}: {e}");
+                }
+            });
+            return Ok(());
+        }
+        self.start_or_wait(id, start, queue)
+    }
+
+    /// Start a `waiting` download now, or (with `start` false) have it wait
+    /// in `queue`, the Download later queue, or the main one.
+    fn start_or_wait(&self, id: u64, start: bool, queue: Option<u64>) -> Result<(), String> {
         if start {
             return self.dispatch(id);
         }
         if self.hub.queue_of(id).is_none() {
-            self.move_to_queue(item.id, queue.unwrap_or(MAIN_QUEUE), None)?;
+            let later = self.settings.lock().unwrap().later_queue;
+            self.move_to_queue(id, self.queue_or_main(queue.or(later)), None)?;
         }
         Ok(())
     }
@@ -1923,6 +2227,7 @@ impl Daemon {
             return;
         }
         if matches!(self.status(id), Some(Status::Confirming | Status::Waiting)) {
+            self.discard_early(id);
             let url = self.hub.table.lock().unwrap().get(id).map(|e| e.url.clone());
             if let Some(url) = url {
                 self.hub.publish(&Outgoing::Canceled { id, url });
@@ -1990,9 +2295,11 @@ impl Daemon {
                 referrer: entry.referrer.clone(),
                 ..Download::default()
             });
-        // The new entry keeps the old one's description and speed limit.
+        // The new entry keeps the old one's description, category and speed
+        // limit.
         let download = Download {
             description: entry.description.clone(),
+            category: entry.category.clone(),
             speed_limit: entry.speed_limit,
             ..download
         };
@@ -2053,6 +2360,7 @@ impl Daemon {
             ..Download::default()
         });
         download.description = entry.description.clone();
+        download.category = entry.category.clone();
         download.speed_limit = entry.speed_limit;
         // Only a download that started has a file of its own; a proposed
         // path may be somebody else's.
@@ -2118,7 +2426,8 @@ impl Daemon {
                 let req = self.request_for(download.clone());
                 let found = engine::inspect(&download.url, None, &req.headers, &req.net)
                     .map_err(|e| format!("could not reach the new link: {e}"))?;
-                if let Err(reason) = engine::partial_matches(Path::new(path), &found) {
+                let ignore_date = self.settings.lock().unwrap().resume_ignores_date;
+                if let Err(reason) = engine::partial_matches(Path::new(path), &found, ignore_date) {
                     return Ok(Some(reason));
                 }
             }
@@ -2502,6 +2811,7 @@ fn run() -> io::Result<()> {
     let token: Arc<str> = token.into();
 
     let (daemon, dirty, notes, wake) = Daemon::new(Paths::from_env());
+    clean_early_folders(&daemon);
     let daemon = Arc::new(daemon);
     spawn_scheduler(Arc::clone(&daemon), wake);
     spawn_history_writer(Arc::clone(&daemon), dirty);
@@ -2699,18 +3009,13 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             eprintln!("[uidm-daemon] cancel #{id}");
             daemon.cancel(id);
         }
-        Incoming::Confirm {
-            id,
-            filename,
-            folder,
-            start,
-            queue,
-            file_exists,
-            duplicate,
-        } => match daemon.confirm(id, filename, folder, start, queue, file_exists, duplicate) {
-            Ok(()) => eprintln!("[uidm-daemon] confirm #{id} (start: {start})"),
-            Err(message) => send(&Outgoing::Error { message }),
-        },
+        Incoming::Confirm(answer) => {
+            let (id, start) = (answer.id, answer.start);
+            match daemon.confirm(answer) {
+                Ok(()) => eprintln!("[uidm-daemon] confirm #{id} (start: {start})"),
+                Err(message) => send(&Outgoing::Error { message }),
+            }
+        }
         Incoming::Retry { id } => match daemon.retry(id) {
             Ok((new_id, url)) => {
                 eprintln!("[uidm-daemon] retry #{id} as #{new_id}");
@@ -2952,6 +3257,46 @@ fn check_body(d: &Download) -> Result<(), String> {
     }
 }
 
+/// `path`, or when a file is there, the first free numbered name next to
+/// it (`name (1).ext`, ...), unless `overwrite` says to remove that file.
+fn free_path(path: &Path, overwrite: bool) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    if overwrite && std::fs::remove_file(path).is_ok() {
+        return path.to_path_buf();
+    }
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return path.to_path_buf();
+    };
+    let name = name.to_string_lossy();
+    (1..)
+        .map(|n| dir.join(engine::numbered_name(&name, n)))
+        .find(|p| !p.exists())
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// Delete the folders of early downloads a previous run left behind, except
+/// those holding the partial file of a download in the list.
+fn clean_early_folders(daemon: &Daemon) {
+    let Ok(dirs) = std::fs::read_dir(std::env::temp_dir().join(EARLY_FOLDER)) else {
+        return;
+    };
+    let partials: Vec<PathBuf> = daemon
+        .hub
+        .table
+        .lock()
+        .unwrap()
+        .entries()
+        .filter_map(|e| e.partial.as_deref().map(PathBuf::from))
+        .collect();
+    for dir in dirs.flatten().map(|d| d.path()) {
+        if !partials.iter().any(|p| p.starts_with(&dir)) {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
 /// Move a finished file to `to`, which must not exist yet. Across drives
 /// this copies the file, then deletes the original.
 fn move_file(from: &Path, to: &Path) -> Result<(), String> {
@@ -3088,6 +3433,54 @@ mod tests {
             }
         });
         format!("http://{addr}/f.bin")
+    }
+
+    /// A server that sends `body` in byte ranges, slowly, counting the bytes
+    /// it sends in `sent`.
+    fn serve_ranges(body: Arc<Vec<u8>>, sent: Arc<AtomicU64>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let (body, sent) = (Arc::clone(&body), Arc::clone(&sent));
+                thread::spawn(move || {
+                    let mut req = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => req.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&req).to_ascii_lowercase();
+                    let len = body.len() as u64;
+                    let range = text
+                        .lines()
+                        .find_map(|l| l.strip_prefix("range: bytes="))
+                        .and_then(|r| r.trim().split_once('-'))
+                        .and_then(|(a, b)| Some((a.parse::<u64>().ok()?, b.parse::<u64>().unwrap_or(len - 1).min(len - 1))));
+                    let (status, start, end, extra) = match range {
+                        Some((a, b)) => ("206 Partial Content", a, b, format!("Content-Range: bytes {a}-{b}/{len}\r\n")),
+                        None => ("200 OK", 0, len - 1, String::new()),
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nETag: \"e1\"\r\n{extra}Connection: close\r\n\r\n",
+                        end + 1 - start
+                    );
+                    if stream.write_all(head.as_bytes()).is_err() || req.starts_with(b"HEAD") {
+                        return;
+                    }
+                    for chunk in body[start as usize..=end as usize].chunks(4096) {
+                        if stream.write_all(chunk).is_err() {
+                            return;
+                        }
+                        sent.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                        thread::sleep(Duration::from_millis(15));
+                    }
+                });
+            }
+        });
+        format!("http://{addr}/big.bin")
     }
 
     struct Setup {
@@ -3268,7 +3661,10 @@ mod tests {
         let asked = t.wait(new, Status::Confirming);
         assert_eq!(asked.duplicate_of, Some(old));
         t.daemon
-            .confirm(new, None, None, true, None, None, Some(Duplicate::Existing))
+            .confirm(Answer {
+                duplicate: Some(Duplicate::Existing),
+                ..Answer::start(new)
+            })
             .unwrap();
         assert!(t.daemon.entry(new).is_none(), "the new download was not added");
         assert!(t.window_got(|m| matches!(m, Outgoing::ShowDone { id } if *id == old)));
@@ -3276,7 +3672,7 @@ mod tests {
         // No answer about the duplicate means a new name.
         let again = t.add(&url);
         t.wait(again, Status::Confirming);
-        t.daemon.confirm(again, None, None, true, None, None, None).unwrap();
+        t.daemon.confirm(Answer::start(again)).unwrap();
         let done = t.wait(again, Status::Done);
         assert_eq!(done.path.map(PathBuf::from), Some(t.dir.join("f (1).bin")));
         assert_eq!(done.duplicate_of, None);
@@ -3291,7 +3687,11 @@ mod tests {
         let new = t.add(&url);
         t.wait(new, Status::Confirming);
         t.daemon
-            .confirm(new, Some("ignored.bin".into()), None, true, None, None, Some(Duplicate::Overwrite))
+            .confirm(Answer {
+                filename: Some("ignored.bin".into()),
+                duplicate: Some(Duplicate::Overwrite),
+                ..Answer::start(new)
+            })
             .unwrap();
         let done = t.wait(new, Status::Done);
         assert_eq!(done.path.map(PathBuf::from), Some(path.clone()));
@@ -3317,6 +3717,13 @@ mod tests {
         let t = setup("many_new_name", Duplicate::NewName);
         t.finished(&url, &t.dir.join("f.bin"));
         assert_eq!(t.daemon.add_many(items(&[&url]), None), (1, 0));
+
+        // An item's own answer wins over the setting.
+        let t = setup("many_answered", Duplicate::Ask);
+        t.finished(&url, &t.dir.join("f.bin"));
+        let mut answered = items(&[&url]);
+        answered[0].duplicate = Some(Duplicate::NewName);
+        assert_eq!(t.daemon.add_many(answered, None), (1, 0));
     }
 
     #[test]
@@ -3533,11 +3940,98 @@ mod tests {
         });
         let chosen = t.dir.join("chosen");
         t.daemon
-            .confirm(id, Some("a.zip".into()), Some(chosen.display().to_string()), false, None, None, None)
+            .confirm(Answer {
+                filename: Some("a.zip".into()),
+                folder: Some(chosen.display().to_string()),
+                start: false,
+                ..Answer::start(id)
+            })
             .unwrap();
         let s = t.daemon.settings.lock().unwrap().clone();
         assert_eq!(s.categories[0].last_folder.as_deref(), Some(chosen.display().to_string().as_str()));
         assert_eq!(s.folders().for_name("b.zip"), chosen);
+    }
+
+    #[test]
+    fn the_save_as_dialog_keeps_a_category_and_description() {
+        let t = setup("category", Duplicate::NewName);
+        t.daemon.settings.lock().unwrap().categories[2].remember_folder = true;
+        let (id, _) = t.daemon.add_later(Download {
+            url: "https://x/a.zip".into(),
+            ..Download::default()
+        });
+        let chosen = t.dir.join("tunes");
+        t.daemon
+            .confirm(Answer {
+                filename: Some("a.zip".into()),
+                folder: Some(chosen.display().to_string()),
+                start: false,
+                category: Some(" Music ".into()),
+                description: Some(" the album ".into()),
+                ..Answer::start(id)
+            })
+            .unwrap();
+        let e = t.daemon.entry(id).unwrap();
+        assert_eq!(e.category.as_deref(), Some("Music"));
+        assert_eq!(e.description.as_deref(), Some("the album"));
+        // The chosen category, not the file's type, remembers the folder.
+        let s = t.daemon.settings.lock().unwrap().clone();
+        assert_eq!(s.categories[2].last_folder.as_deref(), Some(chosen.display().to_string().as_str()));
+        assert_eq!(s.categories[0].last_folder, None);
+        // A retry keeps both.
+        let (again, _) = t.daemon.retry(id).unwrap();
+        let e = t.daemon.entry(again).unwrap();
+        assert_eq!(e.category.as_deref(), Some("Music"));
+        assert_eq!(e.description.as_deref(), Some("the album"));
+    }
+
+    #[test]
+    fn the_save_as_dialog_remembers_its_choices() {
+        let t = setup("remember_choices", Duplicate::Ask);
+        let queue = t.daemon.save_queue(Queue::new(0, "Night")).unwrap();
+
+        // "Remember this path" for General, and "Don't ask me again" for the
+        // queue of a download added for later.
+        let (id, _) = t.daemon.add_later(Download {
+            url: "https://x/notes.xyz".into(),
+            ..Download::default()
+        });
+        let chosen = t.dir.join("misc");
+        t.daemon
+            .confirm(Answer {
+                folder: Some(chosen.display().to_string()),
+                filename: Some("notes.xyz".into()),
+                start: false,
+                queue: Some(queue),
+                remember_folder: Some(true),
+                remember_queue: true,
+                ..Answer::start(id)
+            })
+            .unwrap();
+        let s = t.daemon.settings.lock().unwrap().clone();
+        assert!(s.general_remember_folder);
+        assert_eq!(s.folders().for_name("other.xyz"), chosen);
+        assert_eq!(s.later_queue, Some(queue));
+        // Download later now goes to that queue without being told.
+        let (later, _) = t.daemon.add_later(Download {
+            url: "https://x/more.xyz".into(),
+            ..Download::default()
+        });
+        assert_eq!(t.daemon.hub.queue_of(later), Some(queue));
+
+        // "Remember my selection" for an address already in the list.
+        let url = serve();
+        let old = t.finished(&url, &t.dir.join("twice.bin"));
+        let again = t.add(&url);
+        assert_eq!(t.wait(again, Status::Confirming).duplicate_of, Some(old));
+        t.daemon
+            .confirm(Answer {
+                duplicate: Some(Duplicate::NewName),
+                remember_duplicate: true,
+                ..Answer::start(again)
+            })
+            .unwrap();
+        assert_eq!(t.daemon.settings.lock().unwrap().if_duplicate, Duplicate::NewName);
     }
 
     #[test]
@@ -3725,6 +4219,93 @@ mod tests {
             ..Download::default()
         });
         t.wait(id, Status::Confirming);
+    }
+
+    #[test]
+    fn some_types_start_without_the_dialog_and_add_only_waits() {
+        let t = setup("auto_start", Duplicate::NewName);
+        {
+            let mut s = t.daemon.settings.lock().unwrap();
+            s.ask_where_to_save = true;
+            s.auto_start_types = vec!["bin".into()];
+        }
+        let id = t.add(&serve());
+        assert_eq!(t.wait(id, Status::Done).path.map(PathBuf::from), Some(t.dir.join("f.bin")));
+
+        t.daemon.settings.lock().unwrap().add_only = true;
+        let id = t.add(&serve());
+        assert_eq!(t.daemon.status(id), Some(Status::Waiting));
+        assert_eq!(t.daemon.hub.queue_of(id), Some(MAIN_QUEUE));
+    }
+
+    /// A download that starts while its dialog is open, the dialog then
+    /// answered before or after it finishes: either way the file ends up
+    /// where the answer says, whole, and its bytes come over once.
+    #[test]
+    fn a_download_started_while_asking_keeps_its_bytes() {
+        const LEN: usize = 1024 * 1024;
+        for finish_first in [false, true] {
+            let t = setup(if finish_first { "early_done" } else { "early" }, Duplicate::NewName);
+            {
+                let mut s = t.daemon.settings.lock().unwrap();
+                s.ask_where_to_save = true;
+                s.start_while_asking = true;
+                s.connections = 2;
+            }
+            let body: Arc<Vec<u8>> = Arc::new((0..LEN).map(|i| (i % 251) as u8).collect());
+            let sent = Arc::new(AtomicU64::new(0));
+            let id = t.add(&serve_ranges(Arc::clone(&body), Arc::clone(&sent)));
+            let asked = t.wait(id, Status::Confirming);
+            let wanted = if finish_first { LEN as u64 } else { LEN as u64 / 4 };
+            let until = Instant::now() + Duration::from_secs(30);
+            while t.daemon.entry(id).unwrap().done < wanted {
+                assert!(Instant::now() < until, "the early download never got going");
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(t.daemon.entry(id).unwrap().status, Status::Confirming, "still asking");
+            assert!(!Path::new(asked.path.as_deref().unwrap()).exists(), "nothing written where it was proposed");
+
+            let chosen = t.dir.join("chosen");
+            t.daemon
+                .confirm(Answer {
+                    folder: Some(chosen.display().to_string()),
+                    filename: Some("big.bin".into()),
+                    ..Answer::start(id)
+                })
+                .unwrap();
+            let done = t.wait(id, Status::Done);
+            assert_eq!(done.path.map(PathBuf::from), Some(chosen.join("big.bin")));
+            assert_eq!(std::fs::read(chosen.join("big.bin")).unwrap(), *body);
+            // Two one-byte probes on top of the file itself.
+            assert!(sent.load(Ordering::Relaxed) < LEN as u64 + 4096, "sent {}", sent.load(Ordering::Relaxed));
+        }
+    }
+
+    #[test]
+    fn canceling_the_dialog_drops_the_early_download() {
+        let t = setup("early_cancel", Duplicate::NewName);
+        {
+            let mut s = t.daemon.settings.lock().unwrap();
+            s.ask_where_to_save = true;
+            s.start_while_asking = true;
+        }
+        let body: Arc<Vec<u8>> = Arc::new(vec![7u8; 1024 * 1024]);
+        let id = t.add(&serve_ranges(body, Arc::new(AtomicU64::new(0))));
+        t.wait(id, Status::Confirming);
+        let until = Instant::now() + Duration::from_secs(30);
+        while t.daemon.hub.early_of(id).is_none_or(|s| t.daemon.hub.early.lock().unwrap()[&s].file.is_none()) {
+            assert!(Instant::now() < until, "the early download never started");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let shadow = t.daemon.hub.early_of(id).unwrap();
+        let dir = t.daemon.hub.early.lock().unwrap()[&shadow].dir.clone();
+        t.daemon.cancel(id);
+        t.wait(id, Status::Canceled);
+        let until = Instant::now() + Duration::from_secs(10);
+        while dir.exists() || t.daemon.hub.early.lock().unwrap().contains_key(&shadow) {
+            assert!(Instant::now() < until, "the early download was not dropped");
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]

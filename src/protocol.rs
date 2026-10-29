@@ -75,30 +75,8 @@ pub enum Incoming {
     /// Start again what `pause_all` stopped, and any interrupted download.
     ResumeAll,
     /// Answer the save-as dialog for a `confirming` download, or start a
-    /// `waiting` one. `filename` and `folder` replace the proposed ones when
-    /// given. With `start` false the download waits until started.
-    Confirm {
-        id: u64,
-        #[serde(default)]
-        filename: Option<String>,
-        #[serde(default)]
-        folder: Option<String>,
-        #[serde(default = "yes")]
-        start: bool,
-        /// With `start` false, the queue it waits in (the main queue when
-        /// missing).
-        #[serde(default)]
-        queue: Option<u64>,
-        /// What to do if the file name is taken (rename or overwrite); the
-        /// setting decides when missing.
-        #[serde(default)]
-        file_exists: Option<FileExists>,
-        /// For a download with `duplicate_of`: what to do about the other
-        /// download with the same address. Missing (or `ask`) adds it with a
-        /// new name.
-        #[serde(default)]
-        duplicate: Option<Duplicate>,
-    },
+    /// `waiting` one.
+    Confirm(Answer),
     /// Create a queue (`id` 0) or change one: name, downloads at once,
     /// schedule, what happens when done, retries.
     SaveQueue { queue: Queue },
@@ -197,6 +175,72 @@ fn yes() -> bool {
     true
 }
 
+/// The save-as dialog's answer for a `confirming` download, or the start of
+/// a `waiting` one. `filename` and `folder` replace the proposed ones when
+/// given. With `start` false the download waits until started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Answer {
+    pub id: u64,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default = "yes")]
+    pub start: bool,
+    /// With `start` false, the queue it waits in; missing uses the queue
+    /// Download later is set to, else the main queue.
+    #[serde(default)]
+    pub queue: Option<u64>,
+    /// What to do if the file name is taken (rename or overwrite); the
+    /// setting decides when missing.
+    #[serde(default)]
+    pub file_exists: Option<FileExists>,
+    /// For a download with `duplicate_of`: what to do about the other
+    /// download with the same address. Missing (or `ask`) adds it with a
+    /// new name.
+    #[serde(default)]
+    pub duplicate: Option<Duplicate>,
+    /// The category chosen for it, which the list files it under whatever
+    /// its file type; missing keeps the one its type gives.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// A note about it; missing keeps the one it has, empty clears it.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// "Remember this path": turn keeping the last chosen folder on (and
+    /// keep this one) or off for its category; missing leaves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remember_folder: Option<bool>,
+    /// "Remember my selection": make `duplicate` the setting for every
+    /// address already in the list.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remember_duplicate: bool,
+    /// "Don't ask me again": with `start` false, make `queue` the one
+    /// "Download later" uses without asking.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remember_queue: bool,
+}
+
+impl Answer {
+    /// Start download `id` as proposed.
+    pub fn start(id: u64) -> Self {
+        Answer {
+            id,
+            filename: None,
+            folder: None,
+            start: true,
+            queue: None,
+            file_exists: None,
+            duplicate: None,
+            category: None,
+            description: None,
+            remember_folder: None,
+            remember_duplicate: false,
+            remember_queue: false,
+        }
+    }
+}
+
 /// The payload a browser hand-off needs to reissue a request outside the page.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Download {
@@ -245,9 +289,17 @@ pub struct Download {
     /// the setting decides when missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_exists: Option<FileExists>,
+    /// What to do when its address is already in the list, answered when it
+    /// was added; the setting decides when missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<Duplicate>,
     /// A note about the download, shown in the list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The category the list files it under, chosen in the save-as dialog;
+    /// missing goes by its file type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     /// A login for this download alone. It is tried on the download's own
     /// site before any login saved in Options.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -431,6 +483,10 @@ pub struct DownloadEntry {
     /// The user's note about it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The category chosen for it in the save-as dialog; missing goes by
+    /// its file type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     /// The user name of the download's own login, if it has one. The
     /// password stays in the daemon's encrypted request store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -736,24 +792,30 @@ mod tests {
     fn parse_confirm_with_and_without_file_exists() {
         let raw = br#"{"op":"confirm","id":4,"file_exists":"overwrite"}"#;
         match serde_json::from_slice(raw).unwrap() {
-            Incoming::Confirm { id, start, file_exists, .. } => {
-                assert_eq!(id, 4);
-                assert!(start, "start defaults to true");
-                assert_eq!(file_exists, Some(FileExists::Overwrite));
+            Incoming::Confirm(a) => {
+                assert_eq!(a.id, 4);
+                assert!(a.start, "start defaults to true");
+                assert_eq!(a.file_exists, Some(FileExists::Overwrite));
             }
             _ => panic!("expected confirm"),
         }
         match serde_json::from_slice(br#"{"op":"confirm","id":4}"#).unwrap() {
-            Incoming::Confirm { file_exists, duplicate, .. } => {
-                assert_eq!(file_exists, None);
-                assert_eq!(duplicate, None);
-            }
+            Incoming::Confirm(a) => assert_eq!(a, Answer::start(4)),
             _ => panic!("expected confirm"),
         }
         match serde_json::from_slice(br#"{"op":"confirm","id":4,"duplicate":"existing"}"#).unwrap() {
-            Incoming::Confirm { duplicate, .. } => assert_eq!(duplicate, Some(Duplicate::Existing)),
+            Incoming::Confirm(a) => assert_eq!(a.duplicate, Some(Duplicate::Existing)),
             _ => panic!("expected confirm"),
         }
+        // The answer travels with its op, as the fields used to.
+        let sent = serde_json::to_value(Incoming::Confirm(Answer {
+            category: Some("Music".into()),
+            ..Answer::start(7)
+        }))
+        .unwrap();
+        assert_eq!(sent["op"], "confirm");
+        assert_eq!(sent["id"], 7);
+        assert_eq!(sent["category"], "Music");
         // A download without a choice keeps its JSON as it was.
         let d = Download {
             url: "https://x/a.zip".into(),

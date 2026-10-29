@@ -205,6 +205,7 @@ mod tests {
             referrer: referrer.map(str::to_string),
             last_try: None,
             description: None,
+            category: None,
             login_user: None,
             speed_limit: None,
             partial: None,

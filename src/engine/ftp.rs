@@ -103,8 +103,8 @@ impl Control {
         let code = if code == 331 { c.command(&format!("PASS {pass}"))?.0 } else { code };
         match code {
             230 | 202 => {}
-            530 | 331 | 332 if given => return Err(EngineError::LoginRejected(c.host.clone())),
-            530 | 331 | 332 => return Err(EngineError::NeedsLogin(c.host.clone())),
+            530 | 331 | 332 if given => return Err(EngineError::LoginRejected(c.host.clone(), None)),
+            530 | 331 | 332 => return Err(EngineError::NeedsLogin(c.host.clone(), None)),
             other => return Err(EngineError::Protocol(format!("the FTP server refused the login ({other})"))),
         }
         let (code, text) = c.command("TYPE I")?;
@@ -467,11 +467,11 @@ mod tests {
     #[test]
     fn logs_in_from_the_address_or_a_site_login() {
         let s = server::start(body(10), Some(("ann", "p@ss")));
-        assert!(matches!(probe(&s.url, &FtpOptions::default()), Err(EngineError::NeedsLogin(_))));
+        assert!(matches!(probe(&s.url, &FtpOptions::default()), Err(EngineError::NeedsLogin(..))));
         let with_user = s.url.replace("ftp://", "ftp://ann:p%40ss@");
         assert_eq!(probe(&with_user, &FtpOptions::default()).unwrap().total, Some(10));
         let wrong = s.url.replace("ftp://", "ftp://ann:nope@");
-        assert!(matches!(probe(&wrong, &FtpOptions::default()), Err(EngineError::LoginRejected(_))));
+        assert!(matches!(probe(&wrong, &FtpOptions::default()), Err(EngineError::LoginRejected(..))));
         let saved = FtpOptions {
             logins: vec![Login {
                 site: "127.0.0.1".into(),

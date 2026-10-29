@@ -331,6 +331,15 @@ fn digest_hash(algorithm: &str, data: &str) -> String {
     }
 }
 
+/// The realm the server's `WWW-Authenticate` headers name, if any: the
+/// name of the protected area, shown when asking for a login.
+pub fn realm(challenges: &[String]) -> Option<String> {
+    challenges.iter().find_map(|h| {
+        let (_, params) = parse_challenge(h);
+        params.into_iter().find(|(k, v)| k == "realm" && !v.is_empty()).map(|(_, v)| v)
+    })
+}
+
 /// The `Authorization` header answering `challenges` (the server's
 /// `WWW-Authenticate` headers) for a `method` request to `url`, preferring
 /// Digest. `cnonce` is the client nonce Digest needs.
@@ -642,6 +651,8 @@ mod tests {
             "{header}"
         );
 
+        assert_eq!(realm(&["Basic realm=\"Members, only\"".into()]).as_deref(), Some("Members, only"));
+        assert_eq!(realm(&["Basic".into()]), None);
         let basic = authorization(&["Basic realm=\"x\"".into()], &login("x"), "GET", "http://x/", "c").unwrap();
         assert_eq!(basic, "Basic TXVmYXNhOkNpcmNsZSBPZiBMaWZl");
         // Digest wins when both are offered; nothing for an unknown scheme.

@@ -49,6 +49,7 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         ffmpeg: settings.ffmpeg(),
         speed_limit: d.speed_limit,
         server_date: settings.server_file_date,
+        ignore_date: settings.resume_ignores_date,
         temp_dir: settings.temp_dir.as_deref().map(PathBuf::from).filter(|d| d.is_absolute()),
         reuse_partial: None,
         host_limit,
