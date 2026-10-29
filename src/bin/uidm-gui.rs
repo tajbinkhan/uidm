@@ -439,6 +439,8 @@ enum Action {
     /// What a queue does when this run ends, this time only.
     SetQueueOnce(u64, Option<WhenDone>),
     CancelCountdown,
+    /// Sleep, hibernate or shut down without waiting for the countdown.
+    CountdownNow,
     /// Open the New link dialog for a download.
     OpenRefresh(u64),
     /// Give a download this new link; `restart` starts over even if it is for
@@ -1574,6 +1576,9 @@ impl App {
             }
             Action::CancelCountdown => {
                 send(&self.writer, &Incoming::CancelCountdown);
+            }
+            Action::CountdownNow => {
+                send(&self.writer, &Incoming::CountdownNow);
             }
             Action::OpenQueues(select) => {
                 let list = self.shared.lock().unwrap().queues.clone();

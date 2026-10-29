@@ -280,6 +280,12 @@ pub fn on_done_fields(ui: &mut egui::Ui, on_done: &mut OnDone) {
                 }
             });
     });
+    if on_done.then == WhenDone::ShutDown {
+        ui.checkbox(&mut on_done.force_close, tr("Force apps to close"))
+            .on_hover_text(tr("Shut down even if a program asks to save its work first; unsaved work is lost"));
+    } else {
+        on_done.force_close = false;
+    }
     if on_done.then.needs_countdown() {
         ui.weak(tr("A 60-second countdown comes first, which Cancel stops."));
     }

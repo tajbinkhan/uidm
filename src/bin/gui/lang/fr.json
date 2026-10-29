@@ -666,5 +666,10 @@
   "A 60-second countdown comes first, which Cancel stops.": "Un compte à rebours de 60 secondes précède, qu'Annuler arrête.",
   "When it finishes": "À la fin du téléchargement",
   "Download finished": "Téléchargement terminé",
-  "{name} has finished downloading.": "{name} a fini de se télécharger."
+  "{name} has finished downloading.": "{name} a fini de se télécharger.",
+  "Force apps to close": "Forcer la fermeture des programmes",
+  "Shut down even if a program asks to save its work first; unsaved work is lost": "Arrêter même si un programme demande d'abord d'enregistrer son travail ; ce qui n'est pas enregistré est perdu",
+  "Sleep now": "Mettre en veille maintenant",
+  "Hibernate now": "Mettre en veille prolongée maintenant",
+  "Shut down now": "Arrêter maintenant"
 }

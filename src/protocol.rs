@@ -164,6 +164,8 @@ pub enum Incoming {
         #[serde(default)]
         bytes_per_sec: Option<u64>,
     },
+    /// Stop the countdown and sleep, hibernate or shut down now.
+    CountdownNow,
     /// Set or clear what one unfinished download does once it finishes.
     SetOnDone {
         id: u64,
@@ -524,6 +526,9 @@ pub struct OnDone {
     /// countdown.
     #[serde(default)]
     pub then: WhenDone,
+    /// Shutting down closes programs that would hold it up.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_close: bool,
 }
 
 /// A message from the daemon to a client.

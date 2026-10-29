@@ -191,8 +191,10 @@ tests, not in a running Firefox.
 - **When a queue is done**, UIDM can do nothing, exit, or put the computer to
   sleep, hibernate or shut it down, per queue or for the current run only.
   Sleeping, hibernating and shutting down wait for a 60-second countdown in
-  the window, which **Cancel** stops. Failed downloads count as finished,
-  unless the queue retries them.
+  the window, which **Cancel** stops and **Shut down now** (or **Sleep
+  now**, **Hibernate now**) skips. **Force apps to close** shuts down even
+  when a program asks to save its work first. Failed downloads count as
+  finished, unless the queue retries them.
 - **The tray icon** keeps UIDM at hand. Closing the window hides it there;
   click the icon to bring it back. Its tooltip shows how many downloads run
   and how fast, and its menu has **Open UIDM**, **Add URL from clipboard**,
