@@ -168,6 +168,27 @@ fn parse_ef2(text: &str) -> Vec<Download> {
     items
 }
 
+/// The text of a list file read as `bytes`: UTF-16 when it starts with
+/// UTF-16's byte order mark, or when it has no mark but its first
+/// character is ASCII written as UTF-16 little-endian (Windows' "Unicode",
+/// which IDM files can be saved in); else UTF-8, any invalid bytes
+/// replaced.
+pub fn decode(bytes: &[u8]) -> String {
+    let utf16 = |body: &[u8], big_endian: bool| {
+        let units: Vec<u16> = body
+            .chunks_exact(2)
+            .map(|c| if big_endian { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) })
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xFF, 0xFE, body @ ..] => utf16(body, false),
+        [0xFE, 0xFF, body @ ..] => utf16(body, true),
+        [first, 0, ..] if first.is_ascii() && *first != 0 && bytes.len().is_multiple_of(2) => utf16(bytes, false),
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
 /// The downloads in an exported file, in any of the formats, each set to
 /// wait rather than start. Items without a web address, and repeats, are
 /// left out; so is a folder that is not a full path. Also returns how many
@@ -366,6 +387,21 @@ mod tests {
         assert_eq!(form.headers.get("Content-Type").map(String::as_str), Some("application/x-www-form-urlencoded"));
         let login = form.login.as_ref().unwrap();
         assert_eq!((login.username.as_str(), login.password.as_deref()), ("me", Some("secret")));
+    }
+
+    #[test]
+    fn idm_files_saved_as_utf16() {
+        let le = |text: &str| text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+        let be = |text: &str| text.encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>();
+        let plain = EF2.trim_start_matches('\u{feff}');
+        // EF2 starts with a byte order mark, which encodes as FF FE / FE FF.
+        for bytes in [le(EF2), be(EF2), le(plain)] {
+            let text = decode(&bytes);
+            assert_eq!(text.trim_start_matches('\u{feff}'), plain);
+            assert_eq!(import(&text).unwrap().0.len(), 2);
+        }
+        assert_eq!(decode(EF2.as_bytes()), EF2, "UTF-8 stays as it is");
+        assert_eq!(decode(b"https://x/a.zip\n"), "https://x/a.zip\n");
     }
 
     #[test]

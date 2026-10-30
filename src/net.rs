@@ -133,6 +133,10 @@ pub struct ProxyRules {
     /// `scheme://host:port` of a SOCKS proxy (scheme `socks4`, `socks4a` or
     /// `socks5`), for the URLs whose scheme has no proxy of its own.
     pub socks: Option<String>,
+    /// `host:port` of the FTP proxy when Windows' setting names one with
+    /// `ftp=`. Get System copies it to the FTP proxy field; `ftp://`
+    /// downloads use `NetConfig::ftp_proxy`.
+    pub ftp: Option<String>,
     /// Hosts reached directly: patterns with `*`, and `<local>` for names
     /// without a dot.
     pub bypass: Vec<String>,
@@ -232,8 +236,8 @@ impl ProxyRules {
 }
 
 /// Read Windows' proxy setting: `host:port` for everything, or
-/// `http=host:port;https=host:port;socks=host:port` per scheme. Windows'
-/// SOCKS proxies speak SOCKS4.
+/// `http=host:port;https=host:port;ftp=host:port;socks=host:port` per
+/// scheme. Windows' SOCKS proxies speak SOCKS4.
 pub fn parse_proxy_server(s: &str) -> ProxyRules {
     let mut rules = ProxyRules::default();
     let s = s.trim();
@@ -255,6 +259,7 @@ pub fn parse_proxy_server(s: &str) -> ProxyRules {
         match scheme.trim().to_ascii_lowercase().as_str() {
             "http" => rules.http = Some(addr),
             "https" => rules.https = Some(addr),
+            "ftp" => rules.ftp = Some(addr),
             "socks" => rules.socks = Some(format!("socks4://{addr}")),
             _ => {}
         }
@@ -694,6 +699,7 @@ mod tests {
             http: Some("proxy:3128".into()),
             https: Some("secure:3129".into()),
             socks: None,
+            ftp: None,
             bypass: vec!["<local>".into(), "*.corp.net".into(), "10.0.0.1".into()],
             http_login: ProxyLogin::new("me@corp", "p:w/d"),
             https_login: ProxyLogin::new("tls", "pw"),
@@ -748,6 +754,8 @@ mod tests {
         assert_eq!(each.http.as_deref(), Some("h:1"));
         assert_eq!(each.https.as_deref(), Some("s:2"));
         assert_eq!(each.socks.as_deref(), Some("socks4://k:3"));
+        assert_eq!(each.ftp.as_deref(), Some("f:4"));
+        assert_eq!(all.ftp, None, "one proxy for all is an HTTP proxy, not an FTP gateway");
         assert_eq!(parse_proxy_server(""), ProxyRules::default());
     }
 

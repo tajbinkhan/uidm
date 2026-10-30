@@ -309,8 +309,8 @@ tests, not in a running Firefox.
   order), or export all, as a UIDM list (`.json`, with names, folders,
   sizes and status), plain text (one address per line) or an IDM export
   file (`.ef2`, with referrers, which IDM's **Import > From IDM export
-  file** reads). Imports read any of them and add everything waiting, so
-  nothing starts by itself. An IDM export file brings each download's
+  file** reads). Imports read any of them, in UTF-8 or UTF-16, and add
+  everything waiting, so nothing starts by itself. An IDM export file brings each download's
   referrer, cookies, user agent and form data, and a login if it has one.
   Exports never hold cookies, headers or passwords.
 - **More > Site grabber...** crawls a site from a start page, as many links
@@ -858,11 +858,12 @@ Credential Manager, removed with their login.
 
 **Proxies.** The system proxy is read from the Internet settings in the
 registry each time a download starts: `ProxyServer` (one proxy, or
-`http=…;https=…;socks=…`) and the `ProxyOverride` bypass list, including
+`http=…;https=…;ftp=…;socks=…`) and the `ProxyOverride` bypass list, including
 `<local>`, and its configuration script or automatic detection (WPAD), which
 WinHTTP runs to pick the proxy per address. **Get System** in Options copies
 the fixed part of that setting (the proxies and the bypass list, not the
-script) into the manual fields; Windows' SOCKS proxy speaks SOCKS4. The
+script) into the manual fields, the FTP proxy only when Windows names one
+with `ftp=`; Windows' SOCKS proxy speaks SOCKS4. The
 manual HTTPS proxy is the proxy for `https://` URLs (an HTTP proxy reached
 with `CONNECT`; empty means the HTTP one, with its login). A SOCKS4 or
 SOCKS5 proxy carries the `http://` and `https://` URLs that have no proxy of
@@ -974,7 +975,9 @@ Pages read at once are fetched on their own threads, one batch at a time,
 with the usual wait between batches; robots.txt is read before a site's
 first batch. With `*` in the types, every link with a file name that is not
 a page counts as a file. A project's login is stored in Credential Manager
-as `UIDM/grabber/<start host>`, sent to the start site when it asks, and
+as `UIDM/grabber/<start host>/<user name>`, so projects on one site can use
+different accounts (a password an older version kept under
+`UIDM/grabber/<start host>` is still read), sent to the start site when it asks, and
 given to the downloads on that site. Named filters are kept in
 `%APPDATA%\UIDM\grabber\filters.json` and named templates in
 `grabber\templates\`. With scripts run, the extension closes every window

@@ -720,6 +720,9 @@ pub enum Outgoing {
     },
     /// Any failure the client should hear about.
     Error { message: String },
+    /// Reply to `add` when the download was not taken, so the client can
+    /// keep it: `message` says why.
+    Rejected { url: String, message: String },
 }
 
 /// Read one framed message from `reader`.

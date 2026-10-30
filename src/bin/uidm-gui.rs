@@ -352,7 +352,7 @@ impl Shared {
                     self.segments.remove(id);
                 }
             }
-            Outgoing::Error { message } => self.last_error = Some(message.clone()),
+            Outgoing::Error { message } | Outgoing::Rejected { message, .. } => self.last_error = Some(message.clone()),
             _ => {}
         }
     }
@@ -1885,16 +1885,9 @@ impl App {
             if !connected && d.running() {
                 d.failed(tr("The connection to the UIDM daemon was lost.").into());
             }
-            let categories: Vec<String> = self
-                .shared
-                .lock()
-                .unwrap()
-                .settings
-                .as_ref()
-                .map(|s| s.categories.iter().map(|c| c.name.clone()).collect())
-                .unwrap_or_default();
+            let settings = self.shared.lock().unwrap().settings.clone().unwrap_or_default();
             let done: HashSet<String> = rows.iter().filter(|e| e.status == Status::Done).map(|e| e.url.clone()).collect();
-            if !tools::grab_dialog(ctx, d, &queue_list, &categories, &done, connected, actions) {
+            if !tools::grab_dialog(ctx, d, &queue_list, &settings, &done, connected, actions) {
                 self.grabber = None;
             }
         }
@@ -2865,6 +2858,7 @@ fn get_system_proxy(draft: &mut OptionsDraft) {
     draft.proxy_http = rules.http.clone().unwrap_or_default();
     // An HTTPS proxy the same as the HTTP one is left to fall back to it.
     draft.proxy_https = rules.https.clone().filter(|s| rules.http.as_ref() != Some(s)).unwrap_or_default();
+    draft.proxy_ftp = rules.ftp.clone().unwrap_or_default();
     draft.proxy_socks5 = rules
         .socks
         .as_deref()

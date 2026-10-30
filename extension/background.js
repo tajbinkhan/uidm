@@ -393,6 +393,16 @@ function onHostMessage(msg) {
     case "error":
       lastError = msg.message;
       break;
+    case "rejected": {
+      // UIDM refused a download the browser already let go of: give it back.
+      lastError = msg.message;
+      const taken = awaitingAck.get(msg.url);
+      if (!taken) break;
+      awaitingAck.delete(msg.url);
+      giveBack(msg.url, taken.post);
+      noticeTakeoverFailed(msg.url, taken.filename, msg.message);
+      break;
+    }
   }
   updateBadge();
 }

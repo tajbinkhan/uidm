@@ -1592,7 +1592,8 @@ impl Daemon {
     /// Add `files` a crawl for `req` found to `queue` and start it; with
     /// `first`, also set how many it downloads at once to the request's.
     fn download_in_queue(self: &Arc<Self>, req: &GrabRequest, files: &[grab::GrabFile], queue: u64, first: bool) -> usize {
-        let items = files.iter().filter_map(|f| grab::download_for(req, f)).collect();
+        let settings = self.settings.lock().unwrap().clone();
+        let items = files.iter().filter_map(|f| grab::download_for(req, f, &settings)).collect();
         let (added, _) = self.add_many(items, Some(queue));
         if first {
             let at_once = req.download_at_once as usize;
@@ -1624,7 +1625,7 @@ impl Daemon {
                 net.logins.push(Login {
                     site: host.to_string(),
                     username: user.to_string(),
-                    password: net::load_credential(&grab::project_login_target(&req.start)).unwrap_or_default(),
+                    password: grab::project_password(&req.start, user).unwrap_or_default(),
                 });
             }
         }
@@ -2831,6 +2832,8 @@ impl Daemon {
                         let scheme = net::socks_scheme(s.proxy_socks_version == SocksVersion::V5, s.proxy_remote_dns);
                         format!("{scheme}://{a}")
                     }),
+                    // ftp:// goes through `NetConfig::ftp_proxy`, below.
+                    ftp: None,
                     bypass: net::parse_bypass(&s.proxy_bypass),
                     http_login: proxy_login(&s.proxy_username, ProxyKind::Http),
                     https_login,
@@ -3223,7 +3226,7 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
         Incoming::Ping => send(&Outgoing::Pong),
         Incoming::Add(download) => {
             if let Err(message) = check_body(&download) {
-                send(&Outgoing::Error { message });
+                send(&Outgoing::Rejected { url: download.url, message });
                 return;
             }
             let (id, url) = daemon.add(download);
