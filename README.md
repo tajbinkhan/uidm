@@ -43,8 +43,9 @@ After updating, reload the extension on the extensions page. It asks for
 `webRequest` (to send downloads started by a form as the same POST, and to
 notice the videos a page loads) and `proxy` (to read the browser's proxy
 setting, which it never changes), in addition to native messaging,
-downloads, cookies, context menus and storage. A small content script runs
-on every page for the video button; it does nothing until a video plays.
+downloads, cookies, context menus, storage and notifications. A small
+content script runs on every page for the video button; it does nothing
+until a video plays.
 
 For streamed videos to end up as one `.mp4`, install
 [ffmpeg](https://ffmpeg.org/) and put `ffmpeg.exe` on `PATH`, or choose it in
@@ -58,6 +59,17 @@ whether to remove your settings and download list too. Installing a newer
 setup over an older one closes UIDM first and keeps your settings. With the
 script, `.\install-host.ps1 -Uninstall` removes what it added. Downloaded
 files are left alone either way.
+
+**Updates.** UIDM looks for a newer release on GitHub once a week (Options >
+General can turn that off), and **About** checks on demand. When a newer
+release has a Setup attached, **Update now** (in About, and next to the
+notice in the status bar) has the daemon download `UIDM-Setup-<version>.exe`
+through your proxy settings, only from this repository's release downloads.
+It checks the file's size, that it is a Windows program, and its SHA-256
+when GitHub lists one, saves it to the temp folder and runs it with
+`/fromuidm=yes`. UIDM then stops its downloads, saves its list and quits;
+Setup closes whatever is left without asking again and replaces the files.
+Stopped downloads resume from the list as usual.
 
 ### Firefox
 
@@ -185,9 +197,13 @@ tests, not in a running Firefox.
   once, retries for failed downloads, and what to do when it is done.
 - **Scheduler**: a queue can start at a set time on chosen days of the week,
   or once on a date, and optionally stop at a set time (the next morning if
-  earlier than the start). The queue's header shows its next run. If UIDM was
-  not running at the start time, the queue starts as soon as it is, while the
-  time window is still open.
+  earlier than the start). **Start again every** N hours M minutes starts
+  it again that long after each start, until the stop time (or midnight
+  without one); the last start is saved, so a restart keeps the rhythm.
+  Grabber projects have the same choice. The queue's header shows its next
+  run. If UIDM was not running at the start time, the queue starts as soon
+  as it is, while the time window is still open. The Queues dialog says so
+  next to a schedule until **Don't show this again** hides the note.
 - **When a queue is done**, UIDM can do nothing, exit, or put the computer to
   sleep, hibernate or shut it down, per queue or for the current run only.
   Sleeping, hibernating and shutting down wait for a 60-second countdown in
@@ -221,11 +237,15 @@ tests, not in a running Firefox.
 - **When a download ends**, UIDM shows a Windows notification: **Open** and
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still
-  appears if the window is not running), or nothing, and can play a sound for
-  each. The dialog's **Don't show this dialog again** goes back to
-  notifications. Canceled downloads are never announced.
+  appears if the window is not running), or nothing. **Options > When done >
+  Sounds** plays a sound when a download finishes, when one fails, and when
+  a queue is done, each turned on by itself, with a `.wav` file of your own
+  (**Browse...**, **Play**) or Windows' sound for the event. The dialog's
+  **Don't show this dialog again** goes back to notifications. Canceled
+  downloads are never announced.
 - **Virus scan** (off by default) checks each finished file with Microsoft
-  Defender or a scanner command you set, with `{path}` where the file goes.
+  Defender or a scanner command you set, with `{path}` where the file goes;
+  **Browse...** picks the scanner program and keeps the arguments typed.
   The list shows **No threat found**, **Threat found** or **Scan failed**,
   and opening a file with a threat asks first. With scanning on, the
   notification waits for the scan and says what it found.
@@ -238,11 +258,15 @@ tests, not in a running Firefox.
   when the server sends one); otherwise the window says why and asks before
   starting over.
 - **Proxies and site logins** (Options, **Connection**): no proxy, the
-  Windows proxy setting, or an HTTP, HTTPS and SOCKS5 proxy with an optional
-  user name and password; optionally the proxy the browser uses, for
-  downloads from the browser. Site logins pair a site with a user name and
-  password. When a server asks for a login (HTTP Basic or Digest), UIDM sends
-  the matching one to that site and no other. Without one (or when the
+  Windows proxy setting, or HTTP, HTTPS, FTP and SOCKS proxies, each with
+  its own optional user name and password; **Get System** fills them in from
+  the Windows setting. The SOCKS proxy carries what has no proxy of its own.
+  Downloads from the browser can use the browser's proxy, always or only to
+  retry one that failed. Site logins pair a site with a user name and
+  password; a site can name one of its folders, such as
+  `example.com/private/*`, to use another login there. When a server asks
+  for a login (HTTP Basic or Digest), UIDM sends the matching one to that
+  site and no other. Without one (or when the
   server refuses it) the download stops, and the window asks: **Log in to
   the site** shows the site and the realm it named, takes a user name and
   password, and retries the download with them. They stay the download's
@@ -261,7 +285,17 @@ tests, not in a running Firefox.
   and joined into one video (see [Streams](#streams-batches-and-the-site-grabber)).
   Videos protected by DRM say so and offer nothing: UIDM does not get around
   DRM. The popup turns the button off everywhere or on the current site;
-  **Options > Browser capture** has the same switch and the site list.
+  **Options > Videos and menus** has the same switch and the site list, the
+  video and audio types the button lists (with **Check all**, **Clear all**
+  and **Add**; M3U8 and MPD stand for streams), the smallest file it lists
+  (128 KB by default), a full or mini look for it and for the button by
+  selected links, and whether it shows on protected videos to say so.
+- **Context menu**: the extension adds **Download with UIDM**, **Download
+  later with UIDM**, **Download all links**, **Download selected links**,
+  **Download the last video with UIDM** (the video or audio the browser
+  loaded last, in any tab, in its best quality) and **Recent videos**, a
+  submenu of the last 10. **Options > Videos and menus** chooses which of
+  them show.
 - **More > Add many...** adds downloads from a pattern such as
   `https://example.com/photo[001-120].jpg` (with steps like `[0-100:5]` and
   letter ranges like `[a-z]`), or from a pasted list or a text file with one
@@ -271,7 +305,8 @@ tests, not in a running Firefox.
   optionally starting the queue.
 - **More > Import list... / Export list...** move the list to another
   computer or a backup: tick downloads in the list's first column to export
-  only those, or export all, as a UIDM list (`.json`, with names, folders,
+  only those, pick a queue to export the downloads waiting in it (in its
+  order), or export all, as a UIDM list (`.json`, with names, folders,
   sizes and status), plain text (one address per line) or an IDM export
   file (`.ef2`, with referrers, which IDM's **Import > From IDM export
   file** reads). Imports read any of them and add everything waiting, so
@@ -283,7 +318,30 @@ tests, not in a running Firefox.
   you want (PDFs, say) with the page each was found on. It obeys
   `robots.txt`, waits between pages (longer if `Crawl-delay` asks), and stops
   at a page and size budget it shows before starting. Tick the files to keep
-  and add them to a queue.
+  and add them to a queue. It can also:
+  - explore the whole start site with no depth limit (the budgets still
+    stop it), and follow a set number of links on other sites;
+  - read up to 10 pages at once, and set how many files its queue
+    downloads at once;
+  - keep each file's link text as its description;
+  - pick the file types from named filters (a name and a mask such as
+    `*.jpg;*.png`; **Filters** adds, edits and deletes them), keep every type
+    with `*`, leave some types out, and keep only files on the start site;
+  - save every file to one category's folder, or to one folder without
+    subfolders;
+  - start downloading each match as soon as it is found;
+  - log in to the start site with the project's own user name and password;
+  - when scripts run, ignore the windows they open or explore them too.
+
+  The results show as a list or as a tree by page or by folder, with pages
+  processed and file links looked at, matched and downloaded. **Save as
+  template** keeps the settings under a name, and **New** starts a project
+  from a saved template or one that comes with UIDM (pictures, audio,
+  video, documents, or archives and programs from a site). A scheduled
+  project explores only, explores and downloads the new files (starting the
+  queue), or downloads the ticked files without exploring, then exits UIDM,
+  sleeps, hibernates or shuts down, and can open a file, after the crawl or
+  once the queue is done.
 - **Clipboard** (off by default; **Options > Browser capture**): copying a
   link whose file type is on the capture list brings up a small **Download
   the copied link?** prompt with **Download** and **Ignore**, and the same
@@ -303,17 +361,53 @@ tests, not in a running Firefox.
   unless the pattern names one).
 - **Options** (top right of the window) has five tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
-  10), a total speed limit, what to do when a file name is taken or an
+  10), a total speed limit, a download quota (no more than so many MB every
+  so many hours, with a warning at 90% that can be turned off), what to do when a file name is taken or an
   address is already in the list, the save-as
   dialog, whether to resume unfinished downloads when UIDM starts, Start with
-  Windows, whether closing the window keeps UIDM in the tray, where ffmpeg
+  Windows, whether UIDM shows a tray icon (without one, closing the window
+  quits and the Start menu opens UIDM again), whether closing the window
+  keeps UIDM in the tray, where ffmpeg
   is, the **Language**, the **Theme** (follow Windows, light or dark) and the
   **Text size** (80% to 150%, scaling the whole window). Language, theme and
-  text size change as soon as you save. **Categories**: as above. **Browser capture**: the rules below,
-  the video button and the clipboard prompt. **When
-  done**: notifications, sounds and the virus scan. **Connection**: proxies
-  and site logins. The status bar shows the speed limit and toggles it.
+  text size change as soon as you save. **More > Hide categories** hides
+  the categories and queues panel, and **More > Hide the tray icon** does
+  what the Options box does; both are kept. **Categories**: as above. **Browser
+  capture**: the browsers to capture from, the rules below, the special
+  keys and the clipboard prompt. **Videos and menus**: the video button and
+  the context menu items. **When done**: notifications, sounds and the virus
+  scan. **Connection**: proxies and site logins. The status bar shows the
+  speed limit and toggles it.
+- **Browsers** (**Options > Browser capture**): lists Google Chrome,
+  Microsoft Edge, Mozilla Firefox, Brave and Chromium when they are
+  installed for you (their profile folder exists) or registered. Ticking
+  one writes its native-messaging key under `HKEY_CURRENT_USER` and the
+  manifest it names (`%LOCALAPPDATA%\UIDM\com.uidm.host.json`, or
+  `com.uidm.host.firefox.json` for Firefox), pointing at the `uidm-host.exe`
+  next to the window; unticking removes the key, and the manifest once no
+  browser names it. Setup registers Chrome, Edge and Firefox. Vivaldi and
+  Opera read Chrome's registration, so the list says so when it finds them
+  instead of listing them. Restart a browser after a change.
 
+- **Properties** (a row's **More**) shows a download's status, its file type
+  (what Windows calls it, such as "PDF Document (.pdf)"), size and last
+  try, and edits its link, parent page, description, name, folder and
+  login. A finished download has an **Open** button.
+- **The list's columns**: a click on a header sorts by it (again to
+  reverse, a third time for the order added), and dragging the thin edge
+  after a header sets the column's width. **More > Columns...** shows,
+  hides, orders and sizes them (**Fit** sizes a column to what it holds);
+  the columns include **Parent web page**, the page a download came from,
+  which sorts like the rest. The layout is kept in
+  `%LOCALAPPDATA%\UIDM\window.json`.
+- **Help** (next to **More**): **Help contents** opens this README on
+  GitHub, two more items open its sections on queues and the scheduler and
+  on the site grabber, **Tip of the day** shows a tip with **Next tip**, and
+  **Contact support** opens the issue tracker. A tip shows when the window
+  opens unless its **Show tips on startup** box (also in **Options >
+  General**) is cleared; the next start shows the next tip. **About** sits
+  beside **Help**, and **More > Manage queues...** opens the queues even with
+  the categories panel hidden.
 - **Languages**: the window comes in English, German, Spanish and French.
   It starts in the first Windows display language it has, else English;
   **Options > General > Language** picks another. The extension follows the
@@ -382,16 +476,27 @@ It takes a download from the browser only when all of these hold:
 - the extension did not start it itself (that is how hand-backs avoid loops);
 - it passes the capture rules from **Options > Browser capture**:
   - its file type is in the list (by default every category's types plus
-    `iso`, `img`, `dmg`, `deb`, `rpm` and `bin`; an empty list takes every
-    type). The type comes from the file name, else the MIME type the server
-    sent, else the URL. A download that says only "a file"
+    `iso`, `img`, `dmg`, `deb`, `rpm` and `bin`, which **Default** brings
+    back; an empty list takes every type; **Default** next to the excluded
+    sites empties that list). The type comes from the file name, else the
+    MIME type the server sent, else the URL. A download that says only "a file"
     (`application/octet-stream`) is taken;
   - it is not smaller than the minimum size, when the browser already knows
     the size (often it does not yet, and then only the type and site count);
   - neither its URL nor the page it came from is on an excluded site.
     `example.com` and `*.example.com` both cover the site and every subdomain;
 - **Skip next download** in the popup was not pressed; it lets exactly one
-  download stay in the browser.
+  download stay in the browser;
+- the skip keys were not held while clicking its link (Alt by default).
+
+Holding the force keys (Ctrl by default) while clicking a link sends it to
+UIDM whatever the rules say, instead of opening it. Each is any mix of Ctrl,
+Alt and Shift, plus Insert for forcing, set in **Options > Browser capture**,
+and must be held exactly: Alt+Shift is not Alt. They work with a left or
+middle click and with Enter on a link, or with the option set only with a
+left click. By default the force keys leave links to web pages, pictures and
+scripts (`.html`, `.php`, `.jpg`, `.js`, a path ending in `/` and the like)
+to open as usual.
 
 The extension asks for the rules when it connects and gets every change as it
 is saved, so they are edited only in the window.
@@ -410,6 +515,12 @@ If UIDM takes a download but cannot even start it, for example because the
 server refuses the request, the extension removes it from UIDM's list and
 hands it back to the browser, so it is never silently lost. A POST goes back
 as a POST with its form, when the form is text.
+
+Either way the user hears of it: a browser notice, "UIDM could not take over
+the download", names the file and why (UIDM's error, or that UIDM is not
+running or not connected, for a download the rules would have taken). Its
+**Don't show again** button turns these notices off for good; Firefox's
+notices have no buttons, so there a click on the notice does it.
 
 ## Host-daemon authentication
 
@@ -729,24 +840,35 @@ waiting; `refresh_waiting` with `id: null` says nothing waits.
 
 ## Proxies and logins
 
-The settings hold `proxy_mode` (`none`, `system` or `manual`), the manual
-`proxy_http`, `proxy_https` and `proxy_socks5` (each `host:port`),
-`proxy_username`, `use_browser_proxy` and `site_logins` (`site` and
-`username`). Passwords are write-only: `proxy_password` and each login's
-`password` travel in `set_settings` only when changed, and the daemon keeps
-them outside the settings file and never sends them back. The proxy password
-is encrypted with DPAPI in `%LOCALAPPDATA%\UIDM\proxy.bin`; login passwords
-are generic credentials named `UIDM/login/<site>` in Windows Credential
-Manager, removed with their login.
+The settings hold `proxy_mode` (`none`, `system`, `script` or `manual`), the
+manual `proxy_http`, `proxy_https`, `proxy_ftp` and `proxy_socks5` (each
+`host:port`), each one's user name (`proxy_username` for HTTP, then
+`proxy_https_username`, `proxy_ftp_username` and `proxy_socks_username`),
+`use_browser_proxy`, `browser_proxy_after_errors` and `site_logins` (`site`
+and `username`). Passwords are write-only: `proxy_password`,
+`proxy_https_password`, `proxy_ftp_password`, `proxy_socks_password` and each
+login's `password` travel in `set_settings` only when changed, and the daemon
+keeps them outside the settings file and never sends them back. Proxy
+passwords are encrypted with DPAPI in `%LOCALAPPDATA%\UIDM`: `proxy.bin` for
+HTTP, `proxy-https.bin`, `proxy-ftp.bin` and `proxy-socks.bin`. A settings
+file from before each proxy had a login of its own gives its shared login to
+the HTTPS and SOCKS proxies, which used it, on the daemon's first start. Login
+passwords are generic credentials named `UIDM/login/<site>` in Windows
+Credential Manager, removed with their login.
 
 **Proxies.** The system proxy is read from the Internet settings in the
 registry each time a download starts: `ProxyServer` (one proxy, or
 `http=…;https=…;socks=…`) and the `ProxyOverride` bypass list, including
 `<local>`, and its configuration script or automatic detection (WPAD), which
-WinHTTP runs to pick the proxy per address. The manual HTTPS
-proxy is the proxy for `https://` URLs (an HTTP proxy reached with `CONNECT`;
-empty means the HTTP one); a SOCKS4 or SOCKS5 proxy, when set, carries
-everything.
+WinHTTP runs to pick the proxy per address. **Get System** in Options copies
+the fixed part of that setting (the proxies and the bypass list, not the
+script) into the manual fields; Windows' SOCKS proxy speaks SOCKS4. The
+manual HTTPS proxy is the proxy for `https://` URLs (an HTTP proxy reached
+with `CONNECT`; empty means the HTTP one, with its login). A SOCKS4 or
+SOCKS5 proxy carries the `http://` and `https://` URLs that have no proxy of
+their own. `ftp://` downloads go only through the FTP proxy: UIDM logs in to
+it first with its own login, when it has one (`USER`, `PASS`), then as
+`user@host`.
 ureq sends proxy credentials only when it tunnels `https://` requests, so
 for plain `http://` requests through a proxy with a login UIDM adds
 `Proxy-Authorization` itself and follows redirects itself, adding it only on
@@ -754,12 +876,20 @@ for plain `http://` requests through a proxy with a login UIDM adds
 neither the proxy login nor a site's cookies reach another server. With
 `use_browser_proxy`, the extension reports the browser's fixed proxy
 (`chrome.proxy`, plain HTTP or SOCKS only) with each download, and that proxy
-wins for downloads that carry one.
+wins for downloads that carry one. With `browser_proxy_after_errors` too, a
+download goes through UIDM's own proxy setting first; when it fails, the
+daemon retries it once through the browser's proxy, and that address keeps
+using it until the daemon restarts.
 
 **Logins.** A site matches the way capture rules do: `example.com` covers its
-subdomains, and `*` works within a name; the most specific match wins. A
-request goes out without credentials. On a 401, UIDM picks the login for the
-host that answered and sends the request again, once, straight to that URL,
+subdomains, and `*` works within a name. A path after the site limits the
+login to it: `example.com/private/*` matches with `*` across the whole path,
+and `example.com/private` covers that folder and everything below it, both
+ignoring case. The longest matching pattern wins, so a folder's login beats
+its server's. A download's own login (from **Log in to the site** or its
+properties) replaces the site logins for its host. A request goes out
+without credentials. On a 401, UIDM picks the login for the address that
+answered and sends the request again, once, straight to that URL,
 with `Authorization` for the `WWW-Authenticate` challenge: Digest (MD5,
 MD5-sess, SHA-256, with `qop=auth`) when offered, else Basic. ureq never
 carries `Authorization` across a redirect, so a login never reaches another
@@ -772,8 +902,10 @@ retried.
 **Seeing videos.** The extension's service worker reads the headers of every
 response a tab gets (`webRequest.onHeadersReceived`) and keeps, per tab, the
 direct video and audio files (a `video/` or `audio/` type, or a media file
-name with a generic type; anything under 128 KiB is left out) and the HLS
-and DASH playlists. Segments (`.ts`, `.m4s`, `video/mp2t`) are left out, and
+name with a generic type; anything under `video_min_size_kb`, 128 KiB by
+default, is left out) and the HLS and DASH playlists, of the types in
+`video_types` (`m3u8` and `mpd` for the streams; a file whose type neither
+its name nor its MIME type says is kept). Segments (`.ts`, `.m4s`, `video/mp2t`) are left out, and
 the list starts over when the tab loads a new page. A content script
 (`content.js`) shows **Download video** over a playing `<video>` in a closed
 shadow root, so the page's scripts and styles cannot reach it, and shows
@@ -782,7 +914,10 @@ worker for its own tab's list, and the worker asks UIDM (`probe_media`) what
 each stream offers. A content script can only pick from what the worker saw
 in its tab, by number, never pass in an address. A video element that raised
 an `encrypted` event or holds `MediaKeys` is DRM protected: the menu says so
-and offers nothing. Playlists that are themselves one quality of a listed
+and offers nothing, or with `video_protected_note` off the button does not
+show on it. `video_view` (`full` or `mini`) sets how the button and the
+selected-links button look; the mini one is a round arrow with its text as
+a tooltip. Playlists that are themselves one quality of a listed
 master playlist are folded into it.
 
 **HLS.** UIDM reads master playlists (qualities, separate audio tracks) and
@@ -835,6 +970,20 @@ extension, or `.html`, `.php` and the like), and lists files without
 fetching them. Closing the dialog or **Stop** ends a crawl within a tenth of
 a second.
 
+Pages read at once are fetched on their own threads, one batch at a time,
+with the usual wait between batches; robots.txt is read before a site's
+first batch. With `*` in the types, every link with a file name that is not
+a page counts as a file. A project's login is stored in Credential Manager
+as `UIDM/grabber/<start host>`, sent to the start site when it asks, and
+given to the downloads on that site. Named filters are kept in
+`%APPDATA%\UIDM\grabber\filters.json` and named templates in
+`grabber\templates\`. With scripts run, the extension closes every window
+the page opens and reports its address; the crawl explores those only when
+**Ignore the windows page scripts open** is off. A scheduled run sets the
+project's when-done action and file on its queue for that run only
+(`when_done_once`, `open_when_done_once`), so the queue's own settings come
+back afterwards; a run that adds nothing does them at once.
+
 ## Notifications and virus scans
 
 Windows only shows notifications from an app it knows, so at start the daemon
@@ -868,6 +1017,7 @@ is a failed scan, as is one that runs over 10 minutes.
 | `src/history.rs` | Download history and saved requests on disk |
 | `src/dpapi.rs` | DPAPI encryption for saved requests |
 | `src/registry.rs` | Start with Windows and the notification app id |
+| `src/browsers.rs` | The browsers found, and registering the host with each |
 | `src/notify.rs` | Windows notifications and sounds |
 | `src/scan.rs` | Virus scans of finished downloads |
 | `src/queue.rs` | Queues, schedules and their calendar arithmetic |

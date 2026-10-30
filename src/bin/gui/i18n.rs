@@ -122,6 +122,7 @@ mod tests {
         include_str!("connections.rs"),
         include_str!("droptarget.rs"),
         include_str!("find.rs"),
+        include_str!("help.rs"),
         include_str!("links.rs"),
         include_str!("login.rs"),
         include_str!("progress.rs"),
@@ -132,6 +133,7 @@ mod tests {
         // Labels the window passes through `tr`.
         include_str!("../../queue.rs"),
         include_str!("../../settings.rs"),
+        include_str!("../../grab.rs"),
     ];
 
     /// The `{name}` placeholders in a string, sorted.

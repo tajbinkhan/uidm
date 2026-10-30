@@ -9,7 +9,7 @@
 // require. In the worker, rules.js is loaded first.
 
 if (typeof module !== "undefined") {
-  var { extensionOf, urlPath, hostOf, siteMatches } = require("./rules.js");
+  var { mimeExtension, extensionOf, urlPath, hostOf, siteMatches } = require("./rules.js");
 }
 
 // The menu's text in the browser's language. The tests load this file with
@@ -26,7 +26,8 @@ function uiText(name, subs) {
 
 // Most media kept per tab; the oldest go first.
 const MEDIA_PER_TAB = 50;
-// Smaller direct files are sounds and adverts' beacons, not videos.
+// Smaller direct files are sounds and adverts' beacons, not videos. UIDM's
+// `video_min_size_kb` overrides it.
 const MEDIA_MIN_FILE_BYTES = 128 * 1024;
 
 const HLS_MIME = new Set([
@@ -46,6 +47,11 @@ const MEDIA_FILE_EXTENSIONS = {
   mkv: "video",
   mov: "video",
   ogv: "video",
+  avi: "video",
+  wmv: "video",
+  flv: "video",
+  "3gp": "video",
+  aac: "audio",
   mp3: "audio",
   m4a: "audio",
   ogg: "audio",
@@ -74,18 +80,27 @@ function responseSize(statusCode, headers) {
 // What a response is: { kind: "hls" | "dash" | "file", mime, size }, or null
 // for anything that is not a video, audio file or stream playlist.
 // `d` is a webRequest response: { url, statusCode, responseHeaders }.
-function classifyMedia(d) {
+// `rules` is UIDM's settings, or null before they arrive: their
+// `video_types` (with `m3u8` and `mpd` for streams) and `video_min_size_kb`
+// narrow what counts.
+function classifyMedia(d, rules) {
   if (!/^https?:\/\//i.test(d.url || "") || d.statusCode >= 400) return null;
   const mime = headerValue(d.responseHeaders, "content-type").split(";")[0].trim().toLowerCase();
   const ext = extensionOf(urlPath(d.url));
-  if (HLS_MIME.has(mime) || ext === "m3u8") return { kind: "hls", mime, size: 0 };
-  if (DASH_MIME.has(mime) || ext === "mpd") return { kind: "dash", mime, size: 0 };
+  const types = rules && Array.isArray(rules.video_types) ? rules.video_types : null;
+  const offered = (type) => !types || !type || types.includes(type);
+  if (HLS_MIME.has(mime) || ext === "m3u8") return offered("m3u8") ? { kind: "hls", mime, size: 0 } : null;
+  if (DASH_MIME.has(mime) || ext === "mpd") return offered("mpd") ? { kind: "dash", mime, size: 0 } : null;
   if (SEGMENT_MIME.has(mime) || SEGMENT_EXTENSIONS.has(ext)) return null;
   const media = mime.startsWith("video/") || mime.startsWith("audio/");
   const generic = !mime || mime === "application/octet-stream" || mime === "binary/octet-stream";
   if (!media && !(generic && MEDIA_FILE_EXTENSIONS[ext])) return null;
+  // A type the list leaves out is not offered; one nothing names is.
+  if (!offered(MEDIA_FILE_EXTENSIONS[ext] ? ext : mimeExtension(mime))) return null;
   const size = responseSize(d.statusCode, d.responseHeaders);
-  if (size > 0 && size < MEDIA_MIN_FILE_BYTES) return null;
+  const kb = rules && Number.isFinite(rules.video_min_size_kb) ? rules.video_min_size_kb : null;
+  const minBytes = kb === null ? MEDIA_MIN_FILE_BYTES : kb * 1024;
+  if (size > 0 && size < minBytes) return null;
   return { kind: "file", mime, size };
 }
 
@@ -117,6 +132,22 @@ function fileLabel(entry) {
   const audio = entry.mime.startsWith("audio/") || MEDIA_FILE_EXTENSIONS[ext] === "audio";
   if (!ext) return audio ? uiText("audioFile") : uiText("videoFile");
   return audio ? uiText("audioFileType", ext.toUpperCase()) : uiText("videoFileType", ext.toUpperCase());
+}
+
+// The `n` newest media entries across `store` (tab id -> Map(url ->
+// entry)), newest first, as { tabId, entry }: what the "last video" and
+// "last 10 videos" menu items offer.
+function recentMedia(store, n) {
+  const all = [];
+  for (const [tabId, tab] of store) for (const entry of tab.values()) all.push({ tabId, entry });
+  all.sort((a, b) => b.entry.time - a.entry.time || b.entry.id - a.entry.id);
+  return all.slice(0, n);
+}
+
+// A media entry's kind for people: "MP4 video", "HLS stream".
+function mediaLabel(entry) {
+  if (entry.kind === "file") return fileLabel(entry);
+  return entry.kind === "hls" ? uiText("hlsStream") : uiText("dashStream");
 }
 
 // The video button's menu for a tab's `entries`, newest first. `infos` maps a
@@ -198,5 +229,5 @@ function titleFileName(title, ext) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { classifyMedia, recordMedia, mediaMenu, videoButtonAllowed, titleFileName, responseSize, uiText, MEDIA_PER_TAB };
+  module.exports = { classifyMedia, recordMedia, recentMedia, mediaLabel, mediaMenu, videoButtonAllowed, titleFileName, responseSize, uiText, MEDIA_PER_TAB };
 }

@@ -127,6 +127,10 @@ pub enum Incoming {
     },
     /// Look for a newer UIDM release now; answered with `update`.
     CheckUpdate,
+    /// Download the newest release's Setup, check it and run it, then
+    /// quit so it can replace UIDM's files. Failures come back as
+    /// `update_failed`.
+    InstallUpdate,
     /// Convert a finished video with ffmpeg: to an MP4, or its sound to an
     /// MP3 or M4A. The new file shows as a download of its own, with
     /// progress; the original stays unless `delete_original`.
@@ -140,13 +144,17 @@ pub enum Incoming {
     /// of the archive; answered with `zip_preview`.
     PreviewZip { id: u64 },
     /// A page as the browser showed it, answering `render_page`: its HTML
-    /// after its scripts ran and its address then, or nothing.
+    /// after its scripts ran and its address then, or nothing; and the
+    /// addresses its scripts opened in new windows, which the browser
+    /// closed.
     Rendered {
         request: u64,
         #[serde(default)]
         html: Option<String>,
         #[serde(default)]
         url: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        popups: Vec<String>,
     },
     /// The browser's cookies for a URL, answering `cookies_wanted`.
     Cookies {
@@ -678,6 +686,8 @@ pub enum Outgoing {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Update now could not get or start the new Setup, and why.
+    UpdateFailed { error: String },
     /// The files inside a zip download, answering `preview_zip`, or why
     /// they could not be listed.
     ZipPreview {
@@ -690,12 +700,21 @@ pub enum Outgoing {
     /// Asks the browser extension to open `url` in a background tab, let
     /// its scripts run, and answer with `rendered`.
     RenderPage { request: u64, url: String },
-    /// A crawl's progress: pages read, bytes read and files found so far.
-    GrabProgress { pages: u64, bytes: u64, found: usize },
+    /// A crawl's progress: pages read, bytes read, files kept and links to
+    /// files looked at so far.
+    GrabProgress {
+        pages: u64,
+        bytes: u64,
+        found: usize,
+        #[serde(default)]
+        explored: u64,
+    },
     /// A crawl ended: what it found, and why it stopped early, if it did.
     GrabDone {
         files: Vec<GrabFile>,
         pages: u64,
+        #[serde(default)]
+        explored: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stopped: Option<String>,
     },

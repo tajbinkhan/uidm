@@ -39,8 +39,13 @@ $browserKeys = @(
     "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$hostName",
     "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$hostName"
 )
+# Options can register these browsers too; only removed here.
+$otherBrowserKeys = @(
+    "HKCU:\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\$hostName",
+    "HKCU:\Software\Chromium\NativeMessagingHosts\$hostName"
+)
 # Written by the daemon so Windows shows UIDM's notifications; only removed.
-$registryKeys = $browserKeys + $firefoxKey + "HKCU:\Software\Classes\AppUserModelId\UIDM.DownloadManager"
+$registryKeys = $browserKeys + $otherBrowserKeys + $firefoxKey + "HKCU:\Software\Classes\AppUserModelId\UIDM.DownloadManager"
 # Written by the daemon when "Start with Windows" is on.
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $runValue = "UIDM"

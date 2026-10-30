@@ -139,6 +139,9 @@ pub fn dialog(
                 ui.weak(tr("Status"));
                 ui.label(status_text(e.status));
                 ui.end_row();
+                ui.weak(tr("Type"));
+                ui.label(type_text(&display_name(e)));
+                ui.end_row();
                 ui.weak(tr("Size"));
                 ui.label(match e.total {
                     Some(t) if done => human_bytes(t),
@@ -236,14 +239,39 @@ pub fn dialog(
                 if ui.button(tr("Close")).clicked() {
                     close = true;
                 }
+                if done && ui.button(tr("Open")).on_hover_text(tr("Open the file")).clicked() {
+                    actions.push(Action::Open(d.id));
+                }
             });
         });
     open && !close
 }
 
+/// A file's type for people: what Windows calls it and its extension, such
+/// as "PDF Document (.pdf)".
+fn type_text(name: &str) -> String {
+    match uidm::settings::extension_of(name) {
+        Some(ext) => match super::win::file_type_name(&ext) {
+            Some(kind) => format!("{kind} (.{ext})"),
+            None => format!(".{ext}"),
+        },
+        None => tr("No file type").into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_type_names_the_extension() {
+        assert!(type_text("a.zip").ends_with("(.zip)") || type_text("a.zip") == ".zip");
+        assert_eq!(type_text("README"), "No file type");
+        assert!(super::super::win::file_type_name("").is_none());
+        // Windows always knows text files, by some name in its language.
+        let txt = type_text("notes.txt");
+        assert!(txt.ends_with(" (.txt)") && txt.len() > " (.txt)".len(), "{txt}");
+    }
 
     fn entry(status: Status) -> DownloadEntry {
         DownloadEntry {

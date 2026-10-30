@@ -37,9 +37,47 @@ const OAIF_ALLOW_REGISTRATION: u32 = 0x1;
 const OAIF_REGISTER_EXT: u32 = 0x2;
 const OAIF_EXEC: u32 = 0x4;
 
+/// `SHFILEINFOW`.
+#[repr(C)]
+struct ShFileInfo {
+    icon: isize,
+    icon_index: i32,
+    attributes: u32,
+    display_name: [u16; 260],
+    type_name: [u16; 80],
+}
+
+const SHGFI_USEFILEATTRIBUTES: u32 = 0x10;
+const SHGFI_TYPENAME: u32 = 0x400;
+const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+
 #[link(name = "shell32")]
 extern "system" {
     fn SHOpenWithDialog(parent: isize, info: *const OpenAsInfo) -> i32;
+    fn SHGetFileInfoW(path: *const u16, attributes: u32, info: *mut ShFileInfo, size: u32, flags: u32) -> usize;
+}
+
+/// What Windows calls files with extension `ext` (no dot), such as "PDF
+/// Document", from the file types registered on this computer.
+pub fn file_type_name(ext: &str) -> Option<String> {
+    if ext.is_empty() || ext.contains(['\\', '/', '\0']) {
+        return None;
+    }
+    let name: Vec<u16> = format!("file.{ext}").encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: an all-zero SHFILEINFOW is valid, and the call writes within
+    // the size it is given.
+    let mut info: ShFileInfo = unsafe { std::mem::zeroed() };
+    let found = unsafe {
+        SHGetFileInfoW(
+            name.as_ptr(),
+            FILE_ATTRIBUTE_NORMAL,
+            &mut info,
+            std::mem::size_of::<ShFileInfo>() as u32,
+            SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES,
+        )
+    };
+    let len = info.type_name.iter().position(|c| *c == 0).unwrap_or(info.type_name.len());
+    (found != 0 && len > 0).then(|| String::from_utf16_lossy(&info.type_name[..len]))
 }
 
 #[link(name = "kernel32")]

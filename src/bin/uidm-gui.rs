@@ -25,6 +25,8 @@ mod connections;
 mod droptarget;
 #[path = "gui/find.rs"]
 mod find;
+#[path = "gui/help.rs"]
+mod help;
 #[path = "gui/i18n.rs"]
 mod i18n;
 #[path = "gui/links.rs"]
@@ -60,6 +62,7 @@ use i18n::{tr, trf};
 use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
+use uidm::notify::Sound;
 use uidm::ipc;
 use uidm::protocol::{
     read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, OnDone, Outgoing, Properties, Scan, SegmentInfo,
@@ -70,6 +73,7 @@ use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
     parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, SocksVersion, ServerLimit, QUOTA_HOURS_RANGE, SERVER_CONNECTIONS_RANGE, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, TEXT_SIZE_RANGE, USER_AGENT_PRESETS,
+    BROWSER_MENU_ITEMS, PanelView,
 };
 use uidm::state::DownloadTable;
 
@@ -83,9 +87,6 @@ const ICON_SIZE: u32 = 64;
 
 /// How often the clipboard's change counter is checked.
 const CLIPBOARD_POLL: Duration = Duration::from_millis(700);
-
-/// Width of the file-name column; long names are truncated with a tooltip.
-const NAME_WIDTH: f32 = 200.0;
 
 /// A failure gets its dialog after this long, so a download the browser
 /// extension takes back (and removes) right away gets none. The daemon waits
@@ -195,6 +196,9 @@ struct Shared {
     update: Option<Result<Option<uidm::update::Release>, String>>,
     /// A newer release, for the status bar.
     newer_release: Option<uidm::update::Release>,
+    /// Update now is under way: `None` while the daemon downloads the
+    /// update, or why it failed.
+    installing: Option<Option<String>>,
     /// A zip preview the daemon sent: the download and its files, or why
     /// not.
     zip_listed: Option<(u64, Result<Vec<uidm::zip::ZipEntry>, String>)>,
@@ -204,8 +208,10 @@ struct Shared {
 
 /// News of a site crawl.
 enum GrabEvent {
-    Progress(u64, u64, usize),
-    Done(Vec<GrabFile>, u64, Option<String>),
+    /// Pages read, bytes read, files kept, file links looked at.
+    Progress(u64, u64, usize, u64),
+    /// The files kept, pages read, file links looked at, and why it stopped.
+    Done(Vec<GrabFile>, u64, u64, Option<String>),
 }
 
 impl Shared {
@@ -291,6 +297,9 @@ impl Shared {
                     None
                 };
             }
+            Outgoing::UpdateFailed { error } => {
+                self.installing = Some(Some(error.clone()));
+            }
             Outgoing::Update { newer, error } => {
                 self.update = Some(match error {
                     Some(e) => Err(e.clone()),
@@ -328,11 +337,11 @@ impl Shared {
                 }
                 self.notice = Some(notice);
             }
-            Outgoing::GrabProgress { pages, bytes, found } => {
-                self.grab_events.push_back(GrabEvent::Progress(*pages, *bytes, *found));
+            Outgoing::GrabProgress { pages, bytes, found, explored } => {
+                self.grab_events.push_back(GrabEvent::Progress(*pages, *bytes, *found, *explored));
             }
-            Outgoing::GrabDone { files, pages, stopped } => {
-                self.grab_events.push_back(GrabEvent::Done(files.clone(), *pages, stopped.clone()));
+            Outgoing::GrabDone { files, pages, explored, stopped } => {
+                self.grab_events.push_back(GrabEvent::Done(files.clone(), *pages, *explored, stopped.clone()));
             }
             Outgoing::Done { id, .. }
             | Outgoing::Failed { id, .. }
@@ -414,6 +423,8 @@ enum Action {
     OpenAbout,
     /// Look for a newer release now.
     CheckUpdate,
+    /// Download and run the newer release's Setup.
+    InstallUpdate,
     Reconnect,
     OpenOptions,
     /// Open Options at the Connection tab with a new login for this host.
@@ -480,6 +491,8 @@ enum Action {
     HideProgressTab(progress::Tab),
     /// Set or clear what a download does once it finishes.
     SetOnDone(u64, Option<OnDone>),
+    /// Stop showing the note that a queue's schedule needs UIDM running.
+    HideScheduleNote,
     /// Open the speed limit dialog for a download.
     OpenSpeedLimit(u64),
     /// Set or clear a download's own limit, in bytes per second.
@@ -522,6 +535,9 @@ struct App {
     threat_prompt: Option<(String, String, String)>,
     /// The tray tooltip last set, so it is only updated when it changes.
     tooltip: String,
+    /// Whether the settings last showed the tray icon, so a change shows
+    /// or hides it once.
+    tray_shown: Option<bool>,
     /// The theme and text size last applied, so they are only set when the
     /// settings change them (Ctrl+Plus and Ctrl+Minus zoom in between).
     appearance: Option<(uidm::settings::Theme, u32)>,
@@ -547,6 +563,8 @@ struct App {
     layout: columns::Layout,
     /// The Columns dialog is open.
     columns_dialog: bool,
+    /// The column layout changed and waits to be saved until no drag is on.
+    layout_unsaved: bool,
     /// Open Properties dialogs, one per download.
     properties: Vec<properties::PropertiesDialog>,
     /// The confirmation before removing downloads.
@@ -570,6 +588,10 @@ struct App {
     /// The About box is open; `true` in the second place while a check
     /// it started waits for its answer.
     about: Option<bool>,
+    /// The tip of the day, while it shows.
+    tip: Option<help::TipWindow>,
+    /// The startup tip was considered, once the settings arrived.
+    tip_considered: bool,
     /// Captured addresses whose save-as dialog was canceled once.
     canceled_once: HashSet<String>,
     /// The offer to stop capturing an address, and its "Don't show again" box.
@@ -614,6 +636,20 @@ fn browse_button(ui: &mut egui::Ui, title: &'static str, start: &str, slot: &Pic
             }
             if let Some(folder) = dialog.pick_folder() {
                 *slot.lock().unwrap() = Some(folder);
+                ctx.request_repaint();
+            }
+        });
+    }
+}
+
+/// A "Browse..." button that opens the file picker on its own thread, for
+/// files with extension `ext`, and puts the choice in `slot`.
+fn browse_file_button(ui: &mut egui::Ui, title: &'static str, ext: &'static str, slot: &Picked) {
+    if ui.button(tr("Browse...")).clicked() {
+        let (slot, ctx) = (Arc::clone(slot), ui.ctx().clone());
+        thread::spawn(move || {
+            if let Some(file) = rfd::FileDialog::new().set_title(title).add_filter(ext, &[ext]).pick_file() {
+                *slot.lock().unwrap() = Some(file);
                 ctx.request_repaint();
             }
         });
@@ -706,8 +742,39 @@ enum OptionsTab {
     General,
     Categories,
     Capture,
+    Video,
     Notifications,
     Connection,
+}
+
+/// One proxy's login being edited.
+#[derive(Default)]
+struct ProxyLoginDraft {
+    username: String,
+    /// A new password, when `changed`.
+    password: String,
+    changed: bool,
+}
+
+impl ProxyLoginDraft {
+    fn new(username: &str) -> Self {
+        ProxyLoginDraft {
+            username: username.to_string(),
+            ..ProxyLoginDraft::default()
+        }
+    }
+
+    fn new_password(&self) -> Option<String> {
+        self.changed.then(|| self.password.clone())
+    }
+}
+
+/// A browser in Options' list: whether it was registered when the dialog
+/// opened, and whether it should be.
+struct BrowserDraft {
+    browser: uidm::browsers::Browser,
+    was: bool,
+    on: bool,
 }
 
 /// One site login being edited. An empty password keeps the stored one.
@@ -737,10 +804,17 @@ struct CategoryDraft {
 struct OptionsDraft {
     tab: OptionsTab,
     close_to_tray: bool,
+    tray_icon: bool,
+    /// Kept as it is; the View menu changes it.
+    categories_panel: bool,
     start_with_windows: bool,
     notify: Notify,
     sound_on_done: bool,
     sound_on_failed: bool,
+    sound_on_queue_done: bool,
+    /// The WAV files, in `SOUND_EVENTS` order; empty for Windows' sound.
+    sound_files: [String; 3],
+    sound_picked: [Picked; 3],
     scan_after_download: bool,
     scanner: Scanner,
     scanner_command: String,
@@ -754,11 +828,11 @@ struct OptionsDraft {
     proxy_remote_dns: bool,
     proxy_bypass: String,
     proxy_pac_url: String,
-    proxy_username: String,
-    /// A new proxy password, when `proxy_password_changed`.
-    proxy_password: String,
-    proxy_password_changed: bool,
+    /// The HTTP, HTTPS, FTP and SOCKS proxies' logins, in `ProxyKind::ALL`
+    /// order.
+    proxy_logins: [ProxyLoginDraft; 4],
     use_browser_proxy: bool,
+    browser_proxy_after_errors: bool,
     logins: Vec<LoginDraft>,
     /// Empty means the Downloads folder.
     folder: String,
@@ -788,6 +862,15 @@ struct OptionsDraft {
     clipboard_monitor: bool,
     clipboard_start: bool,
     video_button: bool,
+    /// Each known video type and whether the button offers it.
+    video_types: Vec<(String, bool)>,
+    /// A type typed in to add to the list.
+    video_type_new: String,
+    video_min_size_kb: u64,
+    video_view: PanelView,
+    video_protected_note: bool,
+    /// Each context menu item, its label, and whether it shows.
+    menu_items: Vec<(&'static str, &'static str, bool)>,
     /// One site per line.
     video_button_excluded_sites: String,
     ffmpeg_path: String,
@@ -801,8 +884,14 @@ struct OptionsDraft {
     /// Empty writes partial files in place.
     temp_dir: String,
     temp_picked: Picked,
+    /// The browsers found or registered, with their registration.
+    browsers: Vec<BrowserDraft>,
+    /// Browsers found that read Chrome's registration.
+    chrome_readers: Vec<&'static str>,
     capture_skip_key: CaptureKey,
     capture_force_key: CaptureKey,
+    capture_keys_left_click: bool,
+    capture_force_skips_pages: bool,
     /// One address per line.
     capture_excluded_urls: String,
     offer_exceptions: bool,
@@ -814,11 +903,19 @@ struct OptionsDraft {
     quota_enabled: bool,
     quota_mb: u64,
     quota_hours: u64,
+    quota_warn: bool,
+    /// The scanner program chosen with Browse.
+    scanner_picked: Picked,
     check_updates: bool,
     drop_target: bool,
     progress_on_start: bool,
     progress_speed_tab: bool,
     progress_done_tab: bool,
+    /// Kept as it is; only the Queues dialog changes it.
+    schedule_note_hidden: bool,
+    tips_on_startup: bool,
+    /// Kept as it is; only the tip window changes it.
+    next_tip: usize,
     theme: uidm::settings::Theme,
     text_size: u32,
     /// Empty follows Windows.
@@ -846,10 +943,15 @@ impl OptionsDraft {
         OptionsDraft {
             tab: OptionsTab::General,
             close_to_tray: s.close_to_tray,
+            tray_icon: s.tray_icon,
+            categories_panel: s.categories_panel,
             start_with_windows: s.start_with_windows,
             notify: s.notify,
             sound_on_done: s.sound_on_done,
             sound_on_failed: s.sound_on_failed,
+            sound_on_queue_done: s.sound_on_queue_done,
+            sound_files: [s.sound_done_file.clone(), s.sound_failed_file.clone(), s.sound_queue_file.clone()],
+            sound_picked: Default::default(),
             scan_after_download: s.scan_after_download,
             scanner: s.scanner,
             scanner_command: s.scanner_command.clone(),
@@ -863,10 +965,14 @@ impl OptionsDraft {
             proxy_remote_dns: s.proxy_remote_dns,
             proxy_bypass: s.proxy_bypass.clone(),
             proxy_pac_url: s.proxy_pac_url.clone(),
-            proxy_username: s.proxy_username.clone(),
-            proxy_password: String::new(),
-            proxy_password_changed: false,
+            proxy_logins: [
+                ProxyLoginDraft::new(&s.proxy_username),
+                ProxyLoginDraft::new(&s.proxy_https_username),
+                ProxyLoginDraft::new(&s.proxy_ftp_username),
+                ProxyLoginDraft::new(&s.proxy_socks_username),
+            ],
             use_browser_proxy: s.use_browser_proxy,
+            browser_proxy_after_errors: s.browser_proxy_after_errors,
             logins: s
                 .site_logins
                 .iter()
@@ -912,6 +1018,29 @@ impl OptionsDraft {
             clipboard_monitor: s.clipboard_monitor,
             clipboard_start: s.clipboard_start,
             video_button: s.video_button,
+            video_types: {
+                let mut all: Vec<(String, bool)> = uidm::settings::default_video_types()
+                    .into_iter()
+                    .map(|t| {
+                        let on = s.video_types.contains(&t);
+                        (t, on)
+                    })
+                    .collect();
+                for t in &s.video_types {
+                    if !all.iter().any(|(k, _)| k == t) {
+                        all.push((t.clone(), true));
+                    }
+                }
+                all
+            },
+            video_type_new: String::new(),
+            video_min_size_kb: s.video_min_size_kb,
+            video_view: s.video_view,
+            video_protected_note: s.video_protected_note,
+            menu_items: BROWSER_MENU_ITEMS
+                .iter()
+                .map(|(id, label)| (*id, *label, !s.browser_menu_hidden.iter().any(|h| h == id)))
+                .collect(),
             video_button_excluded_sites: s.video_button_excluded_sites.join("\n"),
             ffmpeg_path: s.ffmpeg_path.clone(),
             ffmpeg_picked: Picked::default(),
@@ -922,8 +1051,25 @@ impl OptionsDraft {
             manual_user_agent: s.manual_user_agent.clone(),
             temp_dir: s.temp_dir.clone().unwrap_or_default(),
             temp_picked: Picked::default(),
+            browsers: uidm::browsers::Registrar::for_this_user()
+                .map(|r| {
+                    uidm::browsers::BROWSERS
+                        .iter()
+                        .map(|b| (b, r.registered(b), r.installed(b)))
+                        .filter(|(_, registered, installed)| *registered || *installed)
+                        .map(|(b, registered, _)| BrowserDraft {
+                            browser: *b,
+                            was: registered,
+                            on: registered,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            chrome_readers: uidm::browsers::chrome_readers(),
             capture_skip_key: s.capture_skip_key,
             capture_force_key: s.capture_force_key,
+            capture_keys_left_click: s.capture_keys_left_click,
+            capture_force_skips_pages: s.capture_force_skips_pages,
             capture_excluded_urls: s.capture_excluded_urls.join("\n"),
             offer_exceptions: s.offer_exceptions,
             selection_button: s.selection_button,
@@ -932,11 +1078,16 @@ impl OptionsDraft {
             quota_enabled: s.quota_enabled,
             quota_mb: s.quota_mb,
             quota_hours: s.quota_hours,
+            quota_warn: s.quota_warn,
+            scanner_picked: Picked::default(),
             check_updates: s.check_updates,
             drop_target: s.drop_target,
             progress_on_start: s.progress_on_start,
             progress_speed_tab: s.progress_speed_tab,
             progress_done_tab: s.progress_done_tab,
+            schedule_note_hidden: s.schedule_note_hidden,
+            tips_on_startup: s.tips_on_startup,
+            next_tip: s.next_tip,
             theme: s.theme,
             text_size: s.text_size,
             language: s.language.clone(),
@@ -960,10 +1111,16 @@ impl OptionsDraft {
             speed_limit_kbps: (self.limit_value * self.limit_unit.kb()).round() as u64,
             resume_at_startup: self.resume_at_startup,
             close_to_tray: self.close_to_tray,
+            tray_icon: self.tray_icon,
+            categories_panel: self.categories_panel,
             start_with_windows: self.start_with_windows,
             notify: self.notify,
             sound_on_done: self.sound_on_done,
             sound_on_failed: self.sound_on_failed,
+            sound_on_queue_done: self.sound_on_queue_done,
+            sound_done_file: self.sound_files[0].trim().to_string(),
+            sound_failed_file: self.sound_files[1].trim().to_string(),
+            sound_queue_file: self.sound_files[2].trim().to_string(),
             scan_after_download: self.scan_after_download,
             scanner: self.scanner,
             scanner_command: self.scanner_command.trim().to_string(),
@@ -977,9 +1134,17 @@ impl OptionsDraft {
             proxy_remote_dns: self.proxy_remote_dns,
             proxy_bypass: self.proxy_bypass.trim().to_string(),
             proxy_pac_url: self.proxy_pac_url.trim().to_string(),
-            proxy_username: self.proxy_username.trim().to_string(),
-            proxy_password: self.proxy_password_changed.then(|| self.proxy_password.clone()),
+            proxy_username: self.proxy_logins[0].username.trim().to_string(),
+            proxy_password: self.proxy_logins[0].new_password(),
+            proxy_https_username: self.proxy_logins[1].username.trim().to_string(),
+            proxy_https_password: self.proxy_logins[1].new_password(),
+            proxy_ftp_username: self.proxy_logins[2].username.trim().to_string(),
+            proxy_ftp_password: self.proxy_logins[2].new_password(),
+            proxy_socks_username: self.proxy_logins[3].username.trim().to_string(),
+            proxy_socks_password: self.proxy_logins[3].new_password(),
+            proxy_logins_split: false,
             use_browser_proxy: self.use_browser_proxy,
+            browser_proxy_after_errors: self.browser_proxy_after_errors,
             site_logins: self
                 .logins
                 .iter()
@@ -1021,6 +1186,11 @@ impl OptionsDraft {
             clipboard_monitor: self.clipboard_monitor,
             clipboard_start: self.clipboard_start,
             video_button: self.video_button,
+            video_types: self.video_types.iter().filter(|(_, on)| *on).map(|(t, _)| t.clone()).collect(),
+            video_min_size_kb: self.video_min_size_kb,
+            video_view: self.video_view,
+            video_protected_note: self.video_protected_note,
+            browser_menu_hidden: self.menu_items.iter().filter(|(_, _, on)| !on).map(|(id, _, _)| id.to_string()).collect(),
             video_button_excluded_sites: sites(&self.video_button_excluded_sites),
             ffmpeg_path: self.ffmpeg_path.trim().to_string(),
             confirm_remove: self.confirm_remove,
@@ -1031,6 +1201,8 @@ impl OptionsDraft {
             temp_dir: optional(&self.temp_dir),
             capture_skip_key: self.capture_skip_key,
             capture_force_key: self.capture_force_key,
+            capture_keys_left_click: self.capture_keys_left_click,
+            capture_force_skips_pages: self.capture_force_skips_pages,
             capture_excluded_urls: self
                 .capture_excluded_urls
                 .lines()
@@ -1052,11 +1224,15 @@ impl OptionsDraft {
             quota_enabled: self.quota_enabled,
             quota_mb: self.quota_mb,
             quota_hours: self.quota_hours,
+            quota_warn: self.quota_warn,
             check_updates: self.check_updates,
             drop_target: self.drop_target,
             progress_on_start: self.progress_on_start,
             progress_speed_tab: self.progress_speed_tab,
             progress_done_tab: self.progress_done_tab,
+            schedule_note_hidden: self.schedule_note_hidden,
+            tips_on_startup: self.tips_on_startup,
+            next_tip: self.next_tip,
             theme: self.theme,
             text_size: self.text_size,
             language: self.language.clone(),
@@ -1068,6 +1244,23 @@ impl OptionsDraft {
             return Err(trf!("The new login for {site} needs a password.", site = l.site.trim()));
         }
         Ok(settings)
+    }
+
+    /// Register or remove the browsers whose box changed, keeping the new
+    /// state of those that worked.
+    fn apply_browsers(&mut self) -> Result<(), String> {
+        let changed: Vec<usize> = (0..self.browsers.len()).filter(|&i| self.browsers[i].on != self.browsers[i].was).collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        let registrar = uidm::browsers::Registrar::for_this_user().map_err(|e| e.to_string())?;
+        for i in changed {
+            let b = &mut self.browsers[i];
+            let done = if b.on { registrar.register(&b.browser) } else { registrar.unregister(&b.browser) };
+            done.map_err(|e| trf!("Could not change {browser}: {error}", browser = b.browser.name, error = e))?;
+            b.was = b.on;
+        }
+        Ok(())
     }
 }
 
@@ -1099,6 +1292,7 @@ impl App {
                 zip_listed: None,
                 update: None,
                 newer_release: None,
+                installing: None,
                 quota_paused: false,
             })),
             writer: Arc::new(Mutex::new(None)),
@@ -1112,6 +1306,7 @@ impl App {
             hide_completed: false,
             threat_prompt: None,
             tooltip: String::new(),
+            tray_shown: None,
             appearance: None,
             language: None,
             filter: Filter::All,
@@ -1125,6 +1320,7 @@ impl App {
             find: None,
             layout: columns::Layout::load(),
             columns_dialog: false,
+            layout_unsaved: false,
             properties: Vec::new(),
             remove_prompt: None,
             limit_dialog: None,
@@ -1133,6 +1329,8 @@ impl App {
             links: None,
             zip_preview: None,
             about: None,
+            tip: None,
+            tip_considered: false,
             drop_shown: false,
             convert: None,
             canceled_once: HashSet::new(),
@@ -1430,6 +1628,11 @@ impl App {
             Action::Convert(id, to, delete_original) => {
                 send(&self.writer, &Incoming::Convert { id, to, delete_original });
             }
+            Action::InstallUpdate => {
+                self.shared.lock().unwrap().installing = Some(None);
+                self.about = Some(true);
+                send(&self.writer, &Incoming::InstallUpdate);
+            }
             Action::CheckUpdate => {
                 self.shared.lock().unwrap().update = None;
                 self.about = Some(true);
@@ -1528,6 +1731,15 @@ impl App {
                     self.perform(Action::QuickSettings(s));
                 }
             }
+            Action::HideScheduleNote => {
+                let settings = self.shared.lock().unwrap().settings.clone();
+                if let Some(s) = settings {
+                    self.perform(Action::QuickSettings(Settings {
+                        schedule_note_hidden: true,
+                        ..s
+                    }));
+                }
+            }
             Action::SetOnDone(id, on_done) => {
                 send(&self.writer, &Incoming::SetOnDone { id, on_done });
             }
@@ -1610,7 +1822,13 @@ impl App {
                 }
             }
             Action::OpenImport => tools::pick_text_file(&self.ctx, tr("Import a download list"), &self.import),
-            Action::OpenExport => self.export = Some(tools::ExportDialog::new(!self.selected.is_empty())),
+            Action::OpenExport => {
+                let queue = match self.filter {
+                    Filter::Queue(id) => Some(id),
+                    _ => None,
+                };
+                self.export = Some(tools::ExportDialog::new(!self.selected.is_empty(), queue));
+            }
             Action::OpenGrabber => {
                 if self.grabber.is_none() {
                     self.grabber = Some(tools::GrabDialog::new());
@@ -1652,7 +1870,7 @@ impl App {
         }
         self.selected.retain(|id| rows.iter().any(|e| e.id == *id));
         if let Some(d) = self.export.as_mut() {
-            if !tools::export_dialog(ctx, d, rows, &self.selected) {
+            if !tools::export_dialog(ctx, d, rows, &self.selected, &queue_list) {
                 self.export = None;
             }
         }
@@ -1660,14 +1878,23 @@ impl App {
         if let Some(d) = self.grabber.as_mut() {
             for event in events {
                 match event {
-                    GrabEvent::Progress(pages, bytes, found) => d.progress(pages, bytes, found),
-                    GrabEvent::Done(files, pages, stopped) => d.done(files, pages, stopped),
+                    GrabEvent::Progress(pages, bytes, found, explored) => d.progress(pages, bytes, found, explored),
+                    GrabEvent::Done(files, pages, explored, stopped) => d.done(files, pages, explored, stopped),
                 }
             }
             if !connected && d.running() {
                 d.failed(tr("The connection to the UIDM daemon was lost.").into());
             }
-            if !tools::grab_dialog(ctx, d, &queue_list, connected, actions) {
+            let categories: Vec<String> = self
+                .shared
+                .lock()
+                .unwrap()
+                .settings
+                .as_ref()
+                .map(|s| s.categories.iter().map(|c| c.name.clone()).collect())
+                .unwrap_or_default();
+            let done: HashSet<String> = rows.iter().filter(|e| e.status == Status::Done).map(|e| e.url.clone()).collect();
+            if !tools::grab_dialog(ctx, d, &queue_list, &categories, &done, connected, actions) {
                 self.grabber = None;
             }
         }
@@ -2111,6 +2338,15 @@ impl App {
         take_picked(&draft.picked, &mut draft.folder);
         take_picked(&draft.temp_picked, &mut draft.temp_dir);
         take_picked(&draft.ffmpeg_picked, &mut draft.ffmpeg_path);
+        // A picked scanner keeps the arguments typed after the program.
+        let mut scanner = String::new();
+        take_picked(&draft.scanner_picked, &mut scanner);
+        if !scanner.is_empty() {
+            draft.scanner_command = uidm::scan::with_program(&scanner, &draft.scanner_command);
+        }
+        for (slot, file) in draft.sound_picked.iter().zip(draft.sound_files.iter_mut()) {
+            take_picked(slot, file);
+        }
         for c in &mut draft.categories {
             take_picked(&c.picked, &mut c.folder);
         }
@@ -2129,6 +2365,7 @@ impl App {
                     ui.selectable_value(&mut draft.tab, OptionsTab::General, tr("General"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Categories, tr("Categories"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Capture, tr("Browser capture"));
+                    ui.selectable_value(&mut draft.tab, OptionsTab::Video, tr("Videos and menus"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Notifications, tr("When done"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Connection, tr("Connection"));
                 });
@@ -2137,6 +2374,7 @@ impl App {
                     OptionsTab::General => general_tab(ui, draft, &queues),
                     OptionsTab::Categories => categories_tab(ui, draft),
                     OptionsTab::Capture => capture_tab(ui, draft),
+                    OptionsTab::Video => video_tab(ui, draft),
                     OptionsTab::Notifications => notifications_tab(ui, draft),
                     OptionsTab::Connection => connection_tab(ui, draft),
                 }
@@ -2149,7 +2387,7 @@ impl App {
                 ui.horizontal(|ui| {
                     let save = ui.add_enabled(connected && !saving, egui::Button::new(tr("Save")));
                     if save.clicked() {
-                        match draft.to_settings() {
+                        match draft.to_settings().and_then(|s| draft.apply_browsers().map(|()| s)) {
                             Ok(settings) => {
                                 draft.error = None;
                                 actions.push(Action::SaveSettings(settings));
@@ -2265,6 +2503,10 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
         .on_hover_text(tr("Downloads pause when it is reached, keeping their progress, and resume when the window allows"));
         ui.end_row();
 
+        ui.label("");
+        ui.add_enabled(draft.quota_enabled, egui::Checkbox::new(&mut draft.quota_warn, tr("Warn me when 90% of it is used")));
+        ui.end_row();
+
         ui.label(tr("If the file exists"));
         egui::ComboBox::from_id_salt("file_exists")
             .selected_text(file_exists_label(draft.file_exists))
@@ -2338,12 +2580,21 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
         ui.end_row();
 
         ui.label("");
-        ui.checkbox(&mut draft.close_to_tray, tr("Closing the window keeps UIDM in the tray"));
+        ui.checkbox(&mut draft.tray_icon, tr("Show UIDM's icon in the notification area"))
+            .on_hover_text(tr("Without it, closing the window quits UIDM; open it again from the Start menu"));
+        ui.end_row();
+
+        ui.label("");
+        ui.add_enabled(draft.tray_icon, egui::Checkbox::new(&mut draft.close_to_tray, tr("Closing the window keeps UIDM in the tray")));
         ui.end_row();
 
         ui.label("");
         ui.checkbox(&mut draft.drop_target, tr("Show the drop target, a small window on top that takes dragged links"))
             .on_hover_text(tr("Drag it to move it, double-click it to open UIDM, right-click it to close it"));
+        ui.end_row();
+
+        ui.label("");
+        ui.checkbox(&mut draft.tips_on_startup, tr("Show tips on startup"));
         ui.end_row();
 
         ui.label(tr("Download window"));
@@ -2357,7 +2608,7 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
 
         ui.label("");
         ui.checkbox(&mut draft.check_updates, tr("Look for a newer UIDM on GitHub once a week"))
-            .on_hover_text(tr("Only a notice with a link; nothing is downloaded or installed"));
+            .on_hover_text(tr("Only a notice; Update now in About downloads and runs the new Setup"));
         ui.end_row();
 
         ui.label(tr("Theme"));
@@ -2436,20 +2687,7 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
                         .hint_text(tr("Empty looks for it on PATH"))
                         .desired_width(280.0),
                 );
-                if ui.button(tr("Browse...")).clicked() {
-                    let (slot, ctx) = (Arc::clone(&draft.ffmpeg_picked), ui.ctx().clone());
-                    let title = tr("Where is ffmpeg.exe?");
-                    thread::spawn(move || {
-                        let file = rfd::FileDialog::new()
-                            .set_title(title)
-                            .add_filter("ffmpeg", &["exe"])
-                            .pick_file();
-                        if let Some(file) = file {
-                            *slot.lock().unwrap() = Some(file);
-                            ctx.request_repaint();
-                        }
-                    });
-                }
+                browse_file_button(ui, tr("Where is ffmpeg.exe?"), "exe", &draft.ffmpeg_picked);
             });
             let found = Settings {
                 ffmpeg_path: draft.ffmpeg_path.trim().to_string(),
@@ -2482,18 +2720,43 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
                         .desired_width(240.0),
                 );
             });
-            ui.radio_value(&mut draft.proxy_mode, ProxyMode::Manual, tr("Use these proxies:"));
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut draft.proxy_mode, ProxyMode::Manual, tr("Use these proxies:"));
+                if ui
+                    .button(tr("Get System"))
+                    .on_hover_text(tr("Fill in the proxies from the Windows proxy setting"))
+                    .clicked()
+                {
+                    get_system_proxy(draft);
+                }
+            });
         });
         ui.end_row();
         let manual = draft.proxy_mode == ProxyMode::Manual;
-        for (label, field, hint) in [
-            (tr("HTTP proxy"), &mut draft.proxy_http, "proxy.example.com:8080"),
-            (tr("HTTPS proxy"), &mut draft.proxy_https, tr("Same as HTTP when empty")),
-            (tr("FTP proxy"), &mut draft.proxy_ftp, tr("For ftp:// downloads; logs in as user@host")),
-            (tr("SOCKS proxy"), &mut draft.proxy_socks5, tr("Used for everything when set")),
+        let [http_login, https_login, ftp_login, socks_login] = &mut draft.proxy_logins;
+        for (label, field, hint, login) in [
+            (tr("HTTP proxy"), &mut draft.proxy_http, "proxy.example.com:8080", http_login),
+            (tr("HTTPS proxy"), &mut draft.proxy_https, tr("Same as HTTP when empty"), https_login),
+            (tr("FTP proxy"), &mut draft.proxy_ftp, tr("For ftp:// downloads; logs in as user@host"), ftp_login),
+            (tr("SOCKS proxy"), &mut draft.proxy_socks5, tr("For what has no proxy of its own"), socks_login),
         ] {
             ui.label(label);
-            ui.add_enabled(manual, egui::TextEdit::singleline(field).hint_text(hint).desired_width(260.0));
+            ui.add_enabled_ui(manual, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(field).hint_text(hint).desired_width(220.0));
+                    ui.add(egui::TextEdit::singleline(&mut login.username).hint_text(tr("User name")).desired_width(110.0));
+                    let hint = if login.changed { tr("Password") } else { tr("Password (unchanged)") };
+                    let pw = ui.add(
+                        egui::TextEdit::singleline(&mut login.password)
+                            .password(true)
+                            .hint_text(hint)
+                            .desired_width(130.0),
+                    );
+                    if pw.changed() {
+                        login.changed = true;
+                    }
+                });
+            });
             ui.end_row();
         }
         ui.label(tr("SOCKS version"));
@@ -2516,25 +2779,18 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         )
         .on_hover_text(tr("Hosts reached directly, separated by spaces or semicolons. * matches anything; <local> is any name without a dot."));
         ui.end_row();
-        ui.label(tr("Proxy login"));
-        ui.add_enabled_ui(manual, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut draft.proxy_username).hint_text(tr("User name")).desired_width(120.0));
-                let hint = if draft.proxy_password_changed { tr("Password") } else { tr("Password (unchanged)") };
-                let pw = ui.add(
-                    egui::TextEdit::singleline(&mut draft.proxy_password)
-                        .password(true)
-                        .hint_text(hint)
-                        .desired_width(130.0),
+        ui.label("");
+        ui.vertical(|ui| {
+            ui.checkbox(&mut draft.use_browser_proxy, tr("For downloads from the browser, use the browser's proxy"));
+            ui.add_enabled_ui(draft.use_browser_proxy, |ui| {
+                ui.radio_value(&mut draft.browser_proxy_after_errors, false, tr("Always"));
+                ui.radio_value(
+                    &mut draft.browser_proxy_after_errors,
+                    true,
+                    tr("Only after a download fails: it is tried once more through the browser's proxy"),
                 );
-                if pw.changed() {
-                    draft.proxy_password_changed = true;
-                }
             });
         });
-        ui.end_row();
-        ui.label("");
-        ui.checkbox(&mut draft.use_browser_proxy, tr("For downloads from the browser, use the browser's proxy"));
         ui.end_row();
         ui.label(tr("FTP"));
         ui.checkbox(&mut draft.ftp_active, tr("Active mode: the server connects back to UIDM for data"))
@@ -2573,7 +2829,8 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     let mut remove = None;
     egui::Grid::new("logins").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         for (i, l) in draft.logins.iter_mut().enumerate() {
-            ui.add_sized([180.0, 20.0], egui::TextEdit::singleline(&mut l.site).hint_text("example.com"));
+            ui.add_sized([180.0, 20.0], egui::TextEdit::singleline(&mut l.site).hint_text("example.com"))
+                .on_hover_text(tr("A server, or one of its folders such as example.com/private/*. The longest match wins."));
             ui.add_sized([120.0, 20.0], egui::TextEdit::singleline(&mut l.username).hint_text(tr("User name")));
             let hint = if l.new { tr("Password") } else { tr("Password (unchanged)") };
             ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(&mut l.password).password(true).hint_text(hint));
@@ -2596,7 +2853,32 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     }
 }
 
+/// Fill the manual proxies from the Windows proxy setting, as IDM's Get
+/// System does. Windows' SOCKS proxies speak SOCKS4. Its configuration
+/// script is not read: it picks a proxy per address.
+fn get_system_proxy(draft: &mut OptionsDraft) {
+    let Some(rules) = uidm::net::system_proxy_at(uidm::net::INTERNET_SETTINGS) else {
+        draft.error = Some(tr("Windows has no proxy server turned on.").to_string());
+        return;
+    };
+    draft.proxy_mode = ProxyMode::Manual;
+    draft.proxy_http = rules.http.clone().unwrap_or_default();
+    // An HTTPS proxy the same as the HTTP one is left to fall back to it.
+    draft.proxy_https = rules.https.clone().filter(|s| rules.http.as_ref() != Some(s)).unwrap_or_default();
+    draft.proxy_socks5 = rules
+        .socks
+        .as_deref()
+        .map(|s| s.split_once("://").map_or(s, |(_, a)| a).to_string())
+        .unwrap_or_default();
+    if rules.socks.is_some() {
+        draft.proxy_socks_version = SocksVersion::V4;
+    }
+    draft.proxy_bypass = rules.bypass.join(" ");
+    draft.error = None;
+}
+
 fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+
     egui::Grid::new("notifications").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label(tr("When a download ends"));
         ui.vertical(|ui| {
@@ -2608,8 +2890,29 @@ fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 
         ui.label(tr("Sounds"));
         ui.vertical(|ui| {
-            ui.checkbox(&mut draft.sound_on_done, tr("When a download finishes"));
-            ui.checkbox(&mut draft.sound_on_failed, tr("When a download fails"));
+            ui.weak(tr("A .wav file for each, or empty for Windows' own sound."));
+            egui::Grid::new("sounds").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+                let events = [
+                    (Sound::Done, tr("When a download finishes"), &mut draft.sound_on_done),
+                    (Sound::Failed, tr("When a download fails"), &mut draft.sound_on_failed),
+                    (Sound::QueueDone, tr("When a queue is done"), &mut draft.sound_on_queue_done),
+                ];
+                for (i, (sound, label, on)) in events.into_iter().enumerate() {
+                    ui.checkbox(on, label);
+                    ui.add_enabled(
+                        *on,
+                        egui::TextEdit::singleline(&mut draft.sound_files[i])
+                            .hint_text(tr("Windows' sound"))
+                            .desired_width(220.0),
+                    );
+                    ui.add_enabled_ui(*on, |ui| browse_file_button(ui, tr("Choose a sound"), "wav", &draft.sound_picked[i]));
+                    if ui.add_enabled(*on, egui::Button::new(tr("Play"))).clicked() {
+                        let file = draft.sound_files[i].trim();
+                        uidm::notify::play(sound, (!file.is_empty()).then(|| Path::new(file)));
+                    }
+                    ui.end_row();
+                }
+            });
         });
         ui.end_row();
 
@@ -2619,12 +2922,16 @@ fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
             ui.add_enabled_ui(draft.scan_after_download, |ui| {
                 ui.radio_value(&mut draft.scanner, Scanner::Defender, "Microsoft Defender");
                 ui.radio_value(&mut draft.scanner, Scanner::Custom, tr("This scanner:"));
-                ui.add_enabled(
-                    draft.scanner == Scanner::Custom,
-                    egui::TextEdit::singleline(&mut draft.scanner_command)
-                        .hint_text(r#""C:\Program Files\ClamAV\clamscan.exe" {path}"#)
-                        .desired_width(380.0),
-                );
+                ui.add_enabled_ui(draft.scanner == Scanner::Custom, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.scanner_command)
+                                .hint_text(r#""C:\Program Files\ClamAV\clamscan.exe" {path}"#)
+                                .desired_width(320.0),
+                        );
+                        browse_file_button(ui, tr("Choose the scanner program"), "exe", &draft.scanner_picked);
+                    });
+                });
                 ui.weak(tr("{path} is replaced by the file. Exit code 0 means clean, 1 a threat."));
             });
         });
@@ -2700,12 +3007,17 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     ui.add_space(6.0);
     egui::Grid::new("capture").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label(tr("File types"));
-        ui.add(
-            egui::TextEdit::multiline(&mut draft.capture_types)
-                .hint_text(tr("Empty takes every type"))
-                .desired_rows(3)
-                .desired_width(360.0),
-        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut draft.capture_types)
+                    .hint_text(tr("Empty takes every type"))
+                    .desired_rows(3)
+                    .desired_width(360.0),
+            );
+            if ui.button(tr("Default")).on_hover_text(tr("The types UIDM starts with")).clicked() {
+                draft.capture_types = uidm::settings::default_capture_types().join(", ");
+            }
+        });
         ui.end_row();
 
         ui.label(tr("Minimum size"));
@@ -2716,12 +3028,17 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.end_row();
 
         ui.label(tr("Never from"));
-        ui.add(
-            egui::TextEdit::multiline(&mut draft.capture_excluded_sites)
-                .hint_text(tr("One site per line, such as *.example.com"))
-                .desired_rows(4)
-                .desired_width(360.0),
-        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut draft.capture_excluded_sites)
+                    .hint_text(tr("One site per line, such as *.example.com"))
+                    .desired_rows(4)
+                    .desired_width(360.0),
+            );
+            if ui.button(tr("Default")).on_hover_text(tr("No site left out, as UIDM starts")).clicked() {
+                draft.capture_excluded_sites.clear();
+            }
+        });
         ui.end_row();
 
         ui.label(tr("Never these addresses"));
@@ -2739,18 +3056,41 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         });
         ui.end_row();
 
+        ui.label(tr("Browsers"));
+        ui.vertical(|ui| {
+            ui.weak(tr("Capture downloads from these browsers. Each needs UIDM's extension; restart a browser after a change."));
+            if draft.browsers.is_empty() {
+                ui.label(tr("No browser was found."));
+            }
+            for b in &mut draft.browsers {
+                ui.checkbox(&mut b.on, b.browser.name);
+            }
+            if !draft.chrome_readers.is_empty() {
+                ui.weak(trf!("{browsers} use Google Chrome's setting.", browsers = draft.chrome_readers.join(", ")));
+            }
+        });
+        ui.end_row();
+
         ui.label(tr("Special keys"));
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.label(tr("Hold"));
-                key_combo(ui, "skip_key", &mut draft.capture_skip_key);
+                key_boxes(ui, &mut draft.capture_skip_key, false);
                 ui.label(tr("while clicking a link to keep its download in the browser"));
             });
             ui.horizontal(|ui| {
                 ui.label(tr("Hold"));
-                key_combo(ui, "force_key", &mut draft.capture_force_key);
+                key_boxes(ui, &mut draft.capture_force_key, true);
                 ui.label(tr("while clicking a link to send it to UIDM, whatever its type"));
             });
+            ui.checkbox(
+                &mut draft.capture_keys_left_click,
+                tr("Only when clicking with the left mouse button, not a middle click or Enter"),
+            );
+            ui.checkbox(
+                &mut draft.capture_force_skips_pages,
+                tr("The force keys leave links to web pages, pictures and scripts alone"),
+            );
         });
         ui.end_row();
 
@@ -2777,19 +3117,6 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         });
         ui.end_row();
 
-        ui.label(tr("Videos"));
-        ui.checkbox(&mut draft.video_button, tr("Show a download button over videos playing in the browser"));
-        ui.end_row();
-
-        ui.label(tr("No video button on"));
-        ui.add_enabled(
-            draft.video_button,
-            egui::TextEdit::multiline(&mut draft.video_button_excluded_sites)
-                .hint_text(tr("One site per line, such as *.example.com"))
-                .desired_rows(2)
-                .desired_width(360.0),
-        );
-        ui.end_row();
 
         ui.label(tr("Clipboard"));
         ui.vertical(|ui| {
@@ -2806,6 +3133,94 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     });
 }
 
+/// The video button's options and the browser's context menu items.
+fn video_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+    egui::Grid::new("video").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+        ui.label(tr("Videos"));
+        ui.checkbox(&mut draft.video_button, tr("Show a download button over videos playing in the browser"));
+        ui.end_row();
+
+        ui.label(tr("No video button on"));
+        ui.add_enabled(
+            draft.video_button,
+            egui::TextEdit::multiline(&mut draft.video_button_excluded_sites)
+                .hint_text(tr("One site per line, such as *.example.com"))
+                .desired_rows(2)
+                .desired_width(360.0),
+        );
+        ui.end_row();
+
+        ui.label(tr("Video types"));
+        ui.add_enabled_ui(draft.video_button, |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.set_max_width(420.0);
+                    for (t, on) in &mut draft.video_types {
+                        ui.checkbox(on, t.to_ascii_uppercase());
+                    }
+                });
+                ui.weak(tr("M3U8 and MPD are HLS and DASH streams."));
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Check all")).clicked() {
+                        draft.video_types.iter_mut().for_each(|(_, on)| *on = true);
+                    }
+                    if ui.button(tr("Clear all")).clicked() {
+                        draft.video_types.iter_mut().for_each(|(_, on)| *on = false);
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut draft.video_type_new).hint_text("ts").desired_width(70.0));
+                    if ui.button(tr("Add")).clicked() {
+                        for t in parse_extensions(&draft.video_type_new) {
+                            match draft.video_types.iter_mut().find(|(k, _)| *k == t) {
+                                Some((_, on)) => *on = true,
+                                None => draft.video_types.push((t, true)),
+                            }
+                        }
+                        draft.video_type_new.clear();
+                    }
+                });
+            });
+        });
+        ui.end_row();
+
+        ui.label(tr("Minimum size"));
+        ui.add_enabled_ui(draft.video_button, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut draft.video_min_size_kb).range(0..=CAPTURE_MIN_SIZE_MAX_KB));
+                ui.label(tr("KB: smaller video and audio files are left out of the list"));
+            });
+        });
+        ui.end_row();
+
+        ui.label(tr("Buttons on pages"));
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut draft.video_view, PanelView::Full, tr("Full, with their text"));
+                ui.radio_value(&mut draft.video_view, PanelView::Mini, tr("Mini, an arrow"));
+            })
+            .response
+            .on_hover_text(tr("For the video button and the button by selected links"));
+            ui.add_enabled(
+                draft.video_button,
+                egui::Checkbox::new(
+                    &mut draft.video_protected_note,
+                    tr("Say when a video is protected and cannot be downloaded"),
+                ),
+            )
+            .on_hover_text(tr("Off, the video button does not show on protected videos"));
+        });
+        ui.end_row();
+
+        ui.label(tr("Context menu"));
+        ui.vertical(|ui| {
+            ui.weak(tr("The items UIDM adds to the browser's menu for links, pages and videos"));
+            for (_, label, on) in &mut draft.menu_items {
+                ui.checkbox(on, tr(label));
+            }
+        });
+        ui.end_row();
+    });
+}
+
 fn selection_label(b: SelectionButton) -> &'static str {
     match b {
         SelectionButton::Off => tr("Nowhere"),
@@ -2814,15 +3229,15 @@ fn selection_label(b: SelectionButton) -> &'static str {
     }
 }
 
-fn key_combo(ui: &mut egui::Ui, id: &str, key: &mut CaptureKey) {
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(tr(key.label()))
-        .width(80.0)
-        .show_ui(ui, |ui| {
-            for k in CaptureKey::ALL {
-                ui.selectable_value(key, k, tr(k.label()));
-            }
-        });
+/// A box for each key of a combination; none ticked turns it off. Only
+/// forcing offers Insert.
+fn key_boxes(ui: &mut egui::Ui, key: &mut CaptureKey, insert: bool) {
+    ui.checkbox(&mut key.ctrl, "Ctrl");
+    ui.checkbox(&mut key.alt, "Alt");
+    ui.checkbox(&mut key.shift, "Shift");
+    if insert {
+        ui.checkbox(&mut key.insert, "Insert");
+    }
 }
 
 fn duplicate_label(d: Duplicate) -> &'static str {
@@ -3074,9 +3489,20 @@ impl eframe::App for App {
         let connected = matches!(link, Link::Connected);
         let mut actions = Vec::new();
 
+        // The tray icon follows the settings; hiding it brings the window
+        // up, since the icon was the way back to a hidden window.
+        if let Some(s) = &settings {
+            if self.tray_shown != Some(s.tray_icon) {
+                tray::set_visible(s.tray_icon);
+                if !s.tray_icon {
+                    win::show();
+                }
+                self.tray_shown = Some(s.tray_icon);
+            }
+        }
         // Close keeps UIDM in the tray unless Options says to quit.
         if ctx.input(|i| i.viewport().close_requested())
-            && tray::installed()
+            && tray::shown()
             && settings.as_ref().is_none_or(|s| s.close_to_tray)
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -3180,17 +3606,47 @@ impl eframe::App for App {
                             self.find.get_or_insert_with(find::FindBar::new);
                             ui.close_menu();
                         }
+                        if ui.button(tr("Manage queues...")).clicked() {
+                            actions.push(Action::OpenQueues(None));
+                            ui.close_menu();
+                        }
                         if ui.button(tr("Columns...")).on_hover_text(tr("Show, hide and order the list's columns")).clicked() {
                             self.columns_dialog = true;
                             ui.close_menu();
                         }
-                        ui.separator();
-                        if ui.button(tr("About UIDM...")).clicked() {
-                            actions.push(Action::OpenAbout);
-                            ui.close_menu();
+                        if let Some(s) = &settings {
+                            let mut hide = !s.categories_panel;
+                            if ui.checkbox(&mut hide, tr("Hide categories")).changed() {
+                                actions.push(Action::SaveSettings(Settings {
+                                    categories_panel: !hide,
+                                    ..s.clone()
+                                }));
+                                ui.close_menu();
+                            }
+                            let mut no_tray = !s.tray_icon;
+                            if ui
+                                .checkbox(&mut no_tray, tr("Hide the tray icon"))
+                                .on_hover_text(tr("Closing the window then quits UIDM; open it again from the Start menu"))
+                                .changed()
+                            {
+                                actions.push(Action::SaveSettings(Settings {
+                                    tray_icon: !no_tray,
+                                    ..s.clone()
+                                }));
+                                ui.close_menu();
+                            }
                         }
                     });
                 });
+                if help::help_menu(ui) {
+                    self.tip = Some(help::TipWindow {
+                        index: settings.as_ref().map_or(0, |s| s.next_tip),
+                        on_startup: settings.as_ref().is_none_or(|s| s.tips_on_startup),
+                    });
+                }
+                if ui.button(tr("About")).clicked() {
+                    actions.push(Action::OpenAbout);
+                }
                 let can_open = connected && settings.is_some();
                 if ui.add_enabled(can_open, egui::Button::new(tr("Options"))).clicked() {
                     actions.push(Action::OpenOptions);
@@ -3245,6 +3701,10 @@ impl eframe::App for App {
                 if let Some(r) = newer {
                     ui.separator();
                     ui.hyperlink_to(trf!("UIDM {version} is available", version = r.version), &r.url);
+                    // About checks again and offers Update now.
+                    if r.setup.is_some() && ui.add_enabled(connected, egui::Button::new(tr("Update now")).small()).clicked() {
+                        actions.push(Action::CheckUpdate);
+                    }
                 }
                 let quota = self.shared.lock().unwrap().quota.clone();
                 if let Some(q) = quota {
@@ -3314,7 +3774,11 @@ impl eframe::App for App {
                 .to_string()
         };
         let queue_list = self.shared.lock().unwrap().queues.clone();
-        if let Some(s) = &settings {
+        // With the panel hidden, nothing is left to pick another view with.
+        if settings.as_ref().is_some_and(|s| !s.categories_panel) {
+            self.filter = Filter::All;
+        }
+        if let Some(s) = settings.as_ref().filter(|s| s.categories_panel) {
             let mut names: Vec<String> = s.categories.iter().map(|c| c.name.clone()).collect();
             names.push(GENERAL.to_string());
             let gone = match &self.filter {
@@ -3437,20 +3901,31 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         ui.label("");
                         for &column in &columns {
-                            let title = egui::RichText::new(format!("{}{}", column.title(), self.layout.arrow(column))).strong();
-                            let header = ui.add(egui::Button::new(title).frame(false));
-                            let header = if current_queue.is_some() {
-                                header.on_hover_text(tr("A queue's downloads stay in its run order"))
-                            } else {
-                                header.on_hover_text(tr("Sort by this column; click again to reverse, a third time for the order added"))
-                            };
-                            if header.clicked() && current_queue.is_none() {
-                                self.layout.click(column);
-                            }
-                            header.context_menu(|ui| {
-                                if ui.button(tr("Columns...")).clicked() {
-                                    self.columns_dialog = true;
-                                    ui.close_menu();
+                            ui.horizontal(|ui| {
+                                let title = egui::RichText::new(format!("{}{}", column.title(), self.layout.arrow(column))).strong();
+                                let header = ui.add(egui::Button::new(title).frame(false));
+                                let header = if current_queue.is_some() {
+                                    header.on_hover_text(tr("A queue's downloads stay in its run order"))
+                                } else {
+                                    header.on_hover_text(tr("Sort by this column; click again to reverse, a third time for the order added"))
+                                };
+                                if header.clicked() && current_queue.is_none() {
+                                    self.layout.click(column);
+                                }
+                                header.context_menu(|ui| {
+                                    if ui.button(tr("Columns...")).clicked() {
+                                        self.columns_dialog = true;
+                                        ui.close_menu();
+                                    }
+                                });
+                                // The edge that sets the column's width.
+                                let (rect, edge) = ui.allocate_exact_size(egui::vec2(6.0, 18.0), egui::Sense::drag());
+                                let edge = edge.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                                let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+                                ui.painter().vline(rect.center().x, rect.y_range(), stroke);
+                                if edge.dragged() {
+                                    let now = self.layout.width(column).unwrap_or(ui.min_rect().width());
+                                    self.layout.set_width(column, now + edge.drag_delta().x);
                                 }
                             });
                         }
@@ -3466,6 +3941,7 @@ impl eframe::App for App {
                                 place,
                                 selected: self.selected.contains(&entry.id),
                                 columns: &columns,
+                                layout: &self.layout,
                                 found: current == Some(entry.id),
                                 scroll: scroll && current == Some(entry.id),
                             };
@@ -3485,6 +3961,28 @@ impl eframe::App for App {
         self.exception_window(ctx, connected, &mut actions);
         self.zip_window(ctx, &rows);
         self.about_window(ctx, connected, &mut actions);
+        // The tip of the day, at startup when the settings ask for it.
+        if let (Some(s), false) = (&settings, self.tip_considered) {
+            self.tip_considered = true;
+            if s.tips_on_startup {
+                self.tip = Some(help::TipWindow {
+                    index: s.next_tip,
+                    on_startup: true,
+                });
+            }
+        }
+        if let Some(t) = self.tip.as_mut() {
+            if let Some((next_tip, tips_on_startup)) = help::tip_window(ctx, t) {
+                self.tip = None;
+                if let Some(s) = settings.as_ref().filter(|_| connected) {
+                    actions.push(Action::SaveSettings(Settings {
+                        next_tip,
+                        tips_on_startup,
+                        ..s.clone()
+                    }));
+                }
+            }
+        }
         self.convert_window(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.shared.lock().unwrap().picked_links.take() {
             self.links = Some(d);
@@ -3516,6 +4014,7 @@ impl eframe::App for App {
         self.refresh_window(ctx, &rows, connected, &mut actions);
         self.tool_windows(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.queues_dialog.as_mut() {
+            d.schedule_note = !settings.as_ref().is_some_and(|s| s.schedule_note_hidden);
             if !queues::dialog(ctx, d, &queue_list, connected, &mut actions) {
                 self.queues_dialog = None;
             }
@@ -3536,8 +4035,14 @@ impl eframe::App for App {
             let entry = rows.iter().find(|e| e.id == d.id);
             properties::dialog(ctx, d, entry, connected, &mut actions)
         });
+        // Saved once a drag on a header's edge is over, not on every frame
+        // of it.
         if self.layout != layout_before {
+            self.layout_unsaved = true;
+        }
+        if self.layout_unsaved && !ctx.input(|i| i.pointer.any_down()) {
             self.layout.save();
+            self.layout_unsaved = false;
         }
 
         for action in actions {
@@ -3670,6 +4175,26 @@ impl App {
                         Some(Ok(Some(r))) => {
                             ui.label(trf!("UIDM {version} is available.", version = r.version));
                             ui.hyperlink_to(tr("Open the release page"), &r.url);
+                            if r.setup.is_some() {
+                                let installing = self.shared.lock().unwrap().installing.clone();
+                                ui.horizontal(|ui| {
+                                    let busy = matches!(installing, Some(None));
+                                    if ui
+                                        .add_enabled(connected && !busy, egui::Button::new(tr("Update now")))
+                                        .on_hover_text(tr("Download the new Setup, check it, and run it. UIDM closes for it; downloads stop and can be resumed."))
+                                        .clicked()
+                                    {
+                                        actions.push(Action::InstallUpdate);
+                                    }
+                                    if busy {
+                                        ui.spinner();
+                                        ui.label(tr("Downloading the update..."));
+                                    }
+                                });
+                                if let Some(Some(e)) = installing {
+                                    ui.colored_label(ui.visuals().error_fg_color, e);
+                                }
+                            }
                         }
                         Some(Ok(None)) => {
                             ui.label(tr("This is the newest version."));
@@ -4022,6 +4547,8 @@ struct Row<'a> {
     selected: bool,
     /// The columns to draw, left to right.
     columns: &'a [Column],
+    /// Their widths.
+    layout: &'a columns::Layout,
     /// The match the find bar moved to.
     found: bool,
     /// Scroll the list to this row.
@@ -4051,7 +4578,18 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
         actions.push(Action::Select(e.id, ticked));
     }
     for column in row.columns {
-        draw_cell(ui, *column, e, row, actions);
+        // A column given a width keeps it, cutting what does not fit; text
+        // columns cut their text themselves.
+        match row.layout.width(*column).filter(|_| !column.is_text()) {
+            Some(w) => {
+                ui.allocate_ui_with_layout(egui::vec2(w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_width(w);
+                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                    draw_cell(ui, *column, e, row, actions);
+                });
+            }
+            None => draw_cell(ui, *column, e, row, actions),
+        }
     }
     ui.horizontal(|ui| {
         if let Some((queue, i, len)) = row.place {
@@ -4187,15 +4725,16 @@ fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row, ac
     // A stream counts segments; its size is only known once fetched.
     let parts = e.parts.filter(|[_, all]| *all > 0);
     let running = row.speed.filter(|s| *s > 0.0 && e.status == Status::Downloading);
+    let width = row.layout.width(column).unwrap_or(columns::TEXT_WIDTH);
     match column {
         Column::Name => {
             // A fixed-width, left-aligned cell so long names truncate instead
             // of pushing the action buttons off the window.
             ui.allocate_ui_with_layout(
-                egui::vec2(NAME_WIDTH, 18.0),
+                egui::vec2(width, 18.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    ui.set_width(NAME_WIDTH);
+                    ui.set_width(width);
                     let mut name = egui::RichText::new(display_name(e));
                     if row.found {
                         let selection = ui.visuals().selection;
@@ -4277,24 +4816,24 @@ fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row, ac
         }
         Column::SaveTo => {
             let folder = e.path.as_deref().and_then(|p| Path::new(p).parent()).map(|d| d.display().to_string());
-            text_cell(ui, folder.as_deref().unwrap_or(""));
+            text_cell(ui, folder.as_deref().unwrap_or(""), width);
         }
         Column::Referrer => {
-            text_cell(ui, e.referrer.as_deref().unwrap_or(""));
+            text_cell(ui, e.referrer.as_deref().unwrap_or(""), width);
         }
         Column::Description => {
-            text_cell(ui, e.description.as_deref().unwrap_or(""));
+            text_cell(ui, e.description.as_deref().unwrap_or(""), width);
         }
     }
 }
 
-/// A long text, cut to the name column's width with the rest in a tooltip.
-fn text_cell(ui: &mut egui::Ui, text: &str) {
+/// A long text, cut to `width` with the rest in a tooltip.
+fn text_cell(ui: &mut egui::Ui, text: &str, width: f32) {
     ui.allocate_ui_with_layout(
-        egui::vec2(NAME_WIDTH, 18.0),
+        egui::vec2(width, 18.0),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            ui.set_width(NAME_WIDTH);
+            ui.set_width(width);
             let label = ui.add(egui::Label::new(text).truncate());
             if !text.is_empty() {
                 label.on_hover_text(text);

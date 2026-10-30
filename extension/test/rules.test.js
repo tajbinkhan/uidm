@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies, urlMatches, selectionButtonAllowed } = require("../rules.js");
+const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, parseKeys, forceLeavesLink, clickApplies, urlMatches, selectionButtonAllowed } = require("../rules.js");
 
 const RULES = {
   capture_types: ["zip", "pdf", "exe", "mp4"],
@@ -160,6 +160,19 @@ test("download later from the context menu adds without starting", async () => {
   assert.equal(JSON.stringify(adds), JSON.stringify([["https://dl.net/a.zip", false], ["https://dl.net/b.zip", undefined], ["https://dl.net/c.mp4", false]]));
 });
 
+test("the force key can leave pages, pictures and scripts alone", () => {
+  const on = { capture_force_skips_pages: true };
+  assert.ok(forceLeavesLink(on, "https://a.net/news/story.html"));
+  assert.ok(forceLeavesLink(on, "https://a.net/img/logo.PNG?x=1"));
+  assert.ok(forceLeavesLink(on, "https://a.net/app.js"));
+  assert.ok(forceLeavesLink(on, "https://a.net/news/"));
+  assert.ok(forceLeavesLink(on, "https://a.net"));
+  assert.ok(!forceLeavesLink(on, "https://a.net/get.php/setup.exe"));
+  assert.ok(!forceLeavesLink(on, "https://a.net/files/setup.exe"));
+  assert.ok(!forceLeavesLink(on, "https://a.net/download"), "a name without a type may be a file");
+  assert.ok(!forceLeavesLink({ capture_force_skips_pages: false }, "https://a.net/a.html"));
+});
+
 test("held keys skip or force capture", () => {
   const keys = { capture_skip_key: "alt", capture_force_key: "ctrl" };
   assert.equal(keyAction(keys, { alt: true }), "skip");
@@ -167,7 +180,21 @@ test("held keys skip or force capture", () => {
   assert.equal(keyAction(keys, { shift: true }), "");
   assert.equal(keyAction(keys, {}), "");
   assert.equal(keyAction({ capture_skip_key: "none", capture_force_key: "none" }, { alt: true, ctrl: true }), "");
-  assert.equal(keyAction(keys, { alt: true, ctrl: true }), "skip", "skipping wins");
+  assert.equal(keyAction(keys, { alt: true, ctrl: true }), "", "a combination is held exactly");
+
+  const combos = { capture_skip_key: "alt+shift", capture_force_key: "ctrl+insert" };
+  assert.equal(keyAction(combos, { alt: true, shift: true }), "skip");
+  assert.equal(keyAction(combos, { alt: true }), "");
+  assert.equal(keyAction(combos, { ctrl: true, insert: true }), "force");
+  assert.equal(keyAction(combos, { ctrl: true }), "");
+  assert.deepEqual(parseKeys("Shift+ctrl"), { alt: false, ctrl: true, shift: true, insert: false });
+  assert.deepEqual(parseKeys(undefined), { alt: false, ctrl: false, shift: false, insert: false });
+
+  const left = { ...keys, capture_keys_left_click: true };
+  assert.equal(keyAction(left, { alt: true, button: 0, mouse: true }), "skip");
+  assert.equal(keyAction(left, { alt: true, button: 1, mouse: true }), "", "a middle click");
+  assert.equal(keyAction(left, { alt: true, button: 0, mouse: false }), "", "Enter on a link");
+  assert.equal(keyAction(keys, { alt: true, button: 1, mouse: true }), "skip", "any click without the setting");
 
   const jpg = { url: "https://dl.net/a.jpg" };
   assert.equal(captureDecision(RULES, jpg).capture, false, "no key: jpg is not a captured type");
@@ -276,6 +303,42 @@ test("each browser's manifest has only the keys it understands", () => {
   assert.equal(firefox.version, chrome.version);
 });
 
+test("a download UIDM cannot take comes with a notice saying why", async () => {
+  const w = loadWorker();
+  const shown = () => w.chrome.notifications.shown.map(([, o]) => o.message);
+  // Not connected: the browser keeps what UIDM would have taken.
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/a.zip", filename: "C:/dl/a.zip" }));
+  assert.deepEqual(shown(), ["UIDM is not running or not connected, so the browser downloads a.zip."]);
+  assert.equal(w.chrome.notifications.shown[0][1].buttons[0].title, "Don't show again");
+
+  // Connected, but UIDM could not start it: it goes back, with the reason.
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.port.onMessage.fire({ op: "settings", settings: RULES });
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/b.zip" }));
+  w.port.onMessage.fire({ op: "ack", id: 4, url: "https://dl.net/b.zip", status: "accepted" });
+  w.port.onMessage.fire({ op: "failed", id: 4, url: "https://dl.net/b.zip", error: "server returned HTTP 403" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(shown().at(-1), "UIDM could not start https://dl.net/b.zip (server returned HTTP 403), so the browser downloads it.");
+
+  // "Don't show again" stops them for good.
+  await w.chrome.notifications.onButtonClicked.fire("uidm-takeover", 0);
+  assert.equal(JSON.stringify(w.chrome.storage.written.at(-1)), JSON.stringify({ takeoverNotice: false }));
+  w.port.onDisconnect.fire();
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/c.zip" }));
+  assert.equal(shown().length, 2);
+});
+
+test("in Firefox, clicking the notice stops it", async () => {
+  const w = loadWorker({ firefox: true });
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/a.zip" }));
+  await new Promise((r) => setTimeout(r, 0));
+  const [[id, options]] = w.chrome.notifications.shown;
+  assert.ok(options.message.endsWith("Click this notice to stop showing it."), options.message);
+  assert.equal(options.buttons, undefined);
+  await w.chrome.notifications.onClicked.fire(id);
+  assert.equal(JSON.stringify(w.chrome.storage.written.at(-1)), JSON.stringify({ takeoverNotice: false }));
+});
+
 test("the worker runs as a Firefox background script", async () => {
   const w = loadWorker({ firefox: true });
   w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
@@ -306,9 +369,15 @@ test("a crawl's page is rendered in a background tab and the tab is closed", asy
   w.chrome.tabs = {
     ...w.chrome.tabs,
     onUpdated: event(),
+    onCreated: event(),
     create: async ({ url, active }) => {
       assert.equal(active, false);
-      setTimeout(() => w.chrome.tabs.onUpdated.fire(11, { status: "complete" }), 0);
+      setTimeout(() => {
+        // The page's script opens a window, then the page finishes loading.
+        w.chrome.tabs.onCreated.fire({ id: 12, openerTabId: 11, pendingUrl: "https://site.net/popup.html" });
+        w.chrome.tabs.onCreated.fire({ id: 13, openerTabId: 99, pendingUrl: "https://other.net/" });
+        w.chrome.tabs.onUpdated.fire(11, { status: "complete" });
+      }, 0);
       return { id: 11, url };
     },
     remove: async (id) => removed.push(id),
@@ -323,5 +392,6 @@ test("a crawl's page is rendered in a background tab and the tab is closed", asy
   assert.equal(answer.request, 5);
   assert.equal(answer.url, "https://site.net/app/");
   assert.ok(answer.html.includes("added-by-script.pdf"));
-  assert.equal(JSON.stringify(removed), "[11]");
+  assert.equal(JSON.stringify(answer.popups), JSON.stringify(["https://site.net/popup.html"]));
+  assert.equal(JSON.stringify(removed), "[12,11]", "the popup is closed, and the tab; another tab's window is left alone");
 });

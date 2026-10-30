@@ -63,7 +63,9 @@ function loadWorker({ firefox = false } = {}) {
       lastError: null,
     },
     storage: {
-      local: { get: async (d) => d, set: async () => {} },
+      // What the worker stored, in order.
+      written: [],
+      local: { get: async (d) => d, set: async (o) => chrome.storage.written.push(o) },
       onChanged: event(),
     },
     proxy: { settings: { get: async () => ({ value: proxyValue }) } },
@@ -80,8 +82,40 @@ function loadWorker({ firefox = false } = {}) {
       download: async (o) => browserCalls.push(["download", o.url, o]),
     },
     cookies: { getAll: async () => [] },
-    contextMenus: { removeAll: () => {}, create: () => {}, onClicked: event() },
+    contextMenus: {
+      // The menu as built: id -> its options.
+      items: new Map(),
+      removeAll: (cb) => {
+        chrome.contextMenus.items.clear();
+        if (cb) cb();
+      },
+      create: (o, cb) => {
+        chrome.contextMenus.items.set(o.id, { ...o });
+        if (cb) cb();
+        return o.id;
+      },
+      update: (id, o, cb) => {
+        Object.assign(chrome.contextMenus.items.get(id) || {}, o);
+        if (cb) cb();
+      },
+      remove: (id, cb) => {
+        chrome.contextMenus.items.delete(id);
+        if (cb) cb();
+      },
+      onClicked: event(),
+    },
     action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
+    notifications: {
+      shown: [],
+      // Firefox's notices take no buttons.
+      create: async (id, options) => {
+        if (firefox && options.buttons) throw new Error("buttons is unsupported by Firefox");
+        chrome.notifications.shown.push([id, options]);
+      },
+      clear: async () => {},
+      onClicked: event(),
+      onButtonClicked: event(),
+    },
     i18n: { getMessage, getUILanguage: () => "en-US" },
   };
   const dir = path.join(__dirname, "..");

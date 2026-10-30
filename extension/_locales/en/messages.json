@@ -283,5 +283,49 @@
   "audioFile": {
     "message": "Audio",
     "description": "The video button's menu: heading for an audio file of unknown format."
+  },
+  "takeoverFailed": {
+    "message": "UIDM could not take over the download",
+    "description": "Title of the notice shown when UIDM could not take a download from the browser, which then downloads it itself."
+  },
+  "takeoverNotConnected": {
+    "message": "UIDM is not running or not connected, so the browser downloads $FILE$.",
+    "description": "Body of the notice when UIDM is not running or not connected. FILE is the download's file name or address.",
+    "placeholders": {
+      "file": {
+        "content": "$1",
+        "example": "setup.exe"
+      }
+    }
+  },
+  "takeoverError": {
+    "message": "UIDM could not start $FILE$ ($REASON$), so the browser downloads it.",
+    "description": "Body of the notice when UIDM refused or could not start a download. FILE is the file name or address, REASON is UIDM's error message.",
+    "placeholders": {
+      "file": {
+        "content": "$1",
+        "example": "setup.exe"
+      },
+      "reason": {
+        "content": "$2",
+        "example": "server returned HTTP 403"
+      }
+    }
+  },
+  "dontShowAgain": {
+    "message": "Don't show again",
+    "description": "Button on the notice that UIDM could not take a download: stop showing such notices."
+  },
+  "takeoverClickToStop": {
+    "message": "Click this notice to stop showing it.",
+    "description": "Added to the notice in browsers whose notices have no buttons (Firefox): clicking the notice stops such notices."
+  },
+  "downloadLastVideo": {
+    "message": "Download the last video with UIDM",
+    "description": "Context menu item on a page or video: sends the video or audio the browser loaded last, in any tab, to UIDM."
+  },
+  "recentVideos": {
+    "message": "Recent videos (UIDM)",
+    "description": "Context menu item on a page or video: a submenu of the last 10 videos or audio files the browser loaded, to send one to UIDM."
   }
 }
