@@ -132,6 +132,7 @@ mod tests {
         // Labels the window passes through `tr`.
         include_str!("../../queue.rs"),
         include_str!("../../settings.rs"),
+        include_str!("../../grab.rs"),
     ];
 
     /// The `{name}` placeholders in a string, sorted.

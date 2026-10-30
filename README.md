@@ -303,7 +303,30 @@ tests, not in a running Firefox.
   you want (PDFs, say) with the page each was found on. It obeys
   `robots.txt`, waits between pages (longer if `Crawl-delay` asks), and stops
   at a page and size budget it shows before starting. Tick the files to keep
-  and add them to a queue.
+  and add them to a queue. It can also:
+  - explore the whole start site with no depth limit (the budgets still
+    stop it), and follow a set number of links on other sites;
+  - read up to 10 pages at once, and set how many files its queue
+    downloads at once;
+  - keep each file's link text as its description;
+  - pick the file types from named filters (a name and a mask such as
+    `*.jpg;*.png`; **Filters** adds, edits and deletes them), keep every type
+    with `*`, leave some types out, and keep only files on the start site;
+  - save every file to one category's folder, or to one folder without
+    subfolders;
+  - start downloading each match as soon as it is found;
+  - log in to the start site with the project's own user name and password;
+  - when scripts run, ignore the windows they open or explore them too.
+
+  The results show as a list or as a tree by page or by folder, with pages
+  processed and file links looked at, matched and downloaded. **Save as
+  template** keeps the settings under a name, and **New** starts a project
+  from a saved template or one that comes with UIDM (pictures, audio,
+  video, documents, or archives and programs from a site). A scheduled
+  project explores only, explores and downloads the new files (starting the
+  queue), or downloads the ticked files without exploring, then exits UIDM,
+  sleeps, hibernates or shuts down, and can open a file, after the crawl or
+  once the queue is done.
 - **Clipboard** (off by default; **Options > Browser capture**): copying a
   link whose file type is on the capture list brings up a small **Download
   the copied link?** prompt with **Download** and **Ignore**, and the same
@@ -906,6 +929,20 @@ It reads at most 5 MiB of any page, follows only page-like links (no
 extension, or `.html`, `.php` and the like), and lists files without
 fetching them. Closing the dialog or **Stop** ends a crawl within a tenth of
 a second.
+
+Pages read at once are fetched on their own threads, one batch at a time,
+with the usual wait between batches; robots.txt is read before a site's
+first batch. With `*` in the types, every link with a file name that is not
+a page counts as a file. A project's login is stored in Credential Manager
+as `UIDM/grabber/<start host>`, sent to the start site when it asks, and
+given to the downloads on that site. Named filters are kept in
+`%APPDATA%\UIDM\grabber\filters.json` and named templates in
+`grabber\templates\`. With scripts run, the extension closes every window
+the page opens and reports its address; the crawl explores those only when
+**Ignore the windows page scripts open** is off. A scheduled run sets the
+project's when-done action and file on its queue for that run only
+(`when_done_once`, `open_when_done_once`), so the queue's own settings come
+back afterwards; a run that adds nothing does them at once.
 
 ## Notifications and virus scans
 

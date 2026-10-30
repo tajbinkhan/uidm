@@ -369,7 +369,13 @@ function onHostMessage(msg) {
       break;
     case "render_page":
       renderPage(msg.url).then((page) =>
-        send({ op: "rendered", request: msg.request, html: page ? page.html : null, url: page ? page.url : null }),
+        send({
+          op: "rendered",
+          request: msg.request,
+          html: page ? page.html : null,
+          url: page ? page.url : null,
+          popups: page ? page.popups : [],
+        }),
       );
       break;
     case "cookies_wanted":
@@ -697,10 +703,20 @@ function waitForLoad(tabId, ms) {
   });
 }
 
-// The page at `url` as the browser shows it: { html, url }, or null.
+// The page at `url` as the browser shows it: { html, url, popups }, or
+// null. Windows its scripts open are closed at once, and their addresses
+// listed in `popups` for UIDM to follow or ignore.
 async function renderPage(url) {
   if (!isWeb(url) || !chrome.scripting || !chrome.tabs || !chrome.tabs.create) return null;
   let tab = null;
+  const popups = [];
+  const opened = (t) => {
+    if (!tab || t.openerTabId !== tab.id) return;
+    const at = t.pendingUrl || t.url;
+    if (isWeb(at)) popups.push(at);
+    chrome.tabs.remove(t.id).catch(() => {});
+  };
+  chrome.tabs.onCreated.addListener(opened);
   try {
     tab = await chrome.tabs.create({ url, active: false });
     await waitForLoad(tab.id, RENDER_TIMEOUT_MS);
@@ -709,10 +725,11 @@ async function renderPage(url) {
       target: { tabId: tab.id },
       func: () => ({ html: document.documentElement.outerHTML, url: location.href }),
     });
-    return res && res.result ? res.result : null;
+    return res && res.result ? { ...res.result, popups } : null;
   } catch (_) {
     return null;
   } finally {
+    chrome.tabs.onCreated.removeListener(opened);
     if (tab) chrome.tabs.remove(tab.id).catch(() => {});
   }
 }
