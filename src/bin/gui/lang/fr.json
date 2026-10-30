@@ -759,5 +759,10 @@
   "Audio files from a site": "Fichiers audio d'un site",
   "Video files from a site": "Fichiers vidéo d'un site",
   "Documents from a site": "Documents d'un site",
-  "Archives and programs from a site": "Archives et programmes d'un site"
+  "Archives and programs from a site": "Archives et programmes d'un site",
+  "Show UIDM's icon in the notification area": "Afficher l'icône d'UIDM dans la zone de notification",
+  "Without it, closing the window quits UIDM; open it again from the Start menu": "Sans elle, fermer la fenêtre quitte UIDM ; rouvrez-le depuis le menu Démarrer",
+  "Hide categories": "Masquer les catégories",
+  "Hide the tray icon": "Masquer l'icône de la zone de notification",
+  "Closing the window then quits UIDM; open it again from the Start menu": "Fermer la fenêtre quitte alors UIDM ; rouvrez-le depuis le menu Démarrer"
 }

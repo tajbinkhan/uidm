@@ -527,6 +527,9 @@ struct App {
     threat_prompt: Option<(String, String, String)>,
     /// The tray tooltip last set, so it is only updated when it changes.
     tooltip: String,
+    /// Whether the settings last showed the tray icon, so a change shows
+    /// or hides it once.
+    tray_shown: Option<bool>,
     /// The theme and text size last applied, so they are only set when the
     /// settings change them (Ctrl+Plus and Ctrl+Minus zoom in between).
     appearance: Option<(uidm::settings::Theme, u32)>,
@@ -773,6 +776,9 @@ struct CategoryDraft {
 struct OptionsDraft {
     tab: OptionsTab,
     close_to_tray: bool,
+    tray_icon: bool,
+    /// Kept as it is; the View menu changes it.
+    categories_panel: bool,
     start_with_windows: bool,
     notify: Notify,
     sound_on_done: bool,
@@ -899,6 +905,8 @@ impl OptionsDraft {
         OptionsDraft {
             tab: OptionsTab::General,
             close_to_tray: s.close_to_tray,
+            tray_icon: s.tray_icon,
+            categories_panel: s.categories_panel,
             start_with_windows: s.start_with_windows,
             notify: s.notify,
             sound_on_done: s.sound_on_done,
@@ -1058,6 +1066,8 @@ impl OptionsDraft {
             speed_limit_kbps: (self.limit_value * self.limit_unit.kb()).round() as u64,
             resume_at_startup: self.resume_at_startup,
             close_to_tray: self.close_to_tray,
+            tray_icon: self.tray_icon,
+            categories_panel: self.categories_panel,
             start_with_windows: self.start_with_windows,
             notify: self.notify,
             sound_on_done: self.sound_on_done,
@@ -1243,6 +1253,7 @@ impl App {
             hide_completed: false,
             threat_prompt: None,
             tooltip: String::new(),
+            tray_shown: None,
             appearance: None,
             language: None,
             filter: Filter::All,
@@ -2495,7 +2506,12 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
         ui.end_row();
 
         ui.label("");
-        ui.checkbox(&mut draft.close_to_tray, tr("Closing the window keeps UIDM in the tray"));
+        ui.checkbox(&mut draft.tray_icon, tr("Show UIDM's icon in the notification area"))
+            .on_hover_text(tr("Without it, closing the window quits UIDM; open it again from the Start menu"));
+        ui.end_row();
+
+        ui.label("");
+        ui.add_enabled(draft.tray_icon, egui::Checkbox::new(&mut draft.close_to_tray, tr("Closing the window keeps UIDM in the tray")));
         ui.end_row();
 
         ui.label("");
@@ -3373,9 +3389,20 @@ impl eframe::App for App {
         let connected = matches!(link, Link::Connected);
         let mut actions = Vec::new();
 
+        // The tray icon follows the settings; hiding it brings the window
+        // up, since the icon was the way back to a hidden window.
+        if let Some(s) = &settings {
+            if self.tray_shown != Some(s.tray_icon) {
+                tray::set_visible(s.tray_icon);
+                if !s.tray_icon {
+                    win::show();
+                }
+                self.tray_shown = Some(s.tray_icon);
+            }
+        }
         // Close keeps UIDM in the tray unless Options says to quit.
         if ctx.input(|i| i.viewport().close_requested())
-            && tray::installed()
+            && tray::shown()
             && settings.as_ref().is_none_or(|s| s.close_to_tray)
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -3482,6 +3509,28 @@ impl eframe::App for App {
                         if ui.button(tr("Columns...")).on_hover_text(tr("Show, hide and order the list's columns")).clicked() {
                             self.columns_dialog = true;
                             ui.close_menu();
+                        }
+                        if let Some(s) = &settings {
+                            let mut hide = !s.categories_panel;
+                            if ui.checkbox(&mut hide, tr("Hide categories")).changed() {
+                                actions.push(Action::SaveSettings(Settings {
+                                    categories_panel: !hide,
+                                    ..s.clone()
+                                }));
+                                ui.close_menu();
+                            }
+                            let mut no_tray = !s.tray_icon;
+                            if ui
+                                .checkbox(&mut no_tray, tr("Hide the tray icon"))
+                                .on_hover_text(tr("Closing the window then quits UIDM; open it again from the Start menu"))
+                                .changed()
+                            {
+                                actions.push(Action::SaveSettings(Settings {
+                                    tray_icon: !no_tray,
+                                    ..s.clone()
+                                }));
+                                ui.close_menu();
+                            }
                         }
                         ui.separator();
                         if ui.button(tr("About UIDM...")).clicked() {
@@ -3613,7 +3662,11 @@ impl eframe::App for App {
                 .to_string()
         };
         let queue_list = self.shared.lock().unwrap().queues.clone();
-        if let Some(s) = &settings {
+        // With the panel hidden, nothing is left to pick another view with.
+        if settings.as_ref().is_some_and(|s| !s.categories_panel) {
+            self.filter = Filter::All;
+        }
+        if let Some(s) = settings.as_ref().filter(|s| s.categories_panel) {
             let mut names: Vec<String> = s.categories.iter().map(|c| c.name.clone()).collect();
             names.push(GENERAL.to_string());
             let gone = match &self.filter {

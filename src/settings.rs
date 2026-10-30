@@ -446,6 +446,11 @@ pub struct Settings {
     pub capture_excluded_sites: Vec<String>,
     /// Closing the window hides it in the tray instead of quitting.
     pub close_to_tray: bool,
+    /// Show UIDM's icon in the notification area. Without it, closing the
+    /// window quits, and UIDM is reached from the Start menu.
+    pub tray_icon: bool,
+    /// Show the categories and queues panel at the window's left.
+    pub categories_panel: bool,
     /// Start the window, hidden in the tray, when you sign in to Windows.
     pub start_with_windows: bool,
     pub notify: Notify,
@@ -629,6 +634,8 @@ impl Default for Settings {
             capture_min_size_kb: 0,
             capture_excluded_sites: Vec::new(),
             close_to_tray: true,
+            tray_icon: true,
+            categories_panel: true,
             start_with_windows: false,
             notify: Notify::Toast,
             sound_on_done: false,
@@ -1204,6 +1211,8 @@ mod tests {
             capture_min_size_kb: 100,
             capture_excluded_sites: vec!["*.example.com".into()],
             close_to_tray: false,
+            tray_icon: false,
+            categories_panel: false,
             start_with_windows: true,
             notify: Notify::Dialog,
             sound_on_done: true,

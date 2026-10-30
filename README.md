@@ -349,10 +349,14 @@ tests, not in a running Firefox.
   10), a total speed limit, what to do when a file name is taken or an
   address is already in the list, the save-as
   dialog, whether to resume unfinished downloads when UIDM starts, Start with
-  Windows, whether closing the window keeps UIDM in the tray, where ffmpeg
+  Windows, whether UIDM shows a tray icon (without one, closing the window
+  quits and the Start menu opens UIDM again), whether closing the window
+  keeps UIDM in the tray, where ffmpeg
   is, the **Language**, the **Theme** (follow Windows, light or dark) and the
   **Text size** (80% to 150%, scaling the whole window). Language, theme and
-  text size change as soon as you save. **Categories**: as above. **Browser
+  text size change as soon as you save. **More > Hide categories** hides
+  the categories and queues panel, and **More > Hide the tray icon** does
+  what the Options box does; both are kept. **Categories**: as above. **Browser
   capture**: the browsers to capture from, the rules below, the special
   keys and the clipboard prompt. **Videos and menus**: the video button and
   the context menu items. **When done**: notifications, sounds and the virus
