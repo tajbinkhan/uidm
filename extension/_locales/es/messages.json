@@ -249,5 +249,11 @@
   },
   "takeoverClickToStop": {
     "message": "Haga clic en este aviso para no volver a mostrarlo."
+  },
+  "downloadLastVideo": {
+    "message": "Descargar el último vídeo con UIDM"
+  },
+  "recentVideos": {
+    "message": "Vídeos recientes (UIDM)"
   }
 }

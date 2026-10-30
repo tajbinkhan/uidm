@@ -72,20 +72,23 @@ if (chrome.webRequest) {
   chrome.webRequest.onHeadersReceived.addListener(
     (d) => {
       if (d.tabId < 0 || d.incognito) return;
-      const found = classifyMedia(d);
-      if (found) recordMedia(media, d.tabId, d.url, found, Date.now());
+      const found = classifyMedia(d, rules);
+      if (found) {
+        recordMedia(media, d.tabId, d.url, found, Date.now());
+        scheduleRecentMenu();
+      }
     },
     { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
     ["responseHeaders"],
   );
   chrome.webRequest.onBeforeRequest.addListener(
     (d) => {
-      if (d.tabId >= 0) media.delete(d.tabId);
+      if (d.tabId >= 0 && media.delete(d.tabId)) scheduleRecentMenu();
     },
     { urls: ["<all_urls>"], types: ["main_frame"] },
   );
 }
-if (chrome.tabs) chrome.tabs.onRemoved.addListener((tabId) => media.delete(tabId));
+if (chrome.tabs) chrome.tabs.onRemoved.addListener((tabId) => media.delete(tabId) && scheduleRecentMenu());
 
 // What UIDM said each stream offers, by URL, and the probes waiting for an
 // answer, by request id.
@@ -168,7 +171,11 @@ function onContentMessage(msg, sender, sendResponse) {
   const pageUrl = sender.url || sender.tab.url || "";
   switch (msg && msg.type) {
     case "video:enabled":
-      sendResponse({ enabled: videoButtonAllowed(rules, pageUrl) });
+      sendResponse({
+        enabled: videoButtonAllowed(rules, pageUrl),
+        view: (rules && rules.video_view) || "full",
+        protectedNote: !rules || rules.video_protected_note !== false,
+      });
       return false;
     case "video:menu":
       if (!connected) {
@@ -181,7 +188,7 @@ function onContentMessage(msg, sender, sendResponse) {
       downloadMedia(tabId, msg, pageUrl).then((ok) => sendResponse({ ok }));
       return true;
     case "selection:enabled":
-      sendResponse({ enabled: connected && selectionButtonAllowed(rules, pageUrl) });
+      sendResponse({ enabled: connected && selectionButtonAllowed(rules, pageUrl), view: (rules && rules.video_view) || "full" });
       return false;
     case "selection:links":
       // Only the selection's links, from every frame of this tab.
@@ -355,6 +362,7 @@ function onHostMessage(msg) {
           capture_force_skips_pages: rules.capture_force_skips_pages !== false,
         },
       });
+      if (JSON.stringify(rules.browser_menu_hidden || []) !== menuBuiltFor) buildMenus();
       break;
     case "refresh_waiting":
       refreshWaiting = msg.id ?? null;
@@ -599,7 +607,6 @@ chrome.downloads.onCreated.addListener(async (item) => {
     giveBack(requestUrl, post);
     noticeTakeoverFailed(requestUrl, described.filename, null);
   }
-
 });
 
 // --- All links on a page ----------------------------------------------------
@@ -712,28 +719,115 @@ async function renderPage(url) {
 
 // --- Context menu -----------------------------------------------------------
 
-chrome.runtime.onInstalled.addListener(() => {
-  const download = chrome.i18n.getMessage("downloadWithUidm");
-  const later = chrome.i18n.getMessage("downloadLaterWithUidm");
+// The menu entries of each item UIDM's Options can leave out (its
+// `browser_menu_hidden` names them), with their titles and contexts.
+const PAGE_CONTEXTS = ["page", "frame", "video", "audio"];
+const MENU_ITEMS = {
+  download: [
+    { id: "uidm-link", title: chrome.i18n.getMessage("downloadWithUidm"), contexts: ["link"] },
+    { id: "uidm-media", title: chrome.i18n.getMessage("downloadWithUidm"), contexts: ["image", "video", "audio"] },
+  ],
+  download_later: [
+    { id: "uidm-later-link", title: chrome.i18n.getMessage("downloadLaterWithUidm"), contexts: ["link"] },
+    { id: "uidm-later-media", title: chrome.i18n.getMessage("downloadLaterWithUidm"), contexts: ["image", "video", "audio"] },
+  ],
+  all_links: [{ id: "uidm-all-links", title: chrome.i18n.getMessage("downloadAllLinksWithUidm"), contexts: ["page", "frame"] }],
+  selected_links: [{ id: "uidm-selection-links", title: chrome.i18n.getMessage("downloadSelectedLinksWithUidm"), contexts: ["selection"] }],
+  last_video: [{ id: "uidm-last-video", title: chrome.i18n.getMessage("downloadLastVideo"), contexts: PAGE_CONTEXTS }],
+  recent_videos: [{ id: "uidm-recent", title: chrome.i18n.getMessage("recentVideos"), contexts: PAGE_CONTEXTS }],
+};
+// How many videos the recent videos submenu lists.
+const RECENT_VIDEOS = 10;
+const RECENT_PREFIX = "uidm-recent-";
+// The hidden list the menu was last built for, as JSON.
+let menuBuiltFor = null;
+const ignoreMenuError = () => void chrome.runtime.lastError;
+
+function menuHidden() {
+  return (rules && rules.browser_menu_hidden) || [];
+}
+
+// Build the context menu with the items UIDM's settings leave in.
+function buildMenus() {
+  const hidden = menuHidden();
+  menuBuiltFor = JSON.stringify(hidden);
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "uidm-link", title: download, contexts: ["link"] });
-    chrome.contextMenus.create({ id: "uidm-media", title: download, contexts: ["image", "video", "audio"] });
-    chrome.contextMenus.create({ id: "uidm-later-link", title: later, contexts: ["link"] });
-    chrome.contextMenus.create({ id: "uidm-later-media", title: later, contexts: ["image", "video", "audio"] });
-    chrome.contextMenus.create({
-      id: "uidm-all-links",
-      title: chrome.i18n.getMessage("downloadAllLinksWithUidm"),
-      contexts: ["page", "frame"],
-    });
-    chrome.contextMenus.create({
-      id: "uidm-selection-links",
-      title: chrome.i18n.getMessage("downloadSelectedLinksWithUidm"),
-      contexts: ["selection"],
-    });
+    recentMenuIds = [];
+    for (const [name, entries] of Object.entries(MENU_ITEMS)) {
+      if (hidden.includes(name)) continue;
+      for (const e of entries) {
+        chrome.contextMenus.create({ id: e.id, title: e.title, contexts: e.contexts }, ignoreMenuError);
+      }
+    }
+    scheduleRecentMenu();
   });
-});
+}
+
+// The recent videos submenu's entries, and the update that rebuilds them.
+let recentMenuIds = [];
+let recentMenuTimer = 0;
+let recentMenuUpdate = Promise.resolve();
+
+function scheduleRecentMenu() {
+  clearTimeout(recentMenuTimer);
+  recentMenuTimer = setTimeout(() => {
+    recentMenuUpdate = recentMenuUpdate.then(updateRecentMenu, updateRecentMenu);
+  }, 300);
+}
+
+async function tabInfo(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return { title: tab.title || "", url: tab.url || "" };
+  } catch (_) {
+    return { title: "", url: "" };
+  }
+}
+
+// List the newest videos (the video button's, across tabs) under the
+// recent videos item, and enable the items only when there is one.
+async function updateRecentMenu() {
+  const hidden = menuHidden();
+  const recent = recentMedia(media, RECENT_VIDEOS);
+  if (!hidden.includes("last_video")) {
+    chrome.contextMenus.update("uidm-last-video", { enabled: recent.length > 0 }, ignoreMenuError);
+  }
+  if (hidden.includes("recent_videos")) return;
+  for (const id of recentMenuIds) chrome.contextMenus.remove(id, ignoreMenuError);
+  recentMenuIds = [];
+  for (const { tabId, entry } of recent) {
+    const { title } = await tabInfo(tabId);
+    const name = (title || hostOf(entry.url)).slice(0, 60);
+    const id = RECENT_PREFIX + entry.id;
+    chrome.contextMenus.create(
+      { id, parentId: "uidm-recent", title: `${name} (${mediaLabel(entry)})`, contexts: PAGE_CONTEXTS },
+      ignoreMenuError,
+    );
+    recentMenuIds.push(id);
+  }
+  chrome.contextMenus.update("uidm-recent", { enabled: recent.length > 0 }, ignoreMenuError);
+}
+
+// Send a recent video to UIDM in its best quality, named after its page.
+async function downloadRecent({ tabId, entry }) {
+  const { title, url } = await tabInfo(tabId);
+  return downloadMedia(tabId, { entry: entry.id, title }, url);
+}
+
+chrome.runtime.onInstalled.addListener(buildMenus);
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === "uidm-last-video") {
+    const [last] = recentMedia(media, 1);
+    if (last) await downloadRecent(last);
+    return;
+  }
+  if (String(info.menuItemId).startsWith(RECENT_PREFIX)) {
+    const id = Number(String(info.menuItemId).slice(RECENT_PREFIX.length));
+    const chosen = recentMedia(media, Infinity).find((r) => r.entry.id === id);
+    if (chosen) await downloadRecent(chosen);
+    return;
+  }
   if (info.menuItemId === "uidm-all-links" || info.menuItemId === "uidm-selection-links") {
     const selection = info.menuItemId === "uidm-selection-links";
     await pickLinks(tab && tab.id, info.pageUrl || (tab && tab.url) || "", selection);

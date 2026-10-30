@@ -319,5 +319,13 @@
   "takeoverClickToStop": {
     "message": "Click this notice to stop showing it.",
     "description": "Added to the notice in browsers whose notices have no buttons (Firefox): clicking the notice stops such notices."
+  },
+  "downloadLastVideo": {
+    "message": "Download the last video with UIDM",
+    "description": "Context menu item on a page or video: sends the video or audio the browser loaded last, in any tab, to UIDM."
+  },
+  "recentVideos": {
+    "message": "Recent videos (UIDM)",
+    "description": "Context menu item on a page or video: a submenu of the last 10 videos or audio files the browser loaded, to send one to UIDM."
   }
 }

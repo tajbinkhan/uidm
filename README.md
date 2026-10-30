@@ -43,8 +43,9 @@ After updating, reload the extension on the extensions page. It asks for
 `webRequest` (to send downloads started by a form as the same POST, and to
 notice the videos a page loads) and `proxy` (to read the browser's proxy
 setting, which it never changes), in addition to native messaging,
-downloads, cookies, context menus and storage. A small content script runs
-on every page for the video button; it does nothing until a video plays.
+downloads, cookies, context menus, storage and notifications. A small
+content script runs on every page for the video button; it does nothing
+until a video plays.
 
 For streamed videos to end up as one `.mp4`, install
 [ffmpeg](https://ffmpeg.org/) and put `ffmpeg.exe` on `PATH`, or choose it in
@@ -269,7 +270,17 @@ tests, not in a running Firefox.
   and joined into one video (see [Streams](#streams-batches-and-the-site-grabber)).
   Videos protected by DRM say so and offer nothing: UIDM does not get around
   DRM. The popup turns the button off everywhere or on the current site;
-  **Options > Browser capture** has the same switch and the site list.
+  **Options > Videos and menus** has the same switch and the site list, the
+  video and audio types the button lists (with **Check all**, **Clear all**
+  and **Add**; M3U8 and MPD stand for streams), the smallest file it lists
+  (128 KB by default), a full or mini look for it and for the button by
+  selected links, and whether it shows on protected videos to say so.
+- **Context menu**: the extension adds **Download with UIDM**, **Download
+  later with UIDM**, **Download all links**, **Download selected links**,
+  **Download the last video with UIDM** (the video or audio the browser
+  loaded last, in any tab, in its best quality) and **Recent videos**, a
+  submenu of the last 10. **Options > Videos and menus** chooses which of
+  them show.
 - **More > Add many...** adds downloads from a pattern such as
   `https://example.com/photo[001-120].jpg` (with steps like `[0-100:5]` and
   letter ranges like `[a-z]`), or from a pasted list or a text file with one
@@ -795,7 +806,6 @@ download goes through UIDM's own proxy setting first; when it fails, the
 daemon retries it once through the browser's proxy, and that address keeps
 using it until the daemon restarts.
 
-
 **Logins.** A site matches the way capture rules do: `example.com` covers its
 subdomains, and `*` works within a name. A path after the site limits the
 login to it: `example.com/private/*` matches with `*` across the whole path,
@@ -817,8 +827,10 @@ retried.
 **Seeing videos.** The extension's service worker reads the headers of every
 response a tab gets (`webRequest.onHeadersReceived`) and keeps, per tab, the
 direct video and audio files (a `video/` or `audio/` type, or a media file
-name with a generic type; anything under 128 KiB is left out) and the HLS
-and DASH playlists. Segments (`.ts`, `.m4s`, `video/mp2t`) are left out, and
+name with a generic type; anything under `video_min_size_kb`, 128 KiB by
+default, is left out) and the HLS and DASH playlists, of the types in
+`video_types` (`m3u8` and `mpd` for the streams; a file whose type neither
+its name nor its MIME type says is kept). Segments (`.ts`, `.m4s`, `video/mp2t`) are left out, and
 the list starts over when the tab loads a new page. A content script
 (`content.js`) shows **Download video** over a playing `<video>` in a closed
 shadow root, so the page's scripts and styles cannot reach it, and shows
@@ -827,7 +839,10 @@ worker for its own tab's list, and the worker asks UIDM (`probe_media`) what
 each stream offers. A content script can only pick from what the worker saw
 in its tab, by number, never pass in an address. A video element that raised
 an `encrypted` event or holds `MediaKeys` is DRM protected: the menu says so
-and offers nothing. Playlists that are themselves one quality of a listed
+and offers nothing, or with `video_protected_note` off the button does not
+show on it. `video_view` (`full` or `mini`) sets how the button and the
+selected-links button look; the mini one is a round arrow with its text as
+a tooltip. Playlists that are themselves one quality of a listed
 master playlist are folded into it.
 
 **HLS.** UIDM reads master playlists (qualities, separate audio tracks) and

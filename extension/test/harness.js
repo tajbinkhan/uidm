@@ -82,7 +82,28 @@ function loadWorker({ firefox = false } = {}) {
       download: async (o) => browserCalls.push(["download", o.url, o]),
     },
     cookies: { getAll: async () => [] },
-    contextMenus: { removeAll: () => {}, create: () => {}, onClicked: event() },
+    contextMenus: {
+      // The menu as built: id -> its options.
+      items: new Map(),
+      removeAll: (cb) => {
+        chrome.contextMenus.items.clear();
+        if (cb) cb();
+      },
+      create: (o, cb) => {
+        chrome.contextMenus.items.set(o.id, { ...o });
+        if (cb) cb();
+        return o.id;
+      },
+      update: (id, o, cb) => {
+        Object.assign(chrome.contextMenus.items.get(id) || {}, o);
+        if (cb) cb();
+      },
+      remove: (id, cb) => {
+        chrome.contextMenus.items.delete(id);
+        if (cb) cb();
+      },
+      onClicked: event(),
+    },
     action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
     notifications: {
       shown: [],

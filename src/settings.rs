@@ -105,6 +105,39 @@ pub enum SelectionButton {
     Sites,
 }
 
+/// How the video button and the selected-links button look on a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelView {
+    /// A button with its text.
+    #[default]
+    Full,
+    /// A small round button with an arrow; its text shows on hover.
+    Mini,
+}
+
+/// The items UIDM can add to the browser's context menu, by the names the
+/// extension knows them by, with their labels.
+pub const BROWSER_MENU_ITEMS: [(&str, &str); 6] = [
+    ("download", "Download with UIDM (links, pictures, videos)"),
+    ("download_later", "Download later with UIDM"),
+    ("all_links", "Download all links with UIDM"),
+    ("selected_links", "Download selected links with UIDM"),
+    ("last_video", "Download the last video with UIDM"),
+    ("recent_videos", "The last 10 videos"),
+];
+
+/// The video and audio types the video button offers, unless the settings
+/// say otherwise. `m3u8` and `mpd` are HLS and DASH streams.
+pub fn default_video_types() -> Vec<String> {
+    [
+        "mp4", "m4v", "webm", "mkv", "mov", "avi", "wmv", "flv", "3gp", "ogv", "mp3", "m4a", "aac", "ogg", "oga",
+        "opus", "flac", "wav", "m3u8", "mpd",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
 /// How UIDM tells you a download finished or failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -489,6 +522,20 @@ pub struct Settings {
     pub video_button: bool,
     /// Sites that get no video button, such as `*.example.com`.
     pub video_button_excluded_sites: Vec<String>,
+    /// The video and audio types (lowercase extensions) the video button
+    /// offers; `m3u8` and `mpd` stand for HLS and DASH streams.
+    pub video_types: Vec<String>,
+    /// Video and audio files the browser reports as smaller than this, in
+    /// KB, are left out of the video button's list.
+    pub video_min_size_kb: u64,
+    /// How the video button and the selected-links button look.
+    pub video_view: PanelView,
+    /// The video button says when a video is protected (DRM). Off, it does
+    /// not show on such videos at all.
+    pub video_protected_note: bool,
+    /// The context menu items the extension leaves out, by the names in
+    /// `BROWSER_MENU_ITEMS`.
+    pub browser_menu_hidden: Vec<String>,
     /// ffmpeg.exe, to join streams into .mp4 files. Empty looks on `PATH`.
     pub ffmpeg_path: String,
     /// Ask before removing downloads from the list.
@@ -615,6 +662,11 @@ impl Default for Settings {
             clipboard_start: false,
             video_button: true,
             video_button_excluded_sites: Vec::new(),
+            video_types: default_video_types(),
+            video_min_size_kb: 128,
+            video_view: PanelView::Full,
+            video_protected_note: true,
+            browser_menu_hidden: Vec::new(),
             ffmpeg_path: String::new(),
             confirm_remove: true,
             remove_deletes_files: false,
@@ -745,6 +797,14 @@ impl Settings {
         }
 
         check_extensions("The captured file types", &self.capture_types)?;
+        check_extensions("The video types", &self.video_types)?;
+        if self.video_min_size_kb > CAPTURE_MIN_SIZE_MAX_KB {
+            return Err("The minimum video size is too large.".to_string());
+        }
+        if let Some(item) = self.browser_menu_hidden.iter().find(|i| !BROWSER_MENU_ITEMS.iter().any(|(id, _)| id == i)) {
+            return Err(format!("\"{item}\" is not a context menu item."));
+        }
+
         check_extensions("The file types that start without asking", &self.auto_start_types)?;
         if self.capture_min_size_kb > CAPTURE_MIN_SIZE_MAX_KB {
             return Err("The minimum size to capture is too large.".to_string());
@@ -1181,6 +1241,11 @@ mod tests {
             clipboard_start: true,
             video_button: false,
             video_button_excluded_sites: vec!["video.example.com".into()],
+            video_types: vec!["mp4".into(), "m3u8".into()],
+            video_min_size_kb: 512,
+            video_view: PanelView::Mini,
+            video_protected_note: false,
+            browser_menu_hidden: vec!["all_links".into()],
             ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".into(),
             confirm_remove: false,
             remove_deletes_files: true,
@@ -1518,8 +1583,6 @@ mod tests {
 
     #[test]
     fn custom_scanner_needs_a_command_with_the_path() {
-
-
         let custom = |cmd: &str| Settings {
             scan_after_download: true,
             scanner: Scanner::Custom,

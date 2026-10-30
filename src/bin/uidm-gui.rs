@@ -70,6 +70,7 @@ use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
     parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, SocksVersion, ServerLimit, QUOTA_HOURS_RANGE, SERVER_CONNECTIONS_RANGE, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, TEXT_SIZE_RANGE, USER_AGENT_PRESETS,
+    BROWSER_MENU_ITEMS, PanelView,
 };
 use uidm::state::DownloadTable;
 
@@ -708,6 +709,7 @@ enum OptionsTab {
     General,
     Categories,
     Capture,
+    Video,
     Notifications,
     Connection,
 }
@@ -812,6 +814,15 @@ struct OptionsDraft {
     clipboard_monitor: bool,
     clipboard_start: bool,
     video_button: bool,
+    /// Each known video type and whether the button offers it.
+    video_types: Vec<(String, bool)>,
+    /// A type typed in to add to the list.
+    video_type_new: String,
+    video_min_size_kb: u64,
+    video_view: PanelView,
+    video_protected_note: bool,
+    /// Each context menu item, its label, and whether it shows.
+    menu_items: Vec<(&'static str, &'static str, bool)>,
     /// One site per line.
     video_button_excluded_sites: String,
     ffmpeg_path: String,
@@ -944,6 +955,29 @@ impl OptionsDraft {
             clipboard_monitor: s.clipboard_monitor,
             clipboard_start: s.clipboard_start,
             video_button: s.video_button,
+            video_types: {
+                let mut all: Vec<(String, bool)> = uidm::settings::default_video_types()
+                    .into_iter()
+                    .map(|t| {
+                        let on = s.video_types.contains(&t);
+                        (t, on)
+                    })
+                    .collect();
+                for t in &s.video_types {
+                    if !all.iter().any(|(k, _)| k == t) {
+                        all.push((t.clone(), true));
+                    }
+                }
+                all
+            },
+            video_type_new: String::new(),
+            video_min_size_kb: s.video_min_size_kb,
+            video_view: s.video_view,
+            video_protected_note: s.video_protected_note,
+            menu_items: BROWSER_MENU_ITEMS
+                .iter()
+                .map(|(id, label)| (*id, *label, !s.browser_menu_hidden.iter().any(|h| h == id)))
+                .collect(),
             video_button_excluded_sites: s.video_button_excluded_sites.join("\n"),
             ffmpeg_path: s.ffmpeg_path.clone(),
             ffmpeg_picked: Picked::default(),
@@ -1064,6 +1098,11 @@ impl OptionsDraft {
             clipboard_monitor: self.clipboard_monitor,
             clipboard_start: self.clipboard_start,
             video_button: self.video_button,
+            video_types: self.video_types.iter().filter(|(_, on)| *on).map(|(t, _)| t.clone()).collect(),
+            video_min_size_kb: self.video_min_size_kb,
+            video_view: self.video_view,
+            video_protected_note: self.video_protected_note,
+            browser_menu_hidden: self.menu_items.iter().filter(|(_, _, on)| !on).map(|(id, _, _)| id.to_string()).collect(),
             video_button_excluded_sites: sites(&self.video_button_excluded_sites),
             ffmpeg_path: self.ffmpeg_path.trim().to_string(),
             confirm_remove: self.confirm_remove,
@@ -2190,6 +2229,7 @@ impl App {
                     ui.selectable_value(&mut draft.tab, OptionsTab::General, tr("General"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Categories, tr("Categories"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Capture, tr("Browser capture"));
+                    ui.selectable_value(&mut draft.tab, OptionsTab::Video, tr("Videos and menus"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Notifications, tr("When done"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Connection, tr("Connection"));
                 });
@@ -2198,6 +2238,7 @@ impl App {
                     OptionsTab::General => general_tab(ui, draft, &queues),
                     OptionsTab::Categories => categories_tab(ui, draft),
                     OptionsTab::Capture => capture_tab(ui, draft),
+                    OptionsTab::Video => video_tab(ui, draft),
                     OptionsTab::Notifications => notifications_tab(ui, draft),
                     OptionsTab::Connection => connection_tab(ui, draft),
                 }
@@ -2890,6 +2931,25 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         });
         ui.end_row();
 
+
+        ui.label(tr("Clipboard"));
+        ui.vertical(|ui| {
+            ui.checkbox(
+                &mut draft.clipboard_monitor,
+                tr("Watch for links I copy whose file type is listed above"),
+            );
+            ui.add_enabled_ui(draft.clipboard_monitor, |ui| {
+                ui.radio_value(&mut draft.clipboard_start, false, tr("Offer to download each one"));
+                ui.radio_value(&mut draft.clipboard_start, true, tr("Start downloading it at once"));
+            });
+        });
+        ui.end_row();
+    });
+}
+
+/// The video button's options and the browser's context menu items.
+fn video_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+    egui::Grid::new("video").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label(tr("Videos"));
         ui.checkbox(&mut draft.video_button, tr("Show a download button over videos playing in the browser"));
         ui.end_row();
@@ -2904,16 +2964,72 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         );
         ui.end_row();
 
-        ui.label(tr("Clipboard"));
-        ui.vertical(|ui| {
-            ui.checkbox(
-                &mut draft.clipboard_monitor,
-                tr("Watch for links I copy whose file type is listed above"),
-            );
-            ui.add_enabled_ui(draft.clipboard_monitor, |ui| {
-                ui.radio_value(&mut draft.clipboard_start, false, tr("Offer to download each one"));
-                ui.radio_value(&mut draft.clipboard_start, true, tr("Start downloading it at once"));
+        ui.label(tr("Video types"));
+        ui.add_enabled_ui(draft.video_button, |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.set_max_width(420.0);
+                    for (t, on) in &mut draft.video_types {
+                        ui.checkbox(on, t.to_ascii_uppercase());
+                    }
+                });
+                ui.weak(tr("M3U8 and MPD are HLS and DASH streams."));
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Check all")).clicked() {
+                        draft.video_types.iter_mut().for_each(|(_, on)| *on = true);
+                    }
+                    if ui.button(tr("Clear all")).clicked() {
+                        draft.video_types.iter_mut().for_each(|(_, on)| *on = false);
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut draft.video_type_new).hint_text("ts").desired_width(70.0));
+                    if ui.button(tr("Add")).clicked() {
+                        for t in parse_extensions(&draft.video_type_new) {
+                            match draft.video_types.iter_mut().find(|(k, _)| *k == t) {
+                                Some((_, on)) => *on = true,
+                                None => draft.video_types.push((t, true)),
+                            }
+                        }
+                        draft.video_type_new.clear();
+                    }
+                });
             });
+        });
+        ui.end_row();
+
+        ui.label(tr("Minimum size"));
+        ui.add_enabled_ui(draft.video_button, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut draft.video_min_size_kb).range(0..=CAPTURE_MIN_SIZE_MAX_KB));
+                ui.label(tr("KB: smaller video and audio files are left out of the list"));
+            });
+        });
+        ui.end_row();
+
+        ui.label(tr("Buttons on pages"));
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut draft.video_view, PanelView::Full, tr("Full, with their text"));
+                ui.radio_value(&mut draft.video_view, PanelView::Mini, tr("Mini, an arrow"));
+            })
+            .response
+            .on_hover_text(tr("For the video button and the button by selected links"));
+            ui.add_enabled(
+                draft.video_button,
+                egui::Checkbox::new(
+                    &mut draft.video_protected_note,
+                    tr("Say when a video is protected and cannot be downloaded"),
+                ),
+            )
+            .on_hover_text(tr("Off, the video button does not show on protected videos"));
+        });
+        ui.end_row();
+
+        ui.label(tr("Context menu"));
+        ui.vertical(|ui| {
+            ui.weak(tr("The items UIDM adds to the browser's menu for links, pages and videos"));
+            for (_, label, on) in &mut draft.menu_items {
+                ui.checkbox(on, tr(label));
+            }
         });
         ui.end_row();
     });
@@ -2937,7 +3053,6 @@ fn key_boxes(ui: &mut egui::Ui, key: &mut CaptureKey, insert: bool) {
         ui.checkbox(&mut key.insert, "Insert");
     }
 }
-
 
 fn duplicate_label(d: Duplicate) -> &'static str {
     match d {

@@ -45,6 +45,13 @@ const MIME_EXTENSIONS = {
   "video/quicktime": "mov",
   "video/webm": "webm",
   "video/x-ms-wmv": "wmv",
+  "video/ogg": "ogv",
+  "video/x-flv": "flv",
+  "video/3gpp": "3gp",
+  "video/x-m4v": "m4v",
+  "audio/opus": "opus",
+  "audio/x-flac": "flac",
+  "audio/x-m4a": "m4a",
   "application/x-iso9660-image": "iso",
 };
 
@@ -52,6 +59,11 @@ const MIME_EXTENSIONS = {
 // but the name says nothing yet, because that is what most real downloads
 // look like before their name is known.
 const GENERIC_MIME = new Set(["application/octet-stream", "binary/octet-stream", "application/force-download"]);
+
+// The file type a MIME type stands for, such as "video/mp4" -> "mp4", or "".
+function mimeExtension(mime) {
+  return MIME_EXTENSIONS[String(mime || "").split(";")[0].trim().toLowerCase()] || "";
+}
 
 // "report.PDF" -> "pdf"; "README" and ".bashrc" -> "".
 function extensionOf(name) {
@@ -217,6 +229,6 @@ function captureDecision(rules, item) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, parseKeys, forceLeavesLink, clickApplies, urlMatches, selectionButtonAllowed };
+  module.exports = { mimeExtension, extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, parseKeys, forceLeavesLink, clickApplies, urlMatches, selectionButtonAllowed };
 
 }

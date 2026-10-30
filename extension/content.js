@@ -9,6 +9,35 @@
 // through Encrypted Media Extensions is DRM protected: the menu says so and
 // offers nothing.
 
+// The mini view's button face: a down arrow, drawn without page text.
+function uidmArrow() {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", "M8 2v9m-4-4 4 4 4-4M3 14h10");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "2");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.append(path);
+  return svg;
+}
+
+// Give `button` the mini view: the arrow alone, its text as a tooltip and
+// its accessible name.
+function makeMini(button) {
+  const label = button.textContent;
+  button.replaceChildren(uidmArrow());
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.classList.add("mini");
+}
+
 // The skip and force keys: a link clicked with the skip keys held downloads
 // in the browser; one clicked with the force keys goes to UIDM instead of
 // opening. The keys come from UIDM's settings, which the worker keeps in
@@ -64,6 +93,7 @@
 // all is asked once, on the first such selection.
 (() => {
   let enabled = null;
+  let view = "full";
   let host = null;
   let button = null;
   let timer = 0;
@@ -77,9 +107,11 @@
       :host { all: initial; }
       button { padding: 4px 9px; border: 0; border-radius: 6px; background: rgba(37,99,235,.95); color: #fff; font: 12px system-ui, sans-serif; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
       button:hover { background: #1d4ed8; }
+      button.mini { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border-radius: 50%; }
     `;
     button = document.createElement("button");
     button.textContent = chrome.i18n.getMessage("downloadWithUidm");
+    if (view === "mini") makeMini(button);
     // Keep the selection: a press would otherwise clear it.
     button.addEventListener("mousedown", (ev) => ev.preventDefault());
     button.addEventListener("click", (ev) => {
@@ -113,6 +145,7 @@
     if (enabled === null) {
       const answer = await chrome.runtime.sendMessage({ type: "selection:enabled" }).catch(() => null);
       enabled = !!(answer && answer.enabled);
+      if (answer && answer.view) view = answer.view;
     }
     if (!enabled) return;
     if (!host) build();
@@ -141,6 +174,9 @@
   if (window.top !== window && innerWidth < 200) return;
 
   let enabled = null; // asked once, on the first video
+  let view = "full";
+  // Whether a protected video gets the button, to say it is protected.
+  let protectedNote = true;
   let host = null;
   let ui = null;
   let current = null; // the video the button belongs to
@@ -187,6 +223,7 @@
       * { box-sizing: border-box; font: 13px system-ui, sans-serif; }
       .btn { padding: 5px 10px; border: 0; border-radius: 6px; background: rgba(37,99,235,.92); color: #fff; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
       .btn:hover { background: #1d4ed8; }
+      .btn.mini { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border-radius: 50%; }
       .menu { position: absolute; right: 0; top: 32px; width: 300px; max-height: 340px; overflow-y: auto; padding: 6px; border-radius: 8px; background: #1f2328; color: #e6edf3; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
       .head { padding: 4px 6px; color: #9198a1; font-size: 12px; }
       .opt { display: flex; width: 100%; gap: 8px; padding: 6px; border: 0; border-radius: 5px; background: none; color: inherit; text-align: left; cursor: pointer; }
@@ -195,6 +232,7 @@
       .note { padding: 6px; color: #d29922; }
     `;
     const button = el("button", "btn", chrome.i18n.getMessage("downloadVideo"));
+    if (view === "mini") makeMini(button);
     const menu = el("div", "menu");
     menu.hidden = true;
     button.addEventListener("click", (ev) => {
@@ -238,8 +276,14 @@
     if (enabled === null) {
       const answer = await ask({ type: "video:enabled" });
       enabled = !!(answer && answer.enabled);
+      if (answer && answer.view) view = answer.view;
+      if (answer && answer.protectedNote === false) protectedNote = false;
     }
     if (!enabled) return;
+    if (!protectedNote && (encrypted.has(video) || video.mediaKeys)) {
+      if (current === video) hide();
+      return;
+    }
     if (!host) build();
     if (current !== video) ui.menu.hidden = true;
     current = video;
@@ -313,7 +357,15 @@
 
   const isVideo = (t) => t instanceof HTMLVideoElement;
   document.addEventListener("play", (ev) => isVideo(ev.target) && show(ev.target), true);
-  document.addEventListener("encrypted", (ev) => isVideo(ev.target) && encrypted.add(ev.target), true);
+  document.addEventListener(
+    "encrypted",
+    (ev) => {
+      if (!isVideo(ev.target)) return;
+      encrypted.add(ev.target);
+      if (!protectedNote && ev.target === current) hide();
+    },
+    true,
+  );
   document.addEventListener(
     "mouseover",
     (ev) => {
