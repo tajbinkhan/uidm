@@ -87,9 +87,6 @@ const ICON_SIZE: u32 = 64;
 /// How often the clipboard's change counter is checked.
 const CLIPBOARD_POLL: Duration = Duration::from_millis(700);
 
-/// Width of the file-name column; long names are truncated with a tooltip.
-const NAME_WIDTH: f32 = 200.0;
-
 /// A failure gets its dialog after this long, so a download the browser
 /// extension takes back (and removes) right away gets none. The daemon waits
 /// the same for its notifications.
@@ -557,6 +554,8 @@ struct App {
     layout: columns::Layout,
     /// The Columns dialog is open.
     columns_dialog: bool,
+    /// The column layout changed and waits to be saved until no drag is on.
+    layout_unsaved: bool,
     /// Open Properties dialogs, one per download.
     properties: Vec<properties::PropertiesDialog>,
     /// The confirmation before removing downloads.
@@ -1280,6 +1279,7 @@ impl App {
             find: None,
             layout: columns::Layout::load(),
             columns_dialog: false,
+            layout_unsaved: false,
             properties: Vec::new(),
             remove_prompt: None,
             limit_dialog: None,
@@ -3816,20 +3816,31 @@ impl eframe::App for App {
                     .show(ui, |ui| {
                         ui.label("");
                         for &column in &columns {
-                            let title = egui::RichText::new(format!("{}{}", column.title(), self.layout.arrow(column))).strong();
-                            let header = ui.add(egui::Button::new(title).frame(false));
-                            let header = if current_queue.is_some() {
-                                header.on_hover_text(tr("A queue's downloads stay in its run order"))
-                            } else {
-                                header.on_hover_text(tr("Sort by this column; click again to reverse, a third time for the order added"))
-                            };
-                            if header.clicked() && current_queue.is_none() {
-                                self.layout.click(column);
-                            }
-                            header.context_menu(|ui| {
-                                if ui.button(tr("Columns...")).clicked() {
-                                    self.columns_dialog = true;
-                                    ui.close_menu();
+                            ui.horizontal(|ui| {
+                                let title = egui::RichText::new(format!("{}{}", column.title(), self.layout.arrow(column))).strong();
+                                let header = ui.add(egui::Button::new(title).frame(false));
+                                let header = if current_queue.is_some() {
+                                    header.on_hover_text(tr("A queue's downloads stay in its run order"))
+                                } else {
+                                    header.on_hover_text(tr("Sort by this column; click again to reverse, a third time for the order added"))
+                                };
+                                if header.clicked() && current_queue.is_none() {
+                                    self.layout.click(column);
+                                }
+                                header.context_menu(|ui| {
+                                    if ui.button(tr("Columns...")).clicked() {
+                                        self.columns_dialog = true;
+                                        ui.close_menu();
+                                    }
+                                });
+                                // The edge that sets the column's width.
+                                let (rect, edge) = ui.allocate_exact_size(egui::vec2(6.0, 18.0), egui::Sense::drag());
+                                let edge = edge.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                                let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+                                ui.painter().vline(rect.center().x, rect.y_range(), stroke);
+                                if edge.dragged() {
+                                    let now = self.layout.width(column).unwrap_or(ui.min_rect().width());
+                                    self.layout.set_width(column, now + edge.drag_delta().x);
                                 }
                             });
                         }
@@ -3845,6 +3856,7 @@ impl eframe::App for App {
                                 place,
                                 selected: self.selected.contains(&entry.id),
                                 columns: &columns,
+                                layout: &self.layout,
                                 found: current == Some(entry.id),
                                 scroll: scroll && current == Some(entry.id),
                             };
@@ -3938,8 +3950,14 @@ impl eframe::App for App {
             let entry = rows.iter().find(|e| e.id == d.id);
             properties::dialog(ctx, d, entry, connected, &mut actions)
         });
+        // Saved once a drag on a header's edge is over, not on every frame
+        // of it.
         if self.layout != layout_before {
+            self.layout_unsaved = true;
+        }
+        if self.layout_unsaved && !ctx.input(|i| i.pointer.any_down()) {
             self.layout.save();
+            self.layout_unsaved = false;
         }
 
         for action in actions {
@@ -4424,6 +4442,8 @@ struct Row<'a> {
     selected: bool,
     /// The columns to draw, left to right.
     columns: &'a [Column],
+    /// Their widths.
+    layout: &'a columns::Layout,
     /// The match the find bar moved to.
     found: bool,
     /// Scroll the list to this row.
@@ -4453,7 +4473,18 @@ fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<A
         actions.push(Action::Select(e.id, ticked));
     }
     for column in row.columns {
-        draw_cell(ui, *column, e, row, actions);
+        // A column given a width keeps it, cutting what does not fit; text
+        // columns cut their text themselves.
+        match row.layout.width(*column).filter(|_| !column.is_text()) {
+            Some(w) => {
+                ui.allocate_ui_with_layout(egui::vec2(w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_width(w);
+                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                    draw_cell(ui, *column, e, row, actions);
+                });
+            }
+            None => draw_cell(ui, *column, e, row, actions),
+        }
     }
     ui.horizontal(|ui| {
         if let Some((queue, i, len)) = row.place {
@@ -4589,15 +4620,16 @@ fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row, ac
     // A stream counts segments; its size is only known once fetched.
     let parts = e.parts.filter(|[_, all]| *all > 0);
     let running = row.speed.filter(|s| *s > 0.0 && e.status == Status::Downloading);
+    let width = row.layout.width(column).unwrap_or(columns::TEXT_WIDTH);
     match column {
         Column::Name => {
             // A fixed-width, left-aligned cell so long names truncate instead
             // of pushing the action buttons off the window.
             ui.allocate_ui_with_layout(
-                egui::vec2(NAME_WIDTH, 18.0),
+                egui::vec2(width, 18.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    ui.set_width(NAME_WIDTH);
+                    ui.set_width(width);
                     let mut name = egui::RichText::new(display_name(e));
                     if row.found {
                         let selection = ui.visuals().selection;
@@ -4679,24 +4711,24 @@ fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row, ac
         }
         Column::SaveTo => {
             let folder = e.path.as_deref().and_then(|p| Path::new(p).parent()).map(|d| d.display().to_string());
-            text_cell(ui, folder.as_deref().unwrap_or(""));
+            text_cell(ui, folder.as_deref().unwrap_or(""), width);
         }
         Column::Referrer => {
-            text_cell(ui, e.referrer.as_deref().unwrap_or(""));
+            text_cell(ui, e.referrer.as_deref().unwrap_or(""), width);
         }
         Column::Description => {
-            text_cell(ui, e.description.as_deref().unwrap_or(""));
+            text_cell(ui, e.description.as_deref().unwrap_or(""), width);
         }
     }
 }
 
-/// A long text, cut to the name column's width with the rest in a tooltip.
-fn text_cell(ui: &mut egui::Ui, text: &str) {
+/// A long text, cut to `width` with the rest in a tooltip.
+fn text_cell(ui: &mut egui::Ui, text: &str, width: f32) {
     ui.allocate_ui_with_layout(
-        egui::vec2(NAME_WIDTH, 18.0),
+        egui::vec2(width, 18.0),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            ui.set_width(NAME_WIDTH);
+            ui.set_width(width);
             let label = ui.add(egui::Label::new(text).truncate());
             if !text.is_empty() {
                 label.on_hover_text(text);

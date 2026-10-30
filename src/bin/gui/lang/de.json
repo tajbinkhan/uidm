@@ -782,5 +782,8 @@
   "Ctrl+F finds a download in the list by its name or address.": "Strg+F findet einen Download in der Liste nach Name oder Adresse.",
   "Options > Connection sets a proxy, and the logins for sites that ask for one.": "Optionen > Verbindung legt einen Proxy fest und die Anmeldungen für Websites, die danach fragen.",
   "A category can remember the folder you last chose for it in the save-as dialog: tick its box under Options > Categories.": "Eine Kategorie kann sich den Ordner merken, den Sie zuletzt im Speichern-unter-Dialog gewählt haben: Setzen Sie ihr Häkchen unter Optionen > Kategorien.",
-  "Options > When done can scan each finished download for viruses, with Microsoft Defender or a scanner you choose.": "Optionen > Wenn fertig kann jeden fertigen Download mit Microsoft Defender oder einem gewählten Scanner auf Viren prüfen."
+  "Options > When done can scan each finished download for viruses, with Microsoft Defender or a scanner you choose.": "Optionen > Wenn fertig kann jeden fertigen Download mit Microsoft Defender oder einem gewählten Scanner auf Viren prüfen.",
+  "Parent web page": "Übergeordnete Webseite",
+  "A width is in points; Fit sizes the column to what it holds. Dragging the edge after a header sets it too.": "Eine Breite ist in Punkten; Anpassen richtet die Spalte nach ihrem Inhalt. Auch das Ziehen am Rand nach einer Überschrift legt sie fest.",
+  "Fit": "Anpassen"
 }

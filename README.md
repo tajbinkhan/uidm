@@ -373,6 +373,13 @@ tests, not in a running Firefox.
   Opera read Chrome's registration, so the list says so when it finds them
   instead of listing them. Restart a browser after a change.
 
+- **The list's columns**: a click on a header sorts by it (again to
+  reverse, a third time for the order added), and dragging the thin edge
+  after a header sets the column's width. **More > Columns...** shows,
+  hides, orders and sizes them (**Fit** sizes a column to what it holds);
+  the columns include **Parent web page**, the page a download came from,
+  which sorts like the rest. The layout is kept in
+  `%LOCALAPPDATA%\UIDM\window.json`.
 - **Help** (next to **More**): **Help contents** opens this README on
   GitHub, two more items open its sections on queues and the scheduler and
   on the site grabber, **Tip of the day** shows a tip with **Next tip**, and
