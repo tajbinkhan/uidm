@@ -262,6 +262,17 @@ impl Registrar {
         serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)
     }
 
+    /// Whether `b`'s registration names this registrar's host.
+    #[cfg_attr(windows, allow(dead_code))]
+    fn points_here(&self, b: &Browser) -> bool {
+        #[cfg(windows)]
+        let path = registry::get_string(&self.key(b), "").ok().flatten().map(PathBuf::from);
+        #[cfg(not(windows))]
+        let path = Some(self.manifest_path(b));
+        let manifest = path.and_then(|p| std::fs::read(p).ok()).and_then(|m| serde_json::from_slice::<serde_json::Value>(&m).ok());
+        manifest.is_some_and(|m| m["path"] == self.host.display().to_string())
+    }
+
     /// Whether `b` has a registration: its manifest is there.
     #[cfg(not(windows))]
     pub fn registered(&self, b: &Browser) -> bool {
@@ -321,6 +332,31 @@ impl Registrar {
     }
 }
 
+/// On macOS and Linux, where no Setup registers UIDM: register every
+/// browser found the first time UIDM runs (noted in `browsers.done` in the
+/// data folder, so one the user turns off in Options stays off), and point
+/// registrations at this copy of the host when UIDM has moved, as an
+/// AppImage does. Returns the browsers registered.
+pub fn register_found() -> io::Result<Vec<&'static str>> {
+    if cfg!(windows) {
+        return Ok(Vec::new());
+    }
+    let registrar = Registrar::for_this_user()?;
+    let done = crate::platform::data_dir()?.join("browsers.done");
+    let first = !done.exists();
+    let mut registered = Vec::new();
+    for b in BROWSERS.iter().filter(|b| registrar.installed(b)) {
+        if (first && !registrar.registered(b)) || (registrar.registered(b) && !registrar.points_here(b)) {
+            registrar.register(b)?;
+            registered.push(b.name);
+        }
+    }
+    if first {
+        crate::settings::write_atomic(&done, b"")?;
+    }
+    Ok(registered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,6 +381,9 @@ mod tests {
         let fx: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join(firefox.hosts_key).join("com.uidm.host.json")).unwrap()).unwrap();
         assert_eq!(fx["allowed_extensions"][0], FIREFOX_EXTENSION_ID);
+        assert!(r.points_here(&chrome));
+        let moved = Registrar::new(&dir.display().to_string(), dir.clone(), dir.join("elsewhere"));
+        assert!(!moved.points_here(&chrome));
         r.unregister(&chrome).unwrap();
         assert!(!r.registered(&chrome) && r.registered(&firefox));
         r.unregister(&chrome).unwrap();

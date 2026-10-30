@@ -2582,7 +2582,10 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
         ui.end_row();
 
         ui.label("");
-        ui.checkbox(&mut draft.start_with_windows, tr("Start with Windows, in the tray"));
+        ui.checkbox(
+            &mut draft.start_with_windows,
+            if cfg!(windows) { tr("Start with Windows, in the tray") } else { tr("Start when I sign in, in the tray") },
+        );
         ui.end_row();
 
         ui.label("");
@@ -2864,7 +2867,10 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 /// script is not read: it picks a proxy per address.
 fn get_system_proxy(draft: &mut OptionsDraft) {
     let Some(rules) = uidm::net::system_fixed_proxy() else {
-        draft.error = Some(tr("Windows has no proxy server turned on.").to_string());
+        draft.error = Some(
+            if cfg!(windows) { tr("Windows has no proxy server turned on.") } else { tr("No proxy is set in http_proxy, https_proxy or all_proxy.") }
+                .to_string(),
+        );
         return;
     };
     draft.proxy_mode = ProxyMode::Manual;

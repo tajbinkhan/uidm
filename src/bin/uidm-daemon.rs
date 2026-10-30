@@ -3058,6 +3058,11 @@ fn run() -> io::Result<()> {
     let token = ipc::new_token()?;
     ipc::write_token(&token)?;
     let token: Arc<str> = token.into();
+    match uidm::browsers::register_found() {
+        Ok(names) if !names.is_empty() => eprintln!("[uidm-daemon] registered with {}", names.join(", ")),
+        Ok(_) => {}
+        Err(e) => eprintln!("[uidm-daemon] could not register with the browsers: {e}"),
+    }
 
     let (daemon, dirty, notes, wake) = Daemon::new(Paths::from_env());
     clean_early_folders(&daemon);

@@ -1,7 +1,7 @@
 # UIDM
 
-A download manager for Windows, rebuilt from scratch in Rust. It catches
-downloads in Chrome and Edge, fetches each file over parallel connections,
+A download manager for Windows, macOS and Linux, rebuilt from scratch in
+Rust. It catches downloads in Chrome, Edge, Firefox and other browsers, fetches each file over parallel connections,
 resumes after interruptions, keeps downloading after the browser closes, and
 shows everything in a desktop window. It also downloads streamed videos (HLS
 and DASH) from a button over the video, adds many files at once from a
@@ -9,9 +9,28 @@ pattern, a list or a site crawl, and watches the clipboard for links.
 
 ## Install
 
-Run `UIDM-Setup-<version>.exe`. GitHub Actions builds it on every push, in
-the `uidm-windows-setup` artifact, and [Build](#build) says how to make it
-yourself. It installs for your user only, without administrator rights, into
+Every release on the
+[Releases page](https://github.com/tajbinkhan/uidm/releases) has a file for
+each system:
+
+| System | File | |
+|---|---|---|
+| Windows 10 and 11 | `UIDM-Setup-<version>.exe` | the installer, below |
+| | `UIDM-<version>-windows-portable.zip` | the programs and `install-host.ps1` |
+| macOS 11 or later | `UIDM-<version>-macos.dmg` | Apple Silicon and Intel |
+| Ubuntu, Debian, Mint | `uidm_<version>_amd64.deb` | `sudo apt install ./uidm_*.deb` |
+| Fedora, openSUSE, RHEL | `uidm-<version>-1.x86_64.rpm` | `sudo dnf install ./uidm-*.rpm` |
+| Any Linux | `UIDM-<version>-x86_64.AppImage` | make it executable and run it |
+| | `uidm-<version>-linux-x86_64.tar.gz` | unpack and run `./install.sh` |
+
+The Linux files need glibc 2.35 and OpenSSL 3 (Ubuntu 22.04, Debian 12,
+Fedora 36 or newer) and GTK 3. The tray icon needs
+`libayatana-appindicator3` (and on GNOME the AppIndicator extension);
+notifications use `notify-send`. [Build](#build) says how the files are made.
+
+### Windows
+
+Run `UIDM-Setup-<version>.exe`. It installs for your user only, without administrator rights, into
 `%LOCALAPPDATA%\Programs\UIDM`. It registers UIDM with Chrome, Edge and
 Firefox, adds
 **UIDM** to the Start menu (and, if you tick it, the desktop), and lists UIDM
@@ -70,6 +89,43 @@ when GitHub lists one, saves it to the temp folder and runs it with
 `/fromuidm=yes`. UIDM then stops its downloads, saves its list and quits;
 Setup closes whatever is left without asking again and replaces the files.
 Stopped downloads resume from the list as usual.
+
+### macOS
+
+Open the disk image and drag **UIDM** to **Applications**. UIDM is not
+signed with an Apple Developer ID, so the first time, right-click it in
+Applications, choose **Open**, then **Open** again (or allow it under
+**System Settings > Privacy & Security**). The extension folders are inside
+the app: in Finder, right-click UIDM, **Show Package Contents**, then
+`Contents/Resources/extension` (Chrome, Edge, Brave) or
+`Contents/Resources/firefox`. In Chrome's **Load unpacked** dialog,
+Cmd+Shift+G and `/Applications/UIDM.app/Contents/Resources/extension` gets
+there directly.
+
+### Linux
+
+Install the `.deb` or `.rpm` with your package manager, or run the
+AppImage, or unpack the `.tar.gz` and run `./install.sh` (it installs into
+`~/.local` for your user; `./install.sh --remove` takes it away). UIDM is
+then among your applications, and `uidm` starts it from a terminal. The
+extension folders are `/usr/lib/uidm/extension` and `/usr/lib/uidm/firefox`
+for the packages, `~/.local/lib/uidm/...` for the archive, and inside the
+AppImage (`./UIDM-*.AppImage --appimage-extract` unpacks them).
+
+### Browsers on macOS and Linux
+
+There is no Setup to register UIDM with the browsers, so the first time UIDM
+runs it registers itself with every browser it finds: Chrome, Edge,
+Firefox, Brave, Chromium and Vivaldi (Opera reads Chrome's). Each browser
+reads `com.uidm.host.json` from its own `NativeMessagingHosts` folder, such
+as `~/.config/google-chrome/NativeMessagingHosts` or
+`~/Library/Application Support/Google/Chrome/NativeMessagingHosts`.
+**Options > Browser capture** lists them to add or remove one later. When an
+AppImage moves, UIDM points the browsers at its new place the next time it
+runs.
+
+Then load the extension as described for Windows above, from the folder for
+your system.
 
 ### Firefox
 
@@ -1054,6 +1110,21 @@ is a failed scan, as is one that runs over 10 minutes.
 
 ## Build
 
+On macOS and Linux, a stable Rust toolchain is enough, plus on Linux the GTK 3
+and OpenSSL development packages (`sudo apt install libgtk-3-dev libssl-dev`
+on Ubuntu):
+
+```bash
+cargo test
+cargo build --release
+```
+
+`installer/linux/package.sh` makes the `.deb`, `.rpm`, AppImage and
+`.tar.gz` in `dist/` (it needs `dpkg-deb`, `rpmbuild` and Node, and
+downloads `appimagetool` unless `$APPIMAGETOOL` names one);
+`installer/macos/package.sh` makes the universal `.dmg` on a Mac. Name
+formats to make only those: `installer/linux/package.sh --skip-build deb`.
+
 Rust on Windows needs a linker. This project builds with the
 `stable-x86_64-pc-windows-gnu` toolchain plus MinGW-w64 (WinLibs) on `PATH`.
 
@@ -1063,13 +1134,26 @@ cargo build --release
 node --test extension/test/*.test.js
 ```
 
-GitHub Actions builds the Windows programs on every push and pull request
-(`.github/workflows/build.yml`): it runs `cargo build --release` and
-`cargo test` with the stable MSVC toolchain on `windows-latest`, and the
-extension's tests with Node, then uploads `uidm-windows`, an artifact with the
-three programs under `target\release`, the extension, its Firefox copy and
-`install-host.ps1`, ready for `.\install-host.ps1`, and
-`uidm-windows-setup`, with the installer.
+GitHub Actions builds and tests UIDM on Windows, macOS and Linux on every
+push and pull request (`.github/workflows/build.yml`), and the extension's
+tests with Node. Those runs keep no files.
+
+The installers come from `.github/workflows/release.yml`. Set the version in
+`Cargo.toml`, commit, and push a tag that matches it:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+It builds every file in the table under [Install](#install) on Windows,
+macOS and Linux runners and attaches them to a new GitHub Release for that
+tag. Release files don't count against the repository's storage (each may be
+up to 2 GB), and UIDM's update check reads the latest release. The build
+files are kept as artifacts for one day only, to hand them from the
+builders to the release. Starting the workflow by hand
+(**Actions > Release > Run workflow**) builds the same files without a
+release, as artifacts for a day.
 
 To build the installer, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 (`winget install JRSoftware.InnoSetup`), then run:
@@ -1362,6 +1446,17 @@ Not verified: ffmpeg itself. The tests use a stand-in that records its
 arguments; no real ffmpeg was run on real video.
 
 ## Known gaps
+
+- On macOS and Linux: the drop target and proxy configuration scripts
+  (PAC and WPAD) are Windows-only; the system proxy comes from the
+  `http_proxy`, `https_proxy`, `ftp_proxy`, `all_proxy` and `no_proxy`
+  variables. Closing to the tray minimizes the window rather than hiding it.
+  macOS notifications have no buttons. Passwords and saved requests are
+  sealed with a key in UIDM's data folder that only your user can read,
+  rather than the Keychain or the Secret Service. **Update now** opens the
+  release page instead of installing. Microsoft Defender is Windows' own:
+  choose a scanner program such as `clamscan`. These builds were tested on
+  Linux; the macOS build is checked by the compiler and CI only.
 
 - The history is written about a second after each change, so a crash can
   lose the last second of progress; the sidecar still has it, so resuming is

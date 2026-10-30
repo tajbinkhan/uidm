@@ -1,0 +1,24 @@
+#!/bin/sh
+# The AppImage's entry point. One AppImage holds UIDM's three programs:
+#
+#   UIDM.AppImage                      the window
+#   UIDM.AppImage uidm-daemon          a program by name (UIDM starts its
+#                                      other programs this way)
+#   UIDM.AppImage chrome-extension://… a browser starting the native host
+#   UIDM.AppImage <manifest> uidm@uidm.local   Firefox starting it
+HERE="$(dirname "$(readlink -f "$0")")"
+BIN="$HERE/usr/bin"
+case "$1" in
+  uidm-gui|uidm-daemon|uidm-host)
+    prog="$1"
+    shift
+    exec "$BIN/$prog" "$@"
+    ;;
+  chrome-extension://*)
+    exec "$BIN/uidm-host" "$@"
+    ;;
+esac
+if [ "$2" = "uidm@uidm.local" ]; then
+  exec "$BIN/uidm-host" "$@"
+fi
+exec "$BIN/uidm-gui" "$@"

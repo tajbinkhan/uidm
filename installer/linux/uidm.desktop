@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=UIDM
+GenericName=Download Manager
+Comment=Download files with many connections, resume and schedule them
+Exec=uidm
+Icon=uidm
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=download;manager;accelerator;
+StartupWMClass=uidm-gui
