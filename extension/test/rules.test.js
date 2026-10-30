@@ -303,6 +303,42 @@ test("each browser's manifest has only the keys it understands", () => {
   assert.equal(firefox.version, chrome.version);
 });
 
+test("a download UIDM cannot take comes with a notice saying why", async () => {
+  const w = loadWorker();
+  const shown = () => w.chrome.notifications.shown.map(([, o]) => o.message);
+  // Not connected: the browser keeps what UIDM would have taken.
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/a.zip", filename: "C:/dl/a.zip" }));
+  assert.deepEqual(shown(), ["UIDM is not running or not connected, so the browser downloads a.zip."]);
+  assert.equal(w.chrome.notifications.shown[0][1].buttons[0].title, "Don't show again");
+
+  // Connected, but UIDM could not start it: it goes back, with the reason.
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.port.onMessage.fire({ op: "settings", settings: RULES });
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/b.zip" }));
+  w.port.onMessage.fire({ op: "ack", id: 4, url: "https://dl.net/b.zip", status: "accepted" });
+  w.port.onMessage.fire({ op: "failed", id: 4, url: "https://dl.net/b.zip", error: "server returned HTTP 403" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(shown().at(-1), "UIDM could not start https://dl.net/b.zip (server returned HTTP 403), so the browser downloads it.");
+
+  // "Don't show again" stops them for good.
+  await w.chrome.notifications.onButtonClicked.fire("uidm-takeover", 0);
+  assert.equal(JSON.stringify(w.chrome.storage.written.at(-1)), JSON.stringify({ takeoverNotice: false }));
+  w.port.onDisconnect.fire();
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/c.zip" }));
+  assert.equal(shown().length, 2);
+});
+
+test("in Firefox, clicking the notice stops it", async () => {
+  const w = loadWorker({ firefox: true });
+  await w.chrome.downloads.onCreated.fire(download({ url: "https://dl.net/a.zip" }));
+  await new Promise((r) => setTimeout(r, 0));
+  const [[id, options]] = w.chrome.notifications.shown;
+  assert.ok(options.message.endsWith("Click this notice to stop showing it."), options.message);
+  assert.equal(options.buttons, undefined);
+  await w.chrome.notifications.onClicked.fire(id);
+  assert.equal(JSON.stringify(w.chrome.storage.written.at(-1)), JSON.stringify({ takeoverNotice: false }));
+});
+
 test("the worker runs as a Firefox background script", async () => {
   const w = loadWorker({ firefox: true });
   w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });

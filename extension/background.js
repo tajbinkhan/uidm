@@ -30,9 +30,9 @@ let reconnectTimer = null;
 
 // Mirror of the daemon's download list, by id.
 const downloads = new Map();
-// Downloads taken from the browser: url -> how it was requested (null for a
-// GET, else the rebuilt POST) until their ack arrives, then id -> { url, post }
-// until they start, finish, or are handed back.
+// Downloads taken from the browser: url -> { post, filename } until their
+// ack arrives (`post` is null for a GET, else the rebuilt POST), then
+// id -> { url, post, filename } until they start, finish, or are handed back.
 const awaitingAck = new Map();
 const captured = new Map();
 
@@ -215,11 +215,13 @@ let skipClick = null;
 // A download in UIDM waiting for a new link: the next download from the
 // browser gives it one instead of starting a new download.
 let refreshWaiting = null;
-const settingsReady = chrome.storage.local.get({ capture: true }).then((s) => {
+const settingsReady = chrome.storage.local.get({ capture: true, takeoverNotice: true }).then((s) => {
   captureEnabled = s.capture;
+  takeoverNotice = s.takeoverNotice;
 });
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.capture) captureEnabled = changes.capture.newValue;
+  if (changes.takeoverNotice) takeoverNotice = changes.takeoverNotice.newValue;
 });
 
 // --- Connection to the host -------------------------------------------------
@@ -283,7 +285,7 @@ function onHostMessage(msg) {
       break;
     case "ack":
       if (awaitingAck.has(msg.url)) {
-        captured.set(msg.id, { url: msg.url, post: awaitingAck.get(msg.url) });
+        captured.set(msg.id, { url: msg.url, ...awaitingAck.get(msg.url) });
         awaitingAck.delete(msg.url);
       }
       break;
@@ -318,7 +320,7 @@ function onHostMessage(msg) {
     case "failed": {
       const e = upsert(msg.id, msg.url);
       Object.assign(e, { status: "failed", error: msg.error });
-      handBackIfNeverStarted(msg.id);
+      handBackIfNeverStarted(msg.id, msg.error);
       break;
     }
     case "canceled":
@@ -382,13 +384,61 @@ function onHostMessage(msg) {
 }
 
 // A download UIDM took but could not even start (the server refused it, say)
-// goes back to the browser so the user does not lose it.
-function handBackIfNeverStarted(id) {
+// goes back to the browser so the user does not lose it. `error` is why.
+function handBackIfNeverStarted(id, error) {
   const taken = captured.get(id);
   if (!taken) return;
   captured.delete(id);
   send({ op: "remove", id });
   giveBack(taken.url, taken.post);
+  noticeTakeoverFailed(taken.url, taken.filename, error || "?");
+}
+
+// --- The notice that UIDM could not take a download ---------------------------
+
+const TAKEOVER_NOTICE = "uidm-takeover";
+// Whether the notice shows; its "Don't show again" turns it off for good.
+let takeoverNotice = true;
+// Whether the last notice had that button; Firefox's notices have none, so
+// there a click on the notice itself turns them off.
+let noticeHasButton = false;
+
+// Tell the user UIDM could not take the download of `url` (named
+// `filename`), which the browser keeps or gets back. `reason` is UIDM's
+// error, or null when UIDM is not connected. One notice replaces the last.
+async function noticeTakeoverFailed(url, filename, reason) {
+  if (!takeoverNotice || !chrome.notifications) return;
+  const file = filename || url;
+  const message = reason ? chrome.i18n.getMessage("takeoverError", [file, reason]) : chrome.i18n.getMessage("takeoverNotConnected", file);
+  const options = {
+    type: "basic",
+    iconUrl: chrome.runtime.getURL("icons/48.png"),
+    title: chrome.i18n.getMessage("takeoverFailed"),
+    message,
+  };
+  try {
+    await chrome.notifications.create(TAKEOVER_NOTICE, { ...options, buttons: [{ title: chrome.i18n.getMessage("dontShowAgain") }] });
+    noticeHasButton = true;
+  } catch (_) {
+    noticeHasButton = false;
+    const hint = chrome.i18n.getMessage("takeoverClickToStop");
+    await chrome.notifications.create(TAKEOVER_NOTICE, { ...options, message: `${message} ${hint}` }).catch(() => {});
+  }
+}
+
+function stopTakeoverNotices() {
+  takeoverNotice = false;
+  chrome.storage.local.set({ takeoverNotice: false });
+  chrome.notifications.clear(TAKEOVER_NOTICE).catch(() => {});
+}
+
+if (chrome.notifications) {
+  chrome.notifications.onButtonClicked.addListener((id) => id === TAKEOVER_NOTICE && stopTakeoverNotices());
+  chrome.notifications.onClicked.addListener((id) => {
+    if (id !== TAKEOVER_NOTICE) return;
+    if (noticeHasButton) chrome.notifications.clear(id).catch(() => {});
+    else stopTakeoverNotices();
+  });
 }
 
 // Let the browser download it after all, the way it was first requested.
@@ -489,11 +539,20 @@ async function handOff(url, referrer, filename, later = false, post = null, refr
 
 chrome.downloads.onCreated.addListener(async (item) => {
   await settingsReady;
-  if (!captureEnabled || !connected) return; // let the browser handle it
+  if (!captureEnabled) return; // let the browser handle it
   if (item.incognito) return; // keep private-window downloads out of UIDM's list
   if (item.byExtensionId === chrome.runtime.id) return; // our own hand-back
   const url = item.finalUrl || item.url;
   if (!isWeb(url)) return; // blob:, data:, file: only exist in the browser
+  const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
+  const described = { url, referrer: item.referrer, filename: baseName(item.filename), mime: item.mime, size };
+  if (!connected) {
+    // It stays in the browser; say so if UIDM would have taken it.
+    if (!skipNext && !clickApplies(skipClick, Date.now()) && captureDecision(rules, described).capture) {
+      noticeTakeoverFailed(url, described.filename, null);
+    }
+    return;
+  }
   if (skipNext) {
     skipNext = false;
     return;
@@ -505,17 +564,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   // A download waiting for a new link takes this one, whatever the capture
   // rules say: the user asked for it.
   const refreshId = refreshWaiting;
-  if (refreshId === null) {
-    const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
-    const decision = captureDecision(rules, {
-      url,
-      referrer: item.referrer,
-      filename: baseName(item.filename),
-      mime: item.mime,
-      size,
-    });
-    if (!decision.capture) return;
-  }
+  if (refreshId === null && !captureDecision(rules, described).capture) return;
 
   // A form's download is sent as the same POST; one whose request cannot be
   // rebuilt stays in the browser.
@@ -542,13 +591,15 @@ chrome.downloads.onCreated.addListener(async (item) => {
     giveBack(requestUrl, post);
     return;
   }
-  awaitingAck.set(requestUrl, post);
-  const sent = await handOff(requestUrl, item.referrer, baseName(item.filename), false, post);
+  awaitingAck.set(requestUrl, { post, filename: described.filename });
+  const sent = await handOff(requestUrl, item.referrer, described.filename, false, post);
   if (!sent) {
     // The port dropped between the check and the send: give it back.
     awaitingAck.delete(requestUrl);
     giveBack(requestUrl, post);
+    noticeTakeoverFailed(requestUrl, described.filename, null);
   }
+
 });
 
 // --- All links on a page ----------------------------------------------------

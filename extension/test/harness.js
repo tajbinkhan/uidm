@@ -63,7 +63,9 @@ function loadWorker({ firefox = false } = {}) {
       lastError: null,
     },
     storage: {
-      local: { get: async (d) => d, set: async () => {} },
+      // What the worker stored, in order.
+      written: [],
+      local: { get: async (d) => d, set: async (o) => chrome.storage.written.push(o) },
       onChanged: event(),
     },
     proxy: { settings: { get: async () => ({ value: proxyValue }) } },
@@ -82,6 +84,17 @@ function loadWorker({ firefox = false } = {}) {
     cookies: { getAll: async () => [] },
     contextMenus: { removeAll: () => {}, create: () => {}, onClicked: event() },
     action: { setBadgeText: () => {}, setBadgeBackgroundColor: () => {} },
+    notifications: {
+      shown: [],
+      // Firefox's notices take no buttons.
+      create: async (id, options) => {
+        if (firefox && options.buttons) throw new Error("buttons is unsupported by Firefox");
+        chrome.notifications.shown.push([id, options]);
+      },
+      clear: async () => {},
+      onClicked: event(),
+      onButtonClicked: event(),
+    },
     i18n: { getMessage, getUILanguage: () => "en-US" },
   };
   const dir = path.join(__dirname, "..");

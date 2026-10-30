@@ -430,6 +430,12 @@ server refuses the request, the extension removes it from UIDM's list and
 hands it back to the browser, so it is never silently lost. A POST goes back
 as a POST with its form, when the form is text.
 
+Either way the user hears of it: a browser notice, "UIDM could not take over
+the download", names the file and why (UIDM's error, or that UIDM is not
+running or not connected, for a download the rules would have taken). Its
+**Don't show again** button turns these notices off for good; Firefox's
+notices have no buttons, so there a click on the notice does it.
+
 ## Host-daemon authentication
 
 Loopback keeps other machines out, but any local process can connect to the
