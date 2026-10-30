@@ -156,7 +156,7 @@ impl Client {
                 let challenges: Vec<String> = resp.all("www-authenticate").iter().map(|h| h.to_string()).collect();
                 let realm = net::realm(&challenges);
                 let needs = || EngineError::NeedsLogin(host.clone(), realm.clone());
-                let login = net::find_login(&self.logins, &host).ok_or_else(needs)?;
+                let login = net::find_login(&self.logins, &asked).ok_or_else(needs)?;
                 let auth = net::authorization(&challenges, login, method, &asked, &cnonce()).ok_or_else(needs)?;
                 match build(&asked, Some(&auth)) {
                     Err(ureq::Error::Status(401, _)) => Err(EngineError::LoginRejected(host, realm)),

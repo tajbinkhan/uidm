@@ -677,5 +677,6 @@
   "minutes": "Minuten",
   "Counted from the last start, until the stop time (or midnight without one)": "Ab dem letzten Start gezählt, bis zur Stoppzeit (ohne eine bis Mitternacht)",
   "The downloads waiting in": "Die wartenden Downloads in",
-  "UIDM must be running at the start time for the schedule to start this queue. If it starts later, the queue starts then, while its time is still open. Start with Windows (Options > General) keeps it running.": "UIDM muss zur Startzeit laufen, damit der Zeitplan diese Warteschlange startet. Startet UIDM später, beginnt die Warteschlange dann, solange ihre Zeit noch läuft. Mit Windows starten (Optionen > Allgemein) hält UIDM am Laufen."
+  "UIDM must be running at the start time for the schedule to start this queue. If it starts later, the queue starts then, while its time is still open. Start with Windows (Options > General) keeps it running.": "UIDM muss zur Startzeit laufen, damit der Zeitplan diese Warteschlange startet. Startet UIDM später, beginnt die Warteschlange dann, solange ihre Zeit noch läuft. Mit Windows starten (Optionen > Allgemein) hält UIDM am Laufen.",
+  "A server, or one of its folders such as example.com/private/*. The longest match wins.": "Ein Server oder einer seiner Ordner, etwa example.com/private/*. Die längste Übereinstimmung gilt."
 }

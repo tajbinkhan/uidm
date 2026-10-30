@@ -89,7 +89,7 @@ impl Control {
             return Err(EngineError::Protocol(format!("the FTP server said: {code} {text}")));
         }
         let from_url = (!parsed.username().is_empty()).then(|| (decode(parsed.username()), decode(parsed.password().unwrap_or(""))));
-        let saved = net::find_login(&opts.logins, &c.host).map(|l| (l.username.clone(), l.password.clone()));
+        let saved = net::find_login(&opts.logins, url).map(|l| (l.username.clone(), l.password.clone()));
         let given = from_url.is_some() || saved.is_some();
         let (user, pass) = from_url.or(saved).unwrap_or_else(|| ("anonymous".into(), "uidm@".into()));
         if has_control(&user) || has_control(&pass) {

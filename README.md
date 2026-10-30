@@ -245,7 +245,8 @@ tests, not in a running Firefox.
   Windows proxy setting, or an HTTP, HTTPS and SOCKS5 proxy with an optional
   user name and password; optionally the proxy the browser uses, for
   downloads from the browser. Site logins pair a site with a user name and
-  password. When a server asks for a login (HTTP Basic or Digest), UIDM sends
+  password; a site can name one of its folders, such as
+  `example.com/private/*`, to use another login there. When a server asks for a login (HTTP Basic or Digest), UIDM sends
   the matching one to that site and no other. Without one (or when the
   server refuses it) the download stops, and the window asks: **Log in to
   the site** shows the site and the realm it named, takes a user name and
@@ -762,9 +763,14 @@ neither the proxy login nor a site's cookies reach another server. With
 wins for downloads that carry one.
 
 **Logins.** A site matches the way capture rules do: `example.com` covers its
-subdomains, and `*` works within a name; the most specific match wins. A
-request goes out without credentials. On a 401, UIDM picks the login for the
-host that answered and sends the request again, once, straight to that URL,
+subdomains, and `*` works within a name. A path after the site limits the
+login to it: `example.com/private/*` matches with `*` across the whole path,
+and `example.com/private` covers that folder and everything below it, both
+ignoring case. The longest matching pattern wins, so a folder's login beats
+its server's. A download's own login (from **Log in to the site** or its
+properties) replaces the site logins for its host. A request goes out
+without credentials. On a 401, UIDM picks the login for the address that
+answered and sends the request again, once, straight to that URL,
 with `Authorization` for the `WWW-Authenticate` challenge: Digest (MD5,
 MD5-sess, SHA-256, with `qop=auth`) when offered, else Basic. ureq never
 carries `Authorization` across a redirect, so a login never reaches another

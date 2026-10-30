@@ -2594,7 +2594,8 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     let mut remove = None;
     egui::Grid::new("logins").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         for (i, l) in draft.logins.iter_mut().enumerate() {
-            ui.add_sized([180.0, 20.0], egui::TextEdit::singleline(&mut l.site).hint_text("example.com"));
+            ui.add_sized([180.0, 20.0], egui::TextEdit::singleline(&mut l.site).hint_text("example.com"))
+                .on_hover_text(tr("A server, or one of its folders such as example.com/private/*. The longest match wins."));
             ui.add_sized([120.0, 20.0], egui::TextEdit::singleline(&mut l.username).hint_text(tr("User name")));
             let hint = if l.new { tr("Password") } else { tr("Password (unchanged)") };
             ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(&mut l.password).password(true).hint_text(hint));

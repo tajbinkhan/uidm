@@ -4,10 +4,10 @@
 //!   Internet settings, with their bypass list and any configuration script
 //!   or automatic detection), a configuration script, or ones set by hand. A
 //!   captured download can also use the proxy the browser reported.
-//! - Site logins pair a site pattern with a username; the password lives in
-//!   Windows Credential Manager. When a server answers 401, the engine sends
-//!   the matching login with HTTP Basic or Digest, to the host that asked and
-//!   to no other.
+//! - Site logins pair a site pattern, optionally with a path, with a
+//!   username; the password lives in Windows Credential Manager. When a
+//!   server answers 401, the engine sends the matching login with HTTP Basic
+//!   or Digest, to the host that asked and to no other.
 //!
 //! The proxy password is kept apart from the settings, encrypted with DPAPI.
 
@@ -254,12 +254,45 @@ pub struct Login {
     pub password: String,
 }
 
-/// The login for `host`, if any: the most specific matching site wins.
-pub fn find_login<'a>(logins: &'a [Login], host: &str) -> Option<&'a Login> {
+/// A login pattern split into its site and its path (`""` for none):
+/// `example.com/private/*` is `example.com` and `/private/*`.
+pub fn split_login_pattern(pattern: &str) -> (&str, &str) {
+    let p = pattern.trim();
+    match p.find('/') {
+        Some(i) => (&p[..i], &p[i..]),
+        None => (p, ""),
+    }
+}
+
+/// Whether `url` falls under the login pattern `pattern`: a site as for
+/// [`site_matches`], optionally followed by a path. A path with `*` is
+/// matched as a whole (`/private/*`); one without covers itself and what is
+/// below it (`/private` covers `/private/a.zip`). Case is ignored.
+pub fn login_matches(pattern: &str, url: &str) -> bool {
+    let (site, path) = split_login_pattern(pattern);
+    if !site_matches(site, &host_of(url)) {
+        return false;
+    }
+    let path = path.to_ascii_lowercase();
+    if path.is_empty() {
+        return true;
+    }
+    let target = request_uri(url);
+    let target = target.split('?').next().unwrap_or("/").to_ascii_lowercase();
+    if path.contains('*') {
+        return glob(&path, &target);
+    }
+    let folder = path.trim_end_matches('/');
+    folder.is_empty() || target == folder || target.starts_with(&format!("{folder}/"))
+}
+
+/// The login for `url`, if any: of the matching patterns, the longest (the
+/// most specific) wins, so a folder's login beats its server's.
+pub fn find_login<'a>(logins: &'a [Login], url: &str) -> Option<&'a Login> {
     logins
         .iter()
-        .filter(|l| site_matches(&l.site, host))
-        .max_by_key(|l| l.site.trim_start_matches("*.").len())
+        .filter(|l| login_matches(&l.site, url))
+        .max_by_key(|l| l.site.trim().trim_start_matches("*.").len())
 }
 
 /// Everything a download needs to reach servers.
@@ -664,9 +697,32 @@ mod tests {
     #[test]
     fn the_most_specific_login_wins() {
         let logins = vec![login("example.com"), Login { username: "cdn".into(), ..login("cdn.example.com") }];
-        assert_eq!(find_login(&logins, "cdn.example.com").unwrap().username, "cdn");
-        assert_eq!(find_login(&logins, "www.example.com").unwrap().username, "Mufasa");
-        assert!(find_login(&logins, "other.net").is_none());
+        assert_eq!(find_login(&logins, "https://cdn.example.com/a").unwrap().username, "cdn");
+        assert_eq!(find_login(&logins, "https://www.example.com/a").unwrap().username, "Mufasa");
+        assert!(find_login(&logins, "https://other.net/a").is_none());
+    }
+
+    #[test]
+    fn a_login_can_be_for_a_folder_on_the_server() {
+        let user = |site: &str, name: &str| Login { username: name.into(), ..login(site) };
+        let logins = vec![
+            user("example.com", "site"),
+            user("example.com/private/*", "private"),
+            user("example.com/private/staff", "staff"),
+            user("files.example.com/members", "members"),
+        ];
+        let who = |url: &str| find_login(&logins, url).map(|l| l.username.as_str());
+        assert_eq!(who("https://example.com/public/a.zip"), Some("site"));
+        assert_eq!(who("https://example.com/private/a.zip?x=1"), Some("private"));
+        assert_eq!(who("https://Example.com/PRIVATE/a.zip"), Some("private"), "case is ignored");
+        assert_eq!(who("https://example.com/private/staff/b.zip"), Some("staff"), "the longest pattern wins");
+        assert_eq!(who("https://example.com/private/staffroom.zip"), Some("private"), "a folder, not a prefix");
+        assert_eq!(who("https://files.example.com/members"), Some("members"));
+        assert_eq!(who("https://files.example.com/other"), Some("site"));
+        assert_eq!(who("https://other.net/private/a.zip"), None);
+        assert!(login_matches("example.com/", "https://example.com/x"));
+        assert!(!login_matches("example.com/private/*", "https://example.com/private"));
+        assert_eq!(split_login_pattern(" dl*.example.com/a/* "), ("dl*.example.com", "/a/*"));
     }
 
     #[test]

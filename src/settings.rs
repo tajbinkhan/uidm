@@ -110,7 +110,9 @@ pub enum ProxyMode {
 /// daemon, and is never written to the settings file or sent back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteLogin {
-    /// `example.com` (with its subdomains) or a pattern such as `dl*.example.com`.
+    /// `example.com` (with its subdomains) or a pattern such as
+    /// `dl*.example.com`, optionally with a path such as `/private/*` for one
+    /// folder of the server.
     pub site: String,
     pub username: String,
     /// A new password to store; `None` keeps the stored one.
@@ -699,9 +701,10 @@ impl Settings {
         let mut sites: Vec<String> = Vec::new();
         for l in &self.site_logins {
             let site = l.site.trim().to_ascii_lowercase();
-            if !is_site(&site) {
+            let (host, path) = crate::net::split_login_pattern(&site);
+            if !is_site(host) || path.contains(char::is_whitespace) {
                 return Err(format!(
-                    "\"{}\" is not a site. Use a host name such as example.com.",
+                    "\"{}\" is not a site. Use a host name such as example.com, or one with a folder such as example.com/private/*.",
                     l.site
                 ));
             }
@@ -1350,6 +1353,9 @@ mod tests {
         assert!(with(&|s| s.site_logins = vec![login("a.com", "u")]).is_ok());
         assert!(with(&|s| s.site_logins = vec![login("a.com", " ")]).is_err());
         assert!(with(&|s| s.site_logins = vec![login("https://a.com/", "u")]).is_err());
+        assert!(with(&|s| s.site_logins = vec![login("a.com/private/*", "u")]).is_ok());
+        assert!(with(&|s| s.site_logins = vec![login("a.com/my files", "u")]).is_err());
+        assert!(with(&|s| s.site_logins = vec![login("a.com", "u"), login("a.com/x", "v")]).is_ok());
         assert!(with(&|s| s.site_logins = vec![login("a.com", "u"), login("A.com", "v")]).is_err());
     }
 

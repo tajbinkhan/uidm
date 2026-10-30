@@ -2668,10 +2668,11 @@ impl Daemon {
                 })
             })
             .collect();
-        // The download's own login goes last, so it wins over a site login
-        // for the same host.
+        // The download's own login takes the place of the site logins for
+        // its host, even those for one of its folders.
         let host = url::Url::parse(&download.url).ok().and_then(|u| u.host_str().map(str::to_string));
         if let (Some(l), Some(host)) = (&download.login, host) {
+            logins.retain(|s| !net::site_matches(net::split_login_pattern(&s.site).0, &host));
             logins.push(Login {
                 site: host,
                 username: l.username.clone(),
@@ -3879,7 +3880,7 @@ mod tests {
         let login = req.login.clone().unwrap();
         assert_eq!((login.username.as_str(), login.password.as_deref()), ("other", Some("pw")));
         let net = t.daemon.net_for(&req, &Settings::default());
-        let found = net::find_login(&net.logins, "y").unwrap();
+        let found = net::find_login(&net.logins, "https://y/new.bin").unwrap();
         assert_eq!(found.username, "other");
 
         // An empty user name removes the login.

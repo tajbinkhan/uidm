@@ -677,5 +677,6 @@
   "minutes": "minutes",
   "Counted from the last start, until the stop time (or midnight without one)": "Compté depuis le dernier démarrage, jusqu'à l'heure d'arrêt (ou minuit sans elle)",
   "The downloads waiting in": "Les téléchargements en attente dans",
-  "UIDM must be running at the start time for the schedule to start this queue. If it starts later, the queue starts then, while its time is still open. Start with Windows (Options > General) keeps it running.": "UIDM doit être lancé à l'heure de début pour que la planification démarre cette file. S'il démarre plus tard, la file démarre alors, tant que sa plage horaire est ouverte. Démarrer avec Windows (Options > Général) le garde lancé."
+  "UIDM must be running at the start time for the schedule to start this queue. If it starts later, the queue starts then, while its time is still open. Start with Windows (Options > General) keeps it running.": "UIDM doit être lancé à l'heure de début pour que la planification démarre cette file. S'il démarre plus tard, la file démarre alors, tant que sa plage horaire est ouverte. Démarrer avec Windows (Options > Général) le garde lancé.",
+  "A server, or one of its folders such as example.com/private/*. The longest match wins.": "Un serveur, ou l'un de ses dossiers comme example.com/private/*. La correspondance la plus longue l'emporte."
 }
