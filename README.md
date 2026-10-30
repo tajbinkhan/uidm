@@ -60,6 +60,17 @@ setup over an older one closes UIDM first and keeps your settings. With the
 script, `.\install-host.ps1 -Uninstall` removes what it added. Downloaded
 files are left alone either way.
 
+**Updates.** UIDM looks for a newer release on GitHub once a week (Options >
+General can turn that off), and **About** checks on demand. When a newer
+release has a Setup attached, **Update now** (in About, and next to the
+notice in the status bar) has the daemon download `UIDM-Setup-<version>.exe`
+through your proxy settings, only from this repository's release downloads.
+It checks the file's size, that it is a Windows program, and its SHA-256
+when GitHub lists one, saves it to the temp folder and runs it with
+`/fromuidm=yes`. UIDM then stops its downloads, saves its list and quits;
+Setup closes whatever is left without asking again and replaces the files.
+Stopped downloads resume from the list as usual.
+
 ### Firefox
 
 Firefox 128 or later loads the `firefox` folder, a copy of the extension with

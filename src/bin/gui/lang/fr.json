@@ -88,7 +88,6 @@
   "Show the drop target, a small window on top that takes dragged links": "Afficher la cible de dépôt, une petite fenêtre au premier plan qui accepte les liens glissés",
   "Drag it to move it, double-click it to open UIDM, right-click it to close it": "Faites-la glisser pour la déplacer, double-cliquez pour ouvrir UIDM, clic droit pour la fermer",
   "Look for a newer UIDM on GitHub once a week": "Rechercher une version plus récente d'UIDM sur GitHub une fois par semaine",
-  "Only a notice with a link; nothing is downloaded or installed": "Simple notification avec un lien ; rien n'est téléchargé ni installé",
   "Theme": "Thème",
   "Language": "Langue",
   "Follow Windows ({language})": "Comme Windows ({language})",
@@ -793,5 +792,9 @@
   "When a queue is done": "Quand une file est terminée",
   "Windows' sound": "Son de Windows",
   "Choose a sound": "Choisir un son",
-  "Play": "Écouter"
+  "Play": "Écouter",
+  "Update now": "Mettre à jour",
+  "Download the new Setup, check it, and run it. UIDM closes for it; downloads stop and can be resumed.": "Télécharger le nouveau programme d'installation, le vérifier et le lancer. UIDM se ferme pour cela ; les téléchargements s'arrêtent et peuvent reprendre.",
+  "Downloading the update...": "Téléchargement de la mise à jour...",
+  "Only a notice; Update now in About downloads and runs the new Setup": "Seulement un avis ; Mettre à jour dans À propos télécharge et lance le nouveau programme d'installation"
 }

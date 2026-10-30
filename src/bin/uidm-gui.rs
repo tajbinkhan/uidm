@@ -196,6 +196,9 @@ struct Shared {
     update: Option<Result<Option<uidm::update::Release>, String>>,
     /// A newer release, for the status bar.
     newer_release: Option<uidm::update::Release>,
+    /// Update now is under way: `None` while the daemon downloads the
+    /// update, or why it failed.
+    installing: Option<Option<String>>,
     /// A zip preview the daemon sent: the download and its files, or why
     /// not.
     zip_listed: Option<(u64, Result<Vec<uidm::zip::ZipEntry>, String>)>,
@@ -293,6 +296,9 @@ impl Shared {
                 } else {
                     None
                 };
+            }
+            Outgoing::UpdateFailed { error } => {
+                self.installing = Some(Some(error.clone()));
             }
             Outgoing::Update { newer, error } => {
                 self.update = Some(match error {
@@ -417,6 +423,8 @@ enum Action {
     OpenAbout,
     /// Look for a newer release now.
     CheckUpdate,
+    /// Download and run the newer release's Setup.
+    InstallUpdate,
     Reconnect,
     OpenOptions,
     /// Open Options at the Connection tab with a new login for this host.
@@ -1278,6 +1286,7 @@ impl App {
                 zip_listed: None,
                 update: None,
                 newer_release: None,
+                installing: None,
                 quota_paused: false,
             })),
             writer: Arc::new(Mutex::new(None)),
@@ -1612,6 +1621,11 @@ impl App {
             Action::OpenConvert(id) => self.convert = Some((id, uidm::media::convert::Target::Mp3, false)),
             Action::Convert(id, to, delete_original) => {
                 send(&self.writer, &Incoming::Convert { id, to, delete_original });
+            }
+            Action::InstallUpdate => {
+                self.shared.lock().unwrap().installing = Some(None);
+                self.about = Some(true);
+                send(&self.writer, &Incoming::InstallUpdate);
             }
             Action::CheckUpdate => {
                 self.shared.lock().unwrap().update = None;
@@ -2578,7 +2592,7 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
 
         ui.label("");
         ui.checkbox(&mut draft.check_updates, tr("Look for a newer UIDM on GitHub once a week"))
-            .on_hover_text(tr("Only a notice with a link; nothing is downloaded or installed"));
+            .on_hover_text(tr("Only a notice; Update now in About downloads and runs the new Setup"));
         ui.end_row();
 
         ui.label(tr("Theme"));
@@ -3657,6 +3671,10 @@ impl eframe::App for App {
                 if let Some(r) = newer {
                     ui.separator();
                     ui.hyperlink_to(trf!("UIDM {version} is available", version = r.version), &r.url);
+                    // About checks again and offers Update now.
+                    if r.setup.is_some() && ui.add_enabled(connected, egui::Button::new(tr("Update now")).small()).clicked() {
+                        actions.push(Action::CheckUpdate);
+                    }
                 }
                 let quota = self.shared.lock().unwrap().quota.clone();
                 if let Some(q) = quota {
@@ -4127,6 +4145,26 @@ impl App {
                         Some(Ok(Some(r))) => {
                             ui.label(trf!("UIDM {version} is available.", version = r.version));
                             ui.hyperlink_to(tr("Open the release page"), &r.url);
+                            if r.setup.is_some() {
+                                let installing = self.shared.lock().unwrap().installing.clone();
+                                ui.horizontal(|ui| {
+                                    let busy = matches!(installing, Some(None));
+                                    if ui
+                                        .add_enabled(connected && !busy, egui::Button::new(tr("Update now")))
+                                        .on_hover_text(tr("Download the new Setup, check it, and run it. UIDM closes for it; downloads stop and can be resumed."))
+                                        .clicked()
+                                    {
+                                        actions.push(Action::InstallUpdate);
+                                    }
+                                    if busy {
+                                        ui.spinner();
+                                        ui.label(tr("Downloading the update..."));
+                                    }
+                                });
+                                if let Some(Some(e)) = installing {
+                                    ui.colored_label(ui.visuals().error_fg_color, e);
+                                }
+                            }
                         }
                         Some(Ok(None)) => {
                             ui.label(tr("This is the newest version."));

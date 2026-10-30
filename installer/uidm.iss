@@ -172,10 +172,17 @@ begin
     UidmRunning(True);
 end;
 
+{ Started by UIDM's Update now (/fromuidm=yes): the user already agreed to
+  close it. }
+function FromUidm(): Boolean;
+begin
+  Result := ExpandConstant('{param:fromuidm|no}') = 'yes';
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  if not CloseUidm(WizardSilent) then
+  if not CloseUidm(WizardSilent or FromUidm()) then
     Result := 'UIDM is still running. Close it and run Setup again.';
 end;
 

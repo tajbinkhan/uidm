@@ -1905,6 +1905,38 @@ impl Daemon {
         }
     }
 
+    /// Update now: download the newest release's Setup through the
+    /// settings' proxy, check it, save it to the temp folder and run it,
+    /// then stop the downloads, save the list and quit with the windows,
+    /// so Setup can replace the files. Setup closes whatever is left.
+    fn install_update(&self) -> Result<(), String> {
+        let release = match self.check_update(uidm::update::LATEST_RELEASE) {
+            Outgoing::Update { newer: Some(r), .. } => r,
+            Outgoing::Update { error: Some(e), .. } => return Err(e),
+            _ => return Err("This is the newest version.".into()),
+        };
+        let setup = release.setup.ok_or("This release has no Setup program; download it from its page.")?;
+        let settings = self.settings.lock().unwrap().clone();
+        let net = self.net_for(&Download { url: setup.url.clone(), ..Download::default() }, &settings);
+        let headers = [("User-Agent".to_string(), format!("UIDM/{}", env!("CARGO_PKG_VERSION")))];
+        eprintln!("[uidm-daemon] downloading {}", setup.url);
+        let fetched = engine::fetch(&setup.url, &headers, &net, uidm::update::MAX_SETUP_BYTES)
+            .map_err(|e| format!("Could not download the update: {e}"))?;
+        uidm::update::check_setup(&setup, &fetched.body)?;
+        let path = std::env::temp_dir().join(&setup.name);
+        std::fs::write(&path, &fetched.body).map_err(|e| format!("Could not save the update to {}: {e}", path.display()))?;
+        // /fromuidm closes UIDM without asking: the user asked for this.
+        Command::new(&path)
+            .arg("/fromuidm=yes")
+            .spawn()
+            .map_err(|e| format!("Could not start {}: {e}", path.display()))?;
+        eprintln!("[uidm-daemon] started {}; quitting for it", path.display());
+        self.pause_all();
+        self.save_history();
+        self.hub.broadcast(&Outgoing::Quit);
+        Ok(())
+    }
+
     /// Once a week, when a window connects, look for a newer release on
     /// another thread and tell the windows if there is one.
     fn weekly_update_check(self: &Arc<Self>) {
@@ -3309,6 +3341,16 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             if let Err(message) = daemon.convert(id, to, delete_original) {
                 send(&Outgoing::Error { message });
             }
+        }
+        Incoming::InstallUpdate => {
+            let (daemon, reply) = (Arc::clone(daemon), reply.clone());
+            thread::spawn(move || {
+                if let Err(error) = daemon.install_update() {
+                    if let Ok(frame) = serde_json::to_vec(&Outgoing::UpdateFailed { error }) {
+                        let _ = reply.send(frame);
+                    }
+                }
+            });
         }
         Incoming::CheckUpdate => {
             let (daemon, reply) = (Arc::clone(daemon), reply.clone());
