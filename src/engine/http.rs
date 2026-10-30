@@ -58,9 +58,9 @@ impl Client {
         let ftp = super::ftp::is_ftp(url);
         if let Some(rules) = net.proxy.as_ref().filter(|_| !ftp) {
             if let Some(proxy) = rules.proxy_for(url) {
-                if proxy.starts_with("http://") && !rules.username.is_empty() {
+                if let Some(login) = rules.login_for(url).filter(|_| proxy.starts_with("http://")) {
                     use base64::Engine as _;
-                    let pair = format!("{}:{}", rules.username, rules.password);
+                    let pair = format!("{}:{}", login.username, login.password);
                     proxy_basic = Some(format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(pair)));
                     builder = builder.redirects(0);
                 }
@@ -76,6 +76,8 @@ impl Client {
                 active: net.ftp_active,
                 logins: net.logins.clone(),
                 proxy: net.ftp_proxy.clone(),
+                proxy_login: net.ftp_proxy_login.clone(),
+
             },
         })
     }

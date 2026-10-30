@@ -712,6 +712,28 @@ enum OptionsTab {
     Connection,
 }
 
+/// One proxy's login being edited.
+#[derive(Default)]
+struct ProxyLoginDraft {
+    username: String,
+    /// A new password, when `changed`.
+    password: String,
+    changed: bool,
+}
+
+impl ProxyLoginDraft {
+    fn new(username: &str) -> Self {
+        ProxyLoginDraft {
+            username: username.to_string(),
+            ..ProxyLoginDraft::default()
+        }
+    }
+
+    fn new_password(&self) -> Option<String> {
+        self.changed.then(|| self.password.clone())
+    }
+}
+
 /// One site login being edited. An empty password keeps the stored one.
 struct LoginDraft {
     site: String,
@@ -756,11 +778,11 @@ struct OptionsDraft {
     proxy_remote_dns: bool,
     proxy_bypass: String,
     proxy_pac_url: String,
-    proxy_username: String,
-    /// A new proxy password, when `proxy_password_changed`.
-    proxy_password: String,
-    proxy_password_changed: bool,
+    /// The HTTP, HTTPS, FTP and SOCKS proxies' logins, in `ProxyKind::ALL`
+    /// order.
+    proxy_logins: [ProxyLoginDraft; 4],
     use_browser_proxy: bool,
+    browser_proxy_after_errors: bool,
     logins: Vec<LoginDraft>,
     /// Empty means the Downloads folder.
     folder: String,
@@ -867,10 +889,14 @@ impl OptionsDraft {
             proxy_remote_dns: s.proxy_remote_dns,
             proxy_bypass: s.proxy_bypass.clone(),
             proxy_pac_url: s.proxy_pac_url.clone(),
-            proxy_username: s.proxy_username.clone(),
-            proxy_password: String::new(),
-            proxy_password_changed: false,
+            proxy_logins: [
+                ProxyLoginDraft::new(&s.proxy_username),
+                ProxyLoginDraft::new(&s.proxy_https_username),
+                ProxyLoginDraft::new(&s.proxy_ftp_username),
+                ProxyLoginDraft::new(&s.proxy_socks_username),
+            ],
             use_browser_proxy: s.use_browser_proxy,
+            browser_proxy_after_errors: s.browser_proxy_after_errors,
             logins: s
                 .site_logins
                 .iter()
@@ -982,9 +1008,17 @@ impl OptionsDraft {
             proxy_remote_dns: self.proxy_remote_dns,
             proxy_bypass: self.proxy_bypass.trim().to_string(),
             proxy_pac_url: self.proxy_pac_url.trim().to_string(),
-            proxy_username: self.proxy_username.trim().to_string(),
-            proxy_password: self.proxy_password_changed.then(|| self.proxy_password.clone()),
+            proxy_username: self.proxy_logins[0].username.trim().to_string(),
+            proxy_password: self.proxy_logins[0].new_password(),
+            proxy_https_username: self.proxy_logins[1].username.trim().to_string(),
+            proxy_https_password: self.proxy_logins[1].new_password(),
+            proxy_ftp_username: self.proxy_logins[2].username.trim().to_string(),
+            proxy_ftp_password: self.proxy_logins[2].new_password(),
+            proxy_socks_username: self.proxy_logins[3].username.trim().to_string(),
+            proxy_socks_password: self.proxy_logins[3].new_password(),
+            proxy_logins_split: false,
             use_browser_proxy: self.use_browser_proxy,
+            browser_proxy_after_errors: self.browser_proxy_after_errors,
             site_logins: self
                 .logins
                 .iter()
@@ -2503,18 +2537,43 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
                         .desired_width(240.0),
                 );
             });
-            ui.radio_value(&mut draft.proxy_mode, ProxyMode::Manual, tr("Use these proxies:"));
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut draft.proxy_mode, ProxyMode::Manual, tr("Use these proxies:"));
+                if ui
+                    .button(tr("Get System"))
+                    .on_hover_text(tr("Fill in the proxies from the Windows proxy setting"))
+                    .clicked()
+                {
+                    get_system_proxy(draft);
+                }
+            });
         });
         ui.end_row();
         let manual = draft.proxy_mode == ProxyMode::Manual;
-        for (label, field, hint) in [
-            (tr("HTTP proxy"), &mut draft.proxy_http, "proxy.example.com:8080"),
-            (tr("HTTPS proxy"), &mut draft.proxy_https, tr("Same as HTTP when empty")),
-            (tr("FTP proxy"), &mut draft.proxy_ftp, tr("For ftp:// downloads; logs in as user@host")),
-            (tr("SOCKS proxy"), &mut draft.proxy_socks5, tr("Used for everything when set")),
+        let [http_login, https_login, ftp_login, socks_login] = &mut draft.proxy_logins;
+        for (label, field, hint, login) in [
+            (tr("HTTP proxy"), &mut draft.proxy_http, "proxy.example.com:8080", http_login),
+            (tr("HTTPS proxy"), &mut draft.proxy_https, tr("Same as HTTP when empty"), https_login),
+            (tr("FTP proxy"), &mut draft.proxy_ftp, tr("For ftp:// downloads; logs in as user@host"), ftp_login),
+            (tr("SOCKS proxy"), &mut draft.proxy_socks5, tr("For what has no proxy of its own"), socks_login),
         ] {
             ui.label(label);
-            ui.add_enabled(manual, egui::TextEdit::singleline(field).hint_text(hint).desired_width(260.0));
+            ui.add_enabled_ui(manual, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(field).hint_text(hint).desired_width(220.0));
+                    ui.add(egui::TextEdit::singleline(&mut login.username).hint_text(tr("User name")).desired_width(110.0));
+                    let hint = if login.changed { tr("Password") } else { tr("Password (unchanged)") };
+                    let pw = ui.add(
+                        egui::TextEdit::singleline(&mut login.password)
+                            .password(true)
+                            .hint_text(hint)
+                            .desired_width(130.0),
+                    );
+                    if pw.changed() {
+                        login.changed = true;
+                    }
+                });
+            });
             ui.end_row();
         }
         ui.label(tr("SOCKS version"));
@@ -2537,25 +2596,18 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         )
         .on_hover_text(tr("Hosts reached directly, separated by spaces or semicolons. * matches anything; <local> is any name without a dot."));
         ui.end_row();
-        ui.label(tr("Proxy login"));
-        ui.add_enabled_ui(manual, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut draft.proxy_username).hint_text(tr("User name")).desired_width(120.0));
-                let hint = if draft.proxy_password_changed { tr("Password") } else { tr("Password (unchanged)") };
-                let pw = ui.add(
-                    egui::TextEdit::singleline(&mut draft.proxy_password)
-                        .password(true)
-                        .hint_text(hint)
-                        .desired_width(130.0),
+        ui.label("");
+        ui.vertical(|ui| {
+            ui.checkbox(&mut draft.use_browser_proxy, tr("For downloads from the browser, use the browser's proxy"));
+            ui.add_enabled_ui(draft.use_browser_proxy, |ui| {
+                ui.radio_value(&mut draft.browser_proxy_after_errors, false, tr("Always"));
+                ui.radio_value(
+                    &mut draft.browser_proxy_after_errors,
+                    true,
+                    tr("Only after a download fails: it is tried once more through the browser's proxy"),
                 );
-                if pw.changed() {
-                    draft.proxy_password_changed = true;
-                }
             });
         });
-        ui.end_row();
-        ui.label("");
-        ui.checkbox(&mut draft.use_browser_proxy, tr("For downloads from the browser, use the browser's proxy"));
         ui.end_row();
         ui.label(tr("FTP"));
         ui.checkbox(&mut draft.ftp_active, tr("Active mode: the server connects back to UIDM for data"))
@@ -2618,7 +2670,32 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     }
 }
 
+/// Fill the manual proxies from the Windows proxy setting, as IDM's Get
+/// System does. Windows' SOCKS proxies speak SOCKS4. Its configuration
+/// script is not read: it picks a proxy per address.
+fn get_system_proxy(draft: &mut OptionsDraft) {
+    let Some(rules) = uidm::net::system_proxy_at(uidm::net::INTERNET_SETTINGS) else {
+        draft.error = Some(tr("Windows has no proxy server turned on.").to_string());
+        return;
+    };
+    draft.proxy_mode = ProxyMode::Manual;
+    draft.proxy_http = rules.http.clone().unwrap_or_default();
+    // An HTTPS proxy the same as the HTTP one is left to fall back to it.
+    draft.proxy_https = rules.https.clone().filter(|s| rules.http.as_ref() != Some(s)).unwrap_or_default();
+    draft.proxy_socks5 = rules
+        .socks
+        .as_deref()
+        .map(|s| s.split_once("://").map_or(s, |(_, a)| a).to_string())
+        .unwrap_or_default();
+    if rules.socks.is_some() {
+        draft.proxy_socks_version = SocksVersion::V4;
+    }
+    draft.proxy_bypass = rules.bypass.join(" ");
+    draft.error = None;
+}
+
 fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+
     egui::Grid::new("notifications").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label(tr("When a download ends"));
         ui.vertical(|ui| {

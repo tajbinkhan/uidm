@@ -242,12 +242,15 @@ tests, not in a running Firefox.
   when the server sends one); otherwise the window says why and asks before
   starting over.
 - **Proxies and site logins** (Options, **Connection**): no proxy, the
-  Windows proxy setting, or an HTTP, HTTPS and SOCKS5 proxy with an optional
-  user name and password; optionally the proxy the browser uses, for
-  downloads from the browser. Site logins pair a site with a user name and
+  Windows proxy setting, or HTTP, HTTPS, FTP and SOCKS proxies, each with
+  its own optional user name and password; **Get System** fills them in from
+  the Windows setting. The SOCKS proxy carries what has no proxy of its own.
+  Downloads from the browser can use the browser's proxy, always or only to
+  retry one that failed. Site logins pair a site with a user name and
   password; a site can name one of its folders, such as
-  `example.com/private/*`, to use another login there. When a server asks for a login (HTTP Basic or Digest), UIDM sends
-  the matching one to that site and no other. Without one (or when the
+  `example.com/private/*`, to use another login there. When a server asks
+  for a login (HTTP Basic or Digest), UIDM sends the matching one to that
+  site and no other. Without one (or when the
   server refuses it) the download stops, and the window asks: **Log in to
   the site** shows the site and the realm it named, takes a user name and
   password, and retries the download with them. They stay the download's
@@ -735,24 +738,35 @@ waiting; `refresh_waiting` with `id: null` says nothing waits.
 
 ## Proxies and logins
 
-The settings hold `proxy_mode` (`none`, `system` or `manual`), the manual
-`proxy_http`, `proxy_https` and `proxy_socks5` (each `host:port`),
-`proxy_username`, `use_browser_proxy` and `site_logins` (`site` and
-`username`). Passwords are write-only: `proxy_password` and each login's
-`password` travel in `set_settings` only when changed, and the daemon keeps
-them outside the settings file and never sends them back. The proxy password
-is encrypted with DPAPI in `%LOCALAPPDATA%\UIDM\proxy.bin`; login passwords
-are generic credentials named `UIDM/login/<site>` in Windows Credential
-Manager, removed with their login.
+The settings hold `proxy_mode` (`none`, `system`, `script` or `manual`), the
+manual `proxy_http`, `proxy_https`, `proxy_ftp` and `proxy_socks5` (each
+`host:port`), each one's user name (`proxy_username` for HTTP, then
+`proxy_https_username`, `proxy_ftp_username` and `proxy_socks_username`),
+`use_browser_proxy`, `browser_proxy_after_errors` and `site_logins` (`site`
+and `username`). Passwords are write-only: `proxy_password`,
+`proxy_https_password`, `proxy_ftp_password`, `proxy_socks_password` and each
+login's `password` travel in `set_settings` only when changed, and the daemon
+keeps them outside the settings file and never sends them back. Proxy
+passwords are encrypted with DPAPI in `%LOCALAPPDATA%\UIDM`: `proxy.bin` for
+HTTP, `proxy-https.bin`, `proxy-ftp.bin` and `proxy-socks.bin`. A settings
+file from before each proxy had a login of its own gives its shared login to
+the HTTPS and SOCKS proxies, which used it, on the daemon's first start. Login
+passwords are generic credentials named `UIDM/login/<site>` in Windows
+Credential Manager, removed with their login.
 
 **Proxies.** The system proxy is read from the Internet settings in the
 registry each time a download starts: `ProxyServer` (one proxy, or
 `http=…;https=…;socks=…`) and the `ProxyOverride` bypass list, including
 `<local>`, and its configuration script or automatic detection (WPAD), which
-WinHTTP runs to pick the proxy per address. The manual HTTPS
-proxy is the proxy for `https://` URLs (an HTTP proxy reached with `CONNECT`;
-empty means the HTTP one); a SOCKS4 or SOCKS5 proxy, when set, carries
-everything.
+WinHTTP runs to pick the proxy per address. **Get System** in Options copies
+the fixed part of that setting (the proxies and the bypass list, not the
+script) into the manual fields; Windows' SOCKS proxy speaks SOCKS4. The
+manual HTTPS proxy is the proxy for `https://` URLs (an HTTP proxy reached
+with `CONNECT`; empty means the HTTP one, with its login). A SOCKS4 or
+SOCKS5 proxy carries the `http://` and `https://` URLs that have no proxy of
+their own. `ftp://` downloads go only through the FTP proxy: UIDM logs in to
+it first with its own login, when it has one (`USER`, `PASS`), then as
+`user@host`.
 ureq sends proxy credentials only when it tunnels `https://` requests, so
 for plain `http://` requests through a proxy with a login UIDM adds
 `Proxy-Authorization` itself and follows redirects itself, adding it only on
@@ -760,7 +774,11 @@ for plain `http://` requests through a proxy with a login UIDM adds
 neither the proxy login nor a site's cookies reach another server. With
 `use_browser_proxy`, the extension reports the browser's fixed proxy
 (`chrome.proxy`, plain HTTP or SOCKS only) with each download, and that proxy
-wins for downloads that carry one.
+wins for downloads that carry one. With `browser_proxy_after_errors` too, a
+download goes through UIDM's own proxy setting first; when it fails, the
+daemon retries it once through the browser's proxy, and that address keeps
+using it until the daemon restarts.
+
 
 **Logins.** A site matches the way capture rules do: `example.com` covers its
 subdomains, and `*` works within a name. A path after the site limits the

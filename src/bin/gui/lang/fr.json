@@ -120,13 +120,11 @@
   "FTP proxy": "Proxy FTP",
   "For ftp:// downloads; logs in as user@host": "Pour les téléchargements ftp:// ; se connecte en tant que user@host",
   "SOCKS proxy": "Proxy SOCKS",
-  "Used for everything when set": "Utilisé pour tout s'il est défini",
   "SOCKS version": "Version SOCKS",
   "The proxy looks up host names (SOCKS4a)": "Le proxy résout les noms d'hôte (SOCKS4a)",
   "A SOCKS5 proxy always looks up host names": "Un proxy SOCKS5 résout toujours les noms d'hôte",
   "Not for": "Sauf pour",
   "Hosts reached directly, separated by spaces or semicolons. * matches anything; <local> is any name without a dot.": "Hôtes atteints directement, séparés par des espaces ou des points-virgules. * correspond à tout ; <local> désigne tout nom sans point.",
-  "Proxy login": "Identifiants du proxy",
   "User name": "Nom d'utilisateur",
   "Password": "Mot de passe",
   "Password (unchanged)": "Mot de passe (inchangé)",
@@ -678,5 +676,11 @@
   "Counted from the last start, until the stop time (or midnight without one)": "Compté depuis le dernier démarrage, jusqu'à l'heure d'arrêt (ou minuit sans elle)",
   "The downloads waiting in": "Les téléchargements en attente dans",
   "UIDM must be running at the start time for the schedule to start this queue. If it starts later, the queue starts then, while its time is still open. Start with Windows (Options > General) keeps it running.": "UIDM doit être lancé à l'heure de début pour que la planification démarre cette file. S'il démarre plus tard, la file démarre alors, tant que sa plage horaire est ouverte. Démarrer avec Windows (Options > Général) le garde lancé.",
-  "A server, or one of its folders such as example.com/private/*. The longest match wins.": "Un serveur, ou l'un de ses dossiers comme example.com/private/*. La correspondance la plus longue l'emporte."
+  "A server, or one of its folders such as example.com/private/*. The longest match wins.": "Un serveur, ou l'un de ses dossiers comme example.com/private/*. La correspondance la plus longue l'emporte.",
+  "Get System": "Du système",
+  "Fill in the proxies from the Windows proxy setting": "Remplir les proxys depuis le réglage de proxy de Windows",
+  "For what has no proxy of its own": "Pour ce qui n'a pas son propre proxy",
+  "Always": "Toujours",
+  "Only after a download fails: it is tried once more through the browser's proxy": "Seulement après un échec : le téléchargement est retenté une fois par le proxy du navigateur",
+  "Windows has no proxy server turned on.": "Windows n'a aucun serveur proxy activé."
 }

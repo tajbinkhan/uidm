@@ -390,12 +390,14 @@ pub struct Settings {
     pub proxy_mode: ProxyMode,
     /// `host:port` of the manual proxy for http URLs.
     pub proxy_http: String,
-    /// `host:port` of the manual proxy for https URLs; empty uses the http one.
+    /// `host:port` of the manual proxy for https URLs; empty uses the http
+    /// one, with its login.
     pub proxy_https: String,
     /// `host:port` of a manual FTP proxy for ftp:// downloads.
     pub proxy_ftp: String,
-    /// `host:port` of a manual SOCKS proxy for everything; wins when set.
-    /// (The name is from when only SOCKS5 was offered.)
+    /// `host:port` of a manual SOCKS proxy, for http and https URLs that
+    /// have no proxy of their own. (The name is from when only SOCKS5 was
+    /// offered.)
     pub proxy_socks5: String,
     pub proxy_socks_version: SocksVersion,
     /// Let the SOCKS proxy look up host names (SOCKS4a, and always for
@@ -409,14 +411,35 @@ pub struct Settings {
     /// FTP data connections come from the server (active mode, PORT)
     /// instead of going to it (passive mode).
     pub ftp_active: bool,
-    /// User name for the manual proxy, if it needs one.
+    /// User name for the manual HTTP proxy, if it needs one.
     pub proxy_username: String,
-    /// A new proxy password to store (empty clears it); `None` keeps the
-    /// stored one. Kept with DPAPI, never in this file.
+    /// A new HTTP proxy password to store (empty clears it); `None` keeps
+    /// the stored one. Each proxy's password is kept with DPAPI, never in
+    /// this file.
     #[serde(default, skip_serializing)]
     pub proxy_password: Option<String>,
+    /// User name for the manual HTTPS proxy.
+    pub proxy_https_username: String,
+    #[serde(default, skip_serializing)]
+    pub proxy_https_password: Option<String>,
+    /// User name for the manual FTP proxy.
+    pub proxy_ftp_username: String,
+    #[serde(default, skip_serializing)]
+    pub proxy_ftp_password: Option<String>,
+    /// User name for the manual SOCKS proxy.
+    pub proxy_socks_username: String,
+    #[serde(default, skip_serializing)]
+    pub proxy_socks_password: Option<String>,
+    /// Set on loading a file from before each proxy had its own login: the
+    /// HTTPS and SOCKS proxies took the HTTP proxy's user name, and the
+    /// daemon gives them its password too.
+    #[serde(skip)]
+    pub proxy_logins_split: bool,
     /// For a download taken from the browser, use the proxy the browser uses.
     pub use_browser_proxy: bool,
+    /// With `use_browser_proxy`, use the browser's proxy only to retry a
+    /// download that failed through UIDM's own proxy setting.
+    pub browser_proxy_after_errors: bool,
     pub site_logins: Vec<SiteLogin>,
     /// Offer to download links copied to the clipboard whose file type is
     /// one of `capture_types`.
@@ -533,7 +556,15 @@ impl Default for Settings {
             ftp_active: false,
             proxy_username: String::new(),
             proxy_password: None,
+            proxy_https_username: String::new(),
+            proxy_https_password: None,
+            proxy_ftp_username: String::new(),
+            proxy_ftp_password: None,
+            proxy_socks_username: String::new(),
+            proxy_socks_password: None,
+            proxy_logins_split: false,
             use_browser_proxy: false,
+            browser_proxy_after_errors: false,
             site_logins: Vec::new(),
             clipboard_monitor: false,
             clipboard_start: false,
@@ -685,7 +716,8 @@ impl Settings {
         for (what, addr) in [
             ("The HTTP proxy", &self.proxy_http),
             ("The HTTPS proxy", &self.proxy_https),
-            ("The SOCKS5 proxy", &self.proxy_socks5),
+            ("The FTP proxy", &self.proxy_ftp),
+            ("The SOCKS proxy", &self.proxy_socks5),
         ] {
             if !addr.trim().is_empty() && !is_host_port(addr.trim()) {
                 return Err(format!("{what} must be host:port, such as proxy.example.com:8080."));
@@ -694,6 +726,7 @@ impl Settings {
         if self.proxy_mode == ProxyMode::Manual
             && self.proxy_http.trim().is_empty()
             && self.proxy_https.trim().is_empty()
+            && self.proxy_ftp.trim().is_empty()
             && self.proxy_socks5.trim().is_empty()
         {
             return Err("Set at least one proxy, or choose another proxy option.".to_string());
@@ -702,7 +735,7 @@ impl Settings {
         for l in &self.site_logins {
             let site = l.site.trim().to_ascii_lowercase();
             let (host, path) = crate::net::split_login_pattern(&site);
-            if !is_site(host) || path.contains(char::is_whitespace) {
+            if !is_site(host) || host.ends_with(':') || path.contains(char::is_whitespace) {
                 return Err(format!(
                     "\"{}\" is not a site. Use a host name such as example.com, or one with a folder such as example.com/private/*.",
                     l.site
@@ -889,8 +922,11 @@ impl Settings {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Settings::default()),
             Err(e) => return Err(e),
         };
-        let settings: Settings = serde_json::from_slice(&bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let invalid = |e| io::Error::new(io::ErrorKind::InvalidData, e);
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).map_err(invalid)?;
+        let split = split_proxy_login(&mut value);
+        let mut settings: Settings = serde_json::from_value(value).map_err(invalid)?;
+        settings.proxy_logins_split = split;
         settings
             .validate()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -904,6 +940,26 @@ impl Settings {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomic(path, &bytes)
     }
+}
+
+/// Give a settings file from before each proxy had its own login an HTTPS
+/// and a SOCKS login: the shared one, which they used. Returns whether it
+/// did.
+fn split_proxy_login(value: &mut serde_json::Value) -> bool {
+    let Some(map) = value.as_object_mut() else {
+        return false;
+    };
+    if map.contains_key("proxy_https_username") {
+        return false;
+    }
+    let user = match map.get("proxy_username").and_then(|u| u.as_str()) {
+        Some(u) if !u.trim().is_empty() => u.to_string(),
+        _ => return false,
+    };
+    for key in ["proxy_https_username", "proxy_socks_username"] {
+        map.insert(key.into(), user.clone().into());
+    }
+    true
 }
 
 /// A host name, optionally with a `*.` wildcard or a port.
@@ -1057,7 +1113,15 @@ mod tests {
             ftp_active: true,
             proxy_username: "me".into(),
             proxy_password: None,
+            proxy_https_username: "tls".into(),
+            proxy_https_password: None,
+            proxy_ftp_username: "ftp".into(),
+            proxy_ftp_password: None,
+            proxy_socks_username: "sock".into(),
+            proxy_socks_password: None,
+            proxy_logins_split: false,
             use_browser_proxy: true,
+            browser_proxy_after_errors: true,
             site_logins: vec![SiteLogin {
                 site: "files.example.com".into(),
                 username: "ann".into(),
@@ -1320,6 +1384,9 @@ mod tests {
     fn passwords_never_reach_the_file() {
         let s = Settings {
             proxy_password: Some("proxy-secret".into()),
+            proxy_https_password: Some("https-secret".into()),
+            proxy_ftp_password: Some("ftp-secret".into()),
+            proxy_socks_password: Some("socks-secret".into()),
             site_logins: vec![SiteLogin {
                 site: "example.com".into(),
                 username: "ann".into(),
@@ -1360,7 +1427,25 @@ mod tests {
     }
 
     #[test]
+    fn an_old_shared_proxy_login_goes_to_https_and_socks() {
+        let path = temp_path("old-proxy.json");
+        fs::write(&path, br#"{"proxy_username":"me","proxy_http":"p:1"}"#).unwrap();
+        let s = Settings::load(&path).unwrap();
+        assert!(s.proxy_logins_split);
+        assert_eq!((s.proxy_https_username.as_str(), s.proxy_socks_username.as_str()), ("me", "me"));
+        assert_eq!(s.proxy_ftp_username, "", "the FTP proxy never had a login");
+        // Saved again, the file has its own logins and is left alone.
+        s.save(&path).unwrap();
+        let again = Settings::load(&path).unwrap();
+        assert!(!again.proxy_logins_split);
+        fs::write(&path, br#"{"proxy_http":"p:1"}"#).unwrap();
+        assert!(!Settings::load(&path).unwrap().proxy_logins_split, "no login to split");
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn custom_scanner_needs_a_command_with_the_path() {
+
         let custom = |cmd: &str| Settings {
             scan_after_download: true,
             scanner: Scanner::Custom,

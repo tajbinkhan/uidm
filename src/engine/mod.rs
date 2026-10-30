@@ -2403,6 +2403,7 @@ mod tests {
             req.net = Arc::new(NetConfig {
                 ftp_active: false,
                 ftp_proxy: None,
+                ftp_proxy_login: Default::default(),
                 proxy: None,
                 logins: vec![login("127.0.0.1", "ann", "wrong")],
             });
@@ -2417,6 +2418,7 @@ mod tests {
             req.net = Arc::new(NetConfig {
                 ftp_active: false,
                 ftp_proxy: None,
+                ftp_proxy_login: Default::default(),
                 proxy: None,
                 logins: vec![login("example.com", "x", "y"), login("127.0.0.1", "ann", "pa ss")],
             });
@@ -2444,6 +2446,7 @@ mod tests {
             req.net = Arc::new(NetConfig {
                 ftp_active: false,
                 ftp_proxy: None,
+                ftp_proxy_login: Default::default(),
                 proxy: None,
                 logins: vec![login("127.0.0.1", "ann", "pw")],
             });
@@ -2500,14 +2503,15 @@ mod tests {
             req.net = Arc::new(NetConfig {
                 ftp_active: false,
                 ftp_proxy: None,
+                ftp_proxy_login: Default::default(),
                 proxy: Some(crate::net::ProxyRules {
                     http: Some(proxy_addr),
-                    username: "pu".into(),
-                    password: "pp".into(),
+                    http_login: crate::net::ProxyLogin::new("pu", "pp"),
                     ..Default::default()
                 }),
                 logins: Vec::new(),
             });
+
             let path = download(|_| {}, req);
             assert_eq!(fs::read(&path).unwrap(), data);
             let seen = through.lock().unwrap();

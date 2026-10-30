@@ -9,7 +9,8 @@
 //!   server answers 401, the engine sends the matching login with HTTP Basic
 //!   or Digest, to the host that asked and to no other.
 //!
-//! The proxy password is kept apart from the settings, encrypted with DPAPI.
+//! Each proxy's password is kept apart from the settings, encrypted with
+//! DPAPI.
 
 use std::ffi::c_void;
 use std::fmt::Write as _;
@@ -94,6 +95,34 @@ fn request_uri(url: &str) -> String {
     path.split('#').next().unwrap_or("/").to_string()
 }
 
+/// A proxy's user name and password; an empty user name means none.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProxyLogin {
+    pub username: String,
+    pub password: String,
+}
+
+impl ProxyLogin {
+    pub fn new(username: &str, password: &str) -> Self {
+        ProxyLogin {
+            username: username.to_string(),
+            password: password.to_string(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.username.is_empty()
+    }
+
+    /// `user:password@` for a proxy URL, or "" without a login.
+    fn userinfo(&self) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+        format!("{}:{}@", encode_userinfo(&self.username), encode_userinfo(&self.password))
+    }
+}
+
 /// Which proxies to use.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProxyRules {
@@ -101,14 +130,15 @@ pub struct ProxyRules {
     pub http: Option<String>,
     /// `host:port` of the proxy for https URLs.
     pub https: Option<String>,
-    /// `scheme://host:port` of a SOCKS proxy for every URL (scheme `socks4`
-    /// or `socks5`). It wins over the others.
+    /// `scheme://host:port` of a SOCKS proxy (scheme `socks4`, `socks4a` or
+    /// `socks5`), for the URLs whose scheme has no proxy of its own.
     pub socks: Option<String>,
     /// Hosts reached directly: patterns with `*`, and `<local>` for names
     /// without a dot.
     pub bypass: Vec<String>,
-    pub username: String,
-    pub password: String,
+    pub http_login: ProxyLogin,
+    pub https_login: ProxyLogin,
+    pub socks_login: ProxyLogin,
     /// A proxy auto-config script that picks the proxy per URL. When it
     /// cannot be found or run, the proxies above apply.
     pub pac: Option<crate::pac::PacSource>,
@@ -156,22 +186,35 @@ impl ProxyRules {
         if let Some(Ok(answer)) = self.pac.as_ref().map(|source| crate::pac::proxy_for(source, url)) {
             return answer;
         }
-        let creds = if self.username.is_empty() {
-            String::new()
-        } else {
-            format!("{}:{}@", encode_userinfo(&self.username), encode_userinfo(&self.password))
-        };
-        if let Some(socks) = &self.socks {
-            let (scheme, addr) = socks.split_once("://").unwrap_or(("socks5", socks));
-            return Some(format!("{scheme}://{creds}{addr}"));
+        let (scheme, addr, login) = self.fixed_for(url)?;
+        Some(format!("{scheme}://{}{addr}", login.userinfo()))
+    }
+
+    /// The login of the fixed proxy `url` goes through, when it has one. A
+    /// proxy a configuration script picks has none.
+    pub fn login_for(&self, url: &str) -> Option<&ProxyLogin> {
+        let scripted = self.pac.as_ref().is_some_and(|source| crate::pac::proxy_for(source, url).is_ok());
+        if scripted || self.bypassed(&host_of(url)) {
+            return None;
         }
+        self.fixed_for(url).map(|(_, _, login)| login).filter(|l| !l.is_empty())
+    }
+
+    /// The fixed proxy for `url` as its scheme, `host:port` and login: the
+    /// proxy for the URL's own scheme, else the SOCKS proxy.
+    fn fixed_for(&self, url: &str) -> Option<(&str, &str, &ProxyLogin)> {
         let https = url.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://"));
-        let addr = if https {
-            self.https.as_ref().or(self.http.as_ref())
+        let own = if https {
+            self.https.as_deref().map(|a| (a, &self.https_login))
         } else {
-            self.http.as_ref()
-        }?;
-        Some(format!("http://{creds}{addr}"))
+            self.http.as_deref().map(|a| (a, &self.http_login))
+        };
+        if let Some((addr, login)) = own {
+            return Some(("http", addr, login));
+        }
+        let socks = self.socks.as_deref()?;
+        let (scheme, addr) = socks.split_once("://").unwrap_or(("socks5", socks));
+        Some((scheme, addr, &self.socks_login))
     }
 
     fn bypassed(&self, host: &str) -> bool {
@@ -305,6 +348,8 @@ pub struct NetConfig {
     pub ftp_active: bool,
     /// `host:port` of an FTP proxy for `ftp://` downloads.
     pub ftp_proxy: Option<String>,
+    /// The FTP proxy's own login, sent before the server's.
+    pub ftp_proxy_login: ProxyLogin,
 }
 
 /// Split a `WWW-Authenticate` header into its scheme and parameters.
@@ -514,11 +559,53 @@ pub fn delete_login_password(site: &str) -> io::Result<()> {
     Ok(())
 }
 
-// --- The proxy password, encrypted with DPAPI ---------------------------------
+// --- The proxies' passwords, encrypted with DPAPI -----------------------------
 
-/// `%LOCALAPPDATA%\UIDM\proxy.bin`.
-pub fn proxy_password_path() -> io::Result<PathBuf> {
-    Ok(crate::history::history_path()?.with_file_name("proxy.bin"))
+/// The proxies set by hand, each with its own login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyKind {
+    Http,
+    Https,
+    Ftp,
+    Socks,
+}
+
+impl ProxyKind {
+    pub const ALL: [ProxyKind; 4] = [ProxyKind::Http, ProxyKind::Https, ProxyKind::Ftp, ProxyKind::Socks];
+
+    fn file_name(self) -> &'static str {
+        match self {
+            // The name is from when one login served every proxy.
+            ProxyKind::Http => "proxy.bin",
+            ProxyKind::Https => "proxy-https.bin",
+            ProxyKind::Ftp => "proxy-ftp.bin",
+            ProxyKind::Socks => "proxy-socks.bin",
+        }
+    }
+}
+
+/// Where the `kind` proxy's password is kept: `proxy.bin` for HTTP and
+/// `proxy-<kind>.bin` for the others, in `%LOCALAPPDATA%\UIDM`.
+pub fn proxy_password_path(kind: ProxyKind) -> io::Result<PathBuf> {
+    Ok(crate::history::history_path()?.with_file_name(kind.file_name()))
+}
+
+/// Give the HTTPS and SOCKS proxies the HTTP proxy's stored password, for
+/// settings from before each proxy had its own login. A proxy that already
+/// has a password keeps it.
+pub fn split_proxy_password() -> io::Result<()> {
+    let http = proxy_password_path(ProxyKind::Http)?;
+    let password = load_proxy_password(&http);
+    if password.is_empty() {
+        return Ok(());
+    }
+    for kind in [ProxyKind::Https, ProxyKind::Socks] {
+        let path = proxy_password_path(kind)?;
+        if !path.exists() {
+            save_proxy_password(&path, &password)?;
+        }
+    }
+    Ok(())
 }
 
 /// Save the proxy password, or delete it when empty.
@@ -592,12 +679,15 @@ mod tests {
             https: Some("secure:3129".into()),
             socks: None,
             bypass: vec!["<local>".into(), "*.corp.net".into(), "10.0.0.1".into()],
-            username: "me@corp".into(),
-            password: "p:w/d".into(),
+            http_login: ProxyLogin::new("me@corp", "p:w/d"),
+            https_login: ProxyLogin::new("tls", "pw"),
+            socks_login: ProxyLogin::default(),
             pac: None,
         };
         assert_eq!(rules.proxy_for("http://a.com/f").as_deref(), Some("http://me%40corp:p%3Aw%2Fd@proxy:3128"));
-        assert_eq!(rules.proxy_for("HTTPS://a.com/f").as_deref(), Some("http://me%40corp:p%3Aw%2Fd@secure:3129"));
+        assert_eq!(rules.proxy_for("HTTPS://a.com/f").as_deref(), Some("http://tls:pw@secure:3129"));
+        assert_eq!(rules.login_for("http://a.com/f").map(|l| l.username.as_str()), Some("me@corp"));
+        assert_eq!(rules.login_for("http://intranet/f"), None);
         assert_eq!(rules.proxy_for("http://intranet/f"), None);
         assert_eq!(rules.proxy_for("https://files.corp.net/f"), None);
         assert_eq!(rules.proxy_for("http://10.0.0.1/f"), None);
@@ -613,6 +703,25 @@ mod tests {
         };
         assert_eq!(https_only.proxy_for("http://a.com/"), None, "no proxy for http");
         assert_eq!(ProxyRules::default().proxy_for("http://a.com/"), None);
+    }
+
+    #[test]
+    fn socks_carries_only_the_schemes_without_a_proxy() {
+        let rules = ProxyRules {
+            http: Some("web:8080".into()),
+            socks: Some("socks5://s:1080".into()),
+            http_login: ProxyLogin::new("web", "1"),
+            socks_login: ProxyLogin::new("sock", "2"),
+            ..ProxyRules::default()
+        };
+        assert_eq!(rules.proxy_for("http://a.com/").as_deref(), Some("http://web:1@web:8080"));
+        assert_eq!(rules.proxy_for("https://a.com/").as_deref(), Some("socks5://sock:2@s:1080"));
+        assert_eq!(rules.login_for("https://a.com/").map(|l| l.username.as_str()), Some("sock"));
+        let no_login = ProxyRules {
+            socks_login: ProxyLogin::default(),
+            ..rules
+        };
+        assert_eq!(no_login.login_for("https://a.com/"), None);
     }
 
     #[test]
