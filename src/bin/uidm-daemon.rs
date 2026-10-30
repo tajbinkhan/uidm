@@ -885,6 +885,10 @@ impl Daemon {
         };
         eprintln!("[uidm-daemon] queue {name} is done");
         if !started.is_empty() {
+            let settings = self.settings.lock().unwrap().clone();
+            if settings.sound_on_queue_done {
+                notify::play(Sound::QueueDone, settings.sound_file(Sound::QueueDone).as_deref());
+            }
             if let Some(file) = open {
                 open_after_run(&file);
             }
@@ -1078,12 +1082,16 @@ impl Daemon {
     /// The quota's state for a window that just connected, if downloads are
     /// paused for it or it is nearly reached.
     fn quota_message(&self) -> Option<Outgoing> {
-        let (limit, window) = self.settings.lock().unwrap().quota()?;
+        let (quota, warn) = {
+            let s = self.settings.lock().unwrap();
+            (s.quota(), s.quota_warn)
+        };
+        let (limit, window) = quota?;
         let now = uidm::quota::now_minute();
         let mut usage = self.hub.quota.lock().unwrap();
         let used = usage.used(now, window);
         let paused = self.quota_paused.lock().unwrap().is_some();
-        (paused || used >= limit / 10 * 9).then(|| Outgoing::Quota {
+        (paused || (warn && used >= limit / 10 * 9)).then(|| Outgoing::Quota {
             used,
             limit,
             paused,
@@ -1095,7 +1103,10 @@ impl Daemon {
     /// before, and resume what it stopped once the window allows. Runs with
     /// the scheduler.
     fn check_quota(&self) {
-        let quota = self.settings.lock().unwrap().quota();
+        let (quota, warn) = {
+            let s = self.settings.lock().unwrap();
+            (s.quota(), s.quota_warn)
+        };
         let now = uidm::quota::now_minute();
         let (used, limit, window) = match quota {
             Some((limit, window)) => (self.hub.quota.lock().unwrap().used(now, window), limit, window),
@@ -1136,7 +1147,7 @@ impl Daemon {
                 eprintln!("[uidm-daemon] quota reached: {used} of {limit} bytes");
                 self.hub.broadcast(&msg(true, Some(at)));
             }
-        } else if used >= limit / 10 * 9 && !self.quota_warned.swap(true, Ordering::Relaxed) {
+        } else if warn && used >= limit / 10 * 9 && !self.quota_warned.swap(true, Ordering::Relaxed) {
             self.hub.broadcast(&msg(false, None));
         }
     }
@@ -1250,10 +1261,10 @@ impl Daemon {
             return;
         };
         if failed && settings.sound_on_failed {
-            notify::play(Sound::Failed);
+            notify::play(Sound::Failed, settings.sound_file(Sound::Failed).as_deref());
         }
         if !failed && settings.sound_on_done {
-            notify::play(Sound::Done);
+            notify::play(Sound::Done, settings.sound_file(Sound::Done).as_deref());
         }
         // A download that asked for the completion dialog gets it, or a
         // notification in its place when no window is open.
@@ -1899,6 +1910,38 @@ impl Daemon {
             },
             Err(e) => Outgoing::Update { newer: None, error: Some(e) },
         }
+    }
+
+    /// Update now: download the newest release's Setup through the
+    /// settings' proxy, check it, save it to the temp folder and run it,
+    /// then stop the downloads, save the list and quit with the windows,
+    /// so Setup can replace the files. Setup closes whatever is left.
+    fn install_update(&self) -> Result<(), String> {
+        let release = match self.check_update(uidm::update::LATEST_RELEASE) {
+            Outgoing::Update { newer: Some(r), .. } => r,
+            Outgoing::Update { error: Some(e), .. } => return Err(e),
+            _ => return Err("This is the newest version.".into()),
+        };
+        let setup = release.setup.ok_or("This release has no Setup program; download it from its page.")?;
+        let settings = self.settings.lock().unwrap().clone();
+        let net = self.net_for(&Download { url: setup.url.clone(), ..Download::default() }, &settings);
+        let headers = [("User-Agent".to_string(), format!("UIDM/{}", env!("CARGO_PKG_VERSION")))];
+        eprintln!("[uidm-daemon] downloading {}", setup.url);
+        let fetched = engine::fetch(&setup.url, &headers, &net, uidm::update::MAX_SETUP_BYTES)
+            .map_err(|e| format!("Could not download the update: {e}"))?;
+        uidm::update::check_setup(&setup, &fetched.body)?;
+        let path = std::env::temp_dir().join(&setup.name);
+        std::fs::write(&path, &fetched.body).map_err(|e| format!("Could not save the update to {}: {e}", path.display()))?;
+        // /fromuidm closes UIDM without asking: the user asked for this.
+        Command::new(&path)
+            .arg("/fromuidm=yes")
+            .spawn()
+            .map_err(|e| format!("Could not start {}: {e}", path.display()))?;
+        eprintln!("[uidm-daemon] started {}; quitting for it", path.display());
+        self.pause_all();
+        self.save_history();
+        self.hub.broadcast(&Outgoing::Quit);
+        Ok(())
     }
 
     /// Once a week, when a window connects, look for a newer release on
@@ -3305,6 +3348,16 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
             if let Err(message) = daemon.convert(id, to, delete_original) {
                 send(&Outgoing::Error { message });
             }
+        }
+        Incoming::InstallUpdate => {
+            let (daemon, reply) = (Arc::clone(daemon), reply.clone());
+            thread::spawn(move || {
+                if let Err(error) = daemon.install_update() {
+                    if let Ok(frame) = serde_json::to_vec(&Outgoing::UpdateFailed { error }) {
+                        let _ = reply.send(frame);
+                    }
+                }
+            });
         }
         Incoming::CheckUpdate => {
             let (daemon, reply) = (Arc::clone(daemon), reply.clone());

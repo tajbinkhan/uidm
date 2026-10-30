@@ -122,6 +122,7 @@ mod tests {
         include_str!("connections.rs"),
         include_str!("droptarget.rs"),
         include_str!("find.rs"),
+        include_str!("help.rs"),
         include_str!("links.rs"),
         include_str!("login.rs"),
         include_str!("progress.rs"),

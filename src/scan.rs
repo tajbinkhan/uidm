@@ -28,6 +28,19 @@ const POLL: Duration = Duration::from_millis(200);
 const DETAIL_CHARS: usize = 300;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// The scanner command line with `program` in place of the one in
+/// `command`, keeping its arguments, or with `{path}` alone when it had
+/// none.
+pub fn with_program(program: &str, command: &str) -> String {
+    let rest = match command.trim().strip_prefix('"') {
+        Some(quoted) => quoted.split_once('"').map_or("", |(_, rest)| rest),
+        None => command.trim().split_once(' ').map_or("", |(_, rest)| rest),
+    }
+    .trim();
+    let rest = if rest.is_empty() { "{path}" } else { rest };
+    format!("\"{program}\" {rest}")
+}
+
 /// Split a command line into the program and its arguments. Whitespace
 /// separates arguments; double quotes group, so `"C:\Program Files\x.exe"` is
 /// one. Backslashes are literal, as in Windows paths. The command must name a
@@ -188,6 +201,15 @@ fn tail(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chosen_program_keeps_the_arguments() {
+        let clam = r"C:\ClamAV\clamscan.exe";
+        assert_eq!(with_program(clam, ""), format!("\"{clam}\" {{path}}"));
+        assert_eq!(with_program(clam, r#""C:\Old\scan.exe" --quiet {path}"#), format!("\"{clam}\" --quiet {{path}}"));
+        assert_eq!(with_program(clam, "scan.exe /f {path}"), format!("\"{clam}\" /f {{path}}"));
+        assert!(parse_command(&with_program(clam, "")).is_ok());
+    }
 
     #[test]
     fn splits_quoted_programs_and_arguments() {

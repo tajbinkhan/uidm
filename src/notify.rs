@@ -6,6 +6,7 @@
 //! as `open:12` that the daemon acts on.
 
 use std::fmt::Write as _;
+use std::os::windows::ffi::OsStrExt as _;
 
 use windows::core::{IInspectable, Interface, HSTRING};
 use windows::Data::Xml::Dom::XmlDocument;
@@ -104,21 +105,40 @@ pub fn show(
 pub enum Sound {
     Done,
     Failed,
+    QueueDone,
 }
 
 const MB_ICONHAND: u32 = 0x10;
+const MB_ICONEXCLAMATION: u32 = 0x30;
 const MB_ICONASTERISK: u32 = 0x40;
+const SND_ASYNC: u32 = 0x0001;
+const SND_NODEFAULT: u32 = 0x0002;
+const SND_FILENAME: u32 = 0x0002_0000;
 
 #[link(name = "user32")]
 extern "system" {
     fn MessageBeep(kind: u32) -> i32;
 }
 
-/// Play the system sound for `sound`, without waiting for it.
-pub fn play(sound: Sound) {
+#[link(name = "winmm")]
+extern "system" {
+    fn PlaySoundW(sound: *const u16, module: isize, flags: u32) -> i32;
+}
+
+/// Play `file` (a WAV file) for `sound`, or the system sound for it when
+/// there is no file or it cannot be played, without waiting for it.
+pub fn play(sound: Sound, file: Option<&std::path::Path>) {
+    if let Some(file) = file.filter(|f| f.is_file()) {
+        let wide: Vec<u16> = file.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        // SAFETY: a NUL-terminated path, read before the call returns.
+        if unsafe { PlaySoundW(wide.as_ptr(), 0, SND_FILENAME | SND_ASYNC | SND_NODEFAULT) } != 0 {
+            return;
+        }
+    }
     let kind = match sound {
         Sound::Done => MB_ICONASTERISK,
         Sound::Failed => MB_ICONHAND,
+        Sound::QueueDone => MB_ICONEXCLAMATION,
     };
     // SAFETY: no pointers; plays asynchronously.
     unsafe {

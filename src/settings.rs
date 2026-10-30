@@ -446,6 +446,11 @@ pub struct Settings {
     pub capture_excluded_sites: Vec<String>,
     /// Closing the window hides it in the tray instead of quitting.
     pub close_to_tray: bool,
+    /// Show UIDM's icon in the notification area. Without it, closing the
+    /// window quits, and UIDM is reached from the Start menu.
+    pub tray_icon: bool,
+    /// Show the categories and queues panel at the window's left.
+    pub categories_panel: bool,
     /// Start the window, hidden in the tray, when you sign in to Windows.
     pub start_with_windows: bool,
     pub notify: Notify,
@@ -453,6 +458,13 @@ pub struct Settings {
     pub sound_on_done: bool,
     /// Play a sound when a download fails.
     pub sound_on_failed: bool,
+    /// Play a sound when a started queue has finished its run.
+    pub sound_on_queue_done: bool,
+    /// The WAV files those sounds play, full paths; empty plays Windows'
+    /// own sound for the event.
+    pub sound_done_file: String,
+    pub sound_failed_file: String,
+    pub sound_queue_file: String,
     /// Scan each finished download for viruses.
     pub scan_after_download: bool,
     pub scanner: Scanner,
@@ -584,6 +596,8 @@ pub struct Settings {
     pub quota_enabled: bool,
     pub quota_mb: u64,
     pub quota_hours: u64,
+    /// Warn when 90% of the quota is used, before downloads stop.
+    pub quota_warn: bool,
     /// Look for a newer UIDM on GitHub once a week.
     pub check_updates: bool,
     /// When that last happened, in seconds since 1970.
@@ -599,6 +613,10 @@ pub struct Settings {
     pub progress_done_tab: bool,
     /// The note that a queue's schedule needs UIDM running was dismissed.
     pub schedule_note_hidden: bool,
+    /// Show a tip when the window opens.
+    pub tips_on_startup: bool,
+    /// The tip to show next.
+    pub next_tip: usize,
     pub theme: Theme,
     /// The window's text size, in percent; everything in it scales along.
     pub text_size: u32,
@@ -629,10 +647,16 @@ impl Default for Settings {
             capture_min_size_kb: 0,
             capture_excluded_sites: Vec::new(),
             close_to_tray: true,
+            tray_icon: true,
+            categories_panel: true,
             start_with_windows: false,
             notify: Notify::Toast,
             sound_on_done: false,
             sound_on_failed: false,
+            sound_on_queue_done: false,
+            sound_done_file: String::new(),
+            sound_failed_file: String::new(),
+            sound_queue_file: String::new(),
             scan_after_download: false,
             scanner: Scanner::Defender,
             scanner_command: String::new(),
@@ -686,6 +710,7 @@ impl Default for Settings {
             quota_enabled: false,
             quota_mb: 1024,
             quota_hours: 24,
+            quota_warn: true,
             check_updates: true,
             last_update_check: 0,
             drop_target: false,
@@ -693,6 +718,8 @@ impl Default for Settings {
             progress_speed_tab: true,
             progress_done_tab: true,
             schedule_note_hidden: false,
+            tips_on_startup: true,
+            next_tip: 0,
             theme: Theme::System,
             text_size: 100,
             language: String::new(),
@@ -718,6 +745,16 @@ pub const USER_AGENT_PRESETS: [(&str, &str); 3] = [
 ];
 
 impl Settings {
+    /// The WAV file to play for `sound`, if one is set.
+    pub fn sound_file(&self, sound: crate::notify::Sound) -> Option<PathBuf> {
+        let file = match sound {
+            crate::notify::Sound::Done => &self.sound_done_file,
+            crate::notify::Sound::Failed => &self.sound_failed_file,
+            crate::notify::Sound::QueueDone => &self.sound_queue_file,
+        };
+        Some(PathBuf::from(file.trim())).filter(|p| !p.as_os_str().is_empty())
+    }
+
     /// Check every value, returning a message fit to show the user.
     pub fn validate(&self) -> Result<(), String> {
         if self.proxy_mode == ProxyMode::Script && !crate::batch::is_web_url(self.proxy_pac_url.trim()) {
@@ -858,6 +895,12 @@ impl Settings {
                 return Err(format!("There are two logins for {site}."));
             }
             sites.push(site);
+        }
+        for file in [&self.sound_done_file, &self.sound_failed_file, &self.sound_queue_file] {
+            let f = file.trim();
+            if !f.is_empty() && (!Path::new(f).is_absolute() || extension_of(f).as_deref() != Some("wav")) {
+                return Err(format!("A sound must be the full path of a .wav file: {f}"));
+            }
         }
         if self.scan_after_download && self.scanner == Scanner::Custom {
             crate::scan::parse_command(&self.scanner_command)?;
@@ -1204,10 +1247,16 @@ mod tests {
             capture_min_size_kb: 100,
             capture_excluded_sites: vec!["*.example.com".into()],
             close_to_tray: false,
+            tray_icon: false,
+            categories_panel: false,
             start_with_windows: true,
             notify: Notify::Dialog,
             sound_on_done: true,
             sound_on_failed: true,
+            sound_on_queue_done: true,
+            sound_done_file: "C:\\Windows\\Media\\tada.wav".into(),
+            sound_failed_file: String::new(),
+            sound_queue_file: "C:\\Windows\\Media\\chimes.wav".into(),
             scan_after_download: true,
             scanner: Scanner::Custom,
             scanner_command: "C:\\scan.exe {path}".into(),
@@ -1268,6 +1317,7 @@ mod tests {
             quota_enabled: true,
             quota_mb: 500,
             quota_hours: 6,
+            quota_warn: false,
             check_updates: false,
             last_update_check: 1_700_000_000,
             drop_target: true,
@@ -1275,6 +1325,8 @@ mod tests {
             progress_speed_tab: false,
             progress_done_tab: false,
             schedule_note_hidden: true,
+            tips_on_startup: false,
+            next_tip: 3,
             theme: Theme::Dark,
             text_size: 125,
             language: "de".into(),
@@ -1579,6 +1631,18 @@ mod tests {
         assert!(with(CaptureKey::CTRL, CaptureKey::CTRL).is_err());
         assert!(with(CaptureKey::NONE, CaptureKey::NONE).is_ok());
         assert!(with(CaptureKey { insert: true, ..CaptureKey::NONE }, CaptureKey::CTRL).is_err());
+    }
+
+    #[test]
+    fn sounds_are_wav_files_or_the_system_sound() {
+        let with = |file: &str| Settings { sound_failed_file: file.into(), ..Settings::default() };
+        assert!(with("").validate().is_ok());
+        assert!(with(r"C:\Windows\Media\chord.WAV").validate().is_ok());
+        assert!(with(r"C:\music\song.mp3").validate().is_err());
+        assert!(with("chord.wav").validate().is_err());
+        assert_eq!(with("").sound_file(crate::notify::Sound::Failed), None);
+        assert_eq!(with(r"C:\a.wav").sound_file(crate::notify::Sound::Failed), Some(PathBuf::from(r"C:\a.wav")));
+        assert_eq!(with(r"C:\a.wav").sound_file(crate::notify::Sound::Done), None);
     }
 
     #[test]

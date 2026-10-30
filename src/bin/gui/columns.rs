@@ -1,10 +1,12 @@
 //! The list's columns and sort order. Clicking a header sorts by that column,
 //! clicking again reverses the order, and a third click goes back to the
-//! order downloads were added in. The Columns dialog shows, hides and
-//! reorders columns. Both are saved to `%LOCALAPPDATA%\UIDM\window.json`, so
-//! they survive a restart. A queue's view always keeps the queue's run order.
+//! order downloads were added in. Dragging the edge after a header sets the
+//! column's width. The Columns dialog shows, hides, reorders and sizes
+//! columns. All of it is saved to `%LOCALAPPDATA%\UIDM\window.json`, so it
+//! survives a restart. A queue's view always keeps the queue's run order.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use eframe::egui;
@@ -15,7 +17,7 @@ use uidm::queue;
 use super::display_name;
 use crate::i18n::tr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Column {
     Name,
@@ -63,11 +65,21 @@ impl Column {
             Column::Status => tr("Status"),
             Column::LastTry => tr("Last try"),
             Column::SaveTo => tr("Save to"),
-            Column::Referrer => tr("Referrer"),
+            Column::Referrer => tr("Parent web page"),
             Column::Description => tr("Description"),
         }
     }
+
+    /// Whether the column holds long text, cut to a fixed width.
+    pub fn is_text(self) -> bool {
+        matches!(self, Column::Name | Column::SaveTo | Column::Referrer | Column::Description)
+    }
 }
+
+/// The width a text column has until one is set.
+pub const TEXT_WIDTH: f32 = 200.0;
+/// The widths a column can be given.
+pub const WIDTH_RANGE: (f32, f32) = (40.0, 800.0);
 
 /// A column to sort by, and which way.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -84,6 +96,10 @@ pub struct Layout {
     /// No sort means the order downloads were added in.
     #[serde(default)]
     pub sort: Option<Sort>,
+    /// Widths set by dragging a header's edge or in the Columns dialog.
+    /// Other columns fit their content, and text columns are `TEXT_WIDTH`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub widths: BTreeMap<Column, f32>,
 }
 
 impl Default for Layout {
@@ -91,6 +107,7 @@ impl Default for Layout {
         Layout {
             columns: Column::DEFAULT.to_vec(),
             sort: None,
+            widths: BTreeMap::new(),
         }
     }
 }
@@ -115,6 +132,18 @@ impl Layout {
                 eprintln!("[uidm-gui] could not save {}: {e}", path.display());
             }
         }
+    }
+
+    /// The width `column` is drawn at: the one set, else `TEXT_WIDTH` for
+    /// text, else none (it fits its content).
+    pub fn width(&self, column: Column) -> Option<f32> {
+        self.widths.get(&column).copied().or(column.is_text().then_some(TEXT_WIDTH))
+    }
+
+    /// Set `column`'s width, kept within `WIDTH_RANGE`.
+    pub fn set_width(&mut self, column: Column, width: f32) {
+        let (lo, hi) = WIDTH_RANGE;
+        self.widths.insert(column, width.clamp(lo, hi).round());
     }
 
     /// No column twice, and the file name always there.
@@ -188,7 +217,7 @@ fn compare(sort: Sort, a: &DownloadEntry, b: &DownloadEntry, speed: &impl Fn(u64
         Column::Status => known(Some(status_rank(a.status)), Some(status_rank(b.status)), down),
         Column::LastTry => known(a.last_try, b.last_try, down),
         Column::SaveTo => known(lower(a.path.as_deref()), lower(b.path.as_deref()), down),
-        Column::Referrer => known(a.referrer.as_deref(), b.referrer.as_deref(), down),
+        Column::Referrer => known(lower(a.referrer.as_deref()), lower(b.referrer.as_deref()), down),
         Column::Description => known(lower(a.description.as_deref()), lower(b.description.as_deref()), down),
     }
 }
@@ -271,11 +300,12 @@ pub fn dialog(ctx: &egui::Context, layout: &mut Layout) -> bool {
         .resizable(false)
         .show(ctx, |ui| {
             ui.label(tr("Tick the columns to show. Up and Down move a column left and right."));
+            ui.weak(tr("A width is in points; Fit sizes the column to what it holds. Dragging the edge after a header sets it too."));
             ui.add_space(6.0);
             // Shown columns in their order, then the hidden ones.
             let mut all: Vec<Column> = layout.columns.clone();
             all.extend(Column::ALL.iter().filter(|c| !layout.columns.contains(c)));
-            egui::Grid::new("columns_grid").num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
+            egui::Grid::new("columns_grid").num_columns(5).spacing([12.0, 4.0]).show(ui, |ui| {
                 for c in all {
                     let mut shown = layout.columns.contains(&c);
                     let pos = layout.columns.iter().position(|x| *x == c);
@@ -296,6 +326,22 @@ pub fn dialog(ctx: &egui::Context, layout: &mut Layout) -> bool {
                     if ui.add_enabled(down, egui::Button::new(tr("Down")).small()).clicked() {
                         let i = pos.unwrap_or(0);
                         layout.columns.swap(i, i + 1);
+                    }
+                    let mut fit = !layout.widths.contains_key(&c) && !c.is_text();
+                    if !c.is_text() && ui.checkbox(&mut fit, tr("Fit")).changed() {
+                        if fit {
+                            layout.widths.remove(&c);
+                        } else {
+                            layout.set_width(c, 100.0);
+                        }
+                    }
+                    if c.is_text() {
+                        ui.label("");
+                    }
+                    let mut width = layout.width(c).unwrap_or(100.0);
+                    let (lo, hi) = WIDTH_RANGE;
+                    if ui.add_enabled(!fit, egui::DragValue::new(&mut width).range(lo..=hi).speed(1.0)).changed() {
+                        layout.set_width(c, width);
                     }
                     ui.end_row();
                 }
@@ -398,6 +444,37 @@ mod tests {
         l.tidy();
         assert_eq!(l.columns, [Column::Name, Column::Size, Column::Status]);
         assert_eq!(l.sort, None);
+    }
+
+    #[test]
+    fn widths_are_kept_within_bounds_and_saved() {
+        let mut l = Layout::default();
+        assert_eq!(l.width(Column::Name), Some(TEXT_WIDTH));
+        assert_eq!(l.width(Column::Size), None, "fits its content");
+        l.set_width(Column::Size, 5.0);
+        l.set_width(Column::Referrer, 333.4);
+        assert_eq!(l.width(Column::Size), Some(WIDTH_RANGE.0));
+        assert_eq!(l.width(Column::Referrer), Some(333.0));
+        let json = serde_json::to_string(&l).unwrap();
+        let back: Layout = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, l);
+        assert!(json.contains(r#""referrer":333.0"#), "{json}");
+        let old: Layout = serde_json::from_str(r#"{"columns":["name"]}"#).unwrap();
+        assert!(old.widths.is_empty());
+    }
+
+    #[test]
+    fn sorts_by_parent_page_without_case() {
+        let mut a = entry(1, "a", None, Status::Done);
+        a.referrer = Some("https://B.example/page".into());
+        let mut b = entry(2, "b", None, Status::Done);
+        b.referrer = Some("https://a.example/page".into());
+        let c = entry(3, "c", None, Status::Done);
+        let mut l = Layout::default();
+        l.click(Column::Referrer);
+        let mut rows = vec![&a, &b, &c];
+        l.sort(&mut rows, |_| None);
+        assert_eq!(ids(&rows), [2, 1, 3], "no page last");
     }
 
     #[test]
