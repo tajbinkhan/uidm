@@ -45,6 +45,8 @@ const EXIT: &str = "Exit";
 
 thread_local! {
     static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
+    /// Whether the icon is showing; Options can hide it.
+    static VISIBLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 /// Create the tray icon. `on_command` runs menu choices and clicks on the
@@ -118,6 +120,22 @@ pub fn install(
 /// Whether the tray icon exists (it may fail to install).
 pub fn installed() -> bool {
     TRAY.with(|t| t.borrow().is_some())
+}
+
+/// Whether the tray icon is there to click: installed and not hidden.
+pub fn shown() -> bool {
+    installed() && VISIBLE.with(|v| v.get())
+}
+
+/// Show or hide the tray icon.
+pub fn set_visible(on: bool) {
+    TRAY.with(|t| {
+        if let Some(tray) = t.borrow().as_ref() {
+            if VISIBLE.with(|v| v.replace(on)) != on {
+                let _ = tray.icon.set_visible(on);
+            }
+        }
+    });
 }
 
 pub fn set_tooltip(text: &str) {

@@ -158,7 +158,9 @@ struct Early {
 }
 
 /// A page the browser rendered for a crawl: its HTML and its address then.
-type Rendered = Option<(String, String)>;
+/// A page the browser rendered: its HTML, its address, and the addresses
+/// its scripts opened in new windows.
+type Rendered = Option<(String, String, Vec<String>)>;
 
 /// Work for the notification thread.
 enum Note {
@@ -742,6 +744,7 @@ impl Daemon {
             q.running = false;
             q.started_by_schedule = false;
             q.when_done_once = None;
+            q.open_when_done_once = None;
             Ok(q.order.clone())
         })?;
         self.runs.lock().unwrap().remove(&id);
@@ -875,12 +878,17 @@ impl Daemon {
             q.running = false;
             q.started_by_schedule = false;
             let action = q.when_done_once.take().unwrap_or(q.when_done);
-            Ok((q.name.clone(), action, q.open_when_done.clone(), q.force_close))
+            let open = q.open_when_done_once.take().or_else(|| q.open_when_done.clone());
+            Ok((q.name.clone(), action, open, q.force_close))
         }) else {
             return;
         };
         eprintln!("[uidm-daemon] queue {name} is done");
         if !started.is_empty() {
+            let settings = self.settings.lock().unwrap().clone();
+            if settings.sound_on_queue_done {
+                notify::play(Sound::QueueDone, settings.sound_file(Sound::QueueDone).as_deref());
+            }
             if let Some(file) = open {
                 open_after_run(&file);
             }
@@ -1074,12 +1082,16 @@ impl Daemon {
     /// The quota's state for a window that just connected, if downloads are
     /// paused for it or it is nearly reached.
     fn quota_message(&self) -> Option<Outgoing> {
-        let (limit, window) = self.settings.lock().unwrap().quota()?;
+        let (quota, warn) = {
+            let s = self.settings.lock().unwrap();
+            (s.quota(), s.quota_warn)
+        };
+        let (limit, window) = quota?;
         let now = uidm::quota::now_minute();
         let mut usage = self.hub.quota.lock().unwrap();
         let used = usage.used(now, window);
         let paused = self.quota_paused.lock().unwrap().is_some();
-        (paused || used >= limit / 10 * 9).then(|| Outgoing::Quota {
+        (paused || (warn && used >= limit / 10 * 9)).then(|| Outgoing::Quota {
             used,
             limit,
             paused,
@@ -1091,7 +1103,10 @@ impl Daemon {
     /// before, and resume what it stopped once the window allows. Runs with
     /// the scheduler.
     fn check_quota(&self) {
-        let quota = self.settings.lock().unwrap().quota();
+        let (quota, warn) = {
+            let s = self.settings.lock().unwrap();
+            (s.quota(), s.quota_warn)
+        };
         let now = uidm::quota::now_minute();
         let (used, limit, window) = match quota {
             Some((limit, window)) => (self.hub.quota.lock().unwrap().used(now, window), limit, window),
@@ -1132,7 +1147,7 @@ impl Daemon {
                 eprintln!("[uidm-daemon] quota reached: {used} of {limit} bytes");
                 self.hub.broadcast(&msg(true, Some(at)));
             }
-        } else if used >= limit / 10 * 9 && !self.quota_warned.swap(true, Ordering::Relaxed) {
+        } else if warn && used >= limit / 10 * 9 && !self.quota_warned.swap(true, Ordering::Relaxed) {
             self.hub.broadcast(&msg(false, None));
         }
     }
@@ -1246,10 +1261,10 @@ impl Daemon {
             return;
         };
         if failed && settings.sound_on_failed {
-            notify::play(Sound::Failed);
+            notify::play(Sound::Failed, settings.sound_file(Sound::Failed).as_deref());
         }
         if !failed && settings.sound_on_done {
-            notify::play(Sound::Done);
+            notify::play(Sound::Done, settings.sound_file(Sound::Done).as_deref());
         }
         // A download that asked for the completion dialog gets it, or a
         // notification in its place when no window is open.
@@ -1526,7 +1541,8 @@ impl Daemon {
     }
 
     /// Crawl a site for `client` on another thread, sending it progress and
-    /// then what was found.
+    /// then what was found. With `download_found`, each file found goes to
+    /// that queue at once, and the queue starts.
     fn grab(self: &Arc<Self>, client: u64, req: GrabRequest, reply: Sender<Vec<u8>>) -> Result<(), String> {
         req.validate()?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -1545,30 +1561,73 @@ impl Daemon {
                 }
             };
             eprintln!("[uidm-daemon] client #{client} crawls {}", req.start);
-            let out = daemon.run_crawl(&req, &stop, |pages, bytes, found| {
-                send(&Outgoing::GrabProgress { pages, bytes, found })
+            let mut handed = 0;
+            let out = daemon.run_crawl(&req, &stop, |o| {
+                if let Some(queue) = req.download_found {
+                    let fresh = &o.files[handed..];
+                    if !fresh.is_empty() {
+                        daemon.download_in_queue(&req, fresh, queue, handed == 0);
+                    }
+                    handed = o.files.len();
+                }
+                send(&Outgoing::GrabProgress {
+                    pages: o.pages,
+                    bytes: o.bytes,
+                    found: o.files.len(),
+                    explored: o.explored,
+                })
             });
             daemon.grabs.lock().unwrap().remove(&client);
             eprintln!("[uidm-daemon] crawl for #{client} read {} pages, found {} files", out.pages, out.files.len());
             send(&Outgoing::GrabDone {
                 files: out.files,
                 pages: out.pages,
+                explored: out.explored,
                 stopped: out.stopped,
             });
         });
         Ok(())
     }
 
-    /// Crawl for `req` on this thread, with the settings' proxy and logins,
-    /// the browser's cookies when it asks, and short waits so `stop` is
-    /// noticed quickly.
-    fn run_crawl(&self, req: &GrabRequest, stop: &AtomicBool, progress: impl FnMut(u64, u64, usize)) -> grab::Outcome {
+    /// Add `files` a crawl for `req` found to `queue` and start it; with
+    /// `first`, also set how many it downloads at once to the request's.
+    fn download_in_queue(self: &Arc<Self>, req: &GrabRequest, files: &[grab::GrabFile], queue: u64, first: bool) -> usize {
+        let items = files.iter().filter_map(|f| grab::download_for(req, f)).collect();
+        let (added, _) = self.add_many(items, Some(queue));
+        if first {
+            let at_once = req.download_at_once as usize;
+            let _ = self.hub.update_queue(queue, |q| {
+                q.max_concurrent = at_once;
+                Ok(())
+            });
+        }
+        if added > 0 && !self.hub.queues.lock().unwrap().iter().any(|q| q.id == queue && q.running) {
+            if let Err(e) = self.start_queue(queue, None) {
+                eprintln!("[uidm-daemon] could not start the grabber's queue: {e}");
+            }
+        }
+        added
+    }
+
+    /// Crawl for `req` on this thread, with the settings' proxy and logins
+    /// (and the project's own login for its start site), the browser's
+    /// cookies when it asks, and short waits so `stop` is noticed quickly.
+    fn run_crawl(&self, req: &GrabRequest, stop: &AtomicBool, progress: impl FnMut(&grab::Outcome)) -> grab::Outcome {
         let settings = self.settings.lock().unwrap().clone();
         let start = Download {
             url: req.start.clone(),
             ..Download::default()
         };
-        let net = self.net_for(&start, &settings);
+        let mut net = self.net_for(&start, &settings);
+        if let (Some(user), Ok(url)) = (req.login_user.as_deref().map(str::trim).filter(|u| !u.is_empty()), url::Url::parse(&req.start)) {
+            if let Some(host) = url.host_str() {
+                net.logins.push(Login {
+                    site: host.to_string(),
+                    username: user.to_string(),
+                    password: net::load_credential(&grab::project_login_target(&req.start)).unwrap_or_default(),
+                });
+            }
+        }
         let headers = [("User-Agent".to_string(), GRABBER_AGENT.to_string())];
         let cookies = if req.browser_cookies { self.browser_cookies(&req.start) } else { None };
         // The browser's cookies go to the start site's pages only.
@@ -1580,19 +1639,25 @@ impl Daemon {
             h
         };
         // Rendering needs the browser extension connected.
-        let render = std::cell::Cell::new(req.render_scripts && self.hub.extension_connected());
+        let render = AtomicBool::new(req.render_scripts && self.hub.extension_connected());
         let fetch = |url: &str| {
             // A page as the browser shows it, when asked and the browser
             // can; otherwise as the server sends it.
-            let rendered = (render.get() && !url.ends_with("/robots.txt"))
-                .then(|| self.render_in_browser(url))
-                .flatten();
+            let rendering = render.load(Ordering::Relaxed) && !url.ends_with("/robots.txt");
+            let rendered = rendering.then(|| self.render_in_browser(url)).flatten();
             // A browser that does not answer once is not asked again.
-            if render.get() && rendered.is_none() && !url.ends_with("/robots.txt") {
+            if rendering && rendered.is_none() {
                 eprintln!("[uidm-daemon] the browser did not render {url}; reading pages as sent");
-                render.set(false);
+                render.store(false, Ordering::Relaxed);
             }
-            if let Some((html, at)) = rendered {
+            if let Some((mut html, at, popups)) = rendered {
+                // Pages the page's scripts opened in new windows are links
+                // like the rest, unless the crawl ignores them.
+                if !req.ignore_popups {
+                    for p in popups.iter().filter(|p| p.starts_with("http://") || p.starts_with("https://")) {
+                        html.push_str(&format!("<a href=\"{}\"></a>", p.replace('"', "%22")));
+                    }
+                }
                 let mut body = html.into_bytes();
                 body.truncate(grab::MAX_PAGE_BYTES as usize);
                 let page = grab::Page {
@@ -1677,29 +1742,60 @@ impl Daemon {
         }
     }
 
-    /// One scheduled run of a grabber project: crawl until done or until the
-    /// schedule's stop time, keep what it found, and add new finds to the
-    /// project's queue when it says to.
+    /// One scheduled run of a grabber project, as its `run` says: crawl
+    /// until done or until the schedule's stop time and keep what it found,
+    /// then maybe add the new finds to the project's queue and start it; or
+    /// only add the ticked files and start the queue. What the project asks
+    /// when done happens after the crawl, or once the queue is done.
     fn run_scheduled_grab(self: &Arc<Self>, dir: &Path, mut project: grab::Project, day: i64) {
-        eprintln!("[uidm-daemon] schedule runs grabber project {}", project.name);
-        let end = project.schedule.as_ref().filter(|s| s.stop.is_some()).and_then(|s| s.end_of_run(day));
-        let stop = AtomicBool::new(false);
-        let out = self.run_crawl(&project.request, &stop, |_, _, _| {
-            if end.is_some_and(|end| queue::local_now() >= end) {
-                stop.store(true, Ordering::Relaxed);
+        eprintln!("[uidm-daemon] schedule runs grabber project {} ({:?})", project.name, project.run);
+        let to_download = match project.run {
+            grab::RunAction::DownloadChecked => project.checked_files(),
+            run => {
+                let end = project.schedule.as_ref().filter(|s| s.stop.is_some()).and_then(|s| s.end_of_run(day));
+                let stop = AtomicBool::new(false);
+                let out = self.run_crawl(&project.request, &stop, |_| {
+                    if end.is_some_and(|end| queue::local_now() >= end) {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                });
+                let new = project.record_run(out.files);
+                eprintln!("[uidm-daemon] grabber project {} found {} new files", project.name, new.len());
+                if run == grab::RunAction::ExploreAndDownload {
+                    new
+                } else {
+                    Vec::new()
+                }
             }
-        });
-        let new = project.record_run(out.files);
-        eprintln!("[uidm-daemon] grabber project {} found {} new files", project.name, new.len());
-        if project.download_new && !new.is_empty() {
-            let items = new.iter().filter_map(|f| grab::download_for(&project.request, f)).collect();
-            // Through the usual path, which skips addresses already in the
-            // list.
-            let (added, skipped) = self.add_many(items, Some(project.queue));
-            eprintln!("[uidm-daemon] added {added}, skipped {skipped} already in the list");
-        }
+        };
         if let Err(e) = project.save(dir) {
             eprintln!("[uidm-daemon] could not save grabber project {}: {e}", project.name);
+        }
+        // Set before the queue starts, so a run that ends at once still
+        // does it.
+        let _ = self.hub.update_queue(project.queue, |q| {
+            q.when_done_once = Some(project.when_done);
+            q.open_when_done_once = project.open_when_done.clone();
+            Ok(())
+        });
+        // Through the usual path, which skips addresses already in the list.
+        let added = if to_download.is_empty() {
+            0
+        } else {
+            self.download_in_queue(&project.request, &to_download, project.queue, true)
+        };
+        eprintln!("[uidm-daemon] grabber project {} added {added} files to its queue", project.name);
+        if added == 0 {
+            // Nothing to wait for: done now.
+            let _ = self.hub.update_queue(project.queue, |q| {
+                q.when_done_once = None;
+                q.open_when_done_once = None;
+                Ok(())
+            });
+            if let Some(file) = &project.open_when_done {
+                open_after_run(file);
+            }
+            self.when_done(project.when_done, &project.name, None, false);
         }
     }
     /// Convert finished download `id` on another thread. The new file is a
@@ -1816,6 +1912,38 @@ impl Daemon {
         }
     }
 
+    /// Update now: download the newest release's Setup through the
+    /// settings' proxy, check it, save it to the temp folder and run it,
+    /// then stop the downloads, save the list and quit with the windows,
+    /// so Setup can replace the files. Setup closes whatever is left.
+    fn install_update(&self) -> Result<(), String> {
+        let release = match self.check_update(uidm::update::LATEST_RELEASE) {
+            Outgoing::Update { newer: Some(r), .. } => r,
+            Outgoing::Update { error: Some(e), .. } => return Err(e),
+            _ => return Err("This is the newest version.".into()),
+        };
+        let setup = release.setup.ok_or("This release has no Setup program; download it from its page.")?;
+        let settings = self.settings.lock().unwrap().clone();
+        let net = self.net_for(&Download { url: setup.url.clone(), ..Download::default() }, &settings);
+        let headers = [("User-Agent".to_string(), format!("UIDM/{}", env!("CARGO_PKG_VERSION")))];
+        eprintln!("[uidm-daemon] downloading {}", setup.url);
+        let fetched = engine::fetch(&setup.url, &headers, &net, uidm::update::MAX_SETUP_BYTES)
+            .map_err(|e| format!("Could not download the update: {e}"))?;
+        uidm::update::check_setup(&setup, &fetched.body)?;
+        let path = std::env::temp_dir().join(&setup.name);
+        std::fs::write(&path, &fetched.body).map_err(|e| format!("Could not save the update to {}: {e}", path.display()))?;
+        // /fromuidm closes UIDM without asking: the user asked for this.
+        Command::new(&path)
+            .arg("/fromuidm=yes")
+            .spawn()
+            .map_err(|e| format!("Could not start {}: {e}", path.display()))?;
+        eprintln!("[uidm-daemon] started {}; quitting for it", path.display());
+        self.pause_all();
+        self.save_history();
+        self.hub.broadcast(&Outgoing::Quit);
+        Ok(())
+    }
+
     /// Once a week, when a window connects, look for a newer release on
     /// another thread and tell the windows if there is one.
     fn weekly_update_check(self: &Arc<Self>) {
@@ -1878,7 +2006,7 @@ impl Daemon {
     /// Ask the browser extension to render `url` in a background tab and
     /// wait for its HTML and final address. `None` without an extension or
     /// an answer in time.
-    fn render_in_browser(&self, url: &str) -> Option<(String, String)> {
+    fn render_in_browser(&self, url: &str) -> Rendered {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let request = NEXT.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = channel();
@@ -3221,6 +3349,16 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
                 send(&Outgoing::Error { message });
             }
         }
+        Incoming::InstallUpdate => {
+            let (daemon, reply) = (Arc::clone(daemon), reply.clone());
+            thread::spawn(move || {
+                if let Err(error) = daemon.install_update() {
+                    if let Ok(frame) = serde_json::to_vec(&Outgoing::UpdateFailed { error }) {
+                        let _ = reply.send(frame);
+                    }
+                }
+            });
+        }
         Incoming::CheckUpdate => {
             let (daemon, reply) = (Arc::clone(daemon), reply.clone());
             thread::spawn(move || {
@@ -3230,9 +3368,9 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
                 }
             });
         }
-        Incoming::Rendered { request, html, url } => {
+        Incoming::Rendered { request, html, url, popups } => {
             if let Some(tx) = daemon.render_waits.lock().unwrap().remove(&request) {
-                let _ = tx.send(html.zip(url));
+                let _ = tx.send(html.zip(url).map(|(h, u)| (h, u, popups)));
             }
         }
         Incoming::Cookies { request, cookies } => {
@@ -4322,7 +4460,7 @@ mod tests {
         let project: grab::Project = serde_json::from_value(serde_json::json!({
             "name": "nightly",
             "request": request,
-            "download_new": true,
+            "run": "explore_and_download",
         }))
         .unwrap();
         let dir = t.dir.join("projects");
@@ -4330,8 +4468,24 @@ mod tests {
         let saved = grab::Project::load(&dir, "nightly").unwrap();
         assert_eq!(saved.seen, [format!("http://{addr}/report.pdf")]);
         assert_eq!(t.len(), 1, "the new find was added");
-        t.daemon.run_scheduled_grab(&dir, saved, 2);
+        assert!(t.daemon.hub.queues.lock().unwrap().iter().any(|q| q.id == MAIN_QUEUE && q.max_concurrent == 3), "the grabber's files at once");
+        t.daemon.run_scheduled_grab(&dir, saved.clone(), 2);
         assert_eq!(t.len(), 1, "nothing new the second time");
+
+        // Downloading the ticked files reads no page.
+        let checked = grab::Project {
+            name: "ticked".into(),
+            run: grab::RunAction::DownloadChecked,
+            request: GrabRequest { start: "http://127.0.0.1:1/".into(), ..request },
+            files: vec![
+                grab::GrabFile { url: format!("http://{addr}/a.pdf"), name: "a.pdf".into(), page: String::new(), size: None, text: None },
+                grab::GrabFile { url: format!("http://{addr}/b.pdf"), name: "b.pdf".into(), page: String::new(), size: None, text: None },
+            ],
+            checked: vec![true, false],
+            ..saved
+        };
+        t.daemon.run_scheduled_grab(&dir, checked, 3);
+        assert_eq!(t.len(), 2, "only the ticked file was added");
     }
 
     #[test]
@@ -4382,8 +4536,8 @@ mod tests {
             }
         };
         let tx = t.daemon.render_waits.lock().unwrap().remove(&request).unwrap();
-        tx.send(Some(("<a href=x.pdf>".into(), "https://site.net/app/".into()))).unwrap();
-        let (html, url) = asking.join().unwrap().unwrap();
+        tx.send(Some(("<a href=x.pdf>".into(), "https://site.net/app/".into(), Vec::new()))).unwrap();
+        let (html, url, _) = asking.join().unwrap().unwrap();
         assert_eq!((html.as_str(), url.as_str()), ("<a href=x.pdf>", "https://site.net/app/"));
     }
 

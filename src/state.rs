@@ -130,6 +130,7 @@ impl DownloadTable {
             | Outgoing::RenderPage { .. }
             | Outgoing::ZipPreview { .. }
             | Outgoing::Update { .. }
+            | Outgoing::UpdateFailed { .. }
             | Outgoing::GrabProgress { .. }
             | Outgoing::GrabDone { .. } => {}
         }

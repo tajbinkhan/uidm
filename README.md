@@ -60,6 +60,17 @@ setup over an older one closes UIDM first and keeps your settings. With the
 script, `.\install-host.ps1 -Uninstall` removes what it added. Downloaded
 files are left alone either way.
 
+**Updates.** UIDM looks for a newer release on GitHub once a week (Options >
+General can turn that off), and **About** checks on demand. When a newer
+release has a Setup attached, **Update now** (in About, and next to the
+notice in the status bar) has the daemon download `UIDM-Setup-<version>.exe`
+through your proxy settings, only from this repository's release downloads.
+It checks the file's size, that it is a Windows program, and its SHA-256
+when GitHub lists one, saves it to the temp folder and runs it with
+`/fromuidm=yes`. UIDM then stops its downloads, saves its list and quits;
+Setup closes whatever is left without asking again and replaces the files.
+Stopped downloads resume from the list as usual.
+
 ### Firefox
 
 Firefox 128 or later loads the `firefox` folder, a copy of the extension with
@@ -226,11 +237,15 @@ tests, not in a running Firefox.
 - **When a download ends**, UIDM shows a Windows notification: **Open** and
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still
-  appears if the window is not running), or nothing, and can play a sound for
-  each. The dialog's **Don't show this dialog again** goes back to
-  notifications. Canceled downloads are never announced.
+  appears if the window is not running), or nothing. **Options > When done >
+  Sounds** plays a sound when a download finishes, when one fails, and when
+  a queue is done, each turned on by itself, with a `.wav` file of your own
+  (**Browse...**, **Play**) or Windows' sound for the event. The dialog's
+  **Don't show this dialog again** goes back to notifications. Canceled
+  downloads are never announced.
 - **Virus scan** (off by default) checks each finished file with Microsoft
-  Defender or a scanner command you set, with `{path}` where the file goes.
+  Defender or a scanner command you set, with `{path}` where the file goes;
+  **Browse...** picks the scanner program and keeps the arguments typed.
   The list shows **No threat found**, **Threat found** or **Scan failed**,
   and opening a file with a threat asks first. With scanning on, the
   notification waits for the scan and says what it found.
@@ -303,7 +318,30 @@ tests, not in a running Firefox.
   you want (PDFs, say) with the page each was found on. It obeys
   `robots.txt`, waits between pages (longer if `Crawl-delay` asks), and stops
   at a page and size budget it shows before starting. Tick the files to keep
-  and add them to a queue.
+  and add them to a queue. It can also:
+  - explore the whole start site with no depth limit (the budgets still
+    stop it), and follow a set number of links on other sites;
+  - read up to 10 pages at once, and set how many files its queue
+    downloads at once;
+  - keep each file's link text as its description;
+  - pick the file types from named filters (a name and a mask such as
+    `*.jpg;*.png`; **Filters** adds, edits and deletes them), keep every type
+    with `*`, leave some types out, and keep only files on the start site;
+  - save every file to one category's folder, or to one folder without
+    subfolders;
+  - start downloading each match as soon as it is found;
+  - log in to the start site with the project's own user name and password;
+  - when scripts run, ignore the windows they open or explore them too.
+
+  The results show as a list or as a tree by page or by folder, with pages
+  processed and file links looked at, matched and downloaded. **Save as
+  template** keeps the settings under a name, and **New** starts a project
+  from a saved template or one that comes with UIDM (pictures, audio,
+  video, documents, or archives and programs from a site). A scheduled
+  project explores only, explores and downloads the new files (starting the
+  queue), or downloads the ticked files without exploring, then exits UIDM,
+  sleeps, hibernates or shuts down, and can open a file, after the crawl or
+  once the queue is done.
 - **Clipboard** (off by default; **Options > Browser capture**): copying a
   link whose file type is on the capture list brings up a small **Download
   the copied link?** prompt with **Download** and **Ignore**, and the same
@@ -323,13 +361,18 @@ tests, not in a running Firefox.
   unless the pattern names one).
 - **Options** (top right of the window) has five tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
-  10), a total speed limit, what to do when a file name is taken or an
+  10), a total speed limit, a download quota (no more than so many MB every
+  so many hours, with a warning at 90% that can be turned off), what to do when a file name is taken or an
   address is already in the list, the save-as
   dialog, whether to resume unfinished downloads when UIDM starts, Start with
-  Windows, whether closing the window keeps UIDM in the tray, where ffmpeg
+  Windows, whether UIDM shows a tray icon (without one, closing the window
+  quits and the Start menu opens UIDM again), whether closing the window
+  keeps UIDM in the tray, where ffmpeg
   is, the **Language**, the **Theme** (follow Windows, light or dark) and the
   **Text size** (80% to 150%, scaling the whole window). Language, theme and
-  text size change as soon as you save. **Categories**: as above. **Browser
+  text size change as soon as you save. **More > Hide categories** hides
+  the categories and queues panel, and **More > Hide the tray icon** does
+  what the Options box does; both are kept. **Categories**: as above. **Browser
   capture**: the browsers to capture from, the rules below, the special
   keys and the clipboard prompt. **Videos and menus**: the video button and
   the context menu items. **When done**: notifications, sounds and the virus
@@ -346,6 +389,25 @@ tests, not in a running Firefox.
   Opera read Chrome's registration, so the list says so when it finds them
   instead of listing them. Restart a browser after a change.
 
+- **Properties** (a row's **More**) shows a download's status, its file type
+  (what Windows calls it, such as "PDF Document (.pdf)"), size and last
+  try, and edits its link, parent page, description, name, folder and
+  login. A finished download has an **Open** button.
+- **The list's columns**: a click on a header sorts by it (again to
+  reverse, a third time for the order added), and dragging the thin edge
+  after a header sets the column's width. **More > Columns...** shows,
+  hides, orders and sizes them (**Fit** sizes a column to what it holds);
+  the columns include **Parent web page**, the page a download came from,
+  which sorts like the rest. The layout is kept in
+  `%LOCALAPPDATA%\UIDM\window.json`.
+- **Help** (next to **More**): **Help contents** opens this README on
+  GitHub, two more items open its sections on queues and the scheduler and
+  on the site grabber, **Tip of the day** shows a tip with **Next tip**, and
+  **Contact support** opens the issue tracker. A tip shows when the window
+  opens unless its **Show tips on startup** box (also in **Options >
+  General**) is cleared; the next start shows the next tip. **About** sits
+  beside **Help**, and **More > Manage queues...** opens the queues even with
+  the categories panel hidden.
 - **Languages**: the window comes in English, German, Spanish and French.
   It starts in the first Windows display language it has, else English;
   **Options > General > Language** picks another. The extension follows the
@@ -414,9 +476,10 @@ It takes a download from the browser only when all of these hold:
 - the extension did not start it itself (that is how hand-backs avoid loops);
 - it passes the capture rules from **Options > Browser capture**:
   - its file type is in the list (by default every category's types plus
-    `iso`, `img`, `dmg`, `deb`, `rpm` and `bin`; an empty list takes every
-    type). The type comes from the file name, else the MIME type the server
-    sent, else the URL. A download that says only "a file"
+    `iso`, `img`, `dmg`, `deb`, `rpm` and `bin`, which **Default** brings
+    back; an empty list takes every type; **Default** next to the excluded
+    sites empties that list). The type comes from the file name, else the
+    MIME type the server sent, else the URL. A download that says only "a file"
     (`application/octet-stream`) is taken;
   - it is not smaller than the minimum size, when the browser already knows
     the size (often it does not yet, and then only the type and site count);
@@ -906,6 +969,20 @@ It reads at most 5 MiB of any page, follows only page-like links (no
 extension, or `.html`, `.php` and the like), and lists files without
 fetching them. Closing the dialog or **Stop** ends a crawl within a tenth of
 a second.
+
+Pages read at once are fetched on their own threads, one batch at a time,
+with the usual wait between batches; robots.txt is read before a site's
+first batch. With `*` in the types, every link with a file name that is not
+a page counts as a file. A project's login is stored in Credential Manager
+as `UIDM/grabber/<start host>`, sent to the start site when it asks, and
+given to the downloads on that site. Named filters are kept in
+`%APPDATA%\UIDM\grabber\filters.json` and named templates in
+`grabber\templates\`. With scripts run, the extension closes every window
+the page opens and reports its address; the crawl explores those only when
+**Ignore the windows page scripts open** is off. A scheduled run sets the
+project's when-done action and file on its queue for that run only
+(`when_done_once`, `open_when_done_once`), so the queue's own settings come
+back afterwards; a run that adds nothing does them at once.
 
 ## Notifications and virus scans
 

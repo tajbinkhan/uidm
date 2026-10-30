@@ -504,7 +504,22 @@ pub fn credential_target(site: &str) -> String {
 
 /// Store a site login's password in Credential Manager.
 pub fn save_login_password(site: &str, username: &str, password: &str) -> io::Result<()> {
-    let mut target = wide(&credential_target(site));
+    save_credential(&credential_target(site), username, password)
+}
+
+/// A site login's password from Credential Manager, if stored.
+pub fn load_login_password(site: &str) -> Option<String> {
+    load_credential(&credential_target(site))
+}
+
+/// Remove a site login's password; a missing one is not an error.
+pub fn delete_login_password(site: &str) -> io::Result<()> {
+    delete_credential(&credential_target(site))
+}
+
+/// Store `password` for `username` in Credential Manager under `target`.
+pub fn save_credential(target: &str, username: &str, password: &str) -> io::Result<()> {
+    let mut target = wide(target);
     let mut user = wide(username);
     let mut blob: Vec<u8> = password.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let cred = Credential {
@@ -528,9 +543,9 @@ pub fn save_login_password(site: &str, username: &str, password: &str) -> io::Re
     Ok(())
 }
 
-/// A site login's password from Credential Manager, if stored.
-pub fn load_login_password(site: &str) -> Option<String> {
-    let target = wide(&credential_target(site));
+/// The password Credential Manager keeps under `target`, if any.
+pub fn load_credential(target: &str) -> Option<String> {
+    let target = wide(target);
     let mut cred: *mut Credential = ptr::null_mut();
     // SAFETY: on success `cred` points at a block freed with CredFree below.
     unsafe {
@@ -546,9 +561,10 @@ pub fn load_login_password(site: &str) -> Option<String> {
     }
 }
 
-/// Remove a site login's password; a missing one is not an error.
-pub fn delete_login_password(site: &str) -> io::Result<()> {
-    let target = wide(&credential_target(site));
+/// Remove what Credential Manager keeps under `target`; a missing entry is
+/// not an error.
+pub fn delete_credential(target: &str) -> io::Result<()> {
+    let target = wide(target);
     // SAFETY: a valid string for the call.
     if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } == 0 {
         let e = io::Error::last_os_error();
