@@ -373,6 +373,10 @@ tests, not in a running Firefox.
   Opera read Chrome's registration, so the list says so when it finds them
   instead of listing them. Restart a browser after a change.
 
+- **Properties** (a row's **More**) shows a download's status, its file type
+  (what Windows calls it, such as "PDF Document (.pdf)"), size and last
+  try, and edits its link, parent page, description, name, folder and
+  login. A finished download has an **Open** button.
 - **The list's columns**: a click on a header sorts by it (again to
   reverse, a third time for the order added), and dragging the thin edge
   after a header sets the column's width. **More > Columns...** shows,

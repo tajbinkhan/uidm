@@ -785,5 +785,8 @@
   "Options > When done can scan each finished download for viruses, with Microsoft Defender or a scanner you choose.": "Optionen > Wenn fertig kann jeden fertigen Download mit Microsoft Defender oder einem gewählten Scanner auf Viren prüfen.",
   "Parent web page": "Übergeordnete Webseite",
   "A width is in points; Fit sizes the column to what it holds. Dragging the edge after a header sets it too.": "Eine Breite ist in Punkten; Anpassen richtet die Spalte nach ihrem Inhalt. Auch das Ziehen am Rand nach einer Überschrift legt sie fest.",
-  "Fit": "Anpassen"
+  "Fit": "Anpassen",
+  "Type": "Typ",
+  "No file type": "Kein Dateityp",
+  "Open the file": "Die Datei öffnen"
 }
