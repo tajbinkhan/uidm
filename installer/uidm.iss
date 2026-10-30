@@ -67,6 +67,9 @@ Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\{#HostName}"; V
 Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueName: ""; ValueData: "{app}\{#HostName}.json"; Flags: uninsdeletekey
 ; Firefox names the allowed extension by ID, so it has its own manifest.
 Root: HKCU; Subkey: "Software\Mozilla\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueName: ""; ValueData: "{app}\{#HostName}.firefox.json"; Flags: uninsdeletekey
+; Options can register other browsers; uninstalling removes those too.
+Root: HKCU; Subkey: "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\{#HostName}"; Flags: uninsdeletekey dontcreatekey
+Root: HKCU; Subkey: "Software\Chromium\NativeMessagingHosts\{#HostName}"; Flags: uninsdeletekey dontcreatekey
 
 [Icons]
 Name: "{autoprograms}\UIDM"; Filename: "{app}\uidm-gui.exe"; WorkingDir: "{app}"; IconFilename: "{app}\uidm.ico"; Comment: "UIDM download manager"
@@ -79,6 +82,8 @@ Filename: "{app}\extension"; Description: "Open the extension folder, to load it
 [UninstallDelete]
 Type: files; Name: "{app}\{#HostName}.json"
 Type: files; Name: "{app}\{#HostName}.firefox.json"
+Type: files; Name: "{localappdata}\UIDM\{#HostName}.json"
+Type: files; Name: "{localappdata}\UIDM\{#HostName}.firefox.json"
 
 [Code]
 const

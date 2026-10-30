@@ -5,6 +5,7 @@
 //!   the window hidden in the tray at sign-in ("Start with Windows").
 //! - `Software\Classes\AppUserModelId\UIDM.DownloadManager`: the name and
 //!   icon Windows shows on UIDM's notifications.
+//! - Each browser's `NativeMessagingHosts\com.uidm.host` (see `browsers`).
 
 use std::io;
 use std::path::Path;
@@ -44,6 +45,7 @@ extern "system" {
         len: *mut u32,
     ) -> i32;
     fn RegDeleteValueW(key: Hkey, name: *const u16) -> i32;
+    fn RegDeleteKeyW(key: Hkey, subkey: *const u16) -> i32;
     fn RegCloseKey(key: Hkey) -> i32;
 }
 
@@ -218,6 +220,17 @@ pub fn delete_value(subkey: &str, name: &str) -> io::Result<()> {
         return Ok(());
     }
     check(code, "delete registry value")
+}
+
+/// Delete a key that has no subkeys; a missing key is not an error.
+pub fn delete_key(subkey: &str) -> io::Result<()> {
+    let name = wide(subkey);
+    // SAFETY: a valid string for the call.
+    let code = unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, name.as_ptr()) };
+    if code == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    check(code, subkey)
 }
 
 /// The Run command that starts `gui` hidden in the tray.

@@ -329,10 +329,22 @@ tests, not in a running Firefox.
   Windows, whether closing the window keeps UIDM in the tray, where ffmpeg
   is, the **Language**, the **Theme** (follow Windows, light or dark) and the
   **Text size** (80% to 150%, scaling the whole window). Language, theme and
-  text size change as soon as you save. **Categories**: as above. **Browser capture**: the rules below,
-  the video button and the clipboard prompt. **When
-  done**: notifications, sounds and the virus scan. **Connection**: proxies
-  and site logins. The status bar shows the speed limit and toggles it.
+  text size change as soon as you save. **Categories**: as above. **Browser
+  capture**: the browsers to capture from, the rules below, the special
+  keys and the clipboard prompt. **Videos and menus**: the video button and
+  the context menu items. **When done**: notifications, sounds and the virus
+  scan. **Connection**: proxies and site logins. The status bar shows the
+  speed limit and toggles it.
+- **Browsers** (**Options > Browser capture**): lists Google Chrome,
+  Microsoft Edge, Mozilla Firefox, Brave and Chromium when they are
+  installed for you (their profile folder exists) or registered. Ticking
+  one writes its native-messaging key under `HKEY_CURRENT_USER` and the
+  manifest it names (`%LOCALAPPDATA%\UIDM\com.uidm.host.json`, or
+  `com.uidm.host.firefox.json` for Firefox), pointing at the `uidm-host.exe`
+  next to the window; unticking removes the key, and the manifest once no
+  browser names it. Setup registers Chrome, Edge and Firefox. Vivaldi and
+  Opera read Chrome's registration, so the list says so when it finds them
+  instead of listing them. Restart a browser after a change.
 
 - **Languages**: the window comes in English, German, Spanish and French.
   It starts in the first Windows display language it has, else English;
@@ -928,6 +940,7 @@ is a failed scan, as is one that runs over 10 minutes.
 | `src/history.rs` | Download history and saved requests on disk |
 | `src/dpapi.rs` | DPAPI encryption for saved requests |
 | `src/registry.rs` | Start with Windows and the notification app id |
+| `src/browsers.rs` | The browsers found, and registering the host with each |
 | `src/notify.rs` | Windows notifications and sounds |
 | `src/scan.rs` | Virus scans of finished downloads |
 | `src/queue.rs` | Queues, schedules and their calendar arithmetic |

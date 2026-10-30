@@ -703,5 +703,10 @@
   "Download all links with UIDM": "Télécharger tous les liens avec UIDM",
   "Download selected links with UIDM": "Télécharger les liens sélectionnés avec UIDM",
   "Download the last video with UIDM": "Télécharger la dernière vidéo avec UIDM",
-  "The last 10 videos": "Les 10 dernières vidéos"
+  "The last 10 videos": "Les 10 dernières vidéos",
+  "Browsers": "Navigateurs",
+  "Capture downloads from these browsers. Each needs UIDM's extension; restart a browser after a change.": "Capturer les téléchargements de ces navigateurs. Chacun a besoin de l'extension UIDM ; redémarrez un navigateur après un changement.",
+  "No browser was found.": "Aucun navigateur n'a été trouvé.",
+  "{browsers} use Google Chrome's setting.": "{browsers} utilisent le réglage de Google Chrome.",
+  "Could not change {browser}: {error}": "Impossible de modifier {browser} : {error}"
 }

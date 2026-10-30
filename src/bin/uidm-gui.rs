@@ -736,6 +736,14 @@ impl ProxyLoginDraft {
     }
 }
 
+/// A browser in Options' list: whether it was registered when the dialog
+/// opened, and whether it should be.
+struct BrowserDraft {
+    browser: uidm::browsers::Browser,
+    was: bool,
+    on: bool,
+}
+
 /// One site login being edited. An empty password keeps the stored one.
 struct LoginDraft {
     site: String,
@@ -836,6 +844,10 @@ struct OptionsDraft {
     /// Empty writes partial files in place.
     temp_dir: String,
     temp_picked: Picked,
+    /// The browsers found or registered, with their registration.
+    browsers: Vec<BrowserDraft>,
+    /// Browsers found that read Chrome's registration.
+    chrome_readers: Vec<&'static str>,
     capture_skip_key: CaptureKey,
     capture_force_key: CaptureKey,
     capture_keys_left_click: bool,
@@ -988,6 +1000,21 @@ impl OptionsDraft {
             manual_user_agent: s.manual_user_agent.clone(),
             temp_dir: s.temp_dir.clone().unwrap_or_default(),
             temp_picked: Picked::default(),
+            browsers: uidm::browsers::Registrar::for_this_user()
+                .map(|r| {
+                    uidm::browsers::BROWSERS
+                        .iter()
+                        .map(|b| (b, r.registered(b), r.installed(b)))
+                        .filter(|(_, registered, installed)| *registered || *installed)
+                        .map(|(b, registered, _)| BrowserDraft {
+                            browser: *b,
+                            was: registered,
+                            on: registered,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            chrome_readers: uidm::browsers::chrome_readers(),
             capture_skip_key: s.capture_skip_key,
             capture_force_key: s.capture_force_key,
             capture_keys_left_click: s.capture_keys_left_click,
@@ -1153,6 +1180,23 @@ impl OptionsDraft {
             return Err(trf!("The new login for {site} needs a password.", site = l.site.trim()));
         }
         Ok(settings)
+    }
+
+    /// Register or remove the browsers whose box changed, keeping the new
+    /// state of those that worked.
+    fn apply_browsers(&mut self) -> Result<(), String> {
+        let changed: Vec<usize> = (0..self.browsers.len()).filter(|&i| self.browsers[i].on != self.browsers[i].was).collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        let registrar = uidm::browsers::Registrar::for_this_user().map_err(|e| e.to_string())?;
+        for i in changed {
+            let b = &mut self.browsers[i];
+            let done = if b.on { registrar.register(&b.browser) } else { registrar.unregister(&b.browser) };
+            done.map_err(|e| trf!("Could not change {browser}: {error}", browser = b.browser.name, error = e))?;
+            b.was = b.on;
+        }
+        Ok(())
     }
 }
 
@@ -2251,7 +2295,7 @@ impl App {
                 ui.horizontal(|ui| {
                     let save = ui.add_enabled(connected && !saving, egui::Button::new(tr("Save")));
                     if save.clicked() {
-                        match draft.to_settings() {
+                        match draft.to_settings().and_then(|s| draft.apply_browsers().map(|()| s)) {
                             Ok(settings) => {
                                 draft.error = None;
                                 actions.push(Action::SaveSettings(settings));
@@ -2882,6 +2926,21 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
                 &mut draft.offer_exceptions,
                 tr("When I cancel the same download twice, offer to stop taking it"),
             );
+        });
+        ui.end_row();
+
+        ui.label(tr("Browsers"));
+        ui.vertical(|ui| {
+            ui.weak(tr("Capture downloads from these browsers. Each needs UIDM's extension; restart a browser after a change."));
+            if draft.browsers.is_empty() {
+                ui.label(tr("No browser was found."));
+            }
+            for b in &mut draft.browsers {
+                ui.checkbox(&mut b.on, b.browser.name);
+            }
+            if !draft.chrome_readers.is_empty() {
+                ui.weak(trf!("{browsers} use Google Chrome's setting.", browsers = draft.chrome_readers.join(", ")));
+            }
         });
         ui.end_row();
 
