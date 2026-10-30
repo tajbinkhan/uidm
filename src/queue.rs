@@ -120,6 +120,9 @@ pub struct Queue {
     /// `when_done`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_when_done: Option<String>,
+    /// Replaces `open_when_done` for the current run only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_when_done_once: Option<String>,
     /// Start it whenever UIDM starts.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub start_on_launch: bool,
@@ -147,6 +150,7 @@ impl Queue {
             last_scheduled_start: None,
             started_by_schedule: false,
             open_when_done: None,
+            open_when_done_once: None,
             start_on_launch: false,
             force_close: false,
         }

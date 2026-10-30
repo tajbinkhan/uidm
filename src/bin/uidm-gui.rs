@@ -205,8 +205,10 @@ struct Shared {
 
 /// News of a site crawl.
 enum GrabEvent {
-    Progress(u64, u64, usize),
-    Done(Vec<GrabFile>, u64, Option<String>),
+    /// Pages read, bytes read, files kept, file links looked at.
+    Progress(u64, u64, usize, u64),
+    /// The files kept, pages read, file links looked at, and why it stopped.
+    Done(Vec<GrabFile>, u64, u64, Option<String>),
 }
 
 impl Shared {
@@ -329,11 +331,11 @@ impl Shared {
                 }
                 self.notice = Some(notice);
             }
-            Outgoing::GrabProgress { pages, bytes, found } => {
-                self.grab_events.push_back(GrabEvent::Progress(*pages, *bytes, *found));
+            Outgoing::GrabProgress { pages, bytes, found, explored } => {
+                self.grab_events.push_back(GrabEvent::Progress(*pages, *bytes, *found, *explored));
             }
-            Outgoing::GrabDone { files, pages, stopped } => {
-                self.grab_events.push_back(GrabEvent::Done(files.clone(), *pages, stopped.clone()));
+            Outgoing::GrabDone { files, pages, explored, stopped } => {
+                self.grab_events.push_back(GrabEvent::Done(files.clone(), *pages, *explored, stopped.clone()));
             }
             Outgoing::Done { id, .. }
             | Outgoing::Failed { id, .. }
@@ -1804,14 +1806,23 @@ impl App {
         if let Some(d) = self.grabber.as_mut() {
             for event in events {
                 match event {
-                    GrabEvent::Progress(pages, bytes, found) => d.progress(pages, bytes, found),
-                    GrabEvent::Done(files, pages, stopped) => d.done(files, pages, stopped),
+                    GrabEvent::Progress(pages, bytes, found, explored) => d.progress(pages, bytes, found, explored),
+                    GrabEvent::Done(files, pages, explored, stopped) => d.done(files, pages, explored, stopped),
                 }
             }
             if !connected && d.running() {
                 d.failed(tr("The connection to the UIDM daemon was lost.").into());
             }
-            if !tools::grab_dialog(ctx, d, &queue_list, connected, actions) {
+            let categories: Vec<String> = self
+                .shared
+                .lock()
+                .unwrap()
+                .settings
+                .as_ref()
+                .map(|s| s.categories.iter().map(|c| c.name.clone()).collect())
+                .unwrap_or_default();
+            let done: HashSet<String> = rows.iter().filter(|e| e.status == Status::Done).map(|e| e.url.clone()).collect();
+            if !tools::grab_dialog(ctx, d, &queue_list, &categories, &done, connected, actions) {
                 self.grabber = None;
             }
         }

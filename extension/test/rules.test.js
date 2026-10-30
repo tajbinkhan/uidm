@@ -369,9 +369,15 @@ test("a crawl's page is rendered in a background tab and the tab is closed", asy
   w.chrome.tabs = {
     ...w.chrome.tabs,
     onUpdated: event(),
+    onCreated: event(),
     create: async ({ url, active }) => {
       assert.equal(active, false);
-      setTimeout(() => w.chrome.tabs.onUpdated.fire(11, { status: "complete" }), 0);
+      setTimeout(() => {
+        // The page's script opens a window, then the page finishes loading.
+        w.chrome.tabs.onCreated.fire({ id: 12, openerTabId: 11, pendingUrl: "https://site.net/popup.html" });
+        w.chrome.tabs.onCreated.fire({ id: 13, openerTabId: 99, pendingUrl: "https://other.net/" });
+        w.chrome.tabs.onUpdated.fire(11, { status: "complete" });
+      }, 0);
       return { id: 11, url };
     },
     remove: async (id) => removed.push(id),
@@ -386,5 +392,6 @@ test("a crawl's page is rendered in a background tab and the tab is closed", asy
   assert.equal(answer.request, 5);
   assert.equal(answer.url, "https://site.net/app/");
   assert.ok(answer.html.includes("added-by-script.pdf"));
-  assert.equal(JSON.stringify(removed), "[11]");
+  assert.equal(JSON.stringify(answer.popups), JSON.stringify(["https://site.net/popup.html"]));
+  assert.equal(JSON.stringify(removed), "[12,11]", "the popup is closed, and the tab; another tab's window is left alone");
 });
