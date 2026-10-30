@@ -201,9 +201,9 @@ mod tests {
 
     #[test]
     fn sidecar_naming() {
-        let p = Path::new("C:\\dl\\movie.mp4");
+        let p = Path::new("dl").join("movie.mp4");
         assert_eq!(
-            Manifest::sidecar_path(p).file_name().unwrap(),
+            Manifest::sidecar_path(&p).file_name().unwrap(),
             "movie.mp4.uidmpart"
         );
     }

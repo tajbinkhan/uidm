@@ -506,7 +506,8 @@ mod tests {
         q.max_concurrent = 2;
         q.retries = 1;
         q.when_done = WhenDone::ShutDown;
-        q.open_when_done = Some(r"C:\Tools\after.bat".into());
+        let after = if cfg!(windows) { r"C:\Tools\after.bat" } else { "/opt/tools/after.sh" };
+        q.open_when_done = Some(after.into());
         q.start_on_launch = true;
         q.schedule = Some(Schedule {
             start: "23:00".into(),
@@ -518,7 +519,7 @@ mod tests {
         let back = QueueDraft::from(&q).to_queue().unwrap();
         assert_eq!(back.schedule, q.schedule);
         assert_eq!((back.max_concurrent, back.retries, back.when_done), (2, 1, WhenDone::ShutDown));
-        assert_eq!(back.open_when_done.as_deref(), Some(r"C:\Tools\after.bat"));
+        assert_eq!(back.open_when_done.as_deref(), Some(after));
         assert!(back.start_on_launch);
         let mut relative = QueueDraft::from(&q);
         relative.open_when_done = "after.bat".into();

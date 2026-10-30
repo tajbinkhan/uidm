@@ -21,7 +21,11 @@ mod answers;
 mod columns;
 #[path = "gui/connections.rs"]
 mod connections;
+#[cfg(windows)]
 #[path = "gui/droptarget.rs"]
+mod droptarget;
+#[cfg(not(windows))]
+#[path = "gui/droptarget_other.rs"]
 mod droptarget;
 #[path = "gui/find.rs"]
 mod find;
@@ -45,14 +49,16 @@ mod theme;
 mod tools;
 #[path = "gui/tray.rs"]
 mod tray;
+#[cfg(windows)]
 #[path = "gui/win.rs"]
+mod win;
+#[cfg(not(windows))]
+#[path = "gui/win_other.rs"]
 mod win;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpStream;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -60,6 +66,7 @@ use std::time::{Duration, Instant};
 use columns::Column;
 use i18n::{tr, trf};
 use eframe::egui;
+#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::notify::Sound;
@@ -98,7 +105,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("UIDM")
-            .with_visible(!minimized)
+            // Elsewhere "hidden" is minimized, which needs a visible window.
+            .with_visible(!minimized || !cfg!(windows))
             .with_icon(egui::IconData {
                 rgba: ICON_RGBA.to_vec(),
                 width: ICON_SIZE,
@@ -112,9 +120,18 @@ fn main() -> eframe::Result {
         "UIDM",
         options,
         Box::new(move |cc| {
+            #[cfg(windows)]
             if let Ok(handle) = cc.window_handle() {
                 if let RawWindowHandle::Win32(h) = handle.as_raw() {
                     win::set_window(h.hwnd.get());
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                win::set_context(&cc.egui_ctx);
+                // Started hidden in the tray: minimized here (see win_other).
+                if minimized {
+                    win::hide();
                 }
             }
             theme::apply(&cc.egui_ctx);
@@ -1643,11 +1660,7 @@ impl App {
                 send(&self.writer, &Incoming::PreviewZip { id });
             }
             Action::ShowInFolder(path) => {
-                // Explorer parses /select itself, so pass the argument raw with
-                // the path quoted. Windows paths cannot contain a double quote.
-                let _ = Command::new("explorer")
-                    .raw_arg(format!("/select,\"{path}\""))
-                    .spawn();
+                let _ = uidm::platform::reveal(std::path::Path::new(&path));
             }
             Action::Reconnect => self.connect(),
             Action::OpenOptions => {
@@ -2850,7 +2863,7 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 /// System does. Windows' SOCKS proxies speak SOCKS4. Its configuration
 /// script is not read: it picks a proxy per address.
 fn get_system_proxy(draft: &mut OptionsDraft) {
-    let Some(rules) = uidm::net::system_proxy_at(uidm::net::INTERNET_SETTINGS) else {
+    let Some(rules) = uidm::net::system_fixed_proxy() else {
         draft.error = Some(tr("Windows has no proxy server turned on.").to_string());
         return;
     };
@@ -3315,9 +3328,9 @@ fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) 
     ctx.request_repaint();
 }
 
-/// Open a file with its program, as Explorer does.
+/// Open a file with its program, as a double-click does.
 fn open_file(path: &str) {
-    let _ = Command::new("explorer").arg(path).spawn();
+    let _ = uidm::platform::open(path.as_ref());
 }
 
 /// An http, https or ftp address with no spaces.
@@ -3504,7 +3517,7 @@ impl eframe::App for App {
         }
         let tooltip = self.shared.lock().unwrap().tooltip();
         if tooltip != self.tooltip {
-            tray::set_tooltip(&tooltip);
+            tray::set_tooltip(tooltip.clone());
             self.tooltip = tooltip;
         }
         if let Some(s) = &settings {

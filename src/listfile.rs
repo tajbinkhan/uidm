@@ -261,6 +261,10 @@ fn keep_valid(candidates: Vec<Download>) -> Result<(Vec<Download>, usize), Strin
 mod tests {
     use super::*;
 
+    /// A full path on this system for a downloads folder and a file in it.
+    const DL: &str = if cfg!(windows) { r"C:\dl" } else { "/dl" };
+    const DL_A_ZIP: &str = if cfg!(windows) { r"C:\dl\a.zip" } else { "/dl/a.zip" };
+
     fn entry(id: u64, url: &str, path: Option<&str>, status: Status) -> DownloadEntry {
         DownloadEntry {
             id,
@@ -290,7 +294,7 @@ mod tests {
 
     #[test]
     fn json_round_trip() {
-        let a = entry(1, "https://x/a.zip", Some(r"C:\dl\a.zip"), Status::Done);
+        let a = entry(1, "https://x/a.zip", Some(DL_A_ZIP), Status::Done);
         let b = entry(2, "https://x/b.iso?sig=1", None, Status::Failed);
         let json = export_json(&[&a, &b]);
         assert!(json.contains("\"uidm_list\": 1"));
@@ -299,7 +303,7 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].url, "https://x/a.zip");
         assert_eq!(items[0].filename.as_deref(), Some("a.zip"));
-        assert_eq!(items[0].folder.as_deref(), Some(r"C:\dl"));
+        assert_eq!(items[0].folder.as_deref(), Some(DL));
         assert_eq!(items[0].start, Some(false), "nothing starts on import");
         assert_eq!(items[1].filename, None);
         assert_eq!(items[1].start, Some(false));
@@ -335,7 +339,7 @@ mod tests {
     fn exports_never_hold_secrets() {
         // A list entry carries no cookies or headers to leak; the export has
         // exactly the fields of a list item.
-        let a = entry(1, "https://x/a.zip", Some(r"C:\dl\a.zip"), Status::Done);
+        let a = entry(1, "https://x/a.zip", Some(DL_A_ZIP), Status::Done);
         let value: serde_json::Value = serde_json::from_str(&export_json(&[&a])).unwrap();
         let mut keys: Vec<&str> = value["items"][0].as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort();
@@ -406,7 +410,7 @@ mod tests {
 
     #[test]
     fn ef2_round_trip() {
-        let mut a = entry(1, "https://x/a.zip", Some(r"C:\dl\a.zip"), Status::Done);
+        let mut a = entry(1, "https://x/a.zip", Some(DL_A_ZIP), Status::Done);
         a.referrer = Some("https://x/downloads".into());
         a.login_user = Some("me".into());
         let b = entry(2, "https://x/b.iso", None, Status::Failed);

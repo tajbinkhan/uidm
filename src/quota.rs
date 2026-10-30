@@ -87,11 +87,9 @@ impl Usage {
     }
 }
 
-/// `%LOCALAPPDATA%\UIDM\quota.json`.
+/// `quota.json` in UIDM's data folder (`%LOCALAPPDATA%\UIDM` on Windows).
 pub fn quota_path() -> io::Result<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-    Ok(PathBuf::from(base).join("UIDM").join("quota.json"))
+    Ok(crate::platform::data_dir()?.join("quota.json"))
 }
 
 /// Minutes since 1970.

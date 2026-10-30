@@ -380,6 +380,9 @@ pub fn dialog(
 mod tests {
     use super::*;
 
+    /// A full path on this system.
+    const DL: &str = if cfg!(windows) { r"D:\dl" } else { "/dl" };
+
     fn link(url: &str, image: bool) -> PageLink {
         PageLink {
             url: url.into(),
@@ -416,14 +419,14 @@ mod tests {
         let mut d = LinksDialog::new("https://x.net/list".into(), vec![link("https://x.net/a.zip", false)], Some("UA".into()));
         d.text_as_description = true;
         d.target = Target::Folder;
-        d.folder = r"D:\dl".into();
+        d.folder = DL.into();
         let items = d.downloads(&Settings::default()).unwrap();
         assert_eq!(items.len(), 1);
         let a = &items[0];
         assert_eq!(a.referrer.as_deref(), Some("https://x.net/list"));
         assert_eq!(a.cookies.as_deref(), Some("s=1"));
         assert_eq!(a.description.as_deref(), Some("Get it"));
-        assert_eq!(a.folder.as_deref(), Some(r"D:\dl"));
+        assert_eq!(a.folder.as_deref(), Some(DL));
         assert_eq!(a.filename, None);
         assert_eq!(a.start, Some(false));
         d.folder = "dl".into();
@@ -436,13 +439,14 @@ mod tests {
         let mut d = LinksDialog::new("https://x.net/".into(), links, None);
         d.target = Target::Category("Music".into());
         let settings = Settings {
-            download_dir: Some(r"D:\dl".into()),
+            download_dir: Some(DL.into()),
             ..Settings::default()
         };
         let items = d.downloads(&settings).unwrap();
+        let music = std::path::Path::new(DL).join("Music").display().to_string();
         for item in &items {
             assert_eq!(item.category.as_deref(), Some("Music"));
-            assert_eq!(item.folder.as_deref(), Some(r"D:\dl\Music"));
+            assert_eq!(item.folder.as_deref(), Some(music.as_str()));
         }
     }
 

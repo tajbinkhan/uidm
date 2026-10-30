@@ -51,17 +51,11 @@ eframe = "0.31.1"
 # Native folder picker for the Options dialog (IFileOpenDialog on Windows,
 # through windows-sys, so it builds on windows-gnu).
 rfd = { version = "0.15.4", default-features = false }
-# System tray icon and its menu (Win32 underneath, builds on windows-gnu).
-tray-icon = "0.21"
+# System tray icon and its menu (Win32 underneath, builds on windows-gnu;
+# GTK on Linux, without libxdo, which only menu shortcuts need).
+tray-icon = { version = "0.21", default-features = false }
 # The window's HWND, to show and hide it from the tray while egui is idle.
 raw-window-handle = "0.6"
-# WinRT toast notifications from the daemon.
-windows = { version = "0.61", features = [
-    "Data_Xml_Dom",
-    "Foundation",
-    "UI_Notifications",
-    "Win32_System_WinRT",
-] }
 # DASH manifests (.mpd) are XML; a small, read-only, pure-Rust parser.
 roxmltree = "0.20"
 # HLS segments encrypted with AES-128 (CBC with PKCS#7 padding).
@@ -71,6 +65,29 @@ cbc = "0.1"
 scraper = "0.20"
 # Decoding %-escapes in file names the site grabber finds (url uses it too).
 percent-encoding = "2"
+
+# WinRT toast notifications from the daemon.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Data_Xml_Dom",
+    "Foundation",
+    "UI_Notifications",
+    "Win32_System_WinRT",
+] }
+
+# The Trash on macOS and Linux (the Recycle Bin is called directly).
+[target.'cfg(unix)'.dependencies]
+trash = "5"
+# The local time zone for queue schedules (localtime_r).
+libc = "0.2"
+# The window's clipboard reads outside egui (egui uses it too).
+arboard = { version = "3.7.0", default-features = false }
+
+# The folder picker's GTK backend on Linux (macOS uses its own panels), and
+# GTK's loop for the tray icon, which tray-icon builds on there.
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.15.4", default-features = false, features = ["gtk3"] }
+gtk = "0.18"
 
 [profile.release]
 strip = true

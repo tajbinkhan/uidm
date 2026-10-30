@@ -43,7 +43,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{TcpListener, TcpStream};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -69,6 +68,7 @@ use uidm::power;
 use uidm::queue::{self, Queue, WhenDone, COUNTDOWN_SECS, MAIN_QUEUE};
 use uidm::protocol::Scan;
 use uidm::grab::{self, GrabRequest};
+#[cfg(windows)]
 use uidm::registry;
 use uidm::scan;
 use uidm::settings::Notify;
@@ -95,6 +95,7 @@ const FAILED_GRACE: Duration = Duration::from_secs(1);
 const KEEP_TOASTS: usize = 32;
 /// The icon Windows shows on UIDM's notifications, written next to the
 /// history so the registry can point at it.
+#[cfg(windows)]
 const ICON_PNG: &[u8] = include_bytes!("../../extension/icons/128.png");
 /// The `client` a desktop window names in its `hello`.
 const WINDOW_CLIENT: &str = "window";
@@ -433,7 +434,7 @@ struct Daemon {
     /// Downloads stopped by `pause_all`, for `resume_all`.
     paused: Mutex<HashSet<u64>>,
     /// Recent notifications; dropping one can stop its buttons working.
-    toasts: Mutex<VecDeque<windows::UI::Notifications::ToastNotification>>,
+    toasts: Mutex<VecDeque<notify::Shown>>,
     /// Queues stopped by `pause_all`, for `resume_all`.
     paused_queues: Mutex<HashSet<u64>>,
     /// What each started queue has started in its current run.
@@ -1306,11 +1307,10 @@ impl Daemon {
                 self.show_window()
             }
             ("open", Some(path)) => {
-                let _ = Command::new("explorer").arg(path).spawn();
+                let _ = uidm::platform::open(path.as_ref());
             }
             ("show", Some(path)) => {
-                // Explorer parses /select itself; Windows paths hold no quotes.
-                let _ = Command::new("explorer").raw_arg(format!("/select,\"{path}\"")).spawn();
+                let _ = uidm::platform::reveal(Path::new(&path));
             }
             ("retry", _) => {
                 if let Some(id) = id {
@@ -1896,7 +1896,9 @@ impl Daemon {
         ];
         let found = engine::fetch(url, &headers, &net, 1024 * 1024)
             .map_err(|e| format!("Could not reach GitHub: {e}"))
-            .and_then(|page| uidm::update::parse_release(&page.body));
+            .and_then(|page| uidm::update::parse_release(&page.body))
+            // Only Windows has a Setup to run; elsewhere the page is shown.
+            .map(|release| uidm::update::Release { setup: release.setup.filter(|_| cfg!(windows)), ..release });
         {
             let mut s = self.settings.lock().unwrap();
             s.last_update_check = uidm::state::unix_now();
@@ -2912,11 +2914,8 @@ impl Daemon {
         let new = self.store_secrets(new)?;
         let old_autostart = self.settings.lock().unwrap().start_with_windows;
         if new.start_with_windows != old_autostart {
-            let gui = std::env::current_exe()
-                .map_err(|e| e.to_string())?
-                .with_file_name("uidm-gui.exe");
-            registry::set_autostart(new.start_with_windows, &gui)
-                .map_err(|e| format!("could not change Start with Windows: {e}"))?;
+            uidm::autostart::set_autostart(new.start_with_windows)
+                .map_err(|e| format!("could not change starting at sign-in: {e}"))?;
         }
         if let Some(path) = &self.paths.settings {
             new.save(path)
@@ -3066,6 +3065,7 @@ fn run() -> io::Result<()> {
     spawn_scheduler(Arc::clone(&daemon), wake);
     spawn_history_writer(Arc::clone(&daemon), dirty);
     spawn_notifier(Arc::clone(&daemon), notes);
+    #[cfg(windows)]
     if let Err(e) = register_notifications() {
         eprintln!("[uidm-daemon] could not register for notifications: {e}");
     }
@@ -3446,6 +3446,7 @@ fn spawn_notifier(daemon: Arc<Daemon>, notes: Receiver<Note>) {
 
 /// Give UIDM's notifications a name and icon. Unpackaged apps need this
 /// registration before Windows shows their notifications.
+#[cfg(windows)]
 fn register_notifications() -> io::Result<()> {
     let icon = history::history_path()?.with_file_name("uidm.png");
     if std::fs::read(&icon).ok().as_deref() != Some(ICON_PNG) {
@@ -3625,15 +3626,14 @@ fn power_off(action: WhenDone, force_close: bool) {
 /// Explorer would on a double-click.
 fn open_after_run(file: &str) {
     eprintln!("[uidm-daemon] opening {file}");
-    if let Err(e) = Command::new("explorer.exe").arg(file).spawn() {
+    if let Err(e) = uidm::platform::open(file.as_ref()) {
         eprintln!("[uidm-daemon] could not open {file}: {e}");
     }
 }
 
 /// Start the desktop window from this daemon's folder.
 fn open_window() -> io::Result<()> {
-    let gui = std::env::current_exe()?.with_file_name("uidm-gui.exe");
-    Command::new(gui)
+    uidm::platform::program_command("uidm-gui")?
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -4681,11 +4681,10 @@ mod tests {
         let t = setup("convert", Duplicate::NewName);
         let clip = t.dir.join("talk.mkv");
         let id = t.finished("https://x/talk.mkv", &clip);
-        let made = Command::new(&ffmpeg)
+        let made = uidm::platform::no_window(&mut Command::new(&ffmpeg))
             .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=160x120:rate=10"])
             .args(["-f", "lavfi", "-i", "sine=duration=1", "-c:v", "libx264", "-c:a", "aac", "-shortest"])
             .arg(&clip)
-            .creation_flags(0x0800_0000)
             .status()
             .unwrap();
         assert!(made.success());

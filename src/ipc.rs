@@ -26,9 +26,8 @@
 use std::fs::{self, File};
 use std::io;
 use std::net::TcpStream;
-use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -58,20 +57,22 @@ const NONCE_BYTES: usize = 32;
 pub const DAEMON_LABEL: &str = "uidm-daemon";
 pub const HOST_LABEL: &str = "uidm-host";
 
-const DETACHED_PROCESS: u32 = 0x0000_0008;
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// How long the host waits for a daemon it just started. A first launch of a
 /// freshly built exe can be slow while antivirus scans it.
 const STARTUP_WAIT: Duration = Duration::from_secs(10);
 const STARTUP_POLL: Duration = Duration::from_millis(100);
 
+#[cfg(windows)]
 const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+#[cfg(windows)]
 const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+#[cfg(windows)]
 const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+#[cfg(windows)]
 const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn GetStdHandle(std_handle: u32) -> *mut std::ffi::c_void;
@@ -229,9 +230,7 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Where the running daemon's token lives.
 pub fn token_path() -> io::Result<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-    Ok(PathBuf::from(base).join("UIDM").join("daemon.token"))
+    Ok(crate::platform::data_dir()?.join("daemon.token"))
 }
 
 /// Publish `token` for clients. Writes a temp file and renames it over the old
@@ -242,7 +241,7 @@ pub fn write_token(token: &str) -> io::Result<()> {
         fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("token.tmp");
-    fs::write(&tmp, token)?;
+    crate::platform::write_private(&tmp, token.as_bytes())?;
     fs::rename(&tmp, &path)
 }
 
@@ -255,25 +254,20 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Launch `uidm-daemon.exe` from the host's own directory as a detached
+/// Launch `uidm-daemon` from the host's own directory as a detached
 /// process, so it keeps running after the host and the browser exit. Its log
-/// goes to `%TEMP%\uidm-daemon.log`.
+/// goes to `uidm-daemon.log` in the temp folder.
 fn spawn_daemon() -> io::Result<()> {
     keep_stdio_private();
-    let exe = std::env::current_exe()?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "host exe has no directory"))?;
-    let daemon = dir.join("uidm-daemon.exe");
+    let mut daemon = crate::platform::program_command("uidm-daemon")?;
     let log = File::create(std::env::temp_dir().join("uidm-daemon.log"))?;
 
-    Command::new(&daemon)
+    crate::platform::detach(&mut daemon)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log))
-        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
         .spawn()
-        .map_err(|e| io::Error::new(e.kind(), format!("starting {}: {e}", daemon.display())))?;
+        .map_err(|e| io::Error::new(e.kind(), format!("starting {:?}: {e}", daemon.get_program())))?;
     Ok(())
 }
 
@@ -282,7 +276,12 @@ fn spawn_daemon() -> io::Result<()> {
 /// Windows hands every inheritable handle to a child, and the pipes a browser
 /// gives its native host are inheritable. Without this the daemon would keep
 /// the browser's pipes open for its whole life, so the browser would never see
-/// the host's stdout close. The handles still work in this process.
+/// the host's stdout close. The handles still work in this process. (Unix
+/// closes every other descriptor on exec already.)
+#[cfg(not(windows))]
+fn keep_stdio_private() {}
+
+#[cfg(windows)]
 fn keep_stdio_private() {
     for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
         // SAFETY: GetStdHandle takes no pointers. SetHandleInformation only

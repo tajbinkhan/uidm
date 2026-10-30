@@ -10,7 +10,6 @@
 //! others): 0 clean, 1 threat found. Anything else is a failed scan.
 
 use std::io::Read;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -26,7 +25,6 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const POLL: Duration = Duration::from_millis(200);
 /// Keep this much of the scanner's output as the result's detail.
 const DETAIL_CHARS: usize = 300;
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// The scanner command line with `program` in place of the one in
 /// `command`, keeping its arguments, or with `{path}` alone when it had
@@ -92,6 +90,9 @@ pub fn parse_command(line: &str) -> Result<(String, Vec<String>), String> {
 pub fn command_for(scanner: Scanner, custom: &str, file: &Path) -> Result<(PathBuf, Vec<String>), String> {
     let file = file.display().to_string();
     match scanner {
+        Scanner::Defender if !cfg!(windows) => {
+            Err("Microsoft Defender is only on Windows. Choose a scanner program such as clamscan.".to_string())
+        }
         Scanner::Defender => {
             let base = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
             let exe = PathBuf::from(base).join("Windows Defender").join("MpCmdRun.exe");
@@ -138,12 +139,10 @@ pub fn scan(scanner: Scanner, custom: &str, file: &Path) -> Scan {
         Ok(c) => c,
         Err(detail) => return Scan::Failed { detail },
     };
-    let mut child = match Command::new(&program)
-        .args(&args)
+    let mut child = match crate::platform::no_window(Command::new(&program).args(&args))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
     {
         Ok(c) => c,
@@ -234,9 +233,13 @@ mod tests {
         let (_, args) = command_for(Scanner::Custom, "scan.exe --file={path} -q", file).unwrap();
         assert_eq!(args, [format!("--file={}", file.display()), "-q".to_string()]);
 
-        let (exe, args) = command_for(Scanner::Defender, "", file).unwrap();
-        assert!(exe.ends_with(r"Windows Defender\MpCmdRun.exe"));
-        assert_eq!(args[..5], ["-Scan", "-ScanType", "3", "-File", &file.display().to_string()]);
+        if cfg!(windows) {
+            let (exe, args) = command_for(Scanner::Defender, "", file).unwrap();
+            assert!(exe.ends_with(r"Windows Defender\MpCmdRun.exe"));
+            assert_eq!(args[..5], ["-Scan", "-ScanType", "3", "-File", &file.display().to_string()]);
+        } else {
+            assert!(command_for(Scanner::Defender, "", file).is_err());
+        }
     }
 
     #[test]
@@ -249,14 +252,20 @@ mod tests {
         assert!(matches!(outcome(Scanner::Custom, None, String::new()), Scan::Failed { .. }));
     }
 
-    /// Runs real programs: `cmd.exe` stands in for a scanner, so the test can
-    /// pick the exit code. (UIDM itself never runs a scanner through cmd.)
+    /// Runs real programs: `cmd.exe` (or `sh`) stands in for a scanner, so
+    /// the test can pick the exit code. (UIDM itself never runs a scanner
+    /// through a shell.)
     #[test]
     fn runs_a_scanner_and_reads_its_exit_code() {
-        let cmd = std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
         let file = std::env::temp_dir().join("uidm scan test.txt");
         std::fs::write(&file, b"x").unwrap();
-        let run = |code: u8| scan(Scanner::Custom, &format!(r#""{cmd}" /c exit {code} {{path}}"#), &file);
+        #[cfg(windows)]
+        let run = |code: u8| {
+            let cmd = std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+            scan(Scanner::Custom, &format!(r#""{cmd}" /c exit {code} {{path}}"#), &file)
+        };
+        #[cfg(not(windows))]
+        let run = |code: u8| scan(Scanner::Custom, &format!(r#"/bin/sh -c "exit {code}" sh {{path}}"#), &file);
         assert_eq!(run(0), Scan::Clean);
         assert!(matches!(run(1), Scan::Threat { .. }));
         assert!(matches!(run(7), Scan::Failed { .. }));
