@@ -62,6 +62,7 @@ use i18n::{tr, trf};
 use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
+use uidm::notify::Sound;
 use uidm::ipc;
 use uidm::protocol::{
     read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, OnDone, Outgoing, Properties, Scan, SegmentInfo,
@@ -633,6 +634,20 @@ fn browse_button(ui: &mut egui::Ui, title: &'static str, start: &str, slot: &Pic
     }
 }
 
+/// A "Browse..." button that opens the file picker on its own thread, for
+/// files with extension `ext`, and puts the choice in `slot`.
+fn browse_file_button(ui: &mut egui::Ui, title: &'static str, ext: &'static str, slot: &Picked) {
+    if ui.button(tr("Browse...")).clicked() {
+        let (slot, ctx) = (Arc::clone(slot), ui.ctx().clone());
+        thread::spawn(move || {
+            if let Some(file) = rfd::FileDialog::new().set_title(title).add_filter(ext, &[ext]).pick_file() {
+                *slot.lock().unwrap() = Some(file);
+                ctx.request_repaint();
+            }
+        });
+    }
+}
+
 /// Copy a picked folder into `field`, if one arrived.
 fn take_picked(slot: &Picked, field: &mut String) {
     if let Some(folder) = slot.lock().unwrap().take() {
@@ -788,6 +803,10 @@ struct OptionsDraft {
     notify: Notify,
     sound_on_done: bool,
     sound_on_failed: bool,
+    sound_on_queue_done: bool,
+    /// The WAV files, in `SOUND_EVENTS` order; empty for Windows' sound.
+    sound_files: [String; 3],
+    sound_picked: [Picked; 3],
     scan_after_download: bool,
     scanner: Scanner,
     scanner_command: String,
@@ -919,6 +938,9 @@ impl OptionsDraft {
             notify: s.notify,
             sound_on_done: s.sound_on_done,
             sound_on_failed: s.sound_on_failed,
+            sound_on_queue_done: s.sound_on_queue_done,
+            sound_files: [s.sound_done_file.clone(), s.sound_failed_file.clone(), s.sound_queue_file.clone()],
+            sound_picked: Default::default(),
             scan_after_download: s.scan_after_download,
             scanner: s.scanner,
             scanner_command: s.scanner_command.clone(),
@@ -1082,6 +1104,10 @@ impl OptionsDraft {
             notify: self.notify,
             sound_on_done: self.sound_on_done,
             sound_on_failed: self.sound_on_failed,
+            sound_on_queue_done: self.sound_on_queue_done,
+            sound_done_file: self.sound_files[0].trim().to_string(),
+            sound_failed_file: self.sound_files[1].trim().to_string(),
+            sound_queue_file: self.sound_files[2].trim().to_string(),
             scan_after_download: self.scan_after_download,
             scanner: self.scanner,
             scanner_command: self.scanner_command.trim().to_string(),
@@ -2292,6 +2318,9 @@ impl App {
         take_picked(&draft.picked, &mut draft.folder);
         take_picked(&draft.temp_picked, &mut draft.temp_dir);
         take_picked(&draft.ffmpeg_picked, &mut draft.ffmpeg_path);
+        for (slot, file) in draft.sound_picked.iter().zip(draft.sound_files.iter_mut()) {
+            take_picked(slot, file);
+        }
         for c in &mut draft.categories {
             take_picked(&c.picked, &mut c.folder);
         }
@@ -2628,20 +2657,7 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
                         .hint_text(tr("Empty looks for it on PATH"))
                         .desired_width(280.0),
                 );
-                if ui.button(tr("Browse...")).clicked() {
-                    let (slot, ctx) = (Arc::clone(&draft.ffmpeg_picked), ui.ctx().clone());
-                    let title = tr("Where is ffmpeg.exe?");
-                    thread::spawn(move || {
-                        let file = rfd::FileDialog::new()
-                            .set_title(title)
-                            .add_filter("ffmpeg", &["exe"])
-                            .pick_file();
-                        if let Some(file) = file {
-                            *slot.lock().unwrap() = Some(file);
-                            ctx.request_repaint();
-                        }
-                    });
-                }
+                browse_file_button(ui, tr("Where is ffmpeg.exe?"), "exe", &draft.ffmpeg_picked);
             });
             let found = Settings {
                 ffmpeg_path: draft.ffmpeg_path.trim().to_string(),
@@ -2844,8 +2860,29 @@ fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 
         ui.label(tr("Sounds"));
         ui.vertical(|ui| {
-            ui.checkbox(&mut draft.sound_on_done, tr("When a download finishes"));
-            ui.checkbox(&mut draft.sound_on_failed, tr("When a download fails"));
+            ui.weak(tr("A .wav file for each, or empty for Windows' own sound."));
+            egui::Grid::new("sounds").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+                let events = [
+                    (Sound::Done, tr("When a download finishes"), &mut draft.sound_on_done),
+                    (Sound::Failed, tr("When a download fails"), &mut draft.sound_on_failed),
+                    (Sound::QueueDone, tr("When a queue is done"), &mut draft.sound_on_queue_done),
+                ];
+                for (i, (sound, label, on)) in events.into_iter().enumerate() {
+                    ui.checkbox(on, label);
+                    ui.add_enabled(
+                        *on,
+                        egui::TextEdit::singleline(&mut draft.sound_files[i])
+                            .hint_text(tr("Windows' sound"))
+                            .desired_width(220.0),
+                    );
+                    ui.add_enabled_ui(*on, |ui| browse_file_button(ui, tr("Choose a sound"), "wav", &draft.sound_picked[i]));
+                    if ui.add_enabled(*on, egui::Button::new(tr("Play"))).clicked() {
+                        let file = draft.sound_files[i].trim();
+                        uidm::notify::play(sound, (!file.is_empty()).then(|| Path::new(file)));
+                    }
+                    ui.end_row();
+                }
+            });
         });
         ui.end_row();
 

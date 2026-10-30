@@ -458,6 +458,13 @@ pub struct Settings {
     pub sound_on_done: bool,
     /// Play a sound when a download fails.
     pub sound_on_failed: bool,
+    /// Play a sound when a started queue has finished its run.
+    pub sound_on_queue_done: bool,
+    /// The WAV files those sounds play, full paths; empty plays Windows'
+    /// own sound for the event.
+    pub sound_done_file: String,
+    pub sound_failed_file: String,
+    pub sound_queue_file: String,
     /// Scan each finished download for viruses.
     pub scan_after_download: bool,
     pub scanner: Scanner,
@@ -644,6 +651,10 @@ impl Default for Settings {
             notify: Notify::Toast,
             sound_on_done: false,
             sound_on_failed: false,
+            sound_on_queue_done: false,
+            sound_done_file: String::new(),
+            sound_failed_file: String::new(),
+            sound_queue_file: String::new(),
             scan_after_download: false,
             scanner: Scanner::Defender,
             scanner_command: String::new(),
@@ -731,6 +742,16 @@ pub const USER_AGENT_PRESETS: [(&str, &str); 3] = [
 ];
 
 impl Settings {
+    /// The WAV file to play for `sound`, if one is set.
+    pub fn sound_file(&self, sound: crate::notify::Sound) -> Option<PathBuf> {
+        let file = match sound {
+            crate::notify::Sound::Done => &self.sound_done_file,
+            crate::notify::Sound::Failed => &self.sound_failed_file,
+            crate::notify::Sound::QueueDone => &self.sound_queue_file,
+        };
+        Some(PathBuf::from(file.trim())).filter(|p| !p.as_os_str().is_empty())
+    }
+
     /// Check every value, returning a message fit to show the user.
     pub fn validate(&self) -> Result<(), String> {
         if self.proxy_mode == ProxyMode::Script && !crate::batch::is_web_url(self.proxy_pac_url.trim()) {
@@ -871,6 +892,12 @@ impl Settings {
                 return Err(format!("There are two logins for {site}."));
             }
             sites.push(site);
+        }
+        for file in [&self.sound_done_file, &self.sound_failed_file, &self.sound_queue_file] {
+            let f = file.trim();
+            if !f.is_empty() && (!Path::new(f).is_absolute() || extension_of(f).as_deref() != Some("wav")) {
+                return Err(format!("A sound must be the full path of a .wav file: {f}"));
+            }
         }
         if self.scan_after_download && self.scanner == Scanner::Custom {
             crate::scan::parse_command(&self.scanner_command)?;
@@ -1223,6 +1250,10 @@ mod tests {
             notify: Notify::Dialog,
             sound_on_done: true,
             sound_on_failed: true,
+            sound_on_queue_done: true,
+            sound_done_file: "C:\\Windows\\Media\\tada.wav".into(),
+            sound_failed_file: String::new(),
+            sound_queue_file: "C:\\Windows\\Media\\chimes.wav".into(),
             scan_after_download: true,
             scanner: Scanner::Custom,
             scanner_command: "C:\\scan.exe {path}".into(),
@@ -1596,6 +1627,18 @@ mod tests {
         assert!(with(CaptureKey::CTRL, CaptureKey::CTRL).is_err());
         assert!(with(CaptureKey::NONE, CaptureKey::NONE).is_ok());
         assert!(with(CaptureKey { insert: true, ..CaptureKey::NONE }, CaptureKey::CTRL).is_err());
+    }
+
+    #[test]
+    fn sounds_are_wav_files_or_the_system_sound() {
+        let with = |file: &str| Settings { sound_failed_file: file.into(), ..Settings::default() };
+        assert!(with("").validate().is_ok());
+        assert!(with(r"C:\Windows\Media\chord.WAV").validate().is_ok());
+        assert!(with(r"C:\music\song.mp3").validate().is_err());
+        assert!(with("chord.wav").validate().is_err());
+        assert_eq!(with("").sound_file(crate::notify::Sound::Failed), None);
+        assert_eq!(with(r"C:\a.wav").sound_file(crate::notify::Sound::Failed), Some(PathBuf::from(r"C:\a.wav")));
+        assert_eq!(with(r"C:\a.wav").sound_file(crate::notify::Sound::Done), None);
     }
 
     #[test]

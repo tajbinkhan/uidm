@@ -788,5 +788,10 @@
   "Fit": "Anpassen",
   "Type": "Typ",
   "No file type": "Kein Dateityp",
-  "Open the file": "Die Datei öffnen"
+  "Open the file": "Die Datei öffnen",
+  "A .wav file for each, or empty for Windows' own sound.": "Eine .wav-Datei für jedes Ereignis, oder leer für den Windows-Klang.",
+  "When a queue is done": "Wenn eine Warteschlange fertig ist",
+  "Windows' sound": "Windows-Klang",
+  "Choose a sound": "Einen Klang wählen",
+  "Play": "Abspielen"
 }

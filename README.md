@@ -226,9 +226,12 @@ tests, not in a running Firefox.
 - **When a download ends**, UIDM shows a Windows notification: **Open** and
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still
-  appears if the window is not running), or nothing, and can play a sound for
-  each. The dialog's **Don't show this dialog again** goes back to
-  notifications. Canceled downloads are never announced.
+  appears if the window is not running), or nothing. **Options > When done >
+  Sounds** plays a sound when a download finishes, when one fails, and when
+  a queue is done, each turned on by itself, with a `.wav` file of your own
+  (**Browse...**, **Play**) or Windows' sound for the event. The dialog's
+  **Don't show this dialog again** goes back to notifications. Canceled
+  downloads are never announced.
 - **Virus scan** (off by default) checks each finished file with Microsoft
   Defender or a scanner command you set, with `{path}` where the file goes.
   The list shows **No threat found**, **Threat found** or **Scan failed**,

@@ -885,6 +885,10 @@ impl Daemon {
         };
         eprintln!("[uidm-daemon] queue {name} is done");
         if !started.is_empty() {
+            let settings = self.settings.lock().unwrap().clone();
+            if settings.sound_on_queue_done {
+                notify::play(Sound::QueueDone, settings.sound_file(Sound::QueueDone).as_deref());
+            }
             if let Some(file) = open {
                 open_after_run(&file);
             }
@@ -1250,10 +1254,10 @@ impl Daemon {
             return;
         };
         if failed && settings.sound_on_failed {
-            notify::play(Sound::Failed);
+            notify::play(Sound::Failed, settings.sound_file(Sound::Failed).as_deref());
         }
         if !failed && settings.sound_on_done {
-            notify::play(Sound::Done);
+            notify::play(Sound::Done, settings.sound_file(Sound::Done).as_deref());
         }
         // A download that asked for the completion dialog gets it, or a
         // notification in its place when no window is open.
