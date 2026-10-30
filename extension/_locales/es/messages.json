@@ -218,5 +218,42 @@
   },
   "audioFile": {
     "message": "Audio"
+  },
+  "takeoverFailed": {
+    "message": "UIDM no pudo hacerse cargo de la descarga"
+  },
+  "takeoverNotConnected": {
+    "message": "UIDM no se está ejecutando o no está conectado, así que el navegador descarga $FILE$.",
+    "placeholders": {
+      "file": {
+        "content": "$1",
+        "example": "setup.exe"
+      }
+    }
+  },
+  "takeoverError": {
+    "message": "UIDM no pudo iniciar $FILE$ ($REASON$), así que lo descarga el navegador.",
+    "placeholders": {
+      "file": {
+        "content": "$1",
+        "example": "setup.exe"
+      },
+      "reason": {
+        "content": "$2",
+        "example": "server returned HTTP 403"
+      }
+    }
+  },
+  "dontShowAgain": {
+    "message": "No volver a mostrar"
+  },
+  "takeoverClickToStop": {
+    "message": "Haga clic en este aviso para no volver a mostrarlo."
+  },
+  "downloadLastVideo": {
+    "message": "Descargar el último vídeo con UIDM"
+  },
+  "recentVideos": {
+    "message": "Vídeos recientes (UIDM)"
   }
 }

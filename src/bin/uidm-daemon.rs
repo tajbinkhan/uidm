@@ -54,7 +54,7 @@ use std::time::{Duration, Instant};
 
 use uidm::app::{progress_to_outgoing, to_request, MAX_MESSAGE_BYTES};
 use uidm::engine::DownloadRequest;
-use uidm::net::{self, Login, NetConfig};
+use uidm::net::{self, Login, NetConfig, ProxyKind, ProxyLogin};
 use uidm::settings::{ProxyMode, SocksVersion};
 use uidm::engine::{self, Engine, Progress};
 use uidm::history::{self, History};
@@ -462,6 +462,9 @@ struct Daemon {
     conversions: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     /// When the projects' schedules were last looked at.
     grab_checked: Mutex<Option<Instant>>,
+    /// Addresses retried through the browser's proxy after failing through
+    /// UIDM's own proxy setting; they keep using it.
+    browser_proxy_retries: Mutex<HashSet<String>>,
 }
 
 /// A countdown before sleeping, hibernating or shutting down.
@@ -480,13 +483,23 @@ impl Daemon {
     /// them. Returns the receivers the history writer and the notification
     /// thread wait on.
     fn new(paths: Paths) -> (Self, Receiver<()>, Receiver<Note>, Receiver<()>) {
-        let settings = match &paths.settings {
+        let mut settings = match &paths.settings {
             Some(path) => Settings::load(path).unwrap_or_else(|e| {
                 eprintln!("[uidm-daemon] ignoring {}: {e}", path.display());
                 Settings::default()
             }),
             None => Settings::default(),
         };
+        // Settings from before each proxy had its own login: the HTTPS and
+        // SOCKS proxies keep the shared password they used.
+        if std::mem::take(&mut settings.proxy_logins_split) {
+            let saved = net::split_proxy_password()
+                .map_err(|e| e.to_string())
+                .and_then(|()| paths.settings.as_ref().map_or(Ok(()), |p| settings.save(p).map_err(|e| e.to_string())));
+            if let Err(e) = saved {
+                eprintln!("[uidm-daemon] could not give each proxy its own login: {e}");
+            }
+        }
         let history = match &paths.history {
             Some(path) => History::load(path).unwrap_or_else(|e| {
                 // Keep the unreadable file for inspection instead of
@@ -573,6 +586,7 @@ impl Daemon {
             grab_runs: Mutex::new(HashSet::new()),
             conversions: Mutex::new(HashMap::new()),
             grab_checked: Mutex::new(None),
+            browser_proxy_retries: Mutex::new(HashSet::new()),
         };
         (daemon, dirty_rx, notes_rx, wake_rx)
     }
@@ -1182,7 +1196,7 @@ impl Daemon {
             }
             Note::Failed(id) => {
                 thread::sleep(FAILED_GRACE);
-                if self.entry(id).is_some_and(|e| e.status == Status::Failed) {
+                if self.entry(id).is_some_and(|e| e.status == Status::Failed) && !self.retry_through_browser_proxy(id, &settings) {
                     self.notify(id, true, &settings);
                 }
             }
@@ -2619,19 +2633,56 @@ impl Daemon {
         req
     }
 
+    /// Under "the browser's proxy only after download errors", retry failed
+    /// download `id` once, through the proxy its browser reported. Returns
+    /// whether it did.
+    fn retry_through_browser_proxy(&self, id: u64, s: &Settings) -> bool {
+        if !(s.use_browser_proxy && s.browser_proxy_after_errors) {
+            return false;
+        }
+        let url = self.hub.requests.lock().unwrap().get(&id).filter(|d| d.proxy.is_some()).map(|d| d.url.clone());
+        let Some(url) = url else {
+            return false;
+        };
+        if !self.browser_proxy_retries.lock().unwrap().insert(url) {
+            return false;
+        }
+        match self.retry(id) {
+            Ok((new_id, _)) => {
+                eprintln!("[uidm-daemon] #{id} failed; retrying it as #{new_id} through the browser's proxy");
+                true
+            }
+            Err(e) => {
+                eprintln!("[uidm-daemon] could not retry #{id} through the browser's proxy: {e}");
+                false
+            }
+        }
+    }
+
     /// The proxy and logins for `download`. A download from the browser uses
-    /// the browser's proxy when the settings say so.
+    /// the browser's proxy when the settings say so: always, or once it
+    /// failed through UIDM's own setting.
     fn net_for(&self, download: &Download, s: &Settings) -> NetConfig {
+        let browser_wanted = s.use_browser_proxy
+            && (!s.browser_proxy_after_errors || self.browser_proxy_retries.lock().unwrap().contains(&download.url));
         let browser = download
             .proxy
             .as_deref()
-            .filter(|_| s.use_browser_proxy)
+            .filter(|_| browser_wanted)
             .map(|p| net::ProxyRules {
                 http: p.strip_prefix("http://").map(str::to_string),
                 https: p.strip_prefix("http://").map(str::to_string),
                 socks: p.starts_with("socks").then(|| p.to_string()),
                 ..net::ProxyRules::default()
             });
+        let addr = |a: &str| (!a.trim().is_empty()).then(|| a.trim().to_string());
+        let proxy_login = |user: &str, kind: ProxyKind| {
+            if user.trim().is_empty() {
+                return ProxyLogin::default();
+            }
+            let password = net::proxy_password_path(kind).map(|p| net::load_proxy_password(&p)).unwrap_or_default();
+            ProxyLogin::new(user.trim(), &password)
+        };
         let proxy = browser.or_else(|| match s.proxy_mode {
             ProxyMode::None => None,
             ProxyMode::System => net::system_proxy(),
@@ -2640,23 +2691,27 @@ impl Daemon {
                 ..net::ProxyRules::default()
             }),
             ProxyMode::Manual => {
-                let addr = |a: &str| (!a.trim().is_empty()).then(|| a.trim().to_string());
+                // An empty HTTPS proxy means the HTTP one, with its login.
+                let (https, https_login) = match addr(&s.proxy_https) {
+                    Some(a) => (Some(a), proxy_login(&s.proxy_https_username, ProxyKind::Https)),
+                    None => (addr(&s.proxy_http), proxy_login(&s.proxy_username, ProxyKind::Http)),
+                };
                 Some(net::ProxyRules {
                     http: addr(&s.proxy_http),
-                    https: addr(&s.proxy_https),
+                    https,
                     socks: addr(&s.proxy_socks5).map(|a| {
                         let scheme = net::socks_scheme(s.proxy_socks_version == SocksVersion::V5, s.proxy_remote_dns);
                         format!("{scheme}://{a}")
                     }),
                     bypass: net::parse_bypass(&s.proxy_bypass),
-                    username: s.proxy_username.trim().to_string(),
-                    password: net::proxy_password_path()
-                        .map(|p| net::load_proxy_password(&p))
-                        .unwrap_or_default(),
+                    http_login: proxy_login(&s.proxy_username, ProxyKind::Http),
+                    https_login,
+                    socks_login: proxy_login(&s.proxy_socks_username, ProxyKind::Socks),
                     pac: None,
                 })
             }
         });
+        let manual_ftp = (s.proxy_mode == ProxyMode::Manual).then(|| addr(&s.proxy_ftp)).flatten();
         let mut logins: Vec<Login> = s
             .site_logins
             .iter()
@@ -2668,10 +2723,11 @@ impl Daemon {
                 })
             })
             .collect();
-        // The download's own login goes last, so it wins over a site login
-        // for the same host.
+        // The download's own login takes the place of the site logins for
+        // its host, even those for one of its folders.
         let host = url::Url::parse(&download.url).ok().and_then(|u| u.host_str().map(str::to_string));
         if let (Some(l), Some(host)) = (&download.login, host) {
+            logins.retain(|s| !net::site_matches(net::split_login_pattern(&s.site).0, &host));
             logins.push(Login {
                 site: host,
                 username: l.username.clone(),
@@ -2682,7 +2738,8 @@ impl Daemon {
             proxy,
             logins,
             ftp_active: s.ftp_active,
-            ftp_proxy: (s.proxy_mode == ProxyMode::Manual && !s.proxy_ftp.trim().is_empty()).then(|| s.proxy_ftp.trim().to_string()),
+            ftp_proxy_login: manual_ftp.as_ref().map_or_else(ProxyLogin::default, |_| proxy_login(&s.proxy_ftp_username, ProxyKind::Ftp)),
+            ftp_proxy: manual_ftp,
         }
     }
 
@@ -2690,10 +2747,18 @@ impl Daemon {
     /// logins: Credential Manager), forget those of removed logins, and return
     /// the settings without them.
     fn store_secrets(&self, mut new: Settings) -> Result<Settings, String> {
-        if let Some(pw) = new.proxy_password.take() {
-            let path = net::proxy_password_path().map_err(|e| e.to_string())?;
-            net::save_proxy_password(&path, &pw).map_err(|e| format!("could not save the proxy password: {e}"))?;
+        for (kind, password) in [
+            (ProxyKind::Http, new.proxy_password.take()),
+            (ProxyKind::Https, new.proxy_https_password.take()),
+            (ProxyKind::Ftp, new.proxy_ftp_password.take()),
+            (ProxyKind::Socks, new.proxy_socks_password.take()),
+        ] {
+            if let Some(pw) = password {
+                let path = net::proxy_password_path(kind).map_err(|e| e.to_string())?;
+                net::save_proxy_password(&path, &pw).map_err(|e| format!("could not save the proxy password: {e}"))?;
+            }
         }
+
         for l in &mut new.site_logins {
             if let Some(pw) = l.password.take() {
                 net::save_login_password(&l.site, &l.username, &pw)
@@ -3879,7 +3944,7 @@ mod tests {
         let login = req.login.clone().unwrap();
         assert_eq!((login.username.as_str(), login.password.as_deref()), ("other", Some("pw")));
         let net = t.daemon.net_for(&req, &Settings::default());
-        let found = net::find_login(&net.logins, "y").unwrap();
+        let found = net::find_login(&net.logins, "https://y/new.bin").unwrap();
         assert_eq!(found.username, "other");
 
         // An empty user name removes the login.
@@ -3890,6 +3955,32 @@ mod tests {
         t.daemon.set_properties(id, clear).unwrap();
         assert_eq!(t.daemon.entry(id).unwrap().login_user, None);
         assert!(t.daemon.hub.requests.lock().unwrap()[&id].login.is_none());
+    }
+
+    #[test]
+    fn the_browsers_proxy_can_wait_for_a_failure() {
+        let t = setup("browser_proxy", Duplicate::NewName);
+        let d = Download {
+            url: "https://x/a.zip".into(),
+            proxy: Some("http://bp:3128".into()),
+            ..Download::default()
+        };
+        let through = |s: &Settings| t.daemon.net_for(&d, s).proxy.and_then(|p| p.proxy_for(&d.url));
+        let after = Settings {
+            use_browser_proxy: true,
+            browser_proxy_after_errors: true,
+            ..Settings::default()
+        };
+        assert_eq!(through(&after), None, "not before it failed");
+        let always = Settings {
+            browser_proxy_after_errors: false,
+            ..after.clone()
+        };
+        assert_eq!(through(&always).as_deref(), Some("http://bp:3128"));
+        t.daemon.browser_proxy_retries.lock().unwrap().insert(d.url.clone());
+        assert_eq!(through(&after).as_deref(), Some("http://bp:3128"), "once it failed");
+        // A download that never failed is not retried through it.
+        assert!(!t.daemon.retry_through_browser_proxy(999, &after));
     }
 
     #[test]

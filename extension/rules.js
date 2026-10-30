@@ -45,6 +45,13 @@ const MIME_EXTENSIONS = {
   "video/quicktime": "mov",
   "video/webm": "webm",
   "video/x-ms-wmv": "wmv",
+  "video/ogg": "ogv",
+  "video/x-flv": "flv",
+  "video/3gpp": "3gp",
+  "video/x-m4v": "m4v",
+  "audio/opus": "opus",
+  "audio/x-flac": "flac",
+  "audio/x-m4a": "m4a",
   "application/x-iso9660-image": "iso",
 };
 
@@ -52,6 +59,11 @@ const MIME_EXTENSIONS = {
 // but the name says nothing yet, because that is what most real downloads
 // look like before their name is known.
 const GENERIC_MIME = new Set(["application/octet-stream", "binary/octet-stream", "application/force-download"]);
+
+// The file type a MIME type stands for, such as "video/mp4" -> "mp4", or "".
+function mimeExtension(mime) {
+  return MIME_EXTENSIONS[String(mime || "").split(";")[0].trim().toLowerCase()] || "";
+}
 
 // "report.PDF" -> "pdf"; "README" and ".bashrc" -> "".
 function extensionOf(name) {
@@ -124,15 +136,49 @@ function downloadType(item) {
   return extensionOf(item.filename) || MIME_EXTENSIONS[mime] || extensionOf(urlPath(item.url));
 }
 
-// What a key held on a link click asks for, by UIDM's `capture_skip_key`
-// and `capture_force_key`: "skip", "force" or "". `keys` is
-// { alt, ctrl, shift }.
+// A key combination as UIDM stores it ("ctrl+shift", "none") made into
+// { alt, ctrl, shift, insert }.
+function parseKeys(combo) {
+  const parts = String(combo || "none").toLowerCase().split("+").map((p) => p.trim());
+  const keys = {};
+  for (const k of ["alt", "ctrl", "shift", "insert"]) keys[k] = parts.includes(k);
+  return keys;
+}
+
+// What the keys held on a link click ask for, by UIDM's `capture_skip_key`
+// and `capture_force_key`: "skip", "force" or "". `keys` is the click's
+// { alt, ctrl, shift, insert, button, mouse }: `mouse` is false for a click
+// made with Enter. A combination must be held exactly, no more and no less.
+// With `capture_keys_left_click`, only a left mouse click counts.
 function keyAction(rules, keys) {
   if (!rules || !keys) return "";
-  const held = (k) => (k === "alt" && keys.alt) || (k === "ctrl" && keys.ctrl) || (k === "shift" && keys.shift);
+  if (rules.capture_keys_left_click && !(keys.button === 0 && keys.mouse !== false)) return "";
+  const held = (combo) => {
+    const want = parseKeys(combo);
+    const any = want.alt || want.ctrl || want.shift || want.insert;
+    return any && ["alt", "ctrl", "shift", "insert"].every((k) => want[k] === !!keys[k]);
+  };
   if (held(rules.capture_skip_key)) return "skip";
   if (held(rules.capture_force_key)) return "force";
   return "";
+}
+
+// Web pages, pictures and scripts, which the force key leaves alone when
+// `capture_force_skips_pages` is on.
+const PAGE_EXTENSIONS = new Set([
+  "htm", "html", "shtml", "xhtml", "php", "asp", "aspx", "jsp", "cgi", "pl",
+  "jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "svg", "ico",
+  "js", "mjs", "css",
+]);
+
+// Whether a forced click on a link to `url` should open it as usual: the
+// setting is on and the link is a page, a picture or a script. A link with
+// no file name ("/", "/news/") is a page.
+function forceLeavesLink(rules, url) {
+  if (!rules || rules.capture_force_skips_pages === false) return false;
+  const path = urlPath(url);
+  const ext = extensionOf(path);
+  return ext ? PAGE_EXTENSIONS.has(ext) : path === "" || path.endsWith("/");
 }
 
 // A click with the skip key held keeps the next download in the browser if
@@ -183,5 +229,6 @@ function captureDecision(rules, item) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies, urlMatches, selectionButtonAllowed };
+  module.exports = { mimeExtension, extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, parseKeys, forceLeavesLink, clickApplies, urlMatches, selectionButtonAllowed };
+
 }

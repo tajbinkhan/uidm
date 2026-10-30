@@ -4,7 +4,8 @@
 //! default (EPSV, then PASV), or active (PORT or EPRT) when the settings say
 //! so. The size comes from `SIZE`, the date from `MDTM`, and resuming and
 //! parallel connections start each range with `REST`. Through an FTP proxy,
-//! the control connection goes to the proxy and logs in as `user@host`.
+//! the control connection goes to the proxy, logs in to it first when it has
+//! a login of its own, then logs in as `user@host`.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
@@ -31,6 +32,8 @@ pub struct FtpOptions {
     pub logins: Vec<Login>,
     /// `host:port` of an FTP proxy to go through.
     pub proxy: Option<String>,
+    /// The proxy's own login, if it wants one.
+    pub proxy_login: net::ProxyLogin,
 }
 
 /// A logged-in control connection.
@@ -88,8 +91,20 @@ impl Control {
         if code != 220 {
             return Err(EngineError::Protocol(format!("the FTP server said: {code} {text}")));
         }
+        let proxy_login = &opts.proxy_login;
+        if target.is_some() && !proxy_login.is_empty() {
+            if has_control(&proxy_login.username) || has_control(&proxy_login.password) {
+                return Err(EngineError::Protocol("the FTP proxy's login has control characters in it".into()));
+            }
+            let (code, _) = c.command(&format!("USER {}", proxy_login.username))?;
+            let (code, text) = if code == 331 { c.command(&format!("PASS {}", proxy_login.password))? } else { (code, String::new()) };
+            if !matches!(code, 230 | 202) {
+                return Err(EngineError::Protocol(format!("the FTP proxy refused its login: {code} {text}")));
+            }
+        }
+
         let from_url = (!parsed.username().is_empty()).then(|| (decode(parsed.username()), decode(parsed.password().unwrap_or(""))));
-        let saved = net::find_login(&opts.logins, &c.host).map(|l| (l.username.clone(), l.password.clone()));
+        let saved = net::find_login(&opts.logins, url).map(|l| (l.username.clone(), l.password.clone()));
         let given = from_url.is_some() || saved.is_some();
         let (user, pass) = from_url.or(saved).unwrap_or_else(|| ("anonymous".into(), "uidm@".into()));
         if has_control(&user) || has_control(&pass) {
@@ -484,7 +499,34 @@ mod tests {
     }
 
     #[test]
+    fn logs_in_to_the_proxy_first_when_it_has_a_login() {
+        // The test server stands in for the proxy: it takes any USER, and
+        // with a login set, refuses any other PASS.
+        let open = server::start(body(10), None);
+        let addr = open.url.trim_start_matches("ftp://").split('/').next().unwrap().to_string();
+        let through = |login: net::ProxyLogin| FtpOptions {
+            proxy: Some(addr.clone()),
+            proxy_login: login,
+            ..FtpOptions::default()
+        };
+        assert_eq!(probe(&open.url, &through(net::ProxyLogin::new("px", "pp"))).unwrap().total, Some(10));
+
+        let strict = server::start(body(10), Some(("px", "pp")));
+        let addr = strict.url.trim_start_matches("ftp://").split('/').next().unwrap().to_string();
+        let opts = FtpOptions {
+            proxy: Some(addr),
+            proxy_login: net::ProxyLogin::new("px", "wrong"),
+            ..FtpOptions::default()
+        };
+        match probe(&strict.url, &opts) {
+            Err(EngineError::Protocol(m)) => assert!(m.contains("proxy refused"), "{m}"),
+            other => panic!("expected the proxy to refuse, got {:?}", other.map(|p| p.total)),
+        }
+    }
+
+    #[test]
     fn encoded_line_breaks_cannot_add_commands() {
+
         let s = server::start(body(10), None);
         let path = s.url.replace("file.bin", "file.bin%0D%0ADELE%20file.bin");
         assert!(matches!(probe(&path, &FtpOptions::default()), Err(EngineError::Protocol(_))));

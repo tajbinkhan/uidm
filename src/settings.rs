@@ -30,27 +30,66 @@ pub const CAPTURE_MIN_SIZE_MAX_KB: u64 = 10 * 1024 * 1024;
 /// list; its files go straight into the download folder.
 pub const GENERAL: &str = "General";
 
-/// A key held while clicking a link in the browser, to keep the download in
-/// the browser or to send the link to UIDM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CaptureKey {
-    None,
-    Alt,
-    Ctrl,
-    Shift,
+/// The keys held while clicking a link in the browser, to keep the download
+/// in the browser or to send the link to UIDM: any mix of Alt, Ctrl and
+/// Shift, and Insert for forcing. Stored as text such as `ctrl+shift`, or
+/// `none`; files from when one key was allowed say `alt`, `ctrl` or `shift`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct CaptureKey {
+    pub alt: bool,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub insert: bool,
 }
 
 impl CaptureKey {
-    pub const ALL: [CaptureKey; 4] = [CaptureKey::None, CaptureKey::Alt, CaptureKey::Ctrl, CaptureKey::Shift];
+    pub const NONE: CaptureKey = CaptureKey { alt: false, ctrl: false, shift: false, insert: false };
+    pub const ALT: CaptureKey = CaptureKey { alt: true, ..CaptureKey::NONE };
+    pub const CTRL: CaptureKey = CaptureKey { ctrl: true, ..CaptureKey::NONE };
+    pub const SHIFT: CaptureKey = CaptureKey { shift: true, ..CaptureKey::NONE };
 
-    pub fn label(self) -> &'static str {
-        match self {
-            CaptureKey::None => "No key",
-            CaptureKey::Alt => "Alt",
-            CaptureKey::Ctrl => "Ctrl",
-            CaptureKey::Shift => "Shift",
+    pub fn is_none(self) -> bool {
+        self == CaptureKey::NONE
+    }
+
+    /// `Ctrl+Shift`, or "" for no key.
+    pub fn label(self) -> String {
+        [(self.ctrl, "Ctrl"), (self.alt, "Alt"), (self.shift, "Shift"), (self.insert, "Insert")]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, name)| *name)
+            .collect::<Vec<_>>()
+            .join("+")
+    }
+}
+
+impl From<CaptureKey> for String {
+    fn from(k: CaptureKey) -> String {
+        if k.is_none() {
+            "none".into()
+        } else {
+            k.label().to_ascii_lowercase()
         }
+    }
+}
+
+impl TryFrom<String> for CaptureKey {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let mut k = CaptureKey::NONE;
+        for part in text.split('+').map(|p| p.trim().to_ascii_lowercase()) {
+            match part.as_str() {
+                "none" | "" => {}
+                "alt" => k.alt = true,
+                "ctrl" => k.ctrl = true,
+                "shift" => k.shift = true,
+                "insert" => k.insert = true,
+                other => return Err(format!("\"{other}\" is not a key: use alt, ctrl, shift or insert")),
+            }
+        }
+        Ok(k)
     }
 }
 
@@ -64,6 +103,39 @@ pub enum SelectionButton {
     Everywhere,
     /// Only on the sites in `selection_button_sites`.
     Sites,
+}
+
+/// How the video button and the selected-links button look on a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelView {
+    /// A button with its text.
+    #[default]
+    Full,
+    /// A small round button with an arrow; its text shows on hover.
+    Mini,
+}
+
+/// The items UIDM can add to the browser's context menu, by the names the
+/// extension knows them by, with their labels.
+pub const BROWSER_MENU_ITEMS: [(&str, &str); 6] = [
+    ("download", "Download with UIDM (links, pictures, videos)"),
+    ("download_later", "Download later with UIDM"),
+    ("all_links", "Download all links with UIDM"),
+    ("selected_links", "Download selected links with UIDM"),
+    ("last_video", "Download the last video with UIDM"),
+    ("recent_videos", "The last 10 videos"),
+];
+
+/// The video and audio types the video button offers, unless the settings
+/// say otherwise. `m3u8` and `mpd` are HLS and DASH streams.
+pub fn default_video_types() -> Vec<String> {
+    [
+        "mp4", "m4v", "webm", "mkv", "mov", "avi", "wmv", "flv", "3gp", "ogv", "mp3", "m4a", "aac", "ogg", "oga",
+        "opus", "flac", "wav", "m3u8", "mpd",
+    ]
+    .map(String::from)
+    .to_vec()
 }
 
 /// How UIDM tells you a download finished or failed.
@@ -110,7 +182,9 @@ pub enum ProxyMode {
 /// daemon, and is never written to the settings file or sent back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteLogin {
-    /// `example.com` (with its subdomains) or a pattern such as `dl*.example.com`.
+    /// `example.com` (with its subdomains) or a pattern such as
+    /// `dl*.example.com`, optionally with a path such as `/private/*` for one
+    /// folder of the server.
     pub site: String,
     pub username: String,
     /// A new password to store; `None` keeps the stored one.
@@ -388,12 +462,14 @@ pub struct Settings {
     pub proxy_mode: ProxyMode,
     /// `host:port` of the manual proxy for http URLs.
     pub proxy_http: String,
-    /// `host:port` of the manual proxy for https URLs; empty uses the http one.
+    /// `host:port` of the manual proxy for https URLs; empty uses the http
+    /// one, with its login.
     pub proxy_https: String,
     /// `host:port` of a manual FTP proxy for ftp:// downloads.
     pub proxy_ftp: String,
-    /// `host:port` of a manual SOCKS proxy for everything; wins when set.
-    /// (The name is from when only SOCKS5 was offered.)
+    /// `host:port` of a manual SOCKS proxy, for http and https URLs that
+    /// have no proxy of their own. (The name is from when only SOCKS5 was
+    /// offered.)
     pub proxy_socks5: String,
     pub proxy_socks_version: SocksVersion,
     /// Let the SOCKS proxy look up host names (SOCKS4a, and always for
@@ -407,14 +483,35 @@ pub struct Settings {
     /// FTP data connections come from the server (active mode, PORT)
     /// instead of going to it (passive mode).
     pub ftp_active: bool,
-    /// User name for the manual proxy, if it needs one.
+    /// User name for the manual HTTP proxy, if it needs one.
     pub proxy_username: String,
-    /// A new proxy password to store (empty clears it); `None` keeps the
-    /// stored one. Kept with DPAPI, never in this file.
+    /// A new HTTP proxy password to store (empty clears it); `None` keeps
+    /// the stored one. Each proxy's password is kept with DPAPI, never in
+    /// this file.
     #[serde(default, skip_serializing)]
     pub proxy_password: Option<String>,
+    /// User name for the manual HTTPS proxy.
+    pub proxy_https_username: String,
+    #[serde(default, skip_serializing)]
+    pub proxy_https_password: Option<String>,
+    /// User name for the manual FTP proxy.
+    pub proxy_ftp_username: String,
+    #[serde(default, skip_serializing)]
+    pub proxy_ftp_password: Option<String>,
+    /// User name for the manual SOCKS proxy.
+    pub proxy_socks_username: String,
+    #[serde(default, skip_serializing)]
+    pub proxy_socks_password: Option<String>,
+    /// Set on loading a file from before each proxy had its own login: the
+    /// HTTPS and SOCKS proxies took the HTTP proxy's user name, and the
+    /// daemon gives them its password too.
+    #[serde(skip)]
+    pub proxy_logins_split: bool,
     /// For a download taken from the browser, use the proxy the browser uses.
     pub use_browser_proxy: bool,
+    /// With `use_browser_proxy`, use the browser's proxy only to retry a
+    /// download that failed through UIDM's own proxy setting.
+    pub browser_proxy_after_errors: bool,
     pub site_logins: Vec<SiteLogin>,
     /// Offer to download links copied to the clipboard whose file type is
     /// one of `capture_types`.
@@ -425,6 +522,20 @@ pub struct Settings {
     pub video_button: bool,
     /// Sites that get no video button, such as `*.example.com`.
     pub video_button_excluded_sites: Vec<String>,
+    /// The video and audio types (lowercase extensions) the video button
+    /// offers; `m3u8` and `mpd` stand for HLS and DASH streams.
+    pub video_types: Vec<String>,
+    /// Video and audio files the browser reports as smaller than this, in
+    /// KB, are left out of the video button's list.
+    pub video_min_size_kb: u64,
+    /// How the video button and the selected-links button look.
+    pub video_view: PanelView,
+    /// The video button says when a video is protected (DRM). Off, it does
+    /// not show on such videos at all.
+    pub video_protected_note: bool,
+    /// The context menu items the extension leaves out, by the names in
+    /// `BROWSER_MENU_ITEMS`.
+    pub browser_menu_hidden: Vec<String>,
     /// ffmpeg.exe, to join streams into .mp4 files. Empty looks on `PATH`.
     pub ffmpeg_path: String,
     /// Ask before removing downloads from the list.
@@ -450,6 +561,12 @@ pub struct Settings {
     pub capture_skip_key: CaptureKey,
     /// Held while clicking a link, sends it to UIDM whatever its type.
     pub capture_force_key: CaptureKey,
+    /// The keys count only on a click with the left mouse button, not a
+    /// middle click or Enter on a link.
+    pub capture_keys_left_click: bool,
+    /// The force key leaves links to web pages, pictures and scripts alone,
+    /// so they open as usual.
+    pub capture_force_skips_pages: bool,
     /// Addresses whose downloads stay in the browser, with `*` matching any
     /// run of characters, such as `https://example.com/files/*.zip`.
     pub capture_excluded_urls: Vec<String>,
@@ -531,12 +648,25 @@ impl Default for Settings {
             ftp_active: false,
             proxy_username: String::new(),
             proxy_password: None,
+            proxy_https_username: String::new(),
+            proxy_https_password: None,
+            proxy_ftp_username: String::new(),
+            proxy_ftp_password: None,
+            proxy_socks_username: String::new(),
+            proxy_socks_password: None,
+            proxy_logins_split: false,
             use_browser_proxy: false,
+            browser_proxy_after_errors: false,
             site_logins: Vec::new(),
             clipboard_monitor: false,
             clipboard_start: false,
             video_button: true,
             video_button_excluded_sites: Vec::new(),
+            video_types: default_video_types(),
+            video_min_size_kb: 128,
+            video_view: PanelView::Full,
+            video_protected_note: true,
+            browser_menu_hidden: Vec::new(),
             ffmpeg_path: String::new(),
             confirm_remove: true,
             remove_deletes_files: false,
@@ -544,8 +674,10 @@ impl Default for Settings {
             resume_ignores_date: false,
             manual_user_agent: String::new(),
             temp_dir: None,
-            capture_skip_key: CaptureKey::Alt,
-            capture_force_key: CaptureKey::Ctrl,
+            capture_skip_key: CaptureKey::ALT,
+            capture_force_key: CaptureKey::CTRL,
+            capture_keys_left_click: false,
+            capture_force_skips_pages: true,
             capture_excluded_urls: Vec::new(),
             offer_exceptions: true,
             selection_button: SelectionButton::Everywhere,
@@ -614,8 +746,11 @@ impl Settings {
                 return Err(format!("The connections for {} must be between {lo} and {hi}.", l.site));
             }
         }
-        if self.capture_skip_key == self.capture_force_key && self.capture_skip_key != CaptureKey::None {
+        if self.capture_skip_key == self.capture_force_key && !self.capture_skip_key.is_none() {
             return Err("The keys that skip and force capture must differ.".into());
+        }
+        if self.capture_skip_key.insert {
+            return Err("Insert can only force capture, not skip it.".into());
         }
         if let Some(dir) = self.temp_dir.as_deref().filter(|d| !Path::new(d).is_absolute()) {
             return Err(format!("The temporary folder must be a full path: {dir}"));
@@ -662,6 +797,14 @@ impl Settings {
         }
 
         check_extensions("The captured file types", &self.capture_types)?;
+        check_extensions("The video types", &self.video_types)?;
+        if self.video_min_size_kb > CAPTURE_MIN_SIZE_MAX_KB {
+            return Err("The minimum video size is too large.".to_string());
+        }
+        if let Some(item) = self.browser_menu_hidden.iter().find(|i| !BROWSER_MENU_ITEMS.iter().any(|(id, _)| id == i)) {
+            return Err(format!("\"{item}\" is not a context menu item."));
+        }
+
         check_extensions("The file types that start without asking", &self.auto_start_types)?;
         if self.capture_min_size_kb > CAPTURE_MIN_SIZE_MAX_KB {
             return Err("The minimum size to capture is too large.".to_string());
@@ -683,7 +826,8 @@ impl Settings {
         for (what, addr) in [
             ("The HTTP proxy", &self.proxy_http),
             ("The HTTPS proxy", &self.proxy_https),
-            ("The SOCKS5 proxy", &self.proxy_socks5),
+            ("The FTP proxy", &self.proxy_ftp),
+            ("The SOCKS proxy", &self.proxy_socks5),
         ] {
             if !addr.trim().is_empty() && !is_host_port(addr.trim()) {
                 return Err(format!("{what} must be host:port, such as proxy.example.com:8080."));
@@ -692,6 +836,7 @@ impl Settings {
         if self.proxy_mode == ProxyMode::Manual
             && self.proxy_http.trim().is_empty()
             && self.proxy_https.trim().is_empty()
+            && self.proxy_ftp.trim().is_empty()
             && self.proxy_socks5.trim().is_empty()
         {
             return Err("Set at least one proxy, or choose another proxy option.".to_string());
@@ -699,9 +844,10 @@ impl Settings {
         let mut sites: Vec<String> = Vec::new();
         for l in &self.site_logins {
             let site = l.site.trim().to_ascii_lowercase();
-            if !is_site(&site) {
+            let (host, path) = crate::net::split_login_pattern(&site);
+            if !is_site(host) || host.ends_with(':') || path.contains(char::is_whitespace) {
                 return Err(format!(
-                    "\"{}\" is not a site. Use a host name such as example.com.",
+                    "\"{}\" is not a site. Use a host name such as example.com, or one with a folder such as example.com/private/*.",
                     l.site
                 ));
             }
@@ -886,8 +1032,11 @@ impl Settings {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Settings::default()),
             Err(e) => return Err(e),
         };
-        let settings: Settings = serde_json::from_slice(&bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let invalid = |e| io::Error::new(io::ErrorKind::InvalidData, e);
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).map_err(invalid)?;
+        let split = split_proxy_login(&mut value);
+        let mut settings: Settings = serde_json::from_value(value).map_err(invalid)?;
+        settings.proxy_logins_split = split;
         settings
             .validate()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -901,6 +1050,26 @@ impl Settings {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomic(path, &bytes)
     }
+}
+
+/// Give a settings file from before each proxy had its own login an HTTPS
+/// and a SOCKS login: the shared one, which they used. Returns whether it
+/// did.
+fn split_proxy_login(value: &mut serde_json::Value) -> bool {
+    let Some(map) = value.as_object_mut() else {
+        return false;
+    };
+    if map.contains_key("proxy_https_username") {
+        return false;
+    }
+    let user = match map.get("proxy_username").and_then(|u| u.as_str()) {
+        Some(u) if !u.trim().is_empty() => u.to_string(),
+        _ => return false,
+    };
+    for key in ["proxy_https_username", "proxy_socks_username"] {
+        map.insert(key.into(), user.clone().into());
+    }
+    true
 }
 
 /// A host name, optionally with a `*.` wildcard or a port.
@@ -1054,7 +1223,15 @@ mod tests {
             ftp_active: true,
             proxy_username: "me".into(),
             proxy_password: None,
+            proxy_https_username: "tls".into(),
+            proxy_https_password: None,
+            proxy_ftp_username: "ftp".into(),
+            proxy_ftp_password: None,
+            proxy_socks_username: "sock".into(),
+            proxy_socks_password: None,
+            proxy_logins_split: false,
             use_browser_proxy: true,
+            browser_proxy_after_errors: true,
             site_logins: vec![SiteLogin {
                 site: "files.example.com".into(),
                 username: "ann".into(),
@@ -1064,6 +1241,11 @@ mod tests {
             clipboard_start: true,
             video_button: false,
             video_button_excluded_sites: vec!["video.example.com".into()],
+            video_types: vec!["mp4".into(), "m3u8".into()],
+            video_min_size_kb: 512,
+            video_view: PanelView::Mini,
+            video_protected_note: false,
+            browser_menu_hidden: vec!["all_links".into()],
             ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".into(),
             confirm_remove: false,
             remove_deletes_files: true,
@@ -1071,8 +1253,10 @@ mod tests {
             resume_ignores_date: true,
             manual_user_agent: USER_AGENT_PRESETS[0].1.into(),
             temp_dir: Some("D:\\UIDM temp".into()),
-            capture_skip_key: CaptureKey::Shift,
-            capture_force_key: CaptureKey::None,
+            capture_skip_key: CaptureKey::SHIFT,
+            capture_force_key: CaptureKey { insert: true, ..CaptureKey::CTRL },
+            capture_keys_left_click: true,
+            capture_force_skips_pages: false,
             capture_excluded_urls: vec!["https://example.com/files/*".into()],
             offer_exceptions: false,
             selection_button: SelectionButton::Sites,
@@ -1317,6 +1501,9 @@ mod tests {
     fn passwords_never_reach_the_file() {
         let s = Settings {
             proxy_password: Some("proxy-secret".into()),
+            proxy_https_password: Some("https-secret".into()),
+            proxy_ftp_password: Some("ftp-secret".into()),
+            proxy_socks_password: Some("socks-secret".into()),
             site_logins: vec![SiteLogin {
                 site: "example.com".into(),
                 username: "ann".into(),
@@ -1350,7 +1537,48 @@ mod tests {
         assert!(with(&|s| s.site_logins = vec![login("a.com", "u")]).is_ok());
         assert!(with(&|s| s.site_logins = vec![login("a.com", " ")]).is_err());
         assert!(with(&|s| s.site_logins = vec![login("https://a.com/", "u")]).is_err());
+        assert!(with(&|s| s.site_logins = vec![login("a.com/private/*", "u")]).is_ok());
+        assert!(with(&|s| s.site_logins = vec![login("a.com/my files", "u")]).is_err());
+        assert!(with(&|s| s.site_logins = vec![login("a.com", "u"), login("a.com/x", "v")]).is_ok());
         assert!(with(&|s| s.site_logins = vec![login("a.com", "u"), login("A.com", "v")]).is_err());
+    }
+
+    #[test]
+    fn an_old_shared_proxy_login_goes_to_https_and_socks() {
+        let path = temp_path("old-proxy.json");
+        fs::write(&path, br#"{"proxy_username":"me","proxy_http":"p:1"}"#).unwrap();
+        let s = Settings::load(&path).unwrap();
+        assert!(s.proxy_logins_split);
+        assert_eq!((s.proxy_https_username.as_str(), s.proxy_socks_username.as_str()), ("me", "me"));
+        assert_eq!(s.proxy_ftp_username, "", "the FTP proxy never had a login");
+        // Saved again, the file has its own logins and is left alone.
+        s.save(&path).unwrap();
+        let again = Settings::load(&path).unwrap();
+        assert!(!again.proxy_logins_split);
+        fs::write(&path, br#"{"proxy_http":"p:1"}"#).unwrap();
+        assert!(!Settings::load(&path).unwrap().proxy_logins_split, "no login to split");
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn capture_keys_are_combinations() {
+        let read = |json: &str| serde_json::from_str::<Settings>(json).unwrap();
+        // Files from when one key was allowed.
+        assert_eq!(read(r#"{"capture_skip_key":"shift"}"#).capture_skip_key, CaptureKey::SHIFT);
+        assert_eq!(read(r#"{"capture_force_key":"none"}"#).capture_force_key, CaptureKey::NONE);
+        let both = read(r#"{"capture_force_key":"Shift+ctrl+insert"}"#).capture_force_key;
+        assert_eq!(both, CaptureKey { ctrl: true, shift: true, insert: true, alt: false });
+        assert_eq!(String::from(both), "ctrl+shift+insert");
+        assert_eq!(both.label(), "Ctrl+Shift+Insert");
+        assert!(serde_json::from_str::<Settings>(r#"{"capture_skip_key":"win"}"#).is_err());
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(json.contains(r#""capture_skip_key":"alt""#), "{json}");
+
+        let with = |skip: CaptureKey, force: CaptureKey| Settings { capture_skip_key: skip, capture_force_key: force, ..Settings::default() }.validate();
+        assert!(with(CaptureKey::ALT, CaptureKey { alt: true, shift: true, ..CaptureKey::NONE }).is_ok());
+        assert!(with(CaptureKey::CTRL, CaptureKey::CTRL).is_err());
+        assert!(with(CaptureKey::NONE, CaptureKey::NONE).is_ok());
+        assert!(with(CaptureKey { insert: true, ..CaptureKey::NONE }, CaptureKey::CTRL).is_err());
     }
 
     #[test]

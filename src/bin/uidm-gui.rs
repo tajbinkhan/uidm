@@ -70,6 +70,7 @@ use uidm::queue::{Queue, WhenDone, MAIN_QUEUE};
 use uidm::settings::{
     parse_extensions, CaptureKey, Category, Duplicate, SelectionButton, SocksVersion, ServerLimit, QUOTA_HOURS_RANGE, SERVER_CONNECTIONS_RANGE, FileExists, Notify, ProxyMode, Scanner, Settings, SiteLogin, CAPTURE_MIN_SIZE_MAX_KB,
     CONNECTIONS_RANGE, GENERAL, MAX_CONCURRENT_RANGE, SPEED_LIMIT_RANGE_KBPS, TEXT_SIZE_RANGE, USER_AGENT_PRESETS,
+    BROWSER_MENU_ITEMS, PanelView,
 };
 use uidm::state::DownloadTable;
 
@@ -708,8 +709,39 @@ enum OptionsTab {
     General,
     Categories,
     Capture,
+    Video,
     Notifications,
     Connection,
+}
+
+/// One proxy's login being edited.
+#[derive(Default)]
+struct ProxyLoginDraft {
+    username: String,
+    /// A new password, when `changed`.
+    password: String,
+    changed: bool,
+}
+
+impl ProxyLoginDraft {
+    fn new(username: &str) -> Self {
+        ProxyLoginDraft {
+            username: username.to_string(),
+            ..ProxyLoginDraft::default()
+        }
+    }
+
+    fn new_password(&self) -> Option<String> {
+        self.changed.then(|| self.password.clone())
+    }
+}
+
+/// A browser in Options' list: whether it was registered when the dialog
+/// opened, and whether it should be.
+struct BrowserDraft {
+    browser: uidm::browsers::Browser,
+    was: bool,
+    on: bool,
 }
 
 /// One site login being edited. An empty password keeps the stored one.
@@ -756,11 +788,11 @@ struct OptionsDraft {
     proxy_remote_dns: bool,
     proxy_bypass: String,
     proxy_pac_url: String,
-    proxy_username: String,
-    /// A new proxy password, when `proxy_password_changed`.
-    proxy_password: String,
-    proxy_password_changed: bool,
+    /// The HTTP, HTTPS, FTP and SOCKS proxies' logins, in `ProxyKind::ALL`
+    /// order.
+    proxy_logins: [ProxyLoginDraft; 4],
     use_browser_proxy: bool,
+    browser_proxy_after_errors: bool,
     logins: Vec<LoginDraft>,
     /// Empty means the Downloads folder.
     folder: String,
@@ -790,6 +822,15 @@ struct OptionsDraft {
     clipboard_monitor: bool,
     clipboard_start: bool,
     video_button: bool,
+    /// Each known video type and whether the button offers it.
+    video_types: Vec<(String, bool)>,
+    /// A type typed in to add to the list.
+    video_type_new: String,
+    video_min_size_kb: u64,
+    video_view: PanelView,
+    video_protected_note: bool,
+    /// Each context menu item, its label, and whether it shows.
+    menu_items: Vec<(&'static str, &'static str, bool)>,
     /// One site per line.
     video_button_excluded_sites: String,
     ffmpeg_path: String,
@@ -803,8 +844,14 @@ struct OptionsDraft {
     /// Empty writes partial files in place.
     temp_dir: String,
     temp_picked: Picked,
+    /// The browsers found or registered, with their registration.
+    browsers: Vec<BrowserDraft>,
+    /// Browsers found that read Chrome's registration.
+    chrome_readers: Vec<&'static str>,
     capture_skip_key: CaptureKey,
     capture_force_key: CaptureKey,
+    capture_keys_left_click: bool,
+    capture_force_skips_pages: bool,
     /// One address per line.
     capture_excluded_urls: String,
     offer_exceptions: bool,
@@ -867,10 +914,14 @@ impl OptionsDraft {
             proxy_remote_dns: s.proxy_remote_dns,
             proxy_bypass: s.proxy_bypass.clone(),
             proxy_pac_url: s.proxy_pac_url.clone(),
-            proxy_username: s.proxy_username.clone(),
-            proxy_password: String::new(),
-            proxy_password_changed: false,
+            proxy_logins: [
+                ProxyLoginDraft::new(&s.proxy_username),
+                ProxyLoginDraft::new(&s.proxy_https_username),
+                ProxyLoginDraft::new(&s.proxy_ftp_username),
+                ProxyLoginDraft::new(&s.proxy_socks_username),
+            ],
             use_browser_proxy: s.use_browser_proxy,
+            browser_proxy_after_errors: s.browser_proxy_after_errors,
             logins: s
                 .site_logins
                 .iter()
@@ -916,6 +967,29 @@ impl OptionsDraft {
             clipboard_monitor: s.clipboard_monitor,
             clipboard_start: s.clipboard_start,
             video_button: s.video_button,
+            video_types: {
+                let mut all: Vec<(String, bool)> = uidm::settings::default_video_types()
+                    .into_iter()
+                    .map(|t| {
+                        let on = s.video_types.contains(&t);
+                        (t, on)
+                    })
+                    .collect();
+                for t in &s.video_types {
+                    if !all.iter().any(|(k, _)| k == t) {
+                        all.push((t.clone(), true));
+                    }
+                }
+                all
+            },
+            video_type_new: String::new(),
+            video_min_size_kb: s.video_min_size_kb,
+            video_view: s.video_view,
+            video_protected_note: s.video_protected_note,
+            menu_items: BROWSER_MENU_ITEMS
+                .iter()
+                .map(|(id, label)| (*id, *label, !s.browser_menu_hidden.iter().any(|h| h == id)))
+                .collect(),
             video_button_excluded_sites: s.video_button_excluded_sites.join("\n"),
             ffmpeg_path: s.ffmpeg_path.clone(),
             ffmpeg_picked: Picked::default(),
@@ -926,8 +1000,25 @@ impl OptionsDraft {
             manual_user_agent: s.manual_user_agent.clone(),
             temp_dir: s.temp_dir.clone().unwrap_or_default(),
             temp_picked: Picked::default(),
+            browsers: uidm::browsers::Registrar::for_this_user()
+                .map(|r| {
+                    uidm::browsers::BROWSERS
+                        .iter()
+                        .map(|b| (b, r.registered(b), r.installed(b)))
+                        .filter(|(_, registered, installed)| *registered || *installed)
+                        .map(|(b, registered, _)| BrowserDraft {
+                            browser: *b,
+                            was: registered,
+                            on: registered,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            chrome_readers: uidm::browsers::chrome_readers(),
             capture_skip_key: s.capture_skip_key,
             capture_force_key: s.capture_force_key,
+            capture_keys_left_click: s.capture_keys_left_click,
+            capture_force_skips_pages: s.capture_force_skips_pages,
             capture_excluded_urls: s.capture_excluded_urls.join("\n"),
             offer_exceptions: s.offer_exceptions,
             selection_button: s.selection_button,
@@ -982,9 +1073,17 @@ impl OptionsDraft {
             proxy_remote_dns: self.proxy_remote_dns,
             proxy_bypass: self.proxy_bypass.trim().to_string(),
             proxy_pac_url: self.proxy_pac_url.trim().to_string(),
-            proxy_username: self.proxy_username.trim().to_string(),
-            proxy_password: self.proxy_password_changed.then(|| self.proxy_password.clone()),
+            proxy_username: self.proxy_logins[0].username.trim().to_string(),
+            proxy_password: self.proxy_logins[0].new_password(),
+            proxy_https_username: self.proxy_logins[1].username.trim().to_string(),
+            proxy_https_password: self.proxy_logins[1].new_password(),
+            proxy_ftp_username: self.proxy_logins[2].username.trim().to_string(),
+            proxy_ftp_password: self.proxy_logins[2].new_password(),
+            proxy_socks_username: self.proxy_logins[3].username.trim().to_string(),
+            proxy_socks_password: self.proxy_logins[3].new_password(),
+            proxy_logins_split: false,
             use_browser_proxy: self.use_browser_proxy,
+            browser_proxy_after_errors: self.browser_proxy_after_errors,
             site_logins: self
                 .logins
                 .iter()
@@ -1026,6 +1125,11 @@ impl OptionsDraft {
             clipboard_monitor: self.clipboard_monitor,
             clipboard_start: self.clipboard_start,
             video_button: self.video_button,
+            video_types: self.video_types.iter().filter(|(_, on)| *on).map(|(t, _)| t.clone()).collect(),
+            video_min_size_kb: self.video_min_size_kb,
+            video_view: self.video_view,
+            video_protected_note: self.video_protected_note,
+            browser_menu_hidden: self.menu_items.iter().filter(|(_, _, on)| !on).map(|(id, _, _)| id.to_string()).collect(),
             video_button_excluded_sites: sites(&self.video_button_excluded_sites),
             ffmpeg_path: self.ffmpeg_path.trim().to_string(),
             confirm_remove: self.confirm_remove,
@@ -1036,6 +1140,8 @@ impl OptionsDraft {
             temp_dir: optional(&self.temp_dir),
             capture_skip_key: self.capture_skip_key,
             capture_force_key: self.capture_force_key,
+            capture_keys_left_click: self.capture_keys_left_click,
+            capture_force_skips_pages: self.capture_force_skips_pages,
             capture_excluded_urls: self
                 .capture_excluded_urls
                 .lines()
@@ -1074,6 +1180,23 @@ impl OptionsDraft {
             return Err(trf!("The new login for {site} needs a password.", site = l.site.trim()));
         }
         Ok(settings)
+    }
+
+    /// Register or remove the browsers whose box changed, keeping the new
+    /// state of those that worked.
+    fn apply_browsers(&mut self) -> Result<(), String> {
+        let changed: Vec<usize> = (0..self.browsers.len()).filter(|&i| self.browsers[i].on != self.browsers[i].was).collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        let registrar = uidm::browsers::Registrar::for_this_user().map_err(|e| e.to_string())?;
+        for i in changed {
+            let b = &mut self.browsers[i];
+            let done = if b.on { registrar.register(&b.browser) } else { registrar.unregister(&b.browser) };
+            done.map_err(|e| trf!("Could not change {browser}: {error}", browser = b.browser.name, error = e))?;
+            b.was = b.on;
+        }
+        Ok(())
     }
 }
 
@@ -2150,6 +2273,7 @@ impl App {
                     ui.selectable_value(&mut draft.tab, OptionsTab::General, tr("General"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Categories, tr("Categories"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Capture, tr("Browser capture"));
+                    ui.selectable_value(&mut draft.tab, OptionsTab::Video, tr("Videos and menus"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Notifications, tr("When done"));
                     ui.selectable_value(&mut draft.tab, OptionsTab::Connection, tr("Connection"));
                 });
@@ -2158,6 +2282,7 @@ impl App {
                     OptionsTab::General => general_tab(ui, draft, &queues),
                     OptionsTab::Categories => categories_tab(ui, draft),
                     OptionsTab::Capture => capture_tab(ui, draft),
+                    OptionsTab::Video => video_tab(ui, draft),
                     OptionsTab::Notifications => notifications_tab(ui, draft),
                     OptionsTab::Connection => connection_tab(ui, draft),
                 }
@@ -2170,7 +2295,7 @@ impl App {
                 ui.horizontal(|ui| {
                     let save = ui.add_enabled(connected && !saving, egui::Button::new(tr("Save")));
                     if save.clicked() {
-                        match draft.to_settings() {
+                        match draft.to_settings().and_then(|s| draft.apply_browsers().map(|()| s)) {
                             Ok(settings) => {
                                 draft.error = None;
                                 actions.push(Action::SaveSettings(settings));
@@ -2503,18 +2628,43 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
                         .desired_width(240.0),
                 );
             });
-            ui.radio_value(&mut draft.proxy_mode, ProxyMode::Manual, tr("Use these proxies:"));
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut draft.proxy_mode, ProxyMode::Manual, tr("Use these proxies:"));
+                if ui
+                    .button(tr("Get System"))
+                    .on_hover_text(tr("Fill in the proxies from the Windows proxy setting"))
+                    .clicked()
+                {
+                    get_system_proxy(draft);
+                }
+            });
         });
         ui.end_row();
         let manual = draft.proxy_mode == ProxyMode::Manual;
-        for (label, field, hint) in [
-            (tr("HTTP proxy"), &mut draft.proxy_http, "proxy.example.com:8080"),
-            (tr("HTTPS proxy"), &mut draft.proxy_https, tr("Same as HTTP when empty")),
-            (tr("FTP proxy"), &mut draft.proxy_ftp, tr("For ftp:// downloads; logs in as user@host")),
-            (tr("SOCKS proxy"), &mut draft.proxy_socks5, tr("Used for everything when set")),
+        let [http_login, https_login, ftp_login, socks_login] = &mut draft.proxy_logins;
+        for (label, field, hint, login) in [
+            (tr("HTTP proxy"), &mut draft.proxy_http, "proxy.example.com:8080", http_login),
+            (tr("HTTPS proxy"), &mut draft.proxy_https, tr("Same as HTTP when empty"), https_login),
+            (tr("FTP proxy"), &mut draft.proxy_ftp, tr("For ftp:// downloads; logs in as user@host"), ftp_login),
+            (tr("SOCKS proxy"), &mut draft.proxy_socks5, tr("For what has no proxy of its own"), socks_login),
         ] {
             ui.label(label);
-            ui.add_enabled(manual, egui::TextEdit::singleline(field).hint_text(hint).desired_width(260.0));
+            ui.add_enabled_ui(manual, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(field).hint_text(hint).desired_width(220.0));
+                    ui.add(egui::TextEdit::singleline(&mut login.username).hint_text(tr("User name")).desired_width(110.0));
+                    let hint = if login.changed { tr("Password") } else { tr("Password (unchanged)") };
+                    let pw = ui.add(
+                        egui::TextEdit::singleline(&mut login.password)
+                            .password(true)
+                            .hint_text(hint)
+                            .desired_width(130.0),
+                    );
+                    if pw.changed() {
+                        login.changed = true;
+                    }
+                });
+            });
             ui.end_row();
         }
         ui.label(tr("SOCKS version"));
@@ -2537,25 +2687,18 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         )
         .on_hover_text(tr("Hosts reached directly, separated by spaces or semicolons. * matches anything; <local> is any name without a dot."));
         ui.end_row();
-        ui.label(tr("Proxy login"));
-        ui.add_enabled_ui(manual, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut draft.proxy_username).hint_text(tr("User name")).desired_width(120.0));
-                let hint = if draft.proxy_password_changed { tr("Password") } else { tr("Password (unchanged)") };
-                let pw = ui.add(
-                    egui::TextEdit::singleline(&mut draft.proxy_password)
-                        .password(true)
-                        .hint_text(hint)
-                        .desired_width(130.0),
+        ui.label("");
+        ui.vertical(|ui| {
+            ui.checkbox(&mut draft.use_browser_proxy, tr("For downloads from the browser, use the browser's proxy"));
+            ui.add_enabled_ui(draft.use_browser_proxy, |ui| {
+                ui.radio_value(&mut draft.browser_proxy_after_errors, false, tr("Always"));
+                ui.radio_value(
+                    &mut draft.browser_proxy_after_errors,
+                    true,
+                    tr("Only after a download fails: it is tried once more through the browser's proxy"),
                 );
-                if pw.changed() {
-                    draft.proxy_password_changed = true;
-                }
             });
         });
-        ui.end_row();
-        ui.label("");
-        ui.checkbox(&mut draft.use_browser_proxy, tr("For downloads from the browser, use the browser's proxy"));
         ui.end_row();
         ui.label(tr("FTP"));
         ui.checkbox(&mut draft.ftp_active, tr("Active mode: the server connects back to UIDM for data"))
@@ -2594,7 +2737,8 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     let mut remove = None;
     egui::Grid::new("logins").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         for (i, l) in draft.logins.iter_mut().enumerate() {
-            ui.add_sized([180.0, 20.0], egui::TextEdit::singleline(&mut l.site).hint_text("example.com"));
+            ui.add_sized([180.0, 20.0], egui::TextEdit::singleline(&mut l.site).hint_text("example.com"))
+                .on_hover_text(tr("A server, or one of its folders such as example.com/private/*. The longest match wins."));
             ui.add_sized([120.0, 20.0], egui::TextEdit::singleline(&mut l.username).hint_text(tr("User name")));
             let hint = if l.new { tr("Password") } else { tr("Password (unchanged)") };
             ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(&mut l.password).password(true).hint_text(hint));
@@ -2617,7 +2761,32 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     }
 }
 
+/// Fill the manual proxies from the Windows proxy setting, as IDM's Get
+/// System does. Windows' SOCKS proxies speak SOCKS4. Its configuration
+/// script is not read: it picks a proxy per address.
+fn get_system_proxy(draft: &mut OptionsDraft) {
+    let Some(rules) = uidm::net::system_proxy_at(uidm::net::INTERNET_SETTINGS) else {
+        draft.error = Some(tr("Windows has no proxy server turned on.").to_string());
+        return;
+    };
+    draft.proxy_mode = ProxyMode::Manual;
+    draft.proxy_http = rules.http.clone().unwrap_or_default();
+    // An HTTPS proxy the same as the HTTP one is left to fall back to it.
+    draft.proxy_https = rules.https.clone().filter(|s| rules.http.as_ref() != Some(s)).unwrap_or_default();
+    draft.proxy_socks5 = rules
+        .socks
+        .as_deref()
+        .map(|s| s.split_once("://").map_or(s, |(_, a)| a).to_string())
+        .unwrap_or_default();
+    if rules.socks.is_some() {
+        draft.proxy_socks_version = SocksVersion::V4;
+    }
+    draft.proxy_bypass = rules.bypass.join(" ");
+    draft.error = None;
+}
+
 fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+
     egui::Grid::new("notifications").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label(tr("When a download ends"));
         ui.vertical(|ui| {
@@ -2760,18 +2929,41 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         });
         ui.end_row();
 
+        ui.label(tr("Browsers"));
+        ui.vertical(|ui| {
+            ui.weak(tr("Capture downloads from these browsers. Each needs UIDM's extension; restart a browser after a change."));
+            if draft.browsers.is_empty() {
+                ui.label(tr("No browser was found."));
+            }
+            for b in &mut draft.browsers {
+                ui.checkbox(&mut b.on, b.browser.name);
+            }
+            if !draft.chrome_readers.is_empty() {
+                ui.weak(trf!("{browsers} use Google Chrome's setting.", browsers = draft.chrome_readers.join(", ")));
+            }
+        });
+        ui.end_row();
+
         ui.label(tr("Special keys"));
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.label(tr("Hold"));
-                key_combo(ui, "skip_key", &mut draft.capture_skip_key);
+                key_boxes(ui, &mut draft.capture_skip_key, false);
                 ui.label(tr("while clicking a link to keep its download in the browser"));
             });
             ui.horizontal(|ui| {
                 ui.label(tr("Hold"));
-                key_combo(ui, "force_key", &mut draft.capture_force_key);
+                key_boxes(ui, &mut draft.capture_force_key, true);
                 ui.label(tr("while clicking a link to send it to UIDM, whatever its type"));
             });
+            ui.checkbox(
+                &mut draft.capture_keys_left_click,
+                tr("Only when clicking with the left mouse button, not a middle click or Enter"),
+            );
+            ui.checkbox(
+                &mut draft.capture_force_skips_pages,
+                tr("The force keys leave links to web pages, pictures and scripts alone"),
+            );
         });
         ui.end_row();
 
@@ -2798,19 +2990,6 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         });
         ui.end_row();
 
-        ui.label(tr("Videos"));
-        ui.checkbox(&mut draft.video_button, tr("Show a download button over videos playing in the browser"));
-        ui.end_row();
-
-        ui.label(tr("No video button on"));
-        ui.add_enabled(
-            draft.video_button,
-            egui::TextEdit::multiline(&mut draft.video_button_excluded_sites)
-                .hint_text(tr("One site per line, such as *.example.com"))
-                .desired_rows(2)
-                .desired_width(360.0),
-        );
-        ui.end_row();
 
         ui.label(tr("Clipboard"));
         ui.vertical(|ui| {
@@ -2827,6 +3006,94 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     });
 }
 
+/// The video button's options and the browser's context menu items.
+fn video_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
+    egui::Grid::new("video").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+        ui.label(tr("Videos"));
+        ui.checkbox(&mut draft.video_button, tr("Show a download button over videos playing in the browser"));
+        ui.end_row();
+
+        ui.label(tr("No video button on"));
+        ui.add_enabled(
+            draft.video_button,
+            egui::TextEdit::multiline(&mut draft.video_button_excluded_sites)
+                .hint_text(tr("One site per line, such as *.example.com"))
+                .desired_rows(2)
+                .desired_width(360.0),
+        );
+        ui.end_row();
+
+        ui.label(tr("Video types"));
+        ui.add_enabled_ui(draft.video_button, |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.set_max_width(420.0);
+                    for (t, on) in &mut draft.video_types {
+                        ui.checkbox(on, t.to_ascii_uppercase());
+                    }
+                });
+                ui.weak(tr("M3U8 and MPD are HLS and DASH streams."));
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Check all")).clicked() {
+                        draft.video_types.iter_mut().for_each(|(_, on)| *on = true);
+                    }
+                    if ui.button(tr("Clear all")).clicked() {
+                        draft.video_types.iter_mut().for_each(|(_, on)| *on = false);
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut draft.video_type_new).hint_text("ts").desired_width(70.0));
+                    if ui.button(tr("Add")).clicked() {
+                        for t in parse_extensions(&draft.video_type_new) {
+                            match draft.video_types.iter_mut().find(|(k, _)| *k == t) {
+                                Some((_, on)) => *on = true,
+                                None => draft.video_types.push((t, true)),
+                            }
+                        }
+                        draft.video_type_new.clear();
+                    }
+                });
+            });
+        });
+        ui.end_row();
+
+        ui.label(tr("Minimum size"));
+        ui.add_enabled_ui(draft.video_button, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut draft.video_min_size_kb).range(0..=CAPTURE_MIN_SIZE_MAX_KB));
+                ui.label(tr("KB: smaller video and audio files are left out of the list"));
+            });
+        });
+        ui.end_row();
+
+        ui.label(tr("Buttons on pages"));
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut draft.video_view, PanelView::Full, tr("Full, with their text"));
+                ui.radio_value(&mut draft.video_view, PanelView::Mini, tr("Mini, an arrow"));
+            })
+            .response
+            .on_hover_text(tr("For the video button and the button by selected links"));
+            ui.add_enabled(
+                draft.video_button,
+                egui::Checkbox::new(
+                    &mut draft.video_protected_note,
+                    tr("Say when a video is protected and cannot be downloaded"),
+                ),
+            )
+            .on_hover_text(tr("Off, the video button does not show on protected videos"));
+        });
+        ui.end_row();
+
+        ui.label(tr("Context menu"));
+        ui.vertical(|ui| {
+            ui.weak(tr("The items UIDM adds to the browser's menu for links, pages and videos"));
+            for (_, label, on) in &mut draft.menu_items {
+                ui.checkbox(on, tr(label));
+            }
+        });
+        ui.end_row();
+    });
+}
+
 fn selection_label(b: SelectionButton) -> &'static str {
     match b {
         SelectionButton::Off => tr("Nowhere"),
@@ -2835,15 +3102,15 @@ fn selection_label(b: SelectionButton) -> &'static str {
     }
 }
 
-fn key_combo(ui: &mut egui::Ui, id: &str, key: &mut CaptureKey) {
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(tr(key.label()))
-        .width(80.0)
-        .show_ui(ui, |ui| {
-            for k in CaptureKey::ALL {
-                ui.selectable_value(key, k, tr(k.label()));
-            }
-        });
+/// A box for each key of a combination; none ticked turns it off. Only
+/// forcing offers Insert.
+fn key_boxes(ui: &mut egui::Ui, key: &mut CaptureKey, insert: bool) {
+    ui.checkbox(&mut key.ctrl, "Ctrl");
+    ui.checkbox(&mut key.alt, "Alt");
+    ui.checkbox(&mut key.shift, "Shift");
+    if insert {
+        ui.checkbox(&mut key.insert, "Insert");
+    }
 }
 
 fn duplicate_label(d: Duplicate) -> &'static str {

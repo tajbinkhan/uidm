@@ -10,6 +10,7 @@
 //! - `history`: the daemon's download list and saved requests on disk.
 //! - `dpapi`: Windows DPAPI encryption for saved requests.
 //! - `registry`: per-user registry values (start with Windows, toast app id).
+//! - `browsers`: the browsers found and their native-messaging registration.
 //! - `notify`: completion notifications and sounds.
 //! - `scan`: virus scans of finished downloads.
 //! - `queue`: download queues, their schedules and calendar arithmetic.
@@ -27,6 +28,7 @@
 
 pub mod app;
 pub mod batch;
+pub mod browsers;
 pub mod dpapi;
 pub mod engine;
 pub mod grab;

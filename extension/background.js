@@ -30,9 +30,9 @@ let reconnectTimer = null;
 
 // Mirror of the daemon's download list, by id.
 const downloads = new Map();
-// Downloads taken from the browser: url -> how it was requested (null for a
-// GET, else the rebuilt POST) until their ack arrives, then id -> { url, post }
-// until they start, finish, or are handed back.
+// Downloads taken from the browser: url -> { post, filename } until their
+// ack arrives (`post` is null for a GET, else the rebuilt POST), then
+// id -> { url, post, filename } until they start, finish, or are handed back.
 const awaitingAck = new Map();
 const captured = new Map();
 
@@ -72,20 +72,23 @@ if (chrome.webRequest) {
   chrome.webRequest.onHeadersReceived.addListener(
     (d) => {
       if (d.tabId < 0 || d.incognito) return;
-      const found = classifyMedia(d);
-      if (found) recordMedia(media, d.tabId, d.url, found, Date.now());
+      const found = classifyMedia(d, rules);
+      if (found) {
+        recordMedia(media, d.tabId, d.url, found, Date.now());
+        scheduleRecentMenu();
+      }
     },
     { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
     ["responseHeaders"],
   );
   chrome.webRequest.onBeforeRequest.addListener(
     (d) => {
-      if (d.tabId >= 0) media.delete(d.tabId);
+      if (d.tabId >= 0 && media.delete(d.tabId)) scheduleRecentMenu();
     },
     { urls: ["<all_urls>"], types: ["main_frame"] },
   );
 }
-if (chrome.tabs) chrome.tabs.onRemoved.addListener((tabId) => media.delete(tabId));
+if (chrome.tabs) chrome.tabs.onRemoved.addListener((tabId) => media.delete(tabId) && scheduleRecentMenu());
 
 // What UIDM said each stream offers, by URL, and the probes waiting for an
 // answer, by request id.
@@ -168,7 +171,11 @@ function onContentMessage(msg, sender, sendResponse) {
   const pageUrl = sender.url || sender.tab.url || "";
   switch (msg && msg.type) {
     case "video:enabled":
-      sendResponse({ enabled: videoButtonAllowed(rules, pageUrl) });
+      sendResponse({
+        enabled: videoButtonAllowed(rules, pageUrl),
+        view: (rules && rules.video_view) || "full",
+        protectedNote: !rules || rules.video_protected_note !== false,
+      });
       return false;
     case "video:menu":
       if (!connected) {
@@ -181,7 +188,7 @@ function onContentMessage(msg, sender, sendResponse) {
       downloadMedia(tabId, msg, pageUrl).then((ok) => sendResponse({ ok }));
       return true;
     case "selection:enabled":
-      sendResponse({ enabled: connected && selectionButtonAllowed(rules, pageUrl) });
+      sendResponse({ enabled: connected && selectionButtonAllowed(rules, pageUrl), view: (rules && rules.video_view) || "full" });
       return false;
     case "selection:links":
       // Only the selection's links, from every frame of this tab.
@@ -215,11 +222,13 @@ let skipClick = null;
 // A download in UIDM waiting for a new link: the next download from the
 // browser gives it one instead of starting a new download.
 let refreshWaiting = null;
-const settingsReady = chrome.storage.local.get({ capture: true }).then((s) => {
+const settingsReady = chrome.storage.local.get({ capture: true, takeoverNotice: true }).then((s) => {
   captureEnabled = s.capture;
+  takeoverNotice = s.takeoverNotice;
 });
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.capture) captureEnabled = changes.capture.newValue;
+  if (changes.takeoverNotice) takeoverNotice = changes.takeoverNotice.newValue;
 });
 
 // --- Connection to the host -------------------------------------------------
@@ -283,7 +292,7 @@ function onHostMessage(msg) {
       break;
     case "ack":
       if (awaitingAck.has(msg.url)) {
-        captured.set(msg.id, { url: msg.url, post: awaitingAck.get(msg.url) });
+        captured.set(msg.id, { url: msg.url, ...awaitingAck.get(msg.url) });
         awaitingAck.delete(msg.url);
       }
       break;
@@ -318,7 +327,7 @@ function onHostMessage(msg) {
     case "failed": {
       const e = upsert(msg.id, msg.url);
       Object.assign(e, { status: "failed", error: msg.error });
-      handBackIfNeverStarted(msg.id);
+      handBackIfNeverStarted(msg.id, msg.error);
       break;
     }
     case "canceled":
@@ -346,8 +355,14 @@ function onHostMessage(msg) {
       // Content scripts read the keys from storage, so a click can be
       // handled at once without asking the worker.
       chrome.storage.local.set({
-        captureKeys: { skip: rules.capture_skip_key || "none", force: rules.capture_force_key || "none" },
+        captureKeys: {
+          capture_skip_key: rules.capture_skip_key || "none",
+          capture_force_key: rules.capture_force_key || "none",
+          capture_keys_left_click: !!rules.capture_keys_left_click,
+          capture_force_skips_pages: rules.capture_force_skips_pages !== false,
+        },
       });
+      if (JSON.stringify(rules.browser_menu_hidden || []) !== menuBuiltFor) buildMenus();
       break;
     case "refresh_waiting":
       refreshWaiting = msg.id ?? null;
@@ -377,13 +392,61 @@ function onHostMessage(msg) {
 }
 
 // A download UIDM took but could not even start (the server refused it, say)
-// goes back to the browser so the user does not lose it.
-function handBackIfNeverStarted(id) {
+// goes back to the browser so the user does not lose it. `error` is why.
+function handBackIfNeverStarted(id, error) {
   const taken = captured.get(id);
   if (!taken) return;
   captured.delete(id);
   send({ op: "remove", id });
   giveBack(taken.url, taken.post);
+  noticeTakeoverFailed(taken.url, taken.filename, error || "?");
+}
+
+// --- The notice that UIDM could not take a download ---------------------------
+
+const TAKEOVER_NOTICE = "uidm-takeover";
+// Whether the notice shows; its "Don't show again" turns it off for good.
+let takeoverNotice = true;
+// Whether the last notice had that button; Firefox's notices have none, so
+// there a click on the notice itself turns them off.
+let noticeHasButton = false;
+
+// Tell the user UIDM could not take the download of `url` (named
+// `filename`), which the browser keeps or gets back. `reason` is UIDM's
+// error, or null when UIDM is not connected. One notice replaces the last.
+async function noticeTakeoverFailed(url, filename, reason) {
+  if (!takeoverNotice || !chrome.notifications) return;
+  const file = filename || url;
+  const message = reason ? chrome.i18n.getMessage("takeoverError", [file, reason]) : chrome.i18n.getMessage("takeoverNotConnected", file);
+  const options = {
+    type: "basic",
+    iconUrl: chrome.runtime.getURL("icons/48.png"),
+    title: chrome.i18n.getMessage("takeoverFailed"),
+    message,
+  };
+  try {
+    await chrome.notifications.create(TAKEOVER_NOTICE, { ...options, buttons: [{ title: chrome.i18n.getMessage("dontShowAgain") }] });
+    noticeHasButton = true;
+  } catch (_) {
+    noticeHasButton = false;
+    const hint = chrome.i18n.getMessage("takeoverClickToStop");
+    await chrome.notifications.create(TAKEOVER_NOTICE, { ...options, message: `${message} ${hint}` }).catch(() => {});
+  }
+}
+
+function stopTakeoverNotices() {
+  takeoverNotice = false;
+  chrome.storage.local.set({ takeoverNotice: false });
+  chrome.notifications.clear(TAKEOVER_NOTICE).catch(() => {});
+}
+
+if (chrome.notifications) {
+  chrome.notifications.onButtonClicked.addListener((id) => id === TAKEOVER_NOTICE && stopTakeoverNotices());
+  chrome.notifications.onClicked.addListener((id) => {
+    if (id !== TAKEOVER_NOTICE) return;
+    if (noticeHasButton) chrome.notifications.clear(id).catch(() => {});
+    else stopTakeoverNotices();
+  });
 }
 
 // Let the browser download it after all, the way it was first requested.
@@ -484,11 +547,20 @@ async function handOff(url, referrer, filename, later = false, post = null, refr
 
 chrome.downloads.onCreated.addListener(async (item) => {
   await settingsReady;
-  if (!captureEnabled || !connected) return; // let the browser handle it
+  if (!captureEnabled) return; // let the browser handle it
   if (item.incognito) return; // keep private-window downloads out of UIDM's list
   if (item.byExtensionId === chrome.runtime.id) return; // our own hand-back
   const url = item.finalUrl || item.url;
   if (!isWeb(url)) return; // blob:, data:, file: only exist in the browser
+  const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
+  const described = { url, referrer: item.referrer, filename: baseName(item.filename), mime: item.mime, size };
+  if (!connected) {
+    // It stays in the browser; say so if UIDM would have taken it.
+    if (!skipNext && !clickApplies(skipClick, Date.now()) && captureDecision(rules, described).capture) {
+      noticeTakeoverFailed(url, described.filename, null);
+    }
+    return;
+  }
   if (skipNext) {
     skipNext = false;
     return;
@@ -500,17 +572,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   // A download waiting for a new link takes this one, whatever the capture
   // rules say: the user asked for it.
   const refreshId = refreshWaiting;
-  if (refreshId === null) {
-    const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
-    const decision = captureDecision(rules, {
-      url,
-      referrer: item.referrer,
-      filename: baseName(item.filename),
-      mime: item.mime,
-      size,
-    });
-    if (!decision.capture) return;
-  }
+  if (refreshId === null && !captureDecision(rules, described).capture) return;
 
   // A form's download is sent as the same POST; one whose request cannot be
   // rebuilt stays in the browser.
@@ -537,12 +599,13 @@ chrome.downloads.onCreated.addListener(async (item) => {
     giveBack(requestUrl, post);
     return;
   }
-  awaitingAck.set(requestUrl, post);
-  const sent = await handOff(requestUrl, item.referrer, baseName(item.filename), false, post);
+  awaitingAck.set(requestUrl, { post, filename: described.filename });
+  const sent = await handOff(requestUrl, item.referrer, described.filename, false, post);
   if (!sent) {
     // The port dropped between the check and the send: give it back.
     awaitingAck.delete(requestUrl);
     giveBack(requestUrl, post);
+    noticeTakeoverFailed(requestUrl, described.filename, null);
   }
 });
 
@@ -656,28 +719,115 @@ async function renderPage(url) {
 
 // --- Context menu -----------------------------------------------------------
 
-chrome.runtime.onInstalled.addListener(() => {
-  const download = chrome.i18n.getMessage("downloadWithUidm");
-  const later = chrome.i18n.getMessage("downloadLaterWithUidm");
+// The menu entries of each item UIDM's Options can leave out (its
+// `browser_menu_hidden` names them), with their titles and contexts.
+const PAGE_CONTEXTS = ["page", "frame", "video", "audio"];
+const MENU_ITEMS = {
+  download: [
+    { id: "uidm-link", title: chrome.i18n.getMessage("downloadWithUidm"), contexts: ["link"] },
+    { id: "uidm-media", title: chrome.i18n.getMessage("downloadWithUidm"), contexts: ["image", "video", "audio"] },
+  ],
+  download_later: [
+    { id: "uidm-later-link", title: chrome.i18n.getMessage("downloadLaterWithUidm"), contexts: ["link"] },
+    { id: "uidm-later-media", title: chrome.i18n.getMessage("downloadLaterWithUidm"), contexts: ["image", "video", "audio"] },
+  ],
+  all_links: [{ id: "uidm-all-links", title: chrome.i18n.getMessage("downloadAllLinksWithUidm"), contexts: ["page", "frame"] }],
+  selected_links: [{ id: "uidm-selection-links", title: chrome.i18n.getMessage("downloadSelectedLinksWithUidm"), contexts: ["selection"] }],
+  last_video: [{ id: "uidm-last-video", title: chrome.i18n.getMessage("downloadLastVideo"), contexts: PAGE_CONTEXTS }],
+  recent_videos: [{ id: "uidm-recent", title: chrome.i18n.getMessage("recentVideos"), contexts: PAGE_CONTEXTS }],
+};
+// How many videos the recent videos submenu lists.
+const RECENT_VIDEOS = 10;
+const RECENT_PREFIX = "uidm-recent-";
+// The hidden list the menu was last built for, as JSON.
+let menuBuiltFor = null;
+const ignoreMenuError = () => void chrome.runtime.lastError;
+
+function menuHidden() {
+  return (rules && rules.browser_menu_hidden) || [];
+}
+
+// Build the context menu with the items UIDM's settings leave in.
+function buildMenus() {
+  const hidden = menuHidden();
+  menuBuiltFor = JSON.stringify(hidden);
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "uidm-link", title: download, contexts: ["link"] });
-    chrome.contextMenus.create({ id: "uidm-media", title: download, contexts: ["image", "video", "audio"] });
-    chrome.contextMenus.create({ id: "uidm-later-link", title: later, contexts: ["link"] });
-    chrome.contextMenus.create({ id: "uidm-later-media", title: later, contexts: ["image", "video", "audio"] });
-    chrome.contextMenus.create({
-      id: "uidm-all-links",
-      title: chrome.i18n.getMessage("downloadAllLinksWithUidm"),
-      contexts: ["page", "frame"],
-    });
-    chrome.contextMenus.create({
-      id: "uidm-selection-links",
-      title: chrome.i18n.getMessage("downloadSelectedLinksWithUidm"),
-      contexts: ["selection"],
-    });
+    recentMenuIds = [];
+    for (const [name, entries] of Object.entries(MENU_ITEMS)) {
+      if (hidden.includes(name)) continue;
+      for (const e of entries) {
+        chrome.contextMenus.create({ id: e.id, title: e.title, contexts: e.contexts }, ignoreMenuError);
+      }
+    }
+    scheduleRecentMenu();
   });
-});
+}
+
+// The recent videos submenu's entries, and the update that rebuilds them.
+let recentMenuIds = [];
+let recentMenuTimer = 0;
+let recentMenuUpdate = Promise.resolve();
+
+function scheduleRecentMenu() {
+  clearTimeout(recentMenuTimer);
+  recentMenuTimer = setTimeout(() => {
+    recentMenuUpdate = recentMenuUpdate.then(updateRecentMenu, updateRecentMenu);
+  }, 300);
+}
+
+async function tabInfo(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return { title: tab.title || "", url: tab.url || "" };
+  } catch (_) {
+    return { title: "", url: "" };
+  }
+}
+
+// List the newest videos (the video button's, across tabs) under the
+// recent videos item, and enable the items only when there is one.
+async function updateRecentMenu() {
+  const hidden = menuHidden();
+  const recent = recentMedia(media, RECENT_VIDEOS);
+  if (!hidden.includes("last_video")) {
+    chrome.contextMenus.update("uidm-last-video", { enabled: recent.length > 0 }, ignoreMenuError);
+  }
+  if (hidden.includes("recent_videos")) return;
+  for (const id of recentMenuIds) chrome.contextMenus.remove(id, ignoreMenuError);
+  recentMenuIds = [];
+  for (const { tabId, entry } of recent) {
+    const { title } = await tabInfo(tabId);
+    const name = (title || hostOf(entry.url)).slice(0, 60);
+    const id = RECENT_PREFIX + entry.id;
+    chrome.contextMenus.create(
+      { id, parentId: "uidm-recent", title: `${name} (${mediaLabel(entry)})`, contexts: PAGE_CONTEXTS },
+      ignoreMenuError,
+    );
+    recentMenuIds.push(id);
+  }
+  chrome.contextMenus.update("uidm-recent", { enabled: recent.length > 0 }, ignoreMenuError);
+}
+
+// Send a recent video to UIDM in its best quality, named after its page.
+async function downloadRecent({ tabId, entry }) {
+  const { title, url } = await tabInfo(tabId);
+  return downloadMedia(tabId, { entry: entry.id, title }, url);
+}
+
+chrome.runtime.onInstalled.addListener(buildMenus);
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === "uidm-last-video") {
+    const [last] = recentMedia(media, 1);
+    if (last) await downloadRecent(last);
+    return;
+  }
+  if (String(info.menuItemId).startsWith(RECENT_PREFIX)) {
+    const id = Number(String(info.menuItemId).slice(RECENT_PREFIX.length));
+    const chosen = recentMedia(media, Infinity).find((r) => r.entry.id === id);
+    if (chosen) await downloadRecent(chosen);
+    return;
+  }
   if (info.menuItemId === "uidm-all-links" || info.menuItemId === "uidm-selection-links") {
     const selection = info.menuItemId === "uidm-selection-links";
     await pickLinks(tab && tab.id, info.pageUrl || (tab && tab.url) || "", selection);

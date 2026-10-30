@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { classifyMedia, recordMedia, mediaMenu, videoButtonAllowed, titleFileName, MEDIA_PER_TAB } = require("../media.js");
+const { classifyMedia, recordMedia, recentMedia, mediaMenu, videoButtonAllowed, titleFileName, MEDIA_PER_TAB } = require("../media.js");
 const { loadWorker } = require("./harness.js");
 
 const same = (a, b) => assert.equal(JSON.stringify(a), JSON.stringify(b));
@@ -125,6 +125,58 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 
 const seen = (w, tabId, url, type, headers) =>
   w.chrome.webRequest.onHeadersReceived.fire({ tabId, type: "xmlhttprequest", ...response(url, type, { headers }) });
+
+test("the settings choose the video types and the smallest file", () => {
+  const rules = { video_types: ["mp4", "m3u8"], video_min_size_kb: 1024 };
+  const mp4 = (size) => response("https://v.net/movie.mp4", "video/mp4", { headers: { "Content-Length": String(size) } });
+  assert.equal(classifyMedia(mp4(2 << 20), rules).kind, "file");
+  assert.equal(classifyMedia(mp4(500 << 10), rules), null, "under the minimum");
+  assert.equal(classifyMedia(mp4(500 << 10)).kind, "file", "the default minimum is 128 KB");
+  assert.equal(classifyMedia(response("https://v.net/a.webm", "video/webm"), rules), null, "not a listed type");
+  assert.equal(classifyMedia(response("https://v.net/clip", "video/webm"), rules), null, "the type from the MIME type");
+  assert.equal(classifyMedia(response("https://v.net/clip", "video/x-unknown"), rules).kind, "file", "an unknown type is kept");
+  assert.equal(classifyMedia(response("https://v.net/master.m3u8", "application/vnd.apple.mpegurl"), rules).kind, "hls");
+  assert.equal(classifyMedia(response("https://v.net/a.mpd", "application/dash+xml"), rules), null, "DASH is left out");
+  assert.equal(classifyMedia(response("https://v.net/a.mpd", "application/dash+xml"), { video_types: [] }), null);
+});
+
+test("the newest media across tabs come first", () => {
+  const store = new Map();
+  recordMedia(store, 1, "https://a.net/1.mp4", { kind: "file", mime: "video/mp4", size: 0 }, 100);
+  recordMedia(store, 2, "https://b.net/2.m3u8", { kind: "hls", mime: "", size: 0 }, 300);
+  recordMedia(store, 1, "https://a.net/3.mp4", { kind: "file", mime: "video/mp4", size: 0 }, 200);
+  same(recentMedia(store, 2).map((r) => [r.tabId, r.entry.url]), [[2, "https://b.net/2.m3u8"], [1, "https://a.net/3.mp4"]]);
+  assert.equal(recentMedia(new Map(), 10).length, 0);
+});
+
+test("the context menu has the items the settings keep, and the last videos", async () => {
+  const w = connected();
+  const items = () => [...w.chrome.contextMenus.items.keys()];
+  w.port.onMessage.fire({ op: "settings", settings: { browser_menu_hidden: ["all_links", "download_later"] } });
+  for (const gone of ["uidm-all-links", "uidm-later-link", "uidm-later-media"]) assert.ok(!items().includes(gone), gone);
+  for (const kept of ["uidm-link", "uidm-media", "uidm-selection-links", "uidm-last-video", "uidm-recent"]) {
+    assert.ok(items().includes(kept), kept);
+  }
+  await new Promise((r) => setTimeout(r, 350));
+  assert.equal(w.chrome.contextMenus.items.get("uidm-last-video").enabled, false, "no video yet");
+
+  await seen(w, 7, "https://v.net/old.mp4", "video/mp4", { "Content-Length": "9000000" });
+  await new Promise((r) => setTimeout(r, 5));
+  await seen(w, 8, "https://v.net/new.mp4", "video/mp4", { "Content-Length": "9000000" });
+  await new Promise((r) => setTimeout(r, 350));
+  assert.equal(w.chrome.contextMenus.items.get("uidm-last-video").enabled, true);
+  const children = [...w.chrome.contextMenus.items.values()].filter((i) => i.parentId === "uidm-recent");
+  same(children.map((c) => c.title), ["v.net (MP4 video)", "v.net (MP4 video)"]);
+
+  await w.chrome.contextMenus.onClicked.fire({ menuItemId: "uidm-last-video" });
+  assert.equal(w.sent.filter((m) => m.op === "add").at(-1).url, "https://v.net/new.mp4");
+  await w.chrome.contextMenus.onClicked.fire({ menuItemId: children[1].id });
+  assert.equal(w.sent.filter((m) => m.op === "add").at(-1).url, "https://v.net/old.mp4");
+
+  // Showing everything again brings the items back.
+  w.port.onMessage.fire({ op: "settings", settings: { browser_menu_hidden: [] } });
+  assert.ok(items().includes("uidm-all-links"));
+});
 
 test("a tab's video goes to UIDM in the quality picked", async () => {
   const w = connected();
