@@ -1082,12 +1082,16 @@ impl Daemon {
     /// The quota's state for a window that just connected, if downloads are
     /// paused for it or it is nearly reached.
     fn quota_message(&self) -> Option<Outgoing> {
-        let (limit, window) = self.settings.lock().unwrap().quota()?;
+        let (quota, warn) = {
+            let s = self.settings.lock().unwrap();
+            (s.quota(), s.quota_warn)
+        };
+        let (limit, window) = quota?;
         let now = uidm::quota::now_minute();
         let mut usage = self.hub.quota.lock().unwrap();
         let used = usage.used(now, window);
         let paused = self.quota_paused.lock().unwrap().is_some();
-        (paused || used >= limit / 10 * 9).then(|| Outgoing::Quota {
+        (paused || (warn && used >= limit / 10 * 9)).then(|| Outgoing::Quota {
             used,
             limit,
             paused,
@@ -1099,7 +1103,10 @@ impl Daemon {
     /// before, and resume what it stopped once the window allows. Runs with
     /// the scheduler.
     fn check_quota(&self) {
-        let quota = self.settings.lock().unwrap().quota();
+        let (quota, warn) = {
+            let s = self.settings.lock().unwrap();
+            (s.quota(), s.quota_warn)
+        };
         let now = uidm::quota::now_minute();
         let (used, limit, window) = match quota {
             Some((limit, window)) => (self.hub.quota.lock().unwrap().used(now, window), limit, window),
@@ -1140,7 +1147,7 @@ impl Daemon {
                 eprintln!("[uidm-daemon] quota reached: {used} of {limit} bytes");
                 self.hub.broadcast(&msg(true, Some(at)));
             }
-        } else if used >= limit / 10 * 9 && !self.quota_warned.swap(true, Ordering::Relaxed) {
+        } else if warn && used >= limit / 10 * 9 && !self.quota_warned.swap(true, Ordering::Relaxed) {
             self.hub.broadcast(&msg(false, None));
         }
     }

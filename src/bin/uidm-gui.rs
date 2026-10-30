@@ -903,6 +903,9 @@ struct OptionsDraft {
     quota_enabled: bool,
     quota_mb: u64,
     quota_hours: u64,
+    quota_warn: bool,
+    /// The scanner program chosen with Browse.
+    scanner_picked: Picked,
     check_updates: bool,
     drop_target: bool,
     progress_on_start: bool,
@@ -1075,6 +1078,8 @@ impl OptionsDraft {
             quota_enabled: s.quota_enabled,
             quota_mb: s.quota_mb,
             quota_hours: s.quota_hours,
+            quota_warn: s.quota_warn,
+            scanner_picked: Picked::default(),
             check_updates: s.check_updates,
             drop_target: s.drop_target,
             progress_on_start: s.progress_on_start,
@@ -1219,6 +1224,7 @@ impl OptionsDraft {
             quota_enabled: self.quota_enabled,
             quota_mb: self.quota_mb,
             quota_hours: self.quota_hours,
+            quota_warn: self.quota_warn,
             check_updates: self.check_updates,
             drop_target: self.drop_target,
             progress_on_start: self.progress_on_start,
@@ -2332,6 +2338,12 @@ impl App {
         take_picked(&draft.picked, &mut draft.folder);
         take_picked(&draft.temp_picked, &mut draft.temp_dir);
         take_picked(&draft.ffmpeg_picked, &mut draft.ffmpeg_path);
+        // A picked scanner keeps the arguments typed after the program.
+        let mut scanner = String::new();
+        take_picked(&draft.scanner_picked, &mut scanner);
+        if !scanner.is_empty() {
+            draft.scanner_command = uidm::scan::with_program(&scanner, &draft.scanner_command);
+        }
         for (slot, file) in draft.sound_picked.iter().zip(draft.sound_files.iter_mut()) {
             take_picked(slot, file);
         }
@@ -2489,6 +2501,10 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
         })
         .response
         .on_hover_text(tr("Downloads pause when it is reached, keeping their progress, and resume when the window allows"));
+        ui.end_row();
+
+        ui.label("");
+        ui.add_enabled(draft.quota_enabled, egui::Checkbox::new(&mut draft.quota_warn, tr("Warn me when 90% of it is used")));
         ui.end_row();
 
         ui.label(tr("If the file exists"));
@@ -2906,12 +2922,16 @@ fn notifications_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
             ui.add_enabled_ui(draft.scan_after_download, |ui| {
                 ui.radio_value(&mut draft.scanner, Scanner::Defender, "Microsoft Defender");
                 ui.radio_value(&mut draft.scanner, Scanner::Custom, tr("This scanner:"));
-                ui.add_enabled(
-                    draft.scanner == Scanner::Custom,
-                    egui::TextEdit::singleline(&mut draft.scanner_command)
-                        .hint_text(r#""C:\Program Files\ClamAV\clamscan.exe" {path}"#)
-                        .desired_width(380.0),
-                );
+                ui.add_enabled_ui(draft.scanner == Scanner::Custom, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.scanner_command)
+                                .hint_text(r#""C:\Program Files\ClamAV\clamscan.exe" {path}"#)
+                                .desired_width(320.0),
+                        );
+                        browse_file_button(ui, tr("Choose the scanner program"), "exe", &draft.scanner_picked);
+                    });
+                });
                 ui.weak(tr("{path} is replaced by the file. Exit code 0 means clean, 1 a threat."));
             });
         });
@@ -2987,12 +3007,17 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     ui.add_space(6.0);
     egui::Grid::new("capture").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label(tr("File types"));
-        ui.add(
-            egui::TextEdit::multiline(&mut draft.capture_types)
-                .hint_text(tr("Empty takes every type"))
-                .desired_rows(3)
-                .desired_width(360.0),
-        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut draft.capture_types)
+                    .hint_text(tr("Empty takes every type"))
+                    .desired_rows(3)
+                    .desired_width(360.0),
+            );
+            if ui.button(tr("Default")).on_hover_text(tr("The types UIDM starts with")).clicked() {
+                draft.capture_types = uidm::settings::default_capture_types().join(", ");
+            }
+        });
         ui.end_row();
 
         ui.label(tr("Minimum size"));
@@ -3003,12 +3028,17 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.end_row();
 
         ui.label(tr("Never from"));
-        ui.add(
-            egui::TextEdit::multiline(&mut draft.capture_excluded_sites)
-                .hint_text(tr("One site per line, such as *.example.com"))
-                .desired_rows(4)
-                .desired_width(360.0),
-        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut draft.capture_excluded_sites)
+                    .hint_text(tr("One site per line, such as *.example.com"))
+                    .desired_rows(4)
+                    .desired_width(360.0),
+            );
+            if ui.button(tr("Default")).on_hover_text(tr("No site left out, as UIDM starts")).clicked() {
+                draft.capture_excluded_sites.clear();
+            }
+        });
         ui.end_row();
 
         ui.label(tr("Never these addresses"));

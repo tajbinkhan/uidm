@@ -796,5 +796,9 @@
   "Update now": "Jetzt aktualisieren",
   "Download the new Setup, check it, and run it. UIDM closes for it; downloads stop and can be resumed.": "Das neue Setup herunterladen, prüfen und ausführen. UIDM wird dafür geschlossen; Downloads halten an und können fortgesetzt werden.",
   "Downloading the update...": "Update wird heruntergeladen...",
-  "Only a notice; Update now in About downloads and runs the new Setup": "Nur ein Hinweis; „Jetzt aktualisieren“ unter „Über“ lädt das neue Setup herunter und führt es aus"
+  "Only a notice; Update now in About downloads and runs the new Setup": "Nur ein Hinweis; „Jetzt aktualisieren“ unter „Über“ lädt das neue Setup herunter und führt es aus",
+  "Warn me when 90% of it is used": "Warnen, wenn 90 % davon verbraucht sind",
+  "Choose the scanner program": "Das Scanprogramm wählen",
+  "The types UIDM starts with": "Die Typen, mit denen UIDM beginnt",
+  "No site left out, as UIDM starts": "Keine Website ausgenommen, wie beim Start von UIDM"
 }

@@ -796,5 +796,9 @@
   "Update now": "Mettre à jour",
   "Download the new Setup, check it, and run it. UIDM closes for it; downloads stop and can be resumed.": "Télécharger le nouveau programme d'installation, le vérifier et le lancer. UIDM se ferme pour cela ; les téléchargements s'arrêtent et peuvent reprendre.",
   "Downloading the update...": "Téléchargement de la mise à jour...",
-  "Only a notice; Update now in About downloads and runs the new Setup": "Seulement un avis ; Mettre à jour dans À propos télécharge et lance le nouveau programme d'installation"
+  "Only a notice; Update now in About downloads and runs the new Setup": "Seulement un avis ; Mettre à jour dans À propos télécharge et lance le nouveau programme d'installation",
+  "Warn me when 90% of it is used": "M'avertir quand 90 % en sont utilisés",
+  "Choose the scanner program": "Choisir le programme d'analyse",
+  "The types UIDM starts with": "Les types de départ d'UIDM",
+  "No site left out, as UIDM starts": "Aucun site exclu, comme au départ d'UIDM"
 }

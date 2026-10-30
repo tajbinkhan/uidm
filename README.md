@@ -244,7 +244,8 @@ tests, not in a running Firefox.
   **Don't show this dialog again** goes back to notifications. Canceled
   downloads are never announced.
 - **Virus scan** (off by default) checks each finished file with Microsoft
-  Defender or a scanner command you set, with `{path}` where the file goes.
+  Defender or a scanner command you set, with `{path}` where the file goes;
+  **Browse...** picks the scanner program and keeps the arguments typed.
   The list shows **No threat found**, **Threat found** or **Scan failed**,
   and opening a file with a threat asks first. With scanning on, the
   notification waits for the scan and says what it found.
@@ -360,7 +361,8 @@ tests, not in a running Firefox.
   unless the pattern names one).
 - **Options** (top right of the window) has five tabs. **General**: the
   download folder, connections per file (1 to 16), downloads at once (1 to
-  10), a total speed limit, what to do when a file name is taken or an
+  10), a total speed limit, a download quota (no more than so many MB every
+  so many hours, with a warning at 90% that can be turned off), what to do when a file name is taken or an
   address is already in the list, the save-as
   dialog, whether to resume unfinished downloads when UIDM starts, Start with
   Windows, whether UIDM shows a tray icon (without one, closing the window
@@ -474,9 +476,10 @@ It takes a download from the browser only when all of these hold:
 - the extension did not start it itself (that is how hand-backs avoid loops);
 - it passes the capture rules from **Options > Browser capture**:
   - its file type is in the list (by default every category's types plus
-    `iso`, `img`, `dmg`, `deb`, `rpm` and `bin`; an empty list takes every
-    type). The type comes from the file name, else the MIME type the server
-    sent, else the URL. A download that says only "a file"
+    `iso`, `img`, `dmg`, `deb`, `rpm` and `bin`, which **Default** brings
+    back; an empty list takes every type; **Default** next to the excluded
+    sites empties that list). The type comes from the file name, else the
+    MIME type the server sent, else the URL. A download that says only "a file"
     (`application/octet-stream`) is taken;
   - it is not smaller than the minimum size, when the browser already knows
     the size (often it does not yet, and then only the type and site count);

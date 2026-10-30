@@ -596,6 +596,8 @@ pub struct Settings {
     pub quota_enabled: bool,
     pub quota_mb: u64,
     pub quota_hours: u64,
+    /// Warn when 90% of the quota is used, before downloads stop.
+    pub quota_warn: bool,
     /// Look for a newer UIDM on GitHub once a week.
     pub check_updates: bool,
     /// When that last happened, in seconds since 1970.
@@ -708,6 +710,7 @@ impl Default for Settings {
             quota_enabled: false,
             quota_mb: 1024,
             quota_hours: 24,
+            quota_warn: true,
             check_updates: true,
             last_update_check: 0,
             drop_target: false,
@@ -1314,6 +1317,7 @@ mod tests {
             quota_enabled: true,
             quota_mb: 500,
             quota_hours: 6,
+            quota_warn: false,
             check_updates: false,
             last_update_check: 1_700_000_000,
             drop_target: true,
