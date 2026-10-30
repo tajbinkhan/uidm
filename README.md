@@ -373,6 +373,14 @@ tests, not in a running Firefox.
   Opera read Chrome's registration, so the list says so when it finds them
   instead of listing them. Restart a browser after a change.
 
+- **Help** (next to **More**): **Help contents** opens this README on
+  GitHub, two more items open its sections on queues and the scheduler and
+  on the site grabber, **Tip of the day** shows a tip with **Next tip**, and
+  **Contact support** opens the issue tracker. A tip shows when the window
+  opens unless its **Show tips on startup** box (also in **Options >
+  General**) is cleared; the next start shows the next tip. **About** sits
+  beside **Help**, and **More > Manage queues...** opens the queues even with
+  the categories panel hidden.
 - **Languages**: the window comes in English, German, Spanish and French.
   It starts in the first Windows display language it has, else English;
   **Options > General > Language** picks another. The extension follows the

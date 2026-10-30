@@ -25,6 +25,8 @@ mod connections;
 mod droptarget;
 #[path = "gui/find.rs"]
 mod find;
+#[path = "gui/help.rs"]
+mod help;
 #[path = "gui/i18n.rs"]
 mod i18n;
 #[path = "gui/links.rs"]
@@ -578,6 +580,10 @@ struct App {
     /// The About box is open; `true` in the second place while a check
     /// it started waits for its answer.
     about: Option<bool>,
+    /// The tip of the day, while it shows.
+    tip: Option<help::TipWindow>,
+    /// The startup tip was considered, once the settings arrived.
+    tip_considered: bool,
     /// Captured addresses whose save-as dialog was canceled once.
     canceled_once: HashSet<String>,
     /// The offer to stop capturing an address, and its "Don't show again" box.
@@ -878,6 +884,9 @@ struct OptionsDraft {
     progress_done_tab: bool,
     /// Kept as it is; only the Queues dialog changes it.
     schedule_note_hidden: bool,
+    tips_on_startup: bool,
+    /// Kept as it is; only the tip window changes it.
+    next_tip: usize,
     theme: uidm::settings::Theme,
     text_size: u32,
     /// Empty follows Windows.
@@ -1043,6 +1052,8 @@ impl OptionsDraft {
             progress_speed_tab: s.progress_speed_tab,
             progress_done_tab: s.progress_done_tab,
             schedule_note_hidden: s.schedule_note_hidden,
+            tips_on_startup: s.tips_on_startup,
+            next_tip: s.next_tip,
             theme: s.theme,
             text_size: s.text_size,
             language: s.language.clone(),
@@ -1181,6 +1192,8 @@ impl OptionsDraft {
             progress_speed_tab: self.progress_speed_tab,
             progress_done_tab: self.progress_done_tab,
             schedule_note_hidden: self.schedule_note_hidden,
+            tips_on_startup: self.tips_on_startup,
+            next_tip: self.next_tip,
             theme: self.theme,
             text_size: self.text_size,
             language: self.language.clone(),
@@ -1275,6 +1288,8 @@ impl App {
             links: None,
             zip_preview: None,
             about: None,
+            tip: None,
+            tip_considered: false,
             drop_shown: false,
             convert: None,
             canceled_once: HashSet::new(),
@@ -2519,6 +2534,10 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
             .on_hover_text(tr("Drag it to move it, double-click it to open UIDM, right-click it to close it"));
         ui.end_row();
 
+        ui.label("");
+        ui.checkbox(&mut draft.tips_on_startup, tr("Show tips on startup"));
+        ui.end_row();
+
         ui.label(tr("Download window"));
         ui.vertical(|ui| {
             ui.checkbox(&mut draft.progress_on_start, tr("Open it when a download starts"))
@@ -3506,6 +3525,10 @@ impl eframe::App for App {
                             self.find.get_or_insert_with(find::FindBar::new);
                             ui.close_menu();
                         }
+                        if ui.button(tr("Manage queues...")).clicked() {
+                            actions.push(Action::OpenQueues(None));
+                            ui.close_menu();
+                        }
                         if ui.button(tr("Columns...")).on_hover_text(tr("Show, hide and order the list's columns")).clicked() {
                             self.columns_dialog = true;
                             ui.close_menu();
@@ -3532,13 +3555,17 @@ impl eframe::App for App {
                                 ui.close_menu();
                             }
                         }
-                        ui.separator();
-                        if ui.button(tr("About UIDM...")).clicked() {
-                            actions.push(Action::OpenAbout);
-                            ui.close_menu();
-                        }
                     });
                 });
+                if help::help_menu(ui) {
+                    self.tip = Some(help::TipWindow {
+                        index: settings.as_ref().map_or(0, |s| s.next_tip),
+                        on_startup: settings.as_ref().is_none_or(|s| s.tips_on_startup),
+                    });
+                }
+                if ui.button(tr("About")).clicked() {
+                    actions.push(Action::OpenAbout);
+                }
                 let can_open = connected && settings.is_some();
                 if ui.add_enabled(can_open, egui::Button::new(tr("Options"))).clicked() {
                     actions.push(Action::OpenOptions);
@@ -3837,6 +3864,28 @@ impl eframe::App for App {
         self.exception_window(ctx, connected, &mut actions);
         self.zip_window(ctx, &rows);
         self.about_window(ctx, connected, &mut actions);
+        // The tip of the day, at startup when the settings ask for it.
+        if let (Some(s), false) = (&settings, self.tip_considered) {
+            self.tip_considered = true;
+            if s.tips_on_startup {
+                self.tip = Some(help::TipWindow {
+                    index: s.next_tip,
+                    on_startup: true,
+                });
+            }
+        }
+        if let Some(t) = self.tip.as_mut() {
+            if let Some((next_tip, tips_on_startup)) = help::tip_window(ctx, t) {
+                self.tip = None;
+                if let Some(s) = settings.as_ref().filter(|_| connected) {
+                    actions.push(Action::SaveSettings(Settings {
+                        next_tip,
+                        tips_on_startup,
+                        ..s.clone()
+                    }));
+                }
+            }
+        }
         self.convert_window(ctx, &rows, connected, &mut actions);
         if let Some(d) = self.shared.lock().unwrap().picked_links.take() {
             self.links = Some(d);

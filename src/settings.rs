@@ -604,6 +604,10 @@ pub struct Settings {
     pub progress_done_tab: bool,
     /// The note that a queue's schedule needs UIDM running was dismissed.
     pub schedule_note_hidden: bool,
+    /// Show a tip when the window opens.
+    pub tips_on_startup: bool,
+    /// The tip to show next.
+    pub next_tip: usize,
     pub theme: Theme,
     /// The window's text size, in percent; everything in it scales along.
     pub text_size: u32,
@@ -700,6 +704,8 @@ impl Default for Settings {
             progress_speed_tab: true,
             progress_done_tab: true,
             schedule_note_hidden: false,
+            tips_on_startup: true,
+            next_tip: 0,
             theme: Theme::System,
             text_size: 100,
             language: String::new(),
@@ -1284,6 +1290,8 @@ mod tests {
             progress_speed_tab: false,
             progress_done_tab: false,
             schedule_note_hidden: true,
+            tips_on_startup: false,
+            next_tip: 3,
             theme: Theme::Dark,
             text_size: 125,
             language: "de".into(),
