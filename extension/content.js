@@ -9,25 +9,41 @@
 // through Encrypted Media Extensions is DRM protected: the menu says so and
 // offers nothing.
 
-// The skip and force keys: a link clicked with the skip key held downloads
-// in the browser; one clicked with the force key goes to UIDM instead of
+// The skip and force keys: a link clicked with the skip keys held downloads
+// in the browser; one clicked with the force keys goes to UIDM instead of
 // opening. The keys come from UIDM's settings, which the worker keeps in
-// storage, so a click is handled at once.
+// storage, so a click is handled at once. rules.js (loaded first) matches
+// them.
 (() => {
-  let keys = { skip: "none", force: "none" };
+  // The capture_* key settings; none until they arrive.
+  let keys = {};
   chrome.storage.local.get("captureKeys").then((s) => s.captureKeys && (keys = s.captureKeys)).catch(() => {});
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.captureKeys && changes.captureKeys.newValue) keys = changes.captureKeys.newValue;
   });
-  const held = (k, ev) => (k === "alt" && ev.altKey) || (k === "ctrl" && ev.ctrlKey) || (k === "shift" && ev.shiftKey);
+  // Insert is no modifier, so whether it is down is followed by hand.
+  let insert = false;
+  addEventListener("keydown", (ev) => ev.key === "Insert" && (insert = true), true);
+  addEventListener("keyup", (ev) => ev.key === "Insert" && (insert = false), true);
+  addEventListener("blur", () => (insert = false));
 
   function onClick(ev) {
     if (ev.button > 1) return;
     const link = ev.composedPath().find((n) => n instanceof HTMLAnchorElement && n.href);
     if (!link || !/^https?:/i.test(link.href)) return;
-    if (held(keys.skip, ev)) {
+    const action = keyAction(keys, {
+      alt: ev.altKey,
+      ctrl: ev.ctrlKey,
+      shift: ev.shiftKey,
+      insert,
+      button: ev.button,
+      // A click made with Enter has a detail of 0.
+      mouse: ev.detail > 0,
+    });
+    if (action === "skip") {
       chrome.runtime.sendMessage({ type: "link:skip" }).catch(() => {});
-    } else if (held(keys.force, ev)) {
+    } else if (action === "force" && !forceLeavesLink(keys, link.href)) {
+
       ev.preventDefault();
       ev.stopImmediatePropagation();
       const url = link.href;

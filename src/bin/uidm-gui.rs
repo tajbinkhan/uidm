@@ -827,6 +827,8 @@ struct OptionsDraft {
     temp_picked: Picked,
     capture_skip_key: CaptureKey,
     capture_force_key: CaptureKey,
+    capture_keys_left_click: bool,
+    capture_force_skips_pages: bool,
     /// One address per line.
     capture_excluded_urls: String,
     offer_exceptions: bool,
@@ -954,6 +956,8 @@ impl OptionsDraft {
             temp_picked: Picked::default(),
             capture_skip_key: s.capture_skip_key,
             capture_force_key: s.capture_force_key,
+            capture_keys_left_click: s.capture_keys_left_click,
+            capture_force_skips_pages: s.capture_force_skips_pages,
             capture_excluded_urls: s.capture_excluded_urls.join("\n"),
             offer_exceptions: s.offer_exceptions,
             selection_button: s.selection_button,
@@ -1070,6 +1074,8 @@ impl OptionsDraft {
             temp_dir: optional(&self.temp_dir),
             capture_skip_key: self.capture_skip_key,
             capture_force_key: self.capture_force_key,
+            capture_keys_left_click: self.capture_keys_left_click,
+            capture_force_skips_pages: self.capture_force_skips_pages,
             capture_excluded_urls: self
                 .capture_excluded_urls
                 .lines()
@@ -2842,14 +2848,22 @@ fn capture_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.label(tr("Hold"));
-                key_combo(ui, "skip_key", &mut draft.capture_skip_key);
+                key_boxes(ui, &mut draft.capture_skip_key, false);
                 ui.label(tr("while clicking a link to keep its download in the browser"));
             });
             ui.horizontal(|ui| {
                 ui.label(tr("Hold"));
-                key_combo(ui, "force_key", &mut draft.capture_force_key);
+                key_boxes(ui, &mut draft.capture_force_key, true);
                 ui.label(tr("while clicking a link to send it to UIDM, whatever its type"));
             });
+            ui.checkbox(
+                &mut draft.capture_keys_left_click,
+                tr("Only when clicking with the left mouse button, not a middle click or Enter"),
+            );
+            ui.checkbox(
+                &mut draft.capture_force_skips_pages,
+                tr("The force keys leave links to web pages, pictures and scripts alone"),
+            );
         });
         ui.end_row();
 
@@ -2913,16 +2927,17 @@ fn selection_label(b: SelectionButton) -> &'static str {
     }
 }
 
-fn key_combo(ui: &mut egui::Ui, id: &str, key: &mut CaptureKey) {
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(tr(key.label()))
-        .width(80.0)
-        .show_ui(ui, |ui| {
-            for k in CaptureKey::ALL {
-                ui.selectable_value(key, k, tr(k.label()));
-            }
-        });
+/// A box for each key of a combination; none ticked turns it off. Only
+/// forcing offers Insert.
+fn key_boxes(ui: &mut egui::Ui, key: &mut CaptureKey, insert: bool) {
+    ui.checkbox(&mut key.ctrl, "Ctrl");
+    ui.checkbox(&mut key.alt, "Alt");
+    ui.checkbox(&mut key.shift, "Shift");
+    if insert {
+        ui.checkbox(&mut key.insert, "Insert");
+    }
 }
+
 
 fn duplicate_label(d: Duplicate) -> &'static str {
     match d {

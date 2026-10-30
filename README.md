@@ -400,7 +400,17 @@ It takes a download from the browser only when all of these hold:
   - neither its URL nor the page it came from is on an excluded site.
     `example.com` and `*.example.com` both cover the site and every subdomain;
 - **Skip next download** in the popup was not pressed; it lets exactly one
-  download stay in the browser.
+  download stay in the browser;
+- the skip keys were not held while clicking its link (Alt by default).
+
+Holding the force keys (Ctrl by default) while clicking a link sends it to
+UIDM whatever the rules say, instead of opening it. Each is any mix of Ctrl,
+Alt and Shift, plus Insert for forcing, set in **Options > Browser capture**,
+and must be held exactly: Alt+Shift is not Alt. They work with a left or
+middle click and with Enter on a link, or with the option set only with a
+left click. By default the force keys leave links to web pages, pictures and
+scripts (`.html`, `.php`, `.jpg`, `.js`, a path ending in `/` and the like)
+to open as usual.
 
 The extension asks for the rules when it connects and gets every change as it
 is saved, so they are edited only in the window.

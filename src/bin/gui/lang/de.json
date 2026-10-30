@@ -561,7 +561,6 @@
   "Sleep": "Energie sparen",
   "Hibernate": "Ruhezustand",
   "Shut down": "Herunterfahren",
-  "No key": "Keine Taste",
   "Alt": "Alt",
   "Ctrl": "Strg",
   "Shift": "Umschalt",
@@ -682,5 +681,7 @@
   "For what has no proxy of its own": "Für alles ohne eigenen Proxy",
   "Always": "Immer",
   "Only after a download fails: it is tried once more through the browser's proxy": "Nur nach einem Fehlschlag: Der Download wird noch einmal über den Proxy des Browsers versucht",
-  "Windows has no proxy server turned on.": "In Windows ist kein Proxyserver eingeschaltet."
+  "Windows has no proxy server turned on.": "In Windows ist kein Proxyserver eingeschaltet.",
+  "Only when clicking with the left mouse button, not a middle click or Enter": "Nur beim Klicken mit der linken Maustaste, nicht mit der mittleren oder der Eingabetaste",
+  "The force keys leave links to web pages, pictures and scripts alone": "Die Erzwingen-Tasten lassen Links auf Webseiten, Bilder und Skripte unberührt"
 }

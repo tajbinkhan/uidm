@@ -30,27 +30,66 @@ pub const CAPTURE_MIN_SIZE_MAX_KB: u64 = 10 * 1024 * 1024;
 /// list; its files go straight into the download folder.
 pub const GENERAL: &str = "General";
 
-/// A key held while clicking a link in the browser, to keep the download in
-/// the browser or to send the link to UIDM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CaptureKey {
-    None,
-    Alt,
-    Ctrl,
-    Shift,
+/// The keys held while clicking a link in the browser, to keep the download
+/// in the browser or to send the link to UIDM: any mix of Alt, Ctrl and
+/// Shift, and Insert for forcing. Stored as text such as `ctrl+shift`, or
+/// `none`; files from when one key was allowed say `alt`, `ctrl` or `shift`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct CaptureKey {
+    pub alt: bool,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub insert: bool,
 }
 
 impl CaptureKey {
-    pub const ALL: [CaptureKey; 4] = [CaptureKey::None, CaptureKey::Alt, CaptureKey::Ctrl, CaptureKey::Shift];
+    pub const NONE: CaptureKey = CaptureKey { alt: false, ctrl: false, shift: false, insert: false };
+    pub const ALT: CaptureKey = CaptureKey { alt: true, ..CaptureKey::NONE };
+    pub const CTRL: CaptureKey = CaptureKey { ctrl: true, ..CaptureKey::NONE };
+    pub const SHIFT: CaptureKey = CaptureKey { shift: true, ..CaptureKey::NONE };
 
-    pub fn label(self) -> &'static str {
-        match self {
-            CaptureKey::None => "No key",
-            CaptureKey::Alt => "Alt",
-            CaptureKey::Ctrl => "Ctrl",
-            CaptureKey::Shift => "Shift",
+    pub fn is_none(self) -> bool {
+        self == CaptureKey::NONE
+    }
+
+    /// `Ctrl+Shift`, or "" for no key.
+    pub fn label(self) -> String {
+        [(self.ctrl, "Ctrl"), (self.alt, "Alt"), (self.shift, "Shift"), (self.insert, "Insert")]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, name)| *name)
+            .collect::<Vec<_>>()
+            .join("+")
+    }
+}
+
+impl From<CaptureKey> for String {
+    fn from(k: CaptureKey) -> String {
+        if k.is_none() {
+            "none".into()
+        } else {
+            k.label().to_ascii_lowercase()
         }
+    }
+}
+
+impl TryFrom<String> for CaptureKey {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let mut k = CaptureKey::NONE;
+        for part in text.split('+').map(|p| p.trim().to_ascii_lowercase()) {
+            match part.as_str() {
+                "none" | "" => {}
+                "alt" => k.alt = true,
+                "ctrl" => k.ctrl = true,
+                "shift" => k.shift = true,
+                "insert" => k.insert = true,
+                other => return Err(format!("\"{other}\" is not a key: use alt, ctrl, shift or insert")),
+            }
+        }
+        Ok(k)
     }
 }
 
@@ -475,6 +514,12 @@ pub struct Settings {
     pub capture_skip_key: CaptureKey,
     /// Held while clicking a link, sends it to UIDM whatever its type.
     pub capture_force_key: CaptureKey,
+    /// The keys count only on a click with the left mouse button, not a
+    /// middle click or Enter on a link.
+    pub capture_keys_left_click: bool,
+    /// The force key leaves links to web pages, pictures and scripts alone,
+    /// so they open as usual.
+    pub capture_force_skips_pages: bool,
     /// Addresses whose downloads stay in the browser, with `*` matching any
     /// run of characters, such as `https://example.com/files/*.zip`.
     pub capture_excluded_urls: Vec<String>,
@@ -577,8 +622,10 @@ impl Default for Settings {
             resume_ignores_date: false,
             manual_user_agent: String::new(),
             temp_dir: None,
-            capture_skip_key: CaptureKey::Alt,
-            capture_force_key: CaptureKey::Ctrl,
+            capture_skip_key: CaptureKey::ALT,
+            capture_force_key: CaptureKey::CTRL,
+            capture_keys_left_click: false,
+            capture_force_skips_pages: true,
             capture_excluded_urls: Vec::new(),
             offer_exceptions: true,
             selection_button: SelectionButton::Everywhere,
@@ -647,8 +694,11 @@ impl Settings {
                 return Err(format!("The connections for {} must be between {lo} and {hi}.", l.site));
             }
         }
-        if self.capture_skip_key == self.capture_force_key && self.capture_skip_key != CaptureKey::None {
+        if self.capture_skip_key == self.capture_force_key && !self.capture_skip_key.is_none() {
             return Err("The keys that skip and force capture must differ.".into());
+        }
+        if self.capture_skip_key.insert {
+            return Err("Insert can only force capture, not skip it.".into());
         }
         if let Some(dir) = self.temp_dir.as_deref().filter(|d| !Path::new(d).is_absolute()) {
             return Err(format!("The temporary folder must be a full path: {dir}"));
@@ -1138,8 +1188,10 @@ mod tests {
             resume_ignores_date: true,
             manual_user_agent: USER_AGENT_PRESETS[0].1.into(),
             temp_dir: Some("D:\\UIDM temp".into()),
-            capture_skip_key: CaptureKey::Shift,
-            capture_force_key: CaptureKey::None,
+            capture_skip_key: CaptureKey::SHIFT,
+            capture_force_key: CaptureKey { insert: true, ..CaptureKey::CTRL },
+            capture_keys_left_click: true,
+            capture_force_skips_pages: false,
             capture_excluded_urls: vec!["https://example.com/files/*".into()],
             offer_exceptions: false,
             selection_button: SelectionButton::Sites,
@@ -1444,7 +1496,29 @@ mod tests {
     }
 
     #[test]
+    fn capture_keys_are_combinations() {
+        let read = |json: &str| serde_json::from_str::<Settings>(json).unwrap();
+        // Files from when one key was allowed.
+        assert_eq!(read(r#"{"capture_skip_key":"shift"}"#).capture_skip_key, CaptureKey::SHIFT);
+        assert_eq!(read(r#"{"capture_force_key":"none"}"#).capture_force_key, CaptureKey::NONE);
+        let both = read(r#"{"capture_force_key":"Shift+ctrl+insert"}"#).capture_force_key;
+        assert_eq!(both, CaptureKey { ctrl: true, shift: true, insert: true, alt: false });
+        assert_eq!(String::from(both), "ctrl+shift+insert");
+        assert_eq!(both.label(), "Ctrl+Shift+Insert");
+        assert!(serde_json::from_str::<Settings>(r#"{"capture_skip_key":"win"}"#).is_err());
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(json.contains(r#""capture_skip_key":"alt""#), "{json}");
+
+        let with = |skip: CaptureKey, force: CaptureKey| Settings { capture_skip_key: skip, capture_force_key: force, ..Settings::default() }.validate();
+        assert!(with(CaptureKey::ALT, CaptureKey { alt: true, shift: true, ..CaptureKey::NONE }).is_ok());
+        assert!(with(CaptureKey::CTRL, CaptureKey::CTRL).is_err());
+        assert!(with(CaptureKey::NONE, CaptureKey::NONE).is_ok());
+        assert!(with(CaptureKey { insert: true, ..CaptureKey::NONE }, CaptureKey::CTRL).is_err());
+    }
+
+    #[test]
     fn custom_scanner_needs_a_command_with_the_path() {
+
 
         let custom = |cmd: &str| Settings {
             scan_after_download: true,

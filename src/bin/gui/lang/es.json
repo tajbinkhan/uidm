@@ -561,7 +561,6 @@
   "Sleep": "Suspender",
   "Hibernate": "Hibernar",
   "Shut down": "Apagar",
-  "No key": "Ninguna tecla",
   "Alt": "Alt",
   "Ctrl": "Ctrl",
   "Shift": "Mayús",
@@ -682,5 +681,7 @@
   "For what has no proxy of its own": "Para lo que no tiene proxy propio",
   "Always": "Siempre",
   "Only after a download fails: it is tried once more through the browser's proxy": "Solo cuando una descarga falla: se intenta otra vez a través del proxy del navegador",
-  "Windows has no proxy server turned on.": "Windows no tiene ningún servidor proxy activado."
+  "Windows has no proxy server turned on.": "Windows no tiene ningún servidor proxy activado.",
+  "Only when clicking with the left mouse button, not a middle click or Enter": "Solo al hacer clic con el botón izquierdo, no con el central ni con Intro",
+  "The force keys leave links to web pages, pictures and scripts alone": "Las teclas de forzar no afectan a los enlaces a páginas web, imágenes y scripts"
 }

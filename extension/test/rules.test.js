@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, clickApplies, urlMatches, selectionButtonAllowed } = require("../rules.js");
+const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, parseKeys, forceLeavesLink, clickApplies, urlMatches, selectionButtonAllowed } = require("../rules.js");
 
 const RULES = {
   capture_types: ["zip", "pdf", "exe", "mp4"],
@@ -160,6 +160,19 @@ test("download later from the context menu adds without starting", async () => {
   assert.equal(JSON.stringify(adds), JSON.stringify([["https://dl.net/a.zip", false], ["https://dl.net/b.zip", undefined], ["https://dl.net/c.mp4", false]]));
 });
 
+test("the force key can leave pages, pictures and scripts alone", () => {
+  const on = { capture_force_skips_pages: true };
+  assert.ok(forceLeavesLink(on, "https://a.net/news/story.html"));
+  assert.ok(forceLeavesLink(on, "https://a.net/img/logo.PNG?x=1"));
+  assert.ok(forceLeavesLink(on, "https://a.net/app.js"));
+  assert.ok(forceLeavesLink(on, "https://a.net/news/"));
+  assert.ok(forceLeavesLink(on, "https://a.net"));
+  assert.ok(!forceLeavesLink(on, "https://a.net/get.php/setup.exe"));
+  assert.ok(!forceLeavesLink(on, "https://a.net/files/setup.exe"));
+  assert.ok(!forceLeavesLink(on, "https://a.net/download"), "a name without a type may be a file");
+  assert.ok(!forceLeavesLink({ capture_force_skips_pages: false }, "https://a.net/a.html"));
+});
+
 test("held keys skip or force capture", () => {
   const keys = { capture_skip_key: "alt", capture_force_key: "ctrl" };
   assert.equal(keyAction(keys, { alt: true }), "skip");
@@ -167,7 +180,21 @@ test("held keys skip or force capture", () => {
   assert.equal(keyAction(keys, { shift: true }), "");
   assert.equal(keyAction(keys, {}), "");
   assert.equal(keyAction({ capture_skip_key: "none", capture_force_key: "none" }, { alt: true, ctrl: true }), "");
-  assert.equal(keyAction(keys, { alt: true, ctrl: true }), "skip", "skipping wins");
+  assert.equal(keyAction(keys, { alt: true, ctrl: true }), "", "a combination is held exactly");
+
+  const combos = { capture_skip_key: "alt+shift", capture_force_key: "ctrl+insert" };
+  assert.equal(keyAction(combos, { alt: true, shift: true }), "skip");
+  assert.equal(keyAction(combos, { alt: true }), "");
+  assert.equal(keyAction(combos, { ctrl: true, insert: true }), "force");
+  assert.equal(keyAction(combos, { ctrl: true }), "");
+  assert.deepEqual(parseKeys("Shift+ctrl"), { alt: false, ctrl: true, shift: true, insert: false });
+  assert.deepEqual(parseKeys(undefined), { alt: false, ctrl: false, shift: false, insert: false });
+
+  const left = { ...keys, capture_keys_left_click: true };
+  assert.equal(keyAction(left, { alt: true, button: 0, mouse: true }), "skip");
+  assert.equal(keyAction(left, { alt: true, button: 1, mouse: true }), "", "a middle click");
+  assert.equal(keyAction(left, { alt: true, button: 0, mouse: false }), "", "Enter on a link");
+  assert.equal(keyAction(keys, { alt: true, button: 1, mouse: true }), "skip", "any click without the setting");
 
   const jpg = { url: "https://dl.net/a.jpg" };
   assert.equal(captureDecision(RULES, jpg).capture, false, "no key: jpg is not a captured type");

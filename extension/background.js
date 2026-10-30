@@ -346,7 +346,12 @@ function onHostMessage(msg) {
       // Content scripts read the keys from storage, so a click can be
       // handled at once without asking the worker.
       chrome.storage.local.set({
-        captureKeys: { skip: rules.capture_skip_key || "none", force: rules.capture_force_key || "none" },
+        captureKeys: {
+          capture_skip_key: rules.capture_skip_key || "none",
+          capture_force_key: rules.capture_force_key || "none",
+          capture_keys_left_click: !!rules.capture_keys_left_click,
+          capture_force_skips_pages: rules.capture_force_skips_pages !== false,
+        },
       });
       break;
     case "refresh_waiting":
