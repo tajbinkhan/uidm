@@ -103,8 +103,9 @@ pub fn window(
     };
     let mut open = true;
     let mut close = false;
-    egui::Window::new(title)
+    crate::dialog::Window::new(title)
         .id(egui::Id::new(("progress", w.id)))
+        .dlu_width(353.0).taskbar(true)
         .open(&mut open)
         .resizable(false)
         .show(ctx, |ui| {

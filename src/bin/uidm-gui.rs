@@ -28,6 +28,8 @@ mod columns;
 #[path = "gui/connections.rs"]
 mod connections;
 #[cfg(windows)]
+#[path = "gui/dialog.rs"]
+mod dialog;
 #[path = "gui/droptarget.rs"]
 mod droptarget;
 #[cfg(not(windows))]
@@ -2096,8 +2098,9 @@ impl App {
         let taken =
             ask && other.is_none() && !name.is_empty() && Path::new(draft.folder.trim()).join(&name).is_file();
 
-        egui::Window::new(tr("Save download"))
+        crate::dialog::Window::new(tr("Save download"))
             .id(egui::Id::new("confirm"))
+            .dlu_width(380.0)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -2329,8 +2332,9 @@ impl App {
         };
         take_picked(&new.picked, &mut new.folder);
         let (mut added, mut close) = (None, false);
-        egui::Window::new(tr("New category"))
+        crate::dialog::Window::new(tr("New category"))
             .id(egui::Id::new("confirm_new_category"))
+            .dlu_width(322.0)
             .collapsible(false)
             .resizable(false)
             .order(egui::Order::Foreground)
@@ -2416,8 +2420,9 @@ impl App {
 
         let mut open = true;
         let mut close = false;
-        egui::Window::new(tr("Options"))
+        crate::dialog::Window::new(tr("Options"))
             .id(egui::Id::new("Options"))
+            .dlu_width(282.0)
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -3436,7 +3441,7 @@ impl App {
             return;
         };
         let title = if failed { tr("Download failed") } else { tr("Download complete") };
-        egui::Window::new(title)
+        crate::dialog::Window::new(title)
             .id(egui::Id::new("completed"))
             .collapsible(false)
             .resizable(false)
@@ -3510,7 +3515,7 @@ impl App {
             return;
         };
         let mut cancel = false;
-        egui::Window::new(tr("Threat found"))
+        crate::dialog::Window::new(tr("Threat found"))
             .id(egui::Id::new("threat"))
             .collapsible(false)
             .resizable(false)
@@ -3937,7 +3942,7 @@ impl App {
         let name = display_name(e);
         let is_mp4 = name.to_ascii_lowercase().ends_with(".mp4");
         let mut close = false;
-        egui::Window::new(tr("Convert"))
+        crate::dialog::Window::new(tr("Convert"))
             .id(egui::Id::new("convert"))
             .collapsible(false)
             .resizable(false)
@@ -4151,7 +4156,7 @@ impl App {
         };
         let answer = self.shared.lock().unwrap().update.clone();
         let mut open = true;
-        egui::Window::new(tr("About UIDM"))
+        crate::dialog::Window::new(tr("About UIDM"))
             .id(egui::Id::new("about"))
             .open(&mut open)
             .collapsible(false)
@@ -4227,7 +4232,7 @@ impl App {
         };
         let name = rows.iter().find(|e| e.id == p.id).map(display_name).unwrap_or_default();
         let mut open = true;
-        egui::Window::new(trf!("Inside {name}", name = name))
+        crate::dialog::Window::new(trf!("Inside {name}", name = name))
             .id(egui::Id::new("zip_preview"))
             .open(&mut open)
             .collapsible(false)
@@ -4266,7 +4271,7 @@ impl App {
         };
         let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
         let mut chosen = None;
-        egui::Window::new(tr("Keep it in the browser?"))
+        crate::dialog::Window::new(tr("Keep it in the browser?"))
             .id(egui::Id::new("exception_offer"))
             .collapsible(false)
             .resizable(false)
@@ -4313,8 +4318,9 @@ impl App {
             return;
         };
         let mut close = false;
-        egui::Window::new(tr("Speed limit"))
+        crate::dialog::Window::new(tr("Speed limit"))
             .id(egui::Id::new("download_limit"))
+            .dlu_width(302.0)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -4417,7 +4423,7 @@ impl App {
             ),
         };
         let mut close = false;
-        egui::Window::new(tr("Remove from the list"))
+        crate::dialog::Window::new(tr("Remove from the list"))
             .id(egui::Id::new("remove"))
             .collapsible(false)
             .resizable(false)
@@ -4471,7 +4477,7 @@ impl App {
             return;
         };
         let mut close = false;
-        egui::Window::new(tr("New link"))
+        crate::dialog::Window::new(tr("New link"))
             .id(egui::Id::new("refresh"))
             .collapsible(false)
             .resizable(false)

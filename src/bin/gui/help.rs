@@ -41,7 +41,7 @@ pub struct TipWindow {
 pub fn tip_window(ctx: &egui::Context, t: &mut TipWindow) -> Option<(usize, bool)> {
     let mut open = true;
     let mut close = false;
-    egui::Window::new(tr("Tip of the day"))
+    crate::dialog::Window::new(tr("Tip of the day"))
         .id(egui::Id::new("tip_of_the_day"))
         .open(&mut open)
         .collapsible(false)

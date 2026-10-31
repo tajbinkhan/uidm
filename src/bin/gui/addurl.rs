@@ -39,8 +39,9 @@ pub enum Outcome {
 pub fn show(ctx: &egui::Context, d: &mut AddDialog, connected: bool) -> Outcome {
     let mut outcome = Outcome::Open;
     let mut open = true;
-    egui::Window::new(tr("Enter new address to download"))
+    crate::dialog::Window::new(tr("Enter new address to download"))
         .id(egui::Id::new("add_url"))
+        .dlu_width(373.0)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

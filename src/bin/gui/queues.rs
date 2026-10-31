@@ -240,8 +240,9 @@ pub fn dialog(
     }
     let mut open = true;
     let mut close = false;
-    egui::Window::new(tr("Queues"))
+    crate::dialog::Window::new(tr("Queues"))
         .id(egui::Id::new("Queues"))
+        .dlu_width(434.0)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -466,7 +467,7 @@ pub fn countdown(
         _ => trf!("This computer will continue in {seconds} seconds.", seconds = left),
     };
     let title = if file.is_some() { tr("Download finished") } else { tr("Queue finished") };
-    egui::Window::new(title)
+    crate::dialog::Window::new(title)
         .id(egui::Id::new("countdown"))
         .collapsible(false)
         .resizable(false)
