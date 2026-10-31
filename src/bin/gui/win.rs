@@ -14,8 +14,27 @@ const SW_SHOW: i32 = 5;
 const SW_RESTORE: i32 = 9;
 const CF_UNICODETEXT: u32 = 13;
 
+const GWLP_HWNDPARENT: i32 = -8;
+const SWP_NOSIZE: u32 = 0x0001;
+const SWP_NOZORDER: u32 = 0x0004;
+const SWP_NOACTIVATE: u32 = 0x0010;
+
+#[repr(C)]
+#[derive(Default)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
 #[link(name = "user32")]
 extern "system" {
+    fn EnumThreadWindows(thread: u32, callback: extern "system" fn(isize, isize) -> i32, lparam: isize) -> i32;
+    fn GetWindowTextW(hwnd: isize, text: *mut u16, len: i32) -> i32;
+    fn SetWindowLongPtrW(hwnd: isize, index: i32, value: isize) -> isize;
+    fn GetWindowRect(hwnd: isize, rect: *mut Rect) -> i32;
+    fn SetWindowPos(hwnd: isize, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> u32;
     fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
     fn IsIconic(hwnd: isize) -> i32;
     fn SetForegroundWindow(hwnd: isize) -> i32;
@@ -92,6 +111,70 @@ const MUI_LANGUAGE_NAME: u32 = 0x8;
 
 pub fn set_window(hwnd: isize) {
     WINDOW.store(hwnd, Ordering::Relaxed);
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentThreadId() -> u32;
+}
+
+/// The window titled `title` that this thread made, if eframe has made it.
+/// Dialogs are made on the UI thread, which calls this.
+fn thread_window(title: &str) -> Option<isize> {
+    struct Search {
+        title: Vec<u16>,
+        found: isize,
+    }
+    extern "system" fn visit(hwnd: isize, lparam: isize) -> i32 {
+        // SAFETY: `lparam` is the `Search` below, alive for the whole call.
+        let search = unsafe { &mut *(lparam as *mut Search) };
+        let mut text = [0u16; 256];
+        // SAFETY: the buffer's length is passed with it.
+        let len = unsafe { GetWindowTextW(hwnd, text.as_mut_ptr(), text.len() as i32) };
+        if text[..len.max(0) as usize] == search.title[..] && hwnd != WINDOW.load(Ordering::Relaxed) {
+            search.found = hwnd;
+            return 0;
+        }
+        1
+    }
+    let mut search = Search { title: title.encode_utf16().collect(), found: 0 };
+    // SAFETY: `visit` only reads `search` through the pointer while
+    // EnumThreadWindows runs.
+    unsafe { EnumThreadWindows(GetCurrentThreadId(), visit, &mut search as *mut Search as isize) };
+    (search.found != 0).then_some(search.found)
+}
+
+/// Make the main window the owner of the dialog titled `title`, so it stays
+/// in front of the main window. False until the dialog's window exists.
+pub fn own_dialog(title: &str) -> bool {
+    let owner = WINDOW.load(Ordering::Relaxed);
+    let Some(dialog) = thread_window(title).filter(|_| owner != 0) else {
+        return false;
+    };
+    // SAFETY: both are this process's windows; GWLP_HWNDPARENT on a
+    // top-level window sets its owner.
+    unsafe { SetWindowLongPtrW(dialog, GWLP_HWNDPARENT, owner) };
+    true
+}
+
+/// Center the dialog titled `title` on the main window. False until the
+/// dialog's window exists.
+pub fn center_dialog(title: &str) -> bool {
+    let owner = WINDOW.load(Ordering::Relaxed);
+    let Some(dialog) = thread_window(title).filter(|_| owner != 0) else {
+        return false;
+    };
+    let (mut main, mut own) = (Rect::default(), Rect::default());
+    // SAFETY: both are this process's windows, and the rects are ours.
+    unsafe {
+        if GetWindowRect(owner, &mut main) == 0 || GetWindowRect(dialog, &mut own) == 0 {
+            return false;
+        }
+        let x = (main.left + main.right) / 2 - (own.right - own.left) / 2;
+        let y = (main.top + main.bottom) / 2 - (own.bottom - own.top) / 2;
+        SetWindowPos(dialog, 0, x, y.max(main.top), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    true
 }
 
 /// Show the window, restore it if minimized, and bring it to the front.

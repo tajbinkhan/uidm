@@ -101,3 +101,13 @@ pub fn display_languages() -> Vec<String> {
     }
     tags
 }
+
+/// Dialogs stay where the window system puts them here.
+pub fn own_dialog(_title: &str) -> bool {
+    true
+}
+
+/// Dialogs open centered on the window from their viewport settings here.
+pub fn center_dialog(_title: &str) -> bool {
+    true
+}

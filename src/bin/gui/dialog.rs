@@ -38,6 +38,10 @@ struct Placement {
     center: Pos2,
     /// It has been fitted to its contents once.
     fitted: bool,
+    /// The main window owns it, so it stays in front of the main window.
+    owned: bool,
+    /// It has been centered on the main window at its fitted size.
+    centered: bool,
 }
 
 impl<'o> Window<'o> {
@@ -120,7 +124,7 @@ impl<'o> Window<'o> {
         let mut place = ctx
             .data(|d| d.get_temp::<Placement>(key))
             .filter(|p| p.pass + 1 >= pass)
-            .unwrap_or(Placement { pass, center: main.center(), fitted: false });
+            .unwrap_or(Placement { pass, center: main.center(), fitted: false, owned: false, centered: false });
         place.pass = pass;
         let first = Vec2::new(width, FIRST_HEIGHT);
         let builder = ViewportBuilder::default()
@@ -134,6 +138,7 @@ impl<'o> Window<'o> {
 
         let closable = self.open.is_some();
         let resizable = self.resizable;
+        let (title, taskbar) = (&self.title, self.taskbar);
         let mut add = Some(add);
         let mut closed = false;
         let shown = ctx.show_viewport_immediate(ViewportId::from_hash_of(id), builder, |ctx, class| {
@@ -165,14 +170,25 @@ impl<'o> Window<'o> {
             );
             if let Some(inner) = inner {
                 let off = (wanted - inner).abs();
-                if (!resizable || !place.fitted) && (off.x > 1.0 || off.y > 1.0) {
+                let settled = off.x <= 1.0 && off.y <= 1.0;
+                if (!resizable || !place.fitted) && !settled {
                     ctx.send_viewport_cmd(ViewportCommand::InnerSize(wanted));
-                    if !place.fitted {
-                        // Centered again at its real size.
+                    // Centered again at its real size. Windows centers it
+                    // on the main window below instead.
+                    if !place.fitted && !cfg!(windows) {
                         ctx.send_viewport_cmd(ViewportCommand::OuterPosition(place.center - wanted / 2.0));
                     }
                 }
                 place.fitted = true;
+                // Owned by the main window, a dialog stays in front of it
+                // and minimizes with it, like a Win32 dialog. The download
+                // window keeps its own taskbar button and stays unowned.
+                if !taskbar && !place.owned {
+                    place.owned = crate::win::own_dialog(title);
+                }
+                if settled && !place.centered {
+                    place.centered = crate::win::center_dialog(title);
+                }
             }
             Some(InnerResponse::new(r, panel.response))
         });
