@@ -31,6 +31,9 @@ pub struct Notes<'a> {
     /// The download whose next browser download gives it a new link.
     pub refreshing: Option<String>,
     pub error: Option<&'a str>,
+    /// The error is an older daemon not knowing a request: the error strip
+    /// offers to restart it.
+    pub stale_daemon: bool,
     pub notice: Option<&'a str>,
     pub quota: Option<&'a str>,
     pub release: Option<Release<'a>>,
@@ -88,6 +91,9 @@ pub fn show(ui: &mut egui::Ui, notes: &Notes, connected: bool, actions: &mut Vec
     if let Some(error) = notes.error {
         strip(ui, Tone::Warn, |ui| {
             ui.label(error);
+            if notes.stale_daemon && ui.button(tr("Restart daemon")).clicked() {
+                actions.push(Action::RestartDaemon);
+            }
             if close(ui) {
                 dismissed.error = true;
             }

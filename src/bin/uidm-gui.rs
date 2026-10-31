@@ -183,8 +183,11 @@ struct Shared {
     link: Link,
     table: DownloadTable,
     speeds: HashMap<u64, Speed>,
-    /// The daemon's most recent `error` reply, shown in the status bar.
+    /// The daemon's most recent `error` reply, shown under the toolbar.
     last_error: Option<String>,
+    /// The daemon did not know a request this window sent: it is an older
+    /// build than the window.
+    stale_daemon: bool,
     /// The daemon's settings, once it has sent them.
     settings: Option<Settings>,
     /// True from sending `set_settings` until the daemon answers with
@@ -293,6 +296,16 @@ impl Shared {
                     self.saving = false;
                     self.save_result = Some(Ok(()));
                 }
+            }
+            // An older daemon than this window cannot read its newer
+            // requests; its parser's complaint means nothing to the user.
+            Outgoing::Error { message } if message.starts_with("invalid message: unknown variant") => {
+                self.saving = false;
+                self.stale_daemon = true;
+                self.last_error = Some(
+                    tr("The running UIDM daemon is older than this window, so it did not understand a request. Restart the daemon to run the new one.")
+                        .into(),
+                );
             }
             Outgoing::Error { message } if self.saving => {
                 self.saving = false;
@@ -779,7 +792,7 @@ impl SpeedUnit {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum OptionsTab {
     General,
     Categories,
@@ -1314,6 +1327,7 @@ impl App {
                 table: DownloadTable::new(),
                 speeds: HashMap::new(),
                 last_error: None,
+                stale_daemon: false,
                 settings: None,
                 saving: false,
                 save_result: None,
@@ -1697,7 +1711,13 @@ impl App {
                 let _ = uidm::platform::reveal(std::path::Path::new(&path));
             }
             Action::Reconnect => self.connect(),
-            Action::RestartDaemon => self.connect_with(true),
+            Action::RestartDaemon => {
+                let mut shared = self.shared.lock().unwrap();
+                shared.stale_daemon = false;
+                shared.last_error = None;
+                drop(shared);
+                self.connect_with(true);
+            }
             Action::OpenOptions => {
                 if let Some(settings) = &self.shared.lock().unwrap().settings {
                     self.options = Some(OptionsDraft::new(settings));
@@ -2438,14 +2458,22 @@ impl App {
                     ui.selectable_value(&mut draft.tab, OptionsTab::Connection, tr("Connection"));
                 });
                 ui.separator();
-                match draft.tab {
-                    OptionsTab::General => general_tab(ui, draft, &queues),
-                    OptionsTab::Categories => categories_tab(ui, draft),
-                    OptionsTab::Capture => capture_tab(ui, draft),
-                    OptionsTab::Video => video_tab(ui, draft),
-                    OptionsTab::Notifications => notifications_tab(ui, draft),
-                    OptionsTab::Connection => connection_tab(ui, draft),
-                }
+                // Every page is the same height, as on a property sheet, so
+                // the dialog keeps its size between tabs; a longer page
+                // scrolls, with the tabs and buttons left in place.
+                egui::ScrollArea::vertical()
+                    .id_salt(("options_page", draft.tab))
+                    .min_scrolled_height(OPTIONS_PAGE_HEIGHT)
+                    .max_height(OPTIONS_PAGE_HEIGHT)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match draft.tab {
+                        OptionsTab::General => general_tab(ui, draft, &queues),
+                        OptionsTab::Categories => categories_tab(ui, draft),
+                        OptionsTab::Capture => capture_tab(ui, draft),
+                        OptionsTab::Video => video_tab(ui, draft),
+                        OptionsTab::Notifications => notifications_tab(ui, draft),
+                        OptionsTab::Connection => connection_tab(ui, draft),
+                    });
 
                 if let Some(err) = &draft.error {
                     ui.add_space(4.0);
@@ -2476,6 +2504,9 @@ impl App {
         }
     }
 }
+
+/// The height of an Options page, which scrolls past it.
+const OPTIONS_PAGE_HEIGHT: f32 = 420.0;
 
 fn theme_label(t: uidm::settings::Theme) -> &'static str {
     match t {
@@ -3642,6 +3673,7 @@ impl eframe::App for App {
             },
             refreshing: refreshing.and_then(|id| rows.iter().find(|e| e.id == id)).map(display_name),
             error: last_error.as_deref(),
+            stale_daemon: self.shared.lock().unwrap().stale_daemon,
             notice: notice.as_deref(),
             quota: quota.as_deref(),
             release: release.as_ref().map(|r| banner::Release {

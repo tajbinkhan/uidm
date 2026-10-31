@@ -19,6 +19,11 @@ const MARGIN: i8 = 10;
 const DEFAULT_WIDTH: f32 = 360.0;
 /// The height a dialog opens at, before it fits its contents.
 const FIRST_HEIGHT: f32 = 160.0;
+/// The share of the screen's height a dialog may take; what is taller
+/// scrolls.
+const MAX_SCREEN_SHARE: f32 = 0.85;
+/// The tallest a dialog gets when the screen's size is unknown.
+const FALLBACK_MAX_HEIGHT: f32 = 640.0;
 
 pub struct Window<'o> {
     title: String,
@@ -148,11 +153,23 @@ impl<'o> Window<'o> {
             closed = closable && (close || escape);
 
             let frame = egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::same(MARGIN));
+            let max_height = ctx
+                .input(|i| i.viewport().monitor_size)
+                .map_or(FALLBACK_MAX_HEIGHT, |m| m.y * MAX_SCREEN_SHARE)
+                - 2.0 * MARGIN as f32;
             let panel = egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-                // The panel itself fills the window; a scope measures only
-                // what the dialog drew.
-                let shown = ui.scope(|ui| add.take().map(|add| add(ui)));
-                (shown.inner, shown.response.rect.size())
+                // The panel itself fills the window; the scroll area takes
+                // only what the dialog drew, up to the screen's limit, and
+                // scrolls the rest.
+                let shown = egui::ScrollArea::vertical()
+                    .id_salt("dialog_scroll")
+                    .max_height(max_height)
+                    .auto_shrink([true, true])
+                    .show(ui, |ui| add.take().map(|add| add(ui)));
+                // The content's own size, not the visible part: that is
+                // never taller than the window it has yet to fit.
+                let content = shown.content_size;
+                (shown.inner, Vec2::new(content.x, content.y.min(max_height)))
             });
             let (r, content) = panel.inner;
 
