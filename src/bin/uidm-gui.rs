@@ -49,6 +49,8 @@ mod properties;
 mod queues;
 #[path = "gui/theme.rs"]
 mod theme;
+#[path = "gui/toolbar.rs"]
+mod toolbar;
 #[path = "gui/tools.rs"]
 mod tools;
 #[path = "gui/tray.rs"]
@@ -504,8 +506,15 @@ enum Action {
     OpenGrabber,
     Grab(GrabRequest),
     CancelGrab,
-    /// Tick or untick a download, for exporting.
+    /// Tick or untick a download.
     Select(u64, bool),
+    /// A click on a download's name: select only it, or with Ctrl add or
+    /// take it away, or with Shift select the run from the last one clicked.
+    Click {
+        id: u64,
+        ctrl: bool,
+        shift: bool,
+    },
     OpenProperties(u64),
     OpenConnections(u64),
     /// Open a download's own window with its status, Pause and Cancel.
@@ -583,6 +592,10 @@ struct App {
     find: Option<find::FindBar>,
     /// Downloads > Find Next was chosen; step to the next match.
     find_next: bool,
+    /// The download a Shift+click selects from.
+    anchor: Option<u64>,
+    /// The downloads the list shows, in its order, for Shift+click and Ctrl+A.
+    order: Vec<u64>,
     /// The list's columns and sort order, saved when they change.
     layout: columns::Layout,
     /// The Columns dialog is open.
@@ -1341,6 +1354,8 @@ impl App {
             import: tools::Loaded::default(),
             selected: HashSet::new(),
             find_next: false,
+            anchor: None,
+            order: Vec::new(),
             find: None,
             layout: columns::Layout::load(),
             columns_dialog: false,
@@ -1866,6 +1881,28 @@ impl App {
                     self.selected.insert(id);
                 } else {
                     self.selected.remove(&id);
+                }
+                self.anchor = Some(id);
+            }
+            Action::Click { id, ctrl, shift } => {
+                let at = |x: u64| self.order.iter().position(|i| *i == x);
+                match self.anchor.and_then(at).zip(at(id)).filter(|_| shift) {
+                    Some((from, to)) => {
+                        if !ctrl {
+                            self.selected.clear();
+                        }
+                        let (lo, hi) = (from.min(to), from.max(to));
+                        self.selected.extend(self.order[lo..=hi].iter().copied());
+                    }
+                    None => {
+                        if !ctrl {
+                            self.selected.clear();
+                            self.selected.insert(id);
+                        } else if !self.selected.remove(&id) {
+                            self.selected.insert(id);
+                        }
+                        self.anchor = Some(id);
+                    }
                 }
             }
         }
@@ -3751,6 +3788,33 @@ impl eframe::App for App {
         if current_queue.is_none() {
             self.layout.sort(&mut shown, |id| speeds.get(&id).copied());
         }
+        self.order = shown.iter().map(|e| e.id).collect();
+        self.selected.retain(|id| rows.iter().any(|e| e.id == *id));
+        if !ctx.wants_keyboard_input() {
+            let (all, delete, enter) = ctx.input_mut(|i| {
+                (
+                    i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::A)),
+                    i.key_pressed(egui::Key::Delete),
+                    i.key_pressed(egui::Key::Enter),
+                )
+            });
+            if all {
+                self.selected = self.order.iter().copied().collect();
+            }
+            if delete {
+                self.menu_command(menubar::Command::RemoveTicked, &rows, settings.as_ref(), &mut actions);
+            }
+            // Like a double-click: a finished file opens, anything else
+            // shows its download window.
+            let one = rows.iter().find(|e| self.selected.len() == 1 && self.selected.contains(&e.id));
+            if let Some(e) = one.filter(|_| enter) {
+                actions.push(if e.status == Status::Done {
+                    Action::Open(e.id)
+                } else {
+                    Action::OpenProgress(e.id)
+                });
+            }
+        }
         let layout_before = self.layout.clone();
         let finding = self.find.as_ref().is_some_and(|b| b.active());
         if let Some(bar) = self.find.as_mut() {
@@ -4036,6 +4100,7 @@ impl App {
             },
             queues: queues.iter().map(|q| (q.id, q.name.clone(), q.running)).collect(),
             sort: self.layout.sort,
+            toolbar_small: self.layout.toolbar_small,
             dark: ctx.style().visuals.dark_mode,
         };
         let mut commands = menubar::take();
@@ -4044,6 +4109,11 @@ impl App {
         } else {
             egui::TopBottomPanel::top("menu").show(ctx, |ui| commands.extend(menubar::show(ui, &state)));
         }
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.add_space(3.0);
+            commands.extend(toolbar::show(ui, &state, self.layout.toolbar_small));
+            ui.add_space(3.0);
+        });
         for command in commands {
             self.menu_command(command, rows, settings, actions);
         }
@@ -4108,7 +4178,14 @@ impl App {
             C::SpeedLimit(on) => actions.extend(changed(&|s| s.speed_limit_enabled = on)),
             C::Options => actions.push(Action::OpenOptions),
             C::ToggleCategories => actions.extend(changed(&|s| s.categories_panel = !s.categories_panel)),
-            C::Arrange(sort) => self.layout.sort = sort,
+            C::Arrange(sort) => {
+                self.layout.sort = sort;
+                self.layout_unsaved = true;
+            }
+            C::ToolbarSmall(small) => {
+                self.layout.toolbar_small = small;
+                self.layout_unsaved = true;
+            }
             C::ToggleTrayIcon => actions.extend(changed(&|s| s.tray_icon = !s.tray_icon)),
             C::Columns => self.columns_dialog = true,
             C::ToggleDarkMode => actions.extend(changed(&|s| {
@@ -4572,7 +4649,7 @@ struct Row<'a> {
     /// In a queue's view: the queue, this row's place and the row count, for
     /// the move up and down buttons.
     place: Option<(u64, usize, usize)>,
-    /// Ticked for exporting.
+    /// Selected (ticked).
     selected: bool,
     /// The columns to draw, left to right.
     columns: &'a [Column],
@@ -4603,7 +4680,7 @@ fn queue_menu(ui: &mut egui::Ui, e: &DownloadEntry, queues: &[Queue], actions: &
 fn draw_row(ui: &mut egui::Ui, e: &DownloadEntry, row: &Row, actions: &mut Vec<Action>) {
     let connected = row.connected;
     let mut ticked = row.selected;
-    if ui.checkbox(&mut ticked, "").on_hover_text(tr("Tick to export it")).changed() {
+    if ui.checkbox(&mut ticked, "").on_hover_text(tr("Select it")).changed() {
         actions.push(Action::Select(e.id, ticked));
     }
     for column in row.columns {
@@ -4765,13 +4842,21 @@ fn draw_cell(ui: &mut egui::Ui, column: Column, e: &DownloadEntry, row: &Row, ac
                 |ui| {
                     ui.set_width(width);
                     let mut name = egui::RichText::new(display_name(e));
-                    if row.found {
+                    if row.found || row.selected {
                         let selection = ui.visuals().selection;
                         name = name.background_color(selection.bg_fill).color(selection.stroke.color);
                     }
                     let label = ui
                         .add(egui::Label::new(name).truncate().sense(egui::Sense::click()))
                         .on_hover_text(e.path.as_deref().unwrap_or(&e.url));
+                    if label.clicked() {
+                        let m = ui.input(|i| i.modifiers);
+                        actions.push(Action::Click {
+                            id: e.id,
+                            ctrl: m.command,
+                            shift: m.shift,
+                        });
+                    }
                     // Like IDM: a finished file opens, anything else shows
                     // its download window.
                     if label.double_clicked() {
