@@ -1,6 +1,6 @@
-// Packs the extension's PNG icons into installer/uidm.ico, the icon of the
-// setup program, its shortcuts and its entry in Installed apps. Windows reads
-// PNG images inside an .ico directly.
+// Packs the extension's PNG icons and assets/icon-256.png into
+// installer/uidm.ico, the icon of the setup program, its shortcuts and its
+// entry in Installed apps. Windows reads PNG images inside an .ico directly.
 //
 //   node installer/make-icon.js
 
@@ -8,7 +8,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const icons = path.join(__dirname, "..", "extension", "icons");
-const images = [16, 32, 48, 128].map((size) => fs.readFileSync(path.join(icons, `${size}.png`)));
+const images = [16, 32, 48, 128]
+  .map((size) => path.join(icons, `${size}.png`))
+  .concat(path.join(__dirname, "..", "assets", "icon-256.png"))
+  .map((file) => fs.readFileSync(file));
 
 const header = Buffer.alloc(6);
 header.writeUInt16LE(0, 0); // reserved

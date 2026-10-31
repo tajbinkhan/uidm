@@ -52,16 +52,16 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# The icon, from the extension's 128-pixel one.
+# The icon, from the 1024-pixel master.
 iconset="$work/uidm.iconset"
 mkdir -p "$iconset"
-for s in 16 32 64 128 256 512; do
-  sips -z "$s" "$s" "$root/extension/icons/128.png" --out "$iconset/icon_${s}x${s}.png" >/dev/null
+for s in 16 32 64 128 256 512 1024; do
+  sips -z "$s" "$s" "$root/assets/icon-1024.png" --out "$iconset/icon_${s}x${s}.png" >/dev/null
 done
-for s in 16 32 128 256; do
+for s in 16 32 128 256 512; do
   cp "$iconset/icon_$((s * 2))x$((s * 2)).png" "$iconset/icon_${s}x${s}@2x.png"
 done
-rm "$iconset/icon_64x64.png"
+rm "$iconset/icon_64x64.png" "$iconset/icon_1024x1024.png"
 iconutil -c icns -o "$app/Contents/Resources/uidm.icns" "$iconset"
 
 # The extension to load in the browser, its Firefox copy, and the README.

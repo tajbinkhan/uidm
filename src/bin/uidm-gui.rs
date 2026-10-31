@@ -101,7 +101,7 @@ use uidm::state::DownloadTable;
 /// Ignore speed samples closer together than this; they are too noisy.
 const SPEED_MIN_INTERVAL: Duration = Duration::from_millis(400);
 
-/// The window icon as raw 64x64 RGBA, made from extension/icons/128.png so no
+/// The window icon as raw 64x64 RGBA, made from assets/icon-1024.png so no
 /// image decoder is needed at run time.
 const ICON_RGBA: &[u8] = include_bytes!("../../assets/icon-64.rgba");
 const ICON_SIZE: u32 = 64;
