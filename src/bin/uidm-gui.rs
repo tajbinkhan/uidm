@@ -27,9 +27,9 @@ mod categories;
 mod columns;
 #[path = "gui/connections.rs"]
 mod connections;
-#[cfg(windows)]
 #[path = "gui/dialog.rs"]
 mod dialog;
+#[cfg(windows)]
 #[path = "gui/droptarget.rs"]
 mod droptarget;
 #[cfg(not(windows))]
