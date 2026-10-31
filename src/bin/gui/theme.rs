@@ -80,10 +80,11 @@ const DARK: Palette = Palette {
     shadow: Color32::from_black_alpha(96),
 };
 
-/// Buttons, inputs and menus (shadcn's rounded-md).
-const CONTROL_RADIUS: u8 = 6;
-/// Windows and dialogs (rounded-lg).
-const WINDOW_RADIUS: u8 = 8;
+/// Buttons, inputs and menus: nearly square, like Windows' own controls,
+/// so a checkbox reads as a box rather than a radio button.
+const CONTROL_RADIUS: u8 = 2;
+/// Windows and dialogs.
+const WINDOW_RADIUS: u8 = 4;
 
 /// Sets the fonts, sizes, spacing and both color sets.
 pub fn apply(ctx: &egui::Context) {
@@ -92,20 +93,26 @@ pub fn apply(ctx: &egui::Context) {
         let palette = if theme == Theme::Dark { &DARK } else { &LIGHT };
         ctx.style_mut_of(theme, |style| {
             style.visuals = visuals(palette);
+            // Sized like the 9 pt Segoe UI of the window UIDM's layout
+            // follows, with its tight padding: 20 px controls, 4 px gaps.
             style.text_styles = [
-                (TextStyle::Small, FontId::proportional(11.0)),
-                (TextStyle::Body, FontId::proportional(13.5)),
-                (TextStyle::Button, FontId::proportional(13.5)),
-                (TextStyle::Heading, FontId::proportional(18.0)),
-                (TextStyle::Monospace, FontId::monospace(12.5)),
+                (TextStyle::Small, FontId::proportional(10.5)),
+                (TextStyle::Body, FontId::proportional(12.0)),
+                (TextStyle::Button, FontId::proportional(12.0)),
+                (TextStyle::Heading, FontId::proportional(15.0)),
+                (TextStyle::Monospace, FontId::monospace(11.5)),
             ]
             .into();
             let spacing = &mut style.spacing;
-            spacing.item_spacing = Vec2::new(8.0, 6.0);
-            spacing.button_padding = Vec2::new(10.0, 4.0);
-            spacing.interact_size.y = 24.0;
-            spacing.window_margin = Margin::same(16);
-            spacing.menu_margin = Margin::same(4);
+            spacing.item_spacing = Vec2::new(6.0, 4.0);
+            spacing.button_padding = Vec2::new(8.0, 2.0);
+            spacing.interact_size = Vec2::new(36.0, 20.0);
+            spacing.icon_width = 13.0;
+            spacing.icon_width_inner = 7.0;
+            spacing.indent = 16.0;
+            spacing.window_margin = Margin::same(10);
+            spacing.menu_margin = Margin::same(3);
+            spacing.combo_height = 160.0;
         });
     }
 }

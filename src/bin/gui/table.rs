@@ -64,7 +64,6 @@ pub fn show(ui: &mut egui::Ui, list: &List, layout: &mut Layout, state: &mut Tab
     ui.scope(|ui| {
         let style = ui.style_mut();
         style.spacing.item_spacing = egui::vec2(8.0, 0.0);
-        style.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(12.5));
         let grid = ui.visuals().widgets.noninteractive.bg_stroke.color.gamma_multiply(0.6);
         let line = Stroke::new(1.0_f32, grid);
         let outer = ui.clip_rect();

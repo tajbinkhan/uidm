@@ -142,6 +142,9 @@ pub struct Layout {
     /// The toolbar has small icon-only buttons rather than large labeled ones.
     #[serde(default)]
     pub toolbar_small: bool,
+    /// The categories panel's width, once it was dragged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub categories_width: Option<f32>,
 }
 
 impl Default for Layout {
@@ -151,6 +154,7 @@ impl Default for Layout {
             sort: None,
             widths: BTreeMap::new(),
             toolbar_small: false,
+            categories_width: None,
         }
     }
 }
