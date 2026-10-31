@@ -3034,6 +3034,14 @@ impl Daemon {
 }
 
 fn main() {
+    // Started through WMI, out of an app package's copy of AppData, the
+    // daemon opens its log itself.
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == uidm::package::LOG_ARG) {
+        if let Err(e) = uidm::package::stderr_to(&ipc::daemon_log()) {
+            eprintln!("[uidm-daemon] could not open the log: {e}");
+        }
+    }
     if let Err(e) = run() {
         eprintln!("[uidm-daemon] fatal: {e}");
         std::process::exit(1);
