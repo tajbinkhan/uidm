@@ -15,6 +15,8 @@
 
 #![windows_subsystem = "windows"]
 
+#[path = "gui/addurl.rs"]
+mod addurl;
 #[path = "gui/answers.rs"]
 mod answers;
 #[path = "gui/columns.rs"]
@@ -35,6 +37,8 @@ mod help;
 mod i18n;
 #[path = "gui/links.rs"]
 mod links;
+#[path = "gui/menubar.rs"]
+mod menubar;
 #[path = "gui/login.rs"]
 mod login;
 #[path = "gui/progress.rs"]
@@ -72,7 +76,7 @@ use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::notify::Sound;
 use uidm::ipc;
 use uidm::protocol::{
-    read_message, write_frame, Answer, Download, DownloadEntry, DownloadLogin, Incoming, OnDone, Outgoing, Properties, Scan, SegmentInfo,
+    read_message, write_frame, Answer, Download, DownloadEntry, Incoming, OnDone, Outgoing, Properties, Scan, SegmentInfo,
     Status,
 };
 use uidm::grab::{GrabFile, GrabRequest};
@@ -124,6 +128,7 @@ fn main() -> eframe::Result {
             if let Ok(handle) = cc.window_handle() {
                 if let RawWindowHandle::Win32(h) = handle.as_raw() {
                     win::set_window(h.hwnd.get());
+                    menubar::attach(h.hwnd.get());
                 }
             }
             #[cfg(not(windows))]
@@ -138,6 +143,7 @@ fn main() -> eframe::Result {
             // Until the settings arrive, follow Windows.
             i18n::set_language("");
             let app = App::new(&cc.egui_ctx);
+            menubar::init(&cc.egui_ctx);
             // Without a tray icon there would be no way back to a hidden
             // window.
             if !tray::installed() {
@@ -534,7 +540,8 @@ struct App {
     /// The write half of the daemon connection, when connected.
     writer: Arc<Mutex<Option<TcpStream>>>,
     ctx: egui::Context,
-    url_input: String,
+    /// Tasks > Add new download, while it is open.
+    add_dialog: Option<addurl::AddDialog>,
     /// The Options dialog, while it is open.
     options: Option<OptionsDraft>,
     /// The save-as dialog for the oldest `confirming` download.
@@ -543,8 +550,6 @@ struct App {
     answers: Option<answers::Prompt>,
     /// The login prompt on screen.
     login: Option<login::LoginPrompt>,
-    /// The URL bar's login fields while shown: user name and password.
-    add_login: Option<(String, String)>,
     /// "Don't show this dialog again" in the completion dialog.
     hide_completed: bool,
     /// A file whose scan found a threat, waiting for "Open anyway": its path,
@@ -576,6 +581,8 @@ struct App {
     selected: HashSet<u64>,
     /// The find bar above the list, while it is open.
     find: Option<find::FindBar>,
+    /// Downloads > Find Next was chosen; step to the next match.
+    find_next: bool,
     /// The list's columns and sort order, saved when they change.
     layout: columns::Layout,
     /// The Columns dialog is open.
@@ -1314,12 +1321,11 @@ impl App {
             })),
             writer: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
-            url_input: String::new(),
+            add_dialog: None,
             options: None,
             confirm: None,
             answers: None,
             login: None,
-            add_login: None,
             hide_completed: false,
             threat_prompt: None,
             tooltip: String::new(),
@@ -1334,6 +1340,7 @@ impl App {
             grabber: None,
             import: tools::Loaded::default(),
             selected: HashSet::new(),
+            find_next: false,
             find: None,
             layout: columns::Layout::load(),
             columns_dialog: false,
@@ -3340,6 +3347,21 @@ fn open_file(path: &str) {
 }
 
 /// An http, https or ftp address with no spaces.
+/// Running, or about to: what Stop Download stops.
+fn is_running(s: Status) -> bool {
+    matches!(s, Status::Queued | Status::Downloading | Status::Confirming)
+}
+
+/// Waiting, stopped or failed: what Download Now starts.
+fn is_startable(s: Status) -> bool {
+    matches!(s, Status::Waiting | Status::Failed | Status::Canceled | Status::Interrupted)
+}
+
+/// Finished or stopped: what Redownload starts over.
+fn is_finished(s: Status) -> bool {
+    s.is_terminal() && s != Status::Waiting
+}
+
 fn is_download_url(url: &str) -> bool {
     uidm::batch::is_download_url(url) && !url.contains(char::is_whitespace)
 }
@@ -3540,142 +3562,17 @@ impl eframe::App for App {
             self.sync_drop_target(s, &mut actions);
         }
 
-        egui::TopBottomPanel::top("add").show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.heading("UIDM");
-                ui.add_space(8.0);
-                let input = ui.add(
-                    egui::TextEdit::singleline(&mut self.url_input)
-                        .hint_text(tr("Paste a download URL"))
-                        .desired_width((ui.available_width() - 360.0).max(120.0)),
-                );
-                let entered = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let url = self.url_input.trim().to_string();
-                let can_add = connected && is_download_url(&url);
-                // The login fields, when filled in, go with it.
-                let login = self.add_login.as_ref().filter(|(u, _)| !u.trim().is_empty()).map(|(u, p)| DownloadLogin {
-                    username: u.trim().to_string(),
-                    password: Some(p.clone()),
-                });
-                let clicked = ui.add_enabled(can_add, egui::Button::new(tr("Download"))).clicked();
-                if can_add && (clicked || entered) {
-                    actions.push(Action::AddDownload(Download {
-                        url: url.clone(),
-                        login: login.clone(),
-                        ..Download::default()
-                    }));
-                    self.url_input.clear();
+        self.menu_bar(ctx, connected, &rows, settings.as_ref(), &mut actions);
+        if let Some(d) = self.add_dialog.as_mut() {
+            match addurl::show(ctx, d, connected) {
+                addurl::Outcome::Open => {}
+                addurl::Outcome::Add(download) => {
+                    actions.push(Action::AddDownload(*download));
+                    self.add_dialog = None;
                 }
-                let later = ui
-                    .add_enabled(can_add, egui::Button::new(tr("Later")))
-                    .on_hover_text(tr("Add it to the main queue without starting it"));
-                if can_add && later.clicked() {
-                    actions.push(Action::AddDownload(Download {
-                        url,
-                        login,
-                        start: Some(false),
-                        ..Download::default()
-                    }));
-                    self.url_input.clear();
-                }
-                let mut with_login = self.add_login.is_some();
-                if ui
-                    .toggle_value(&mut with_login, tr("Login"))
-                    .on_hover_text(tr("Send a user name and password with the address"))
-                    .changed()
-                {
-                    self.add_login = with_login.then(Default::default);
-                }
-                ui.add_enabled_ui(connected, |ui| {
-                    ui.menu_button(tr("More"), |ui| {
-                        if ui.button(tr("Add many...")).on_hover_text(tr("From a URL pattern or a list")).clicked() {
-                            actions.push(Action::OpenBatch);
-                            ui.close_menu();
-                        }
-                        if ui
-                            .button(tr("Add batch download from clipboard"))
-                            .on_hover_text(tr("Every link in the copied text, to tick and add"))
-                            .clicked()
-                        {
-                            actions.push(Action::BatchFromClipboard);
-                            ui.close_menu();
-                        }
-                        if ui.button(tr("Site grabber...")).on_hover_text(tr("Find the files a site links to")).clicked() {
-                            actions.push(Action::OpenGrabber);
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        if ui.button(tr("Import list...")).clicked() {
-                            actions.push(Action::OpenImport);
-                            ui.close_menu();
-                        }
-                        if ui.button(tr("Export list...")).clicked() {
-                            actions.push(Action::OpenExport);
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        if ui.button(tr("Find in the list...")).on_hover_text(tr("Ctrl+F")).clicked() {
-                            self.find.get_or_insert_with(find::FindBar::new);
-                            ui.close_menu();
-                        }
-                        if ui.button(tr("Manage queues...")).clicked() {
-                            actions.push(Action::OpenQueues(None));
-                            ui.close_menu();
-                        }
-                        if ui.button(tr("Columns...")).on_hover_text(tr("Show, hide and order the list's columns")).clicked() {
-                            self.columns_dialog = true;
-                            ui.close_menu();
-                        }
-                        if let Some(s) = &settings {
-                            let mut hide = !s.categories_panel;
-                            if ui.checkbox(&mut hide, tr("Hide categories")).changed() {
-                                actions.push(Action::SaveSettings(Settings {
-                                    categories_panel: !hide,
-                                    ..s.clone()
-                                }));
-                                ui.close_menu();
-                            }
-                            let mut no_tray = !s.tray_icon;
-                            if ui
-                                .checkbox(&mut no_tray, tr("Hide the tray icon"))
-                                .on_hover_text(tr("Closing the window then quits UIDM; open it again from the Start menu"))
-                                .changed()
-                            {
-                                actions.push(Action::SaveSettings(Settings {
-                                    tray_icon: !no_tray,
-                                    ..s.clone()
-                                }));
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                });
-                if help::help_menu(ui) {
-                    self.tip = Some(help::TipWindow {
-                        index: settings.as_ref().map_or(0, |s| s.next_tip),
-                        on_startup: settings.as_ref().is_none_or(|s| s.tips_on_startup),
-                    });
-                }
-                if ui.button(tr("About")).clicked() {
-                    actions.push(Action::OpenAbout);
-                }
-                let can_open = connected && settings.is_some();
-                if ui.add_enabled(can_open, egui::Button::new(tr("Options"))).clicked() {
-                    actions.push(Action::OpenOptions);
-                }
-            });
-            if let Some((user, password)) = self.add_login.as_mut() {
-                ui.horizontal(|ui| {
-                    ui.label(tr("User name"));
-                    ui.add(egui::TextEdit::singleline(user).desired_width(160.0));
-                    ui.label(tr("Password"));
-                    ui.add(egui::TextEdit::singleline(password).password(true).desired_width(160.0));
-                    ui.weak(tr("Used for the addresses you add here until you close it"));
-                });
+                addurl::Outcome::Close => self.add_dialog = None,
             }
-            ui.add_space(6.0);
-        });
+        }
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.add_space(4.0);
@@ -3859,6 +3756,9 @@ impl eframe::App for App {
         if let Some(bar) = self.find.as_mut() {
             let ids: Vec<u64> = shown.iter().map(|e| e.id).collect();
             find::step_keys(ctx, bar, &ids);
+            if std::mem::take(&mut self.find_next) {
+                bar.step(&ids, false);
+            }
             let open = egui::TopBottomPanel::top("find")
                 .show(ctx, |ui| {
                     ui.add_space(4.0);
@@ -3901,7 +3801,7 @@ impl eframe::App for App {
             }
             if rows.is_empty() {
                 ui.centered_and_justified(|ui| {
-                    ui.weak(tr("No downloads yet. Paste a URL above, or download something in your browser."));
+                    ui.weak(tr("No downloads yet. Choose Tasks > Add new download, or download something in your browser."));
                 });
                 return;
             }
@@ -4114,6 +4014,122 @@ impl App {
 
     /// Open or close the drop target to match the setting. Closing it with
     /// a right-click turns the setting off.
+    /// The menu bar: put it on the window, and do what was chosen from it.
+    fn menu_bar(&mut self, ctx: &egui::Context, connected: bool, rows: &[DownloadEntry], settings: Option<&Settings>, actions: &mut Vec<Action>) {
+        let queues = self.shared.lock().unwrap().queues.clone();
+        let ticked: Vec<Status> = rows.iter().filter(|e| self.selected.contains(&e.id)).map(|e| e.status).collect();
+        let state = menubar::State {
+            connected,
+            settings: settings.map(|s| menubar::Checks {
+                drop_target: s.drop_target,
+                speed_limit: s.speed_limit_enabled,
+                categories: s.categories_panel,
+                tray_icon: s.tray_icon,
+                dark_mode: s.theme != uidm::settings::Theme::Light,
+                language: s.language.clone(),
+            }),
+            ticked: menubar::Ticked {
+                any: ticked.iter().any(|s| s.is_terminal()),
+                running: ticked.iter().any(|s| is_running(*s)),
+                startable: ticked.iter().any(|s| is_startable(*s)),
+                finished: ticked.iter().any(|s| is_finished(*s)),
+            },
+            queues: queues.iter().map(|q| (q.id, q.name.clone(), q.running)).collect(),
+            sort: self.layout.sort,
+            dark: ctx.style().visuals.dark_mode,
+        };
+        let mut commands = menubar::take();
+        if menubar::native() {
+            menubar::sync(&state);
+        } else {
+            egui::TopBottomPanel::top("menu").show(ctx, |ui| commands.extend(menubar::show(ui, &state)));
+        }
+        for command in commands {
+            self.menu_command(command, rows, settings, actions);
+        }
+    }
+
+    fn menu_command(&mut self, command: menubar::Command, rows: &[DownloadEntry], settings: Option<&Settings>, actions: &mut Vec<Action>) {
+        use menubar::Command as C;
+        let selected = &self.selected;
+        let ticked = |keep: fn(Status) -> bool| -> Vec<u64> {
+            rows.iter().filter(|e| selected.contains(&e.id) && keep(e.status)).map(|e| e.id).collect()
+        };
+        // A setting changed from the menu, sent without the Options dialog.
+        let changed = |change: &dyn Fn(&mut Settings)| {
+            settings.map(|s| {
+                let mut s = s.clone();
+                change(&mut s);
+                Action::QuickSettings(s)
+            })
+        };
+        match command {
+            C::AddUrl => self.add_dialog = Some(addurl::AddDialog::new(win::clipboard_text())),
+            C::AddBatch => actions.push(Action::OpenBatch),
+            C::BatchFromClipboard => actions.push(Action::BatchFromClipboard),
+            C::Grabber => actions.push(Action::OpenGrabber),
+            C::ToggleDropTarget => actions.extend(changed(&|s| s.drop_target = !s.drop_target)),
+            C::Export => actions.push(Action::OpenExport),
+            C::Import => actions.push(Action::OpenImport),
+            // The daemon keeps downloading and exits on its own once idle.
+            C::Exit => std::process::exit(0),
+            C::StopTicked => actions.extend(ticked(is_running).into_iter().map(Action::Cancel)),
+            C::RemoveTicked => {
+                let ids = ticked(Status::is_terminal);
+                if !ids.is_empty() {
+                    actions.push(Action::Remove(ids));
+                }
+            }
+            C::StartTicked => {
+                for e in rows.iter().filter(|e| selected.contains(&e.id)) {
+                    match e.status {
+                        Status::Waiting => actions.push(Action::Confirm(Answer::start(e.id))),
+                        s if is_startable(s) => actions.push(Action::Retry(e.id)),
+                        _ => {}
+                    }
+                }
+            }
+            C::RedownloadTicked => actions.extend(ticked(is_finished).into_iter().map(Action::Redownload)),
+            C::PauseAll => {
+                send(&self.writer, &Incoming::PauseAll);
+            }
+            C::ResumeAll => {
+                send(&self.writer, &Incoming::ResumeAll);
+            }
+            C::DeleteCompleted => actions.push(Action::ClearFinished),
+            C::Find => self.find.get_or_insert_with(find::FindBar::new).focus = true,
+            C::FindNext => match self.find {
+                Some(_) => self.find_next = true,
+                None => self.find = Some(find::FindBar::new()),
+            },
+            C::Scheduler => actions.push(Action::OpenQueues(None)),
+            C::StartQueue(id) => actions.push(Action::StartQueue(id)),
+            C::StopQueue(id) => actions.push(Action::StopQueue(id)),
+            C::SpeedLimit(on) => actions.extend(changed(&|s| s.speed_limit_enabled = on)),
+            C::Options => actions.push(Action::OpenOptions),
+            C::ToggleCategories => actions.extend(changed(&|s| s.categories_panel = !s.categories_panel)),
+            C::Arrange(sort) => self.layout.sort = sort,
+            C::ToggleTrayIcon => actions.extend(changed(&|s| s.tray_icon = !s.tray_icon)),
+            C::Columns => self.columns_dialog = true,
+            C::ToggleDarkMode => actions.extend(changed(&|s| {
+                s.theme = match s.theme {
+                    uidm::settings::Theme::Light => uidm::settings::Theme::System,
+                    _ => uidm::settings::Theme::Light,
+                }
+            })),
+            C::Language(code) => actions.extend(changed(&|s| s.language = code.to_string())),
+            C::Help(url) => self.ctx.open_url(egui::OpenUrl::new_tab(url)),
+            C::Tip => {
+                self.tip = Some(help::TipWindow {
+                    index: settings.map_or(0, |s| s.next_tip),
+                    on_startup: settings.is_none_or(|s| s.tips_on_startup),
+                })
+            }
+            C::CheckUpdate => actions.push(Action::CheckUpdate),
+            C::About => actions.push(Action::OpenAbout),
+        }
+    }
+
     fn sync_drop_target(&mut self, s: &Settings, actions: &mut Vec<Action>) {
         let open = droptarget::is_open();
         tray::set_drop_target_checked(s.drop_target && open);

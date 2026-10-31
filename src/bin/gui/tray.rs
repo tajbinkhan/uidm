@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::i18n::tr;
@@ -145,11 +145,13 @@ fn build(
         (exit.id().clone(), Command::Exit),
     ];
     let run = Arc::clone(&on_command);
-    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-        if let Some((_, command)) = ids.iter().find(|(id, _)| *id == event.id) {
+    crate::menubar::on_menu_event(move |id| {
+        let found = ids.iter().find(|(i, _)| i == id);
+        if let Some((_, command)) = found {
             run(*command);
         }
-    }));
+        found.is_some()
+    });
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| match event {
         TrayIconEvent::Click {
             button: MouseButton::Left,

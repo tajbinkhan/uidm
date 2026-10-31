@@ -29,7 +29,7 @@ pub struct FindBar {
     /// Scroll the list to `current` on this frame.
     pub scroll: bool,
     /// Put the cursor in the text box on this frame.
-    focus: bool,
+    pub focus: bool,
 }
 
 impl FindBar {
