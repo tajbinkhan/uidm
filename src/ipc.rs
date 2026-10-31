@@ -23,7 +23,7 @@
 //! the port cannot answer step 2, so the host gives up before relaying any
 //! browser frame, and the squatter learns only a random nonce.
 
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -62,6 +62,10 @@ pub const HOST_LABEL: &str = "uidm-host";
 /// freshly built exe can be slow while antivirus scans it.
 const STARTUP_WAIT: Duration = Duration::from_secs(10);
 const STARTUP_POLL: Duration = Duration::from_millis(100);
+/// How long a listener that fails the proof is given before giving up. A
+/// daemon binds its port before it writes its token, so one that just
+/// started can fail it for a moment.
+const PROOF_WAIT: Duration = Duration::from_secs(2);
 
 #[cfg(windows)]
 const STD_INPUT_HANDLE: u32 = -10i32 as u32;
@@ -100,8 +104,12 @@ pub enum Handshake {
 /// A daemon that has bound but not yet written its token file looks the same
 /// as one that is not up yet, so both are retried during the startup wait.
 pub fn connect_or_spawn() -> io::Result<TcpStream> {
-    if let Ok(stream) = connect_authenticated() {
-        return Ok(stream);
+    match connect_authenticated() {
+        Ok(stream) => return Ok(stream),
+        // Something holds the port but cannot prove it is the daemon.
+        // Starting another daemon cannot help, as it could not bind.
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return retry_proof(e),
+        Err(_) => {}
     }
     spawn_daemon()?;
     // Give the new process time to bind and write its token. The limit is on
@@ -157,6 +165,21 @@ fn stop_daemons() -> io::Result<()> {
         .stderr(Stdio::null())
         .status()
         .map(|_| ())
+}
+
+/// Try the handshake again for `PROOF_WAIT`, for a daemon that has bound
+/// but not yet written its token; else fail with `first`.
+fn retry_proof(first: io::Error) -> io::Result<TcpStream> {
+    let deadline = Instant::now() + PROOF_WAIT;
+    let mut last = first;
+    while Instant::now() < deadline {
+        thread::sleep(STARTUP_POLL);
+        match connect_authenticated() {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 /// Connect once and run the client side of the handshake. Returns the stream
@@ -291,11 +314,16 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Launch `uidm-daemon` from the host's own directory as a detached
 /// process, so it keeps running after the host and the browser exit. Its log
-/// goes to `uidm-daemon.log` in the temp folder.
+/// goes to `uidm-daemon.log` in the temp folder, added to the end: a daemon
+/// that is already running keeps writing there too, and truncating the file
+/// under it would leave a run of NULs where its log was.
 fn spawn_daemon() -> io::Result<()> {
     keep_stdio_private();
     let mut daemon = crate::platform::program_command("uidm-daemon")?;
-    let log = File::create(std::env::temp_dir().join("uidm-daemon.log"))?;
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("uidm-daemon.log"))?;
 
     crate::platform::detach(&mut daemon)
         .stdin(Stdio::null())

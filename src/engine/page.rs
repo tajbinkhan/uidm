@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -94,7 +95,12 @@ pub(super) fn run(
         fs::remove_file(&output)?;
     }
 
-    let template = format!("{}.%(ext)s", ytdlp::literal_template(&output.with_extension("").to_string_lossy()));
+    // yt-dlp reuses any file already at its own names: an unrelated
+    // "Song.m4a" next to "Song.mp3" would be converted, then deleted. A name
+    // of this download's own keeps its files apart, and stays the same
+    // between runs so yt-dlp can resume its parts.
+    let working = working_stem(&output, id);
+    let template = format!("{}.%(ext)s", ytdlp::literal_template(&working.to_string_lossy()));
     let proxy = req.net.proxy.as_ref().and_then(|p| p.proxy_for(&req.url));
     let mut cmd = ytdlp::command(&yt_dlp, proxy.as_deref());
     cmd.args(["-f", &ytdlp::format_spec(choice, req.ffmpeg.is_some())])
@@ -187,7 +193,11 @@ pub(super) fn run(
     if !status.success() {
         return Err(EngineError::Io(ytdlp::complaint(&complaints.lock().unwrap())));
     }
-    let path = saved_as.lock().unwrap().take().map(Into::into).filter(|p: &std::path::PathBuf| p.is_file()).unwrap_or(output);
+    let saved = saved_as.lock().unwrap().take().map(std::path::PathBuf::from).filter(|p| p.is_file());
+    let path = match saved {
+        Some(saved) => settle(&saved, &output),
+        None => output,
+    };
     let note = req.ffmpeg.is_none().then(|| {
         "Saved with its sound in one file, the best quality YouTube sends that way. With ffmpeg (set in Options) UIDM saves the quality you chose."
             .to_string()
@@ -196,9 +206,61 @@ pub(super) fn run(
     Ok(Saved { path, note })
 }
 
+/// The name yt-dlp works under for download `id`, without an extension:
+/// the chosen file's, with the id added.
+fn working_stem(output: &Path, id: u64) -> PathBuf {
+    let mut stem = output.with_extension("").into_os_string();
+    stem.push(format!(".uidm-{id}"));
+    stem.into()
+}
+
+/// Move yt-dlp's finished file to the chosen name, keeping the extension
+/// yt-dlp gave it. If that name is taken now, the file stays where it is.
+fn settle(saved: &Path, output: &Path) -> PathBuf {
+    let ext = saved.extension().unwrap_or_default();
+    let wanted = output.with_extension(ext);
+    if wanted.exists() || fs::rename(saved, &wanted).is_err() {
+        return saved.to_path_buf();
+    }
+    wanted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn working_stem_adds_the_id() {
+        let stem = working_stem(Path::new("dl/Song.mp3"), 42);
+        assert_eq!(stem, Path::new("dl/Song.uidm-42"));
+        // Dots in the title stay; only the extension goes.
+        assert_eq!(working_stem(Path::new("a.b.mp4"), 7), Path::new("a.b.uidm-7"));
+    }
+
+    #[test]
+    fn settle_renames_unless_taken() {
+        let dir = std::env::temp_dir().join(format!("uidm-settle-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("Song.mp3");
+
+        let saved = dir.join("Song.uidm-1.mp3");
+        fs::write(&saved, b"new").unwrap();
+        assert_eq!(settle(&saved, &output), output);
+        assert_eq!(fs::read(&output).unwrap(), b"new");
+
+        // yt-dlp's own extension is kept.
+        let saved = dir.join("Song.uidm-2.m4a");
+        fs::write(&saved, b"m4a").unwrap();
+        assert_eq!(settle(&saved, &output), dir.join("Song.m4a"));
+
+        // A name taken since leaves the file under its working name.
+        let saved = dir.join("Song.uidm-3.mp3");
+        fs::write(&saved, b"third").unwrap();
+        assert_eq!(settle(&saved, &output), saved);
+        assert_eq!(fs::read(&output).unwrap(), b"new");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn video_then_sound_add_up() {
