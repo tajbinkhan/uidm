@@ -3,7 +3,9 @@
 //
 // The service worker watches responses (webRequest) and keeps, for each tab,
 // the direct video and audio files and the HLS (.m3u8) and DASH (.mpd)
-// playlists its pages loaded. The segments a player fetches one by one are
+// playlists its pages loaded, and the YouTube video it shows. YouTube's
+// player streams in POST requests that are none of those, so its page is
+// kept instead, and UIDM reads the page with yt-dlp. The segments a player fetches one by one are
 // left out: UIDM fetches those itself from the playlist. These are plain
 // functions: the worker loads them with importScripts, the tests with
 // require. In the worker, rules.js is loaded first.
@@ -104,6 +106,35 @@ function classifyMedia(d, rules) {
   return { kind: "file", mime, size };
 }
 
+// The YouTube video page at `url` as one address per video
+// (https://www.youtube.com/watch?v=ID), or null for any other page. Shorts
+// and youtu.be links are the same videos.
+function videoPageUrl(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch (_) {
+    return null;
+  }
+  if (!/^https?:$/.test(u.protocol)) return null;
+  const host = u.hostname.toLowerCase();
+  let id = null;
+  if (host === "youtu.be") id = u.pathname.slice(1).split("/")[0];
+  else if (["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"].includes(host)) {
+    if (u.pathname === "/watch") id = u.searchParams.get("v");
+    else id = (/^\/(?:shorts|live)\/([^/]+)/.exec(u.pathname) || [])[1];
+  }
+  return id && /^[\w-]+$/.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
+}
+
+// A YouTube page's title without the count of new notifications YouTube
+// puts in front and the " - YouTube" after.
+function pageTitle(title) {
+  return String(title || "")
+    .replace(/^\(\d+\+?\)\s*/, "")
+    .replace(/\s+-\s+YouTube$/, "");
+}
+
 let nextMediaId = 1;
 
 // Remember media `found` (from classifyMedia) at `url` for tab `tabId`.
@@ -134,6 +165,15 @@ function fileLabel(entry) {
   return audio ? uiText("audioFileType", ext.toUpperCase()) : uiText("videoFileType", ext.toUpperCase());
 }
 
+// Remember that tab `tabId` shows the video page `url` (from videoPageUrl).
+// YouTube moves between videos without loading a new page, so the tab's
+// earlier video page goes.
+function recordPage(store, tabId, url, now) {
+  const tab = store.get(tabId);
+  if (tab) for (const [key, e] of tab) if (e.kind === "page" && key !== url) tab.delete(key);
+  return recordMedia(store, tabId, url, { kind: "page", mime: "", size: 0 }, now);
+}
+
 // The `n` newest media entries across `store` (tab id -> Map(url ->
 // entry)), newest first, as { tabId, entry }: what the "last video" and
 // "last 10 videos" menu items offer.
@@ -144,14 +184,19 @@ function recentMedia(store, n) {
   return all.slice(0, n);
 }
 
+// A stream's or page's kind for people: "HLS stream", "YouTube video".
+function streamLabel(kind) {
+  if (kind === "page") return uiText("youtubeVideo");
+  return kind === "hls" ? uiText("hlsStream") : uiText("dashStream");
+}
+
 // A media entry's kind for people: "MP4 video", "HLS stream".
 function mediaLabel(entry) {
-  if (entry.kind === "file") return fileLabel(entry);
-  return entry.kind === "hls" ? uiText("hlsStream") : uiText("dashStream");
+  return entry.kind === "file" ? fileLabel(entry) : streamLabel(entry.kind);
 }
 
 // The video button's menu for a tab's `entries`, newest first. `infos` maps a
-// stream's URL to what UIDM said it offers (a MediaInfo). Each item is
+// stream's (or video page's) URL to what UIDM said it offers (a MediaInfo). Each item is
 // { entry, label, options: [{ label, size, video, audio }], drm, error }.
 // A stream that is one quality of another listed stream (an HLS variant
 // playlist the player loaded after its master playlist) is left out.
@@ -168,7 +213,7 @@ function mediaMenu(entries, infos) {
     }
     if (parts.has(e.url)) continue;
     const info = infos.get(e.url);
-    const label = e.kind === "hls" ? uiText("hlsStream") : uiText("dashStream");
+    const label = streamLabel(e.kind);
     if (!info) {
       items.push({ entry: e.id, label, options: [], error: uiText("mediaNoAnswer") });
       continue;
@@ -229,5 +274,5 @@ function titleFileName(title, ext) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { classifyMedia, recordMedia, recentMedia, mediaLabel, mediaMenu, videoButtonAllowed, titleFileName, responseSize, uiText, MEDIA_PER_TAB };
+  module.exports = { classifyMedia, recordMedia, recordPage, videoPageUrl, pageTitle, recentMedia, mediaLabel, mediaMenu, videoButtonAllowed, titleFileName, responseSize, uiText, MEDIA_PER_TAB };
 }

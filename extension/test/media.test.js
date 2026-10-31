@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { classifyMedia, recordMedia, recentMedia, mediaMenu, videoButtonAllowed, titleFileName, MEDIA_PER_TAB } = require("../media.js");
+const { classifyMedia, recordMedia, recordPage, videoPageUrl, pageTitle, recentMedia, mediaMenu, videoButtonAllowed, titleFileName, MEDIA_PER_TAB } = require("../media.js");
 const { loadWorker } = require("./harness.js");
 
 const same = (a, b) => assert.equal(JSON.stringify(a), JSON.stringify(b));
@@ -217,6 +217,57 @@ test("a tab's video goes to UIDM in the quality picked", async () => {
   // A new page in the tab starts its list over.
   await w.chrome.webRequest.onBeforeRequest.fire({ tabId: 7, type: "main_frame", method: "GET", url: "https://site.net/next" });
   assert.equal((await w.content({ type: "video:menu" }, 7)).items.length, 0);
+});
+
+test("YouTube pages are one address per video", () => {
+  const watch = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+  assert.equal(videoPageUrl(watch), watch);
+  assert.equal(videoPageUrl("https://m.youtube.com/watch?v=jNQXAC9IVRw&list=PL1&t=4"), watch);
+  assert.equal(videoPageUrl("https://www.youtube.com/shorts/jNQXAC9IVRw"), watch);
+  assert.equal(videoPageUrl("https://youtu.be/jNQXAC9IVRw?si=x"), watch);
+  for (const url of ["https://www.youtube.com/", "https://www.youtube.com/@jawed", "https://notyoutube.com/watch?v=x", "nonsense", "https://www.youtube.com/watch?v=a%22b"]) {
+    assert.equal(videoPageUrl(url), null, url);
+  }
+  assert.equal(pageTitle("(3) Me at the zoo - YouTube"), "Me at the zoo");
+  assert.equal(pageTitle("A - B - YouTube"), "A - B");
+
+  // Moving to another video replaces the tab's page, not its other media.
+  const store = new Map();
+  recordMedia(store, 1, "https://v.net/a.mp4", { kind: "file", mime: "video/mp4", size: 0 }, 1);
+  recordPage(store, 1, watch, 2);
+  recordPage(store, 1, "https://www.youtube.com/watch?v=other", 3);
+  same([...store.get(1).keys()], ["https://v.net/a.mp4", "https://www.youtube.com/watch?v=other"]);
+});
+
+test("a YouTube video goes to UIDM as a page yt-dlp reads", async () => {
+  const w = connected();
+  const page = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+  const asked = w.content({ type: "video:menu" }, 7, "https://www.youtube.com/watch?v=jNQXAC9IVRw&t=3");
+  await tick();
+  const probe = w.sent.find((m) => m.op === "probe_media");
+  assert.equal(probe.download.url, page);
+  w.port.onMessage.fire({
+    op: "media_info",
+    request: probe.request,
+    info: { kind: "page", video: [{ id: "137", label: "1080p", size: 9 }], audio: [{ id: "140", label: "en" }] },
+  });
+  const menu = await asked;
+  same(menu.items.map((i) => i.label), ["YouTube video"]);
+  const item = menu.items[0];
+  same(item.options.map((o) => o.label), ["1080p", "Sound only (M4A)", "Sound only (MP3)"]);
+
+  await w.content({ type: "video:download", entry: item.entry, video: "137", title: "(2) Me at the zoo - YouTube" }, 7);
+  const add = w.sent.find((m) => m.op === "add");
+  same([add.url, add.filename, add.media], [page, "Me at the zoo.mp4", { kind: "page", video: "137" }]);
+
+  // Another video in the same tab, without a page load, replaces it.
+  await w.chrome.tabs.onUpdated.fire(7, { url: "https://www.youtube.com/shorts/abc" }, { incognito: false });
+  const next = w.content({ type: "video:menu" }, 7, "https://www.youtube.com/shorts/abc");
+  await tick();
+  const second = w.sent.filter((m) => m.op === "probe_media").at(-1);
+  assert.equal(second.download.url, "https://www.youtube.com/watch?v=abc");
+  w.port.onMessage.fire({ op: "media_info", request: second.request, info: { kind: "page", video: [{ id: "18", label: "360p" }], audio: [] } });
+  assert.equal((await next).items.length, 1);
 });
 
 test("content scripts cannot use the popup's commands", async () => {

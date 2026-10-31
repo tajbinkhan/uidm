@@ -71,6 +71,12 @@ For streamed videos to end up as one `.mp4`, install
 **Options > General**. Without it UIDM still downloads streams, as `.ts`
 files or as separate video and audio files.
 
+YouTube videos need [yt-dlp](https://github.com/yt-dlp/yt-dlp) as well:
+`winget install yt-dlp.yt-dlp` installs it with ffmpeg and Deno, which
+yt-dlp uses to read YouTube's player. UIDM finds `yt-dlp.exe` on `PATH`, next
+to UIDM's programs or next to ffmpeg. Restart UIDM after installing it, so
+it sees the new `PATH`.
+
 To remove UIDM, uninstall it from **Installed apps**. That closes UIDM if it
 is running, removes the program, its browser registration, shortcuts, the
 **Start with Windows** entry and the notification registration, and asks
@@ -707,6 +713,8 @@ Client to daemon (the host relays the browser's unchanged):
   "media": { "kind": "hls", "video": "https://.../720/index.m3u8", "audio": null } }
 { "op": "add_many", "items": [ { "url": "https://...", "start": false, "folder": "D:\\Photos" } ], "queue": 1 }
 { "op": "probe_media", "request": 3, "download": { "url": "https://.../manifest.mpd", "cookies": "..." } }
+{ "op": "add", "url": "https://www.youtube.com/watch?v=...", "filename": "Talk.mp4",
+  "media": { "kind": "page", "video": "137", "audio": "140" } }
 { "op": "grab", "start": "https://example.com/docs/", "depth": 2, "same_site": true, "types": ["pdf"],
   "max_pages": 200, "max_bytes": 52428800, "delay_ms": 1000 }
 { "op": "cancel_grab" }
@@ -976,6 +984,23 @@ show on it. `video_view` (`full` or `mini`) sets how the button and the
 selected-links button look; the mini one is a round arrow with its text as
 a tooltip. Playlists that are themselves one quality of a listed
 master playlist are folded into it.
+
+**YouTube.** YouTube's player streams over SABR: POST requests to
+`googlevideo.com/videoplayback` whose bodies hold video and sound in
+YouTube's own framing (`application/vnd.yt-ump`), so no response is a file,
+a playlist or a manifest. The worker keeps the tab's video page instead
+(`kind: "page"`, as `https://www.youtube.com/watch?v=ID` for watch pages,
+Shorts and `youtu.be` links), from the tab's address as YouTube moves between
+videos without loading a page. `probe_media` on such an address runs
+`yt-dlp -J` and offers one video per height (H.264 first, then the highest
+bit rate) and the sound per language. The download runs yt-dlp with the
+chosen formats and `--ffmpeg-location`, so ffmpeg joins them into an `.mp4`;
+the sound alone is `-x --audio-format mp3|m4a`. UIDM reads yt-dlp's progress
+lines, and canceling ends yt-dlp and its children (`taskkill /T` on
+Windows); its `.part` files let a retry carry on. Without ffmpeg the best
+format with both video and sound in one file is saved, with a note. Live
+streams are refused. UIDM does not send the browser's YouTube cookies, so
+only videos anyone can watch signed out are offered.
 
 **HLS.** UIDM reads master playlists (qualities, separate audio tracks) and
 media playlists (segments, `#EXT-X-BYTERANGE`, `#EXT-X-MAP` headers,

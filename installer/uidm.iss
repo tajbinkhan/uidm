@@ -206,7 +206,8 @@ begin
       '3. Check that its ID reads {#ExtensionId}.' + #13#10#13#10 +
       'In Firefox, open about:debugging, choose This Firefox, then Load Temporary Add-on, ' +
       'and pick manifest.json in ' + ExpandConstant('{app}\firefox') + '.' + #13#10#13#10 +
-      'For streamed videos to be saved as .mp4, install ffmpeg and put it on PATH, or choose it in Options.';
+      'For streamed videos to be saved as .mp4, install ffmpeg and put it on PATH, or choose it in Options. ' +
+      'For YouTube videos, also install yt-dlp: winget install yt-dlp.yt-dlp';
 end;
 
 function InitializeUninstall(): Boolean;

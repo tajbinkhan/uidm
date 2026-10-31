@@ -251,6 +251,10 @@
     "message": "DASH stream",
     "description": "The video button's menu: heading for a video streamed with MPEG-DASH (a technical name)."
   },
+  "youtubeVideo": {
+    "message": "YouTube video",
+    "description": "The video button's menu: heading for a YouTube video, which UIDM reads with yt-dlp."
+  },
   "mediaNoAnswer": {
     "message": "UIDM did not answer.",
     "description": "The video button's menu, under a stream UIDM gave no details for."

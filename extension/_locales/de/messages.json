@@ -192,6 +192,9 @@
   "dashStream": {
     "message": "DASH-Stream"
   },
+  "youtubeVideo": {
+    "message": "YouTube-Video"
+  },
   "mediaNoAnswer": {
     "message": "UIDM hat nicht geantwortet."
   },
