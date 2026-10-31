@@ -89,6 +89,16 @@ if (chrome.webRequest) {
   );
 }
 if (chrome.tabs) chrome.tabs.onRemoved.addListener((tabId) => media.delete(tabId) && scheduleRecentMenu());
+// A YouTube video, which moves between videos without loading a page.
+if (chrome.tabs) {
+  chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+    const page = change.url && !tab.incognito && videoPageUrl(change.url);
+    if (page) {
+      recordPage(media, tabId, page, Date.now());
+      scheduleRecentMenu();
+    }
+  });
+}
 
 // What UIDM said each stream offers, by URL, and the probes waiting for an
 // answer, by request id.
@@ -96,10 +106,12 @@ const mediaInfos = new Map();
 const probes = new Map();
 let nextProbe = 1;
 const PROBE_TIMEOUT_MS = 20000;
+// yt-dlp takes longer: it reads the page and the player's code first.
+const PAGE_PROBE_TIMEOUT_MS = 60000;
 
 // Ask UIDM what the stream at `url` offers, sending the page's cookies
 // along. Resolves to a MediaInfo, or null without an answer.
-async function probeStream(url, referrer) {
+async function probeStream(url, referrer, timeout = PROBE_TIMEOUT_MS) {
   if (mediaInfos.has(url)) return mediaInfos.get(url);
   const request = nextProbe++;
   const download = { url, user_agent: navigator.userAgent };
@@ -110,7 +122,7 @@ async function probeStream(url, referrer) {
     const timer = setTimeout(() => {
       probes.delete(request);
       resolve(null);
-    }, PROBE_TIMEOUT_MS);
+    }, timeout);
     probes.set(request, (info) => {
       clearTimeout(timer);
       // Failures are not kept: the next click asks again.
@@ -127,12 +139,14 @@ async function probeStream(url, referrer) {
 
 // The video button's menu for tab `tabId`.
 async function videoMenu(tabId, referrer) {
+  const page = videoPageUrl(referrer);
+  if (page) recordPage(media, tabId, page, Date.now());
   const entries = [...(media.get(tabId) || new Map()).values()];
   const streams = entries.filter((e) => e.kind !== "file");
   const infos = new Map();
   await Promise.all(
     streams.map(async (e) => {
-      const info = await probeStream(e.url, referrer);
+      const info = await probeStream(e.url, referrer, e.kind === "page" ? PAGE_PROBE_TIMEOUT_MS : PROBE_TIMEOUT_MS);
       if (info) infos.set(e.url, info);
     }),
   );
@@ -154,7 +168,8 @@ async function downloadMedia(tabId, msg, referrer) {
     download.filename = titleFileName(msg.title, ext);
   } else {
     const soundOnly = ["m4a", "mp3"].includes(msg.audioOnly) ? msg.audioOnly : null;
-    download.filename = titleFileName(msg.title, soundOnly || "mp4");
+    const title = entry.kind === "page" ? pageTitle(msg.title) : msg.title;
+    download.filename = titleFileName(title, soundOnly || "mp4");
     download.media = { kind: entry.kind };
     if (typeof msg.video === "string") download.media.video = msg.video;
     if (typeof msg.audio === "string") download.media.audio = msg.audio;

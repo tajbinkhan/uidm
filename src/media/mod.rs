@@ -10,20 +10,23 @@
 //! around DRM, and a live stream has no end to download to.
 //!
 //! `convert` turns a finished video into an MP4, or its sound into an MP3
-//! or M4A, with ffmpeg.
+//! or M4A, with ffmpeg. `ytdlp` reads video pages that name no stream at
+//! all (YouTube) with yt-dlp.
 
 pub mod convert;
 pub mod dash;
 pub mod hls;
+pub mod ytdlp;
 
 use serde::{Deserialize, Serialize};
 
-/// The two stream formats.
+/// The two stream formats, and a video page yt-dlp reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
     Hls,
     Dash,
+    Page,
 }
 
 /// Which stream to download, and in which quality.

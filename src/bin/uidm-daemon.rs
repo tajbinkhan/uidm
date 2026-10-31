@@ -1533,7 +1533,7 @@ impl Daemon {
     fn probe_media(&self, request: u64, download: Download, reply: Sender<Vec<u8>>) {
         let req = self.request_for(download);
         thread::spawn(move || {
-            let info = engine::probe_media(&req.url, &req.headers, &req.net);
+            let info = engine::probe_media(&req.url, &req.headers, &req.net, req.ffmpeg.as_deref());
             if let Ok(frame) = serde_json::to_vec(&Outgoing::MediaInfo { request, info }) {
                 let _ = reply.send(frame);
             }

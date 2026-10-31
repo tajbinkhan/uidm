@@ -75,7 +75,7 @@ Architecture: $debarch
 Maintainer: Tajbin Khan <tajbinofficial@gmail.com>
 Installed-Size: $size
 Depends: libc6 (>= 2.35), libgtk-3-0, libssl3 | libssl3t64, libxkbcommon-x11-0, libgl1, libegl1
-Recommends: libayatana-appindicator3-1, libnotify-bin, ffmpeg
+Recommends: libayatana-appindicator3-1, libnotify-bin, ffmpeg, yt-dlp
 Suggests: clamav
 Section: net
 Priority: optional
@@ -100,7 +100,7 @@ Summary: Download manager with a browser extension
 License: MIT
 URL: https://github.com/tajbinkhan/uidm
 Requires: gtk3, openssl-libs >= 3, libxkbcommon-x11, libglvnd-glx, libglvnd-egl
-Recommends: libayatana-appindicator-gtk3, libnotify, ffmpeg
+Recommends: libayatana-appindicator-gtk3, libnotify, ffmpeg, yt-dlp
 AutoReqProv: no
 
 %description

@@ -83,6 +83,7 @@ fn load_tracks(
         .or_else(|| sniff(&text))
         .ok_or_else(|| refused("This address is not an HLS playlist or a DASH manifest.".into()))?;
     match kind {
+        MediaKind::Page => Err(refused("A video page is not an HLS playlist or a DASH manifest.".into())),
         MediaKind::Dash => {
             let manifest = dash::parse(&text, &base).map_err(refused)?;
             dash::pick(&manifest, choice.video.as_deref(), choice.audio.as_deref()).map_err(refused)
@@ -123,6 +124,7 @@ pub fn probe(url: &str, headers: &[(String, String)], net: &NetConfig) -> MediaI
     };
     match sniff(&text) {
         None => MediaInfo::failed(None, "This address is not an HLS playlist or a DASH manifest.".into()),
+        Some(MediaKind::Page) => unreachable!("sniff finds only streams"),
         Some(MediaKind::Dash) => match dash::parse(&text, &base) {
             Ok(m) => dash::describe(&m),
             Err(e) => MediaInfo::failed(Some(MediaKind::Dash), e),
@@ -170,7 +172,7 @@ struct Job {
 
 /// The name the video gets, without its extension: the request's file name,
 /// or the playlist's.
-fn stem(req: &DownloadRequest) -> String {
+pub(super) fn stem(req: &DownloadRequest) -> String {
     let name = req
         .filename
         .as_deref()

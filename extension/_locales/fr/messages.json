@@ -192,6 +192,9 @@
   "dashStream": {
     "message": "Flux DASH"
   },
+  "youtubeVideo": {
+    "message": "Vidéo YouTube"
+  },
   "mediaNoAnswer": {
     "message": "UIDM n’a pas répondu."
   },

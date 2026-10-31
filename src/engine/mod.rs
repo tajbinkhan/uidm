@@ -12,6 +12,7 @@
 mod ftp;
 mod http;
 mod limit;
+mod page;
 mod resume;
 mod segments;
 mod stream;
@@ -608,6 +609,9 @@ fn run_inner(
     shared: &Shared,
 ) -> Result<Saved, EngineError> {
     let agent = http::Client::new(&req.net, &req.url)?;
+    if let Some(choice) = req.media.as_ref().filter(|c| c.kind == Some(crate::media::MediaKind::Page)) {
+        return page::run(id, token, req, choice, reporter, shared);
+    }
     if let Some(choice) = &req.media {
         return stream::run(id, token, &agent, req, choice, reporter, shared);
     }
@@ -829,10 +833,23 @@ fn fetch_with(agent: &http::Client, url: &str, headers: &[(String, String)], lim
     })
 }
 
-/// What a stream (an HLS playlist or DASH manifest at `url`) offers, or why
-/// it cannot be downloaded.
-pub fn probe_media(url: &str, headers: &[(String, String)], net: &NetConfig) -> crate::media::MediaInfo {
-    stream::probe(url, headers, net)
+/// What a stream (an HLS playlist or DASH manifest at `url`) or a video page
+/// yt-dlp reads offers, or why it cannot be downloaded. `ffmpeg` is where
+/// to look for yt-dlp besides `PATH`.
+pub fn probe_media(
+    url: &str,
+    headers: &[(String, String)],
+    net: &NetConfig,
+    ffmpeg: Option<&Path>,
+) -> crate::media::MediaInfo {
+    use crate::media::{ytdlp, MediaInfo, MediaKind};
+    if !ytdlp::supports(url) {
+        return stream::probe(url, headers, net);
+    }
+    match ytdlp::find(ffmpeg) {
+        Some(yt_dlp) => ytdlp::probe(&yt_dlp, url, net.proxy.as_ref().and_then(|p| p.proxy_for(url)).as_deref()),
+        None => MediaInfo::failed(Some(MediaKind::Page), ytdlp::MISSING.into()),
+    }
 }
 
 /// What a download will be before it starts, for a save-as dialog.
