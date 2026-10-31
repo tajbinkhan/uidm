@@ -645,7 +645,7 @@ impl GrabDialog {
     }
 
     /// The form and results of a saved project.
-    fn open(p: grab::Project) -> Self {
+    pub fn open(p: grab::Project) -> Self {
         let mut d = Self::from_request(&p.request);
         d.project = p.name.clone();
         if let Some(s) = &p.schedule {

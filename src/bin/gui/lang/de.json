@@ -231,8 +231,6 @@
   "No speed limit": "Kein Geschwindigkeitslimit",
   "All downloads ({count})": "Alle Downloads ({count})",
   "Queues": "Warteschlangen",
-  "{name} ({count}, started)": "{name} ({count}, gestartet)",
-  "Manage queues...": "Warteschlangen verwalten...",
   "No downloads here match. Press Escape to see them all.": "Keine passenden Downloads. Drücken Sie Esc, um alle zu sehen.",
   "No downloads in this category.": "Keine Downloads in dieser Kategorie.",
   "A queue's downloads stay in its run order": "Die Downloads einer Warteschlange bleiben in ihrer Ausführungsreihenfolge",
