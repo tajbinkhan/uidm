@@ -19,6 +19,8 @@
 mod addurl;
 #[path = "gui/answers.rs"]
 mod answers;
+#[path = "gui/banner.rs"]
+mod banner;
 #[path = "gui/categories.rs"]
 mod categories;
 #[path = "gui/columns.rs"]
@@ -455,6 +457,8 @@ enum Action {
     /// Download and run the newer release's Setup.
     InstallUpdate,
     Reconnect,
+    /// Stop the daemon and start a new one.
+    RestartDaemon,
     OpenOptions,
     /// Open Options at the Connection tab with a new login for this host.
     /// Ask for the login a failed download's site wants.
@@ -1501,6 +1505,11 @@ impl App {
 
     /// Connect on a background thread, then read events until the daemon goes.
     fn connect(&self) {
+        self.connect_with(false);
+    }
+
+    /// Connect, first restarting the daemon if `restart`.
+    fn connect_with(&self, restart: bool) {
         let shared = Arc::clone(&self.shared);
         let writer = Arc::clone(&self.writer);
         let ctx = self.ctx.clone();
@@ -1511,7 +1520,7 @@ impl App {
                 shared.lock().unwrap().link = link;
                 ctx.request_repaint();
             };
-            let stream = match ipc::connect_or_spawn() {
+            let stream = match if restart { ipc::restart_daemon() } else { ipc::connect_or_spawn() } {
                 Ok(s) => s,
                 Err(e) => return set_link(Link::Lost(e.to_string())),
             };
@@ -1686,6 +1695,7 @@ impl App {
                 let _ = uidm::platform::reveal(std::path::Path::new(&path));
             }
             Action::Reconnect => self.connect(),
+            Action::RestartDaemon => self.connect_with(true),
             Action::OpenOptions => {
                 if let Some(settings) = &self.shared.lock().unwrap().settings {
                     self.options = Some(OptionsDraft::new(settings));
@@ -3614,106 +3624,45 @@ impl eframe::App for App {
             }
         }
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                match &link {
-                    Link::Connecting => {
-                        ui.spinner();
-                        ui.label(tr("Connecting to the UIDM daemon..."));
-                    }
-                    Link::Connected => {
-                        ui.label(tr("Connected"));
-                    }
-                    Link::Lost(why) => {
-                        ui.colored_label(ui.visuals().error_fg_color, trf!("Disconnected: {reason}", reason = why));
-                        if ui.button(tr("Reconnect")).clicked() {
-                            actions.push(Action::Reconnect);
-                        }
-                    }
-                }
-                let refreshing = self.shared.lock().unwrap().refresh_waiting;
-                if let Some(e) = refreshing.and_then(|id| rows.iter().find(|e| e.id == id)) {
-                    ui.separator();
-                    ui.label(trf!("Your next browser download gives {name} a new link", name = display_name(e)));
-                    if ui.small_button(tr("Stop waiting")).clicked() {
-                        actions.push(Action::CancelRefresh);
-                    }
-                }
-                let active = rows.iter().filter(|e| !e.status.is_terminal()).count();
-                ui.separator();
-                ui.label(trf!("{active} active, {total} total", active = active, total = rows.len()));
-                if let Some(err) = &last_error {
-                    ui.separator();
-                    ui.colored_label(ui.visuals().warn_fg_color, err);
-                }
-                let newer = self.shared.lock().unwrap().newer_release.clone();
-                if let Some(r) = newer {
-                    ui.separator();
-                    ui.hyperlink_to(trf!("UIDM {version} is available", version = r.version), &r.url);
-                    // About checks again and offers Update now.
-                    if r.setup.is_some() && ui.add_enabled(connected, egui::Button::new(tr("Update now")).small()).clicked() {
-                        actions.push(Action::CheckUpdate);
-                    }
-                }
-                let quota = self.shared.lock().unwrap().quota.clone();
-                if let Some(q) = quota {
-                    ui.separator();
-                    ui.colored_label(ui.visuals().warn_fg_color, q);
-                }
-                let notice = self.shared.lock().unwrap().notice.clone();
-                if let Some(n) = notice {
-                    ui.separator();
-                    ui.label(n);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let any_done = rows.iter().any(|e| e.status == Status::Done);
-                    if ui
-                        .add_enabled(connected && any_done, egui::Button::new(tr("Clear finished")))
-                        .clicked()
-                    {
-                        actions.push(Action::ClearFinished);
-                    }
-                    let ticked: Vec<u64> = rows
-                        .iter()
-                        .filter(|e| self.selected.contains(&e.id) && e.status.is_terminal())
-                        .map(|e| e.id)
-                        .collect();
-                    if !ticked.is_empty()
-                        && ui
-                            .add_enabled(connected, egui::Button::new(trf!("Remove ticked ({count})", count = ticked.len())))
-                            .on_hover_text(tr("Running downloads are left alone"))
-                            .clicked()
-                    {
-                        actions.push(Action::Remove(ticked));
-                    }
-                    if let Some(s) = &settings {
-                        ui.separator();
-                        let toggle = if s.speed_limit_enabled { tr("Turn off") } else { tr("Limit speed") };
-                        let hover = trf!("Limit: {speed}/s", speed = human_bytes(s.speed_limit_kbps * 1024));
-                        if ui
-                            .add_enabled(connected, egui::Button::new(toggle).small())
-                            .on_hover_text(hover)
-                            .clicked()
-                        {
-                            actions.push(Action::QuickSettings(Settings {
-                                speed_limit_enabled: !s.speed_limit_enabled,
-                                ..s.clone()
-                            }));
-                        }
-                        if s.speed_limit_enabled {
-                            ui.colored_label(
-                                ui.visuals().warn_fg_color,
-                                trf!("Speed limit {speed}/s", speed = human_bytes(s.speed_limit_kbps * 1024)),
-                            );
-                        } else {
-                            ui.weak(tr("No speed limit"));
-                        }
-                    }
-                });
-            });
-            ui.add_space(4.0);
-        });
+        // What the window has to say, under the toolbar.
+        let (refreshing, notice, quota, release) = {
+            let sh = self.shared.lock().unwrap();
+            (sh.refresh_waiting, sh.notice.clone(), sh.quota.clone(), sh.newer_release.clone())
+        };
+        let notes = banner::Notes {
+            connection: match &link {
+                Link::Connected => banner::Connection::Up,
+                Link::Connecting => banner::Connection::Connecting,
+                Link::Lost(why) => banner::Connection::Lost(why),
+            },
+            refreshing: refreshing.and_then(|id| rows.iter().find(|e| e.id == id)).map(display_name),
+            error: last_error.as_deref(),
+            notice: notice.as_deref(),
+            quota: quota.as_deref(),
+            release: release.as_ref().map(|r| banner::Release {
+                version: &r.version,
+                url: &r.url,
+                installable: r.setup.is_some(),
+            }),
+        };
+        if notes.any() {
+            let dismissed = egui::TopBottomPanel::top("banner")
+                .show_separator_line(false)
+                .show(ctx, |ui| {
+                    ui.add_space(3.0);
+                    let d = banner::show(ui, &notes, connected, &mut actions);
+                    ui.add_space(3.0);
+                    d
+                })
+                .inner;
+            let mut sh = self.shared.lock().unwrap();
+            if dismissed.error {
+                sh.last_error = None;
+            }
+            if dismissed.notice {
+                sh.notice = None;
+            }
+        }
 
         // Category of each row, from its file name, and the tree to filter by
         // it. Until the daemon sends its settings the tree uses the defaults.
