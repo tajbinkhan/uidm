@@ -26,7 +26,7 @@ pub fn dialog(ctx: &egui::Context, id: u64, entry: Option<&DownloadEntry>, segme
         return false;
     };
     let mut open = true;
-    egui::Window::new(trf!("Connections of {name}", name = display_name(e)))
+    crate::dialog::Window::new(trf!("Connections of {name}", name = display_name(e)))
         .id(egui::Id::new(("connections", id)))
         .open(&mut open)
         .collapsible(false)

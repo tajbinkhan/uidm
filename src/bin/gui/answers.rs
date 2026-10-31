@@ -161,7 +161,7 @@ pub fn window(ctx: &egui::Context, p: &mut Prompt) -> Option<bool> {
     let question = p.current()?.clone();
     let name = |path: &str| Path::new(path).file_name().map_or(path.to_string(), |n| n.to_string_lossy().into_owned());
     let mut result = None;
-    egui::Window::new(tr("Adding downloads"))
+    crate::dialog::Window::new(tr("Adding downloads"))
         .id(egui::Id::new("batch_answers"))
         .collapsible(false)
         .resizable(false)

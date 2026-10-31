@@ -81,8 +81,9 @@ impl LoginPrompt {
 pub fn window(ctx: &egui::Context, p: &mut LoginPrompt, settings: Option<&Settings>, connected: bool, actions: &mut Vec<Action>) -> bool {
     let mut open = true;
     let mut done = false;
-    egui::Window::new(tr("Log in to the site"))
+    crate::dialog::Window::new(tr("Log in to the site"))
         .id(egui::Id::new("login_prompt"))
+        .dlu_width(300.0)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

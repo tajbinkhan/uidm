@@ -129,8 +129,9 @@ pub fn dialog(
     let stopped = done || e.status.is_retryable();
     let mut open = true;
     let mut close = false;
-    egui::Window::new(trf!("Properties of {name}", name = display_name(e)))
+    crate::dialog::Window::new(trf!("Properties of {name}", name = display_name(e)))
         .id(egui::Id::new(("properties", d.id)))
+        .dlu_width(318.0)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

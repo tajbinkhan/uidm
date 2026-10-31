@@ -206,7 +206,7 @@ pub fn dialog(
     take_picked(&d.picked, &mut d.folder);
     let mut open = true;
     let mut close = false;
-    egui::Window::new(tr("Download links from the page"))
+    crate::dialog::Window::new(tr("Download links from the page"))
         .id(egui::Id::new("links_picker"))
         .open(&mut open)
         .collapsible(false)

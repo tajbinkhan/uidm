@@ -162,8 +162,9 @@ pub fn batch_dialog(
     let mut open = true;
     let mut close = false;
     let title = if d.source == Source::Imported { "Import downloads" } else { "Add many downloads" };
-    egui::Window::new(tr(title))
+    crate::dialog::Window::new(tr(title))
         .id(egui::Id::new(title))
+        .dlu_width(316.0)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -407,7 +408,7 @@ pub fn export_dialog(
     };
     let mut open = true;
     let mut close = false;
-    egui::Window::new(tr("Export the list"))
+    crate::dialog::Window::new(tr("Export the list"))
         .id(egui::Id::new("Export the list"))
         .open(&mut open)
         .collapsible(false)
@@ -873,8 +874,9 @@ pub fn grab_dialog(
     let mut close = false;
     let mut again = false;
     let mut replace = None;
-    egui::Window::new(tr("Site grabber"))
+    crate::dialog::Window::new(tr("Site grabber"))
         .id(egui::Id::new("Site grabber"))
+        .dlu_width(409.0)
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -1588,7 +1590,7 @@ fn save_filters(d: &mut GrabDialog) {
 /// answered.
 pub fn clipboard_offer(ctx: &egui::Context, url: &str, connected: bool, actions: &mut Vec<Action>) -> bool {
     let mut answered = false;
-    egui::Window::new(tr("Download the copied link?"))
+    crate::dialog::Window::new(tr("Download the copied link?"))
         .id(egui::Id::new("Download the copied link?"))
         .collapsible(false)
         .resizable(false)

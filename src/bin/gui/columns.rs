@@ -338,7 +338,7 @@ pub fn local_date(unix: u64) -> String {
 pub fn dialog(ctx: &egui::Context, layout: &mut Layout) -> bool {
     let mut open = true;
     let mut close = false;
-    egui::Window::new(tr("Columns"))
+    crate::dialog::Window::new(tr("Columns"))
         .id(egui::Id::new("columns"))
         .open(&mut open)
         .collapsible(false)
