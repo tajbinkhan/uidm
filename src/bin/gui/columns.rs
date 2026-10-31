@@ -17,10 +17,12 @@ use uidm::queue;
 use super::display_name;
 use crate::i18n::tr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Column {
     Name,
+    /// The download's place in its queue.
+    Queue,
     Size,
     Progress,
     Speed,
@@ -33,8 +35,9 @@ pub enum Column {
 }
 
 impl Column {
-    pub const ALL: [Column; 10] = [
+    pub const ALL: [Column; 11] = [
         Column::Name,
+        Column::Queue,
         Column::Size,
         Column::Progress,
         Column::Speed,
@@ -46,7 +49,22 @@ impl Column {
         Column::Description,
     ];
 
-    const DEFAULT: [Column; 6] = [
+    /// The columns, in the order of the download manager UIDM's list
+    /// follows.
+    const DEFAULT: [Column; 8] = [
+        Column::Name,
+        Column::Queue,
+        Column::Size,
+        Column::Status,
+        Column::TimeLeft,
+        Column::Speed,
+        Column::LastTry,
+        Column::Description,
+    ];
+
+    /// The default before the list followed that order. A layout still on
+    /// it moves to the new one.
+    const OLD_DEFAULT: [Column; 6] = [
         Column::Name,
         Column::Size,
         Column::Progress,
@@ -57,17 +75,38 @@ impl Column {
 
     pub fn title(self) -> &'static str {
         match self {
-            Column::Name => tr("File"),
+            Column::Name => tr("File Name"),
+            Column::Queue => tr("Q"),
             Column::Size => tr("Size"),
             Column::Progress => tr("Progress"),
-            Column::Speed => tr("Speed"),
+            Column::Speed => tr("Transfer rate"),
             Column::TimeLeft => tr("Time left"),
             Column::Status => tr("Status"),
-            Column::LastTry => tr("Last try"),
+            Column::LastTry => tr("Last Try Date"),
             Column::SaveTo => tr("Save to"),
             Column::Referrer => tr("Parent web page"),
             Column::Description => tr("Description"),
         }
+    }
+
+    /// The width the column has until one is set.
+    pub fn default_width(self) -> f32 {
+        match self {
+            Column::Name => 220.0,
+            Column::Queue => 22.0,
+            Column::Size => 80.0,
+            Column::Progress => 120.0,
+            Column::Speed => 95.0,
+            Column::TimeLeft => 80.0,
+            Column::Status => 95.0,
+            Column::LastTry => 110.0,
+            Column::SaveTo | Column::Referrer | Column::Description => TEXT_WIDTH,
+        }
+    }
+
+    /// Whether the list can be sorted by it.
+    pub fn sortable(self) -> bool {
+        self != Column::Queue
     }
 
     /// Whether the column holds long text, cut to a fixed width.
@@ -123,6 +162,9 @@ impl Layout {
         let mut layout: Layout = saved
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        if layout.columns == Column::OLD_DEFAULT {
+            layout.columns = Column::DEFAULT.to_vec();
+        }
         layout.tidy();
         layout
     }
@@ -142,6 +184,12 @@ impl Layout {
     /// text, else none (it fits its content).
     pub fn width(&self, column: Column) -> Option<f32> {
         self.widths.get(&column).copied().or(column.is_text().then_some(TEXT_WIDTH))
+    }
+
+    /// The width `column` is drawn at in the list: the one set, else its
+    /// default.
+    pub fn shown_width(&self, column: Column) -> f32 {
+        self.widths.get(&column).copied().unwrap_or(column.default_width())
     }
 
     /// Set `column`'s width, kept within `WIDTH_RANGE`.
@@ -179,20 +227,6 @@ impl Layout {
         };
     }
 
-    /// The arrow after a header's title, if the list is sorted by it.
-    pub fn arrow(&self, column: Column) -> &'static str {
-        match self.sort {
-            Some(Sort { column: c, descending }) if c == column => {
-                if descending {
-                    " \u{25BC}"
-                } else {
-                    " \u{25B2}"
-                }
-            }
-            _ => "",
-        }
-    }
-
     /// Sort `rows` by the chosen column. `speed` gives a running download's
     /// bytes per second. Ties keep the order added.
     pub fn sort(&self, rows: &mut [&DownloadEntry], speed: impl Fn(u64) -> Option<f64>) {
@@ -214,6 +248,9 @@ fn compare(sort: Sort, a: &DownloadEntry, b: &DownloadEntry, speed: &impl Fn(u64
     let lower = |s: Option<&str>| s.map(str::to_lowercase);
     match sort.column {
         Column::Name => known(Some(display_name(a).to_lowercase()), Some(display_name(b).to_lowercase()), down),
+        // The place in a queue is not the download's own; a queue's view
+        // shows its order anyway.
+        Column::Queue => Ordering::Equal,
         Column::Size => known(a.total, b.total, down),
         Column::Progress => known(fraction(a), fraction(b), down),
         Column::Speed => known(running(a), running(b), down),

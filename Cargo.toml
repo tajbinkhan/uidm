@@ -48,6 +48,8 @@ sha2 = "0.11.1"
 # Immediate-mode GUI for the desktop window. Pure Rust; the default glow
 # backend renders through OpenGL.
 eframe = "0.31.1"
+# The download list's table: resizable columns and whole-row selection.
+egui_extras = { version = "0.31.1", default-features = false }
 # Native folder picker for the Options dialog (IFileOpenDialog on Windows,
 # through windows-sys, so it builds on windows-gnu).
 rfd = { version = "0.15.4", default-features = false }
