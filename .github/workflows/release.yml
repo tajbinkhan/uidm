@@ -2,8 +2,9 @@
 # Release. Release files don't count against the repository's storage, and
 # UIDM's own update check reads the latest release.
 #
-# To release: set the version in Cargo.toml, commit, then push a tag that
-# matches it:
+# To release: set the version in Cargo.toml, write the notes in
+# release-notes/v<version>.md (start from release-notes/TEMPLATE.md), commit,
+# then push a tag that matches it:
 #
 #   git tag v0.2.0 && git push origin v0.2.0
 #
@@ -154,17 +155,31 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only the notes are read; gh uses GH_TOKEN, so git keeps no token.
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
       - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
 
+      # The notes come from release-notes/<tag>.md. Without that file the
+      # release gets GitHub's list of merged pull requests instead.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
           ls -la dist
-          gh release create "${{ github.ref_name }}" dist/* \
+          notes="release-notes/$TAG.md"
+          if [ -f "$notes" ] && [ ! -L "$notes" ]; then
+            set -- --notes-file "$notes"
+          else
+            set -- --generate-notes
+          fi
+          gh release create "$TAG" dist/* \
             --repo "${{ github.repository }}" \
-            --title "UIDM ${{ github.ref_name }}" \
-            --generate-notes
+            --title "UIDM $TAG" \
+            "$@"
