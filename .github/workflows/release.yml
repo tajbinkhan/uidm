@@ -179,7 +179,7 @@ jobs:
           else
             set -- --generate-notes
           fi
-          gh release create "${{ github.ref_name }}" dist/* \
+          gh release create "$TAG" dist/* \
             --repo "${{ github.repository }}" \
-            --title "UIDM ${{ github.ref_name }}" \
+            --title "UIDM $TAG" \
             "$@"
