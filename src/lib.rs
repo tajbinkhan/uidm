@@ -25,6 +25,7 @@
 //! - `quota`: counting the bytes downloaded for the download quota.
 //! - `zip`: listing a zip archive's files from its end, for a preview.
 //! - `update`: checking GitHub for a newer release.
+//! - `package`: keeping the daemon out of an app package's copy of AppData.
 
 pub mod app;
 pub mod autostart;
@@ -39,6 +40,8 @@ pub mod listfile;
 pub mod media;
 pub mod net;
 pub mod notify;
+#[cfg(windows)]
+pub mod package;
 pub mod pac;
 pub mod platform;
 pub mod power;

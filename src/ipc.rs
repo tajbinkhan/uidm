@@ -108,7 +108,10 @@ pub fn connect_or_spawn() -> io::Result<TcpStream> {
         Ok(stream) => return Ok(stream),
         // Something holds the port but cannot prove it is the daemon.
         // Starting another daemon cannot help, as it could not bind.
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return retry_proof(e),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            drop_package_token();
+            return retry_proof(e);
+        }
         Err(_) => {}
     }
     spawn_daemon()?;
@@ -165,6 +168,16 @@ fn stop_daemons() -> io::Result<()> {
         .stderr(Stdio::null())
         .status()
         .map(|_| ())
+}
+
+/// Inside a Windows app package, delete the package's own copy of the token,
+/// if a daemon once started there left one. Windows reads that copy before
+/// the real file, so a stale one fails every handshake from the package.
+fn drop_package_token() {
+    #[cfg(windows)]
+    if let Some(copy) = crate::package::data_copy() {
+        let _ = fs::remove_file(copy.join("daemon.token"));
+    }
 }
 
 /// Try the handshake again for `PROOF_WAIT`, for a daemon that has bound
@@ -312,6 +325,11 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// The daemon's log, in the temp folder.
+pub fn daemon_log() -> PathBuf {
+    std::env::temp_dir().join("uidm-daemon.log")
+}
+
 /// Launch `uidm-daemon` from the host's own directory as a detached
 /// process, so it keeps running after the host and the browser exit. Its log
 /// goes to `uidm-daemon.log` in the temp folder, added to the end: a daemon
@@ -319,11 +337,16 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 /// under it would leave a run of NULs where its log was.
 fn spawn_daemon() -> io::Result<()> {
     keep_stdio_private();
+    // Started from where Windows keeps a package's copy of AppData, the
+    // daemon would keep its files in that copy; it runs outside it instead.
+    #[cfg(windows)]
+    if crate::package::data_copy().is_some() {
+        let (program, mut args) = crate::platform::program("uidm-daemon")?;
+        args.push(crate::package::LOG_ARG.to_string());
+        return crate::package::spawn_outside(&program, &args);
+    }
+    let log = fs::OpenOptions::new().create(true).append(true).open(daemon_log())?;
     let mut daemon = crate::platform::program_command("uidm-daemon")?;
-    let log = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(std::env::temp_dir().join("uidm-daemon.log"))?;
 
     crate::platform::detach(&mut daemon)
         .stdin(Stdio::null())

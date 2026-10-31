@@ -184,7 +184,7 @@ Build: `cargo clippy --all-targets` reports 0 errors and 11 style warnings. `car
 
 | # | Defect | Where | Status |
 |---|---|---|---|
-| 1 | GUI shows "could not prove it is the UIDM daemon". The cause is two copies of `daemon.token`: a daemon started from an MSIX-packaged app (here, the Claude desktop app) wrote it into the package's redirected `LocalCache`. The same can happen with Store Firefox launching the native host. | `src/ipc.rs` | confirmed (handshake replayed with both tokens) |
+| 1 | GUI shows "could not prove it is the UIDM daemon". The cause is two copies of `daemon.token`: a daemon started from an MSIX-packaged app (here, the Claude desktop app) wrote it into the package's redirected `LocalCache`. The same can happen with Store Firefox launching the native host. | `src/ipc.rs` | fixed in #127 |
 | 2 | Each failed connect truncates the running daemon's log with `File::create`. The daemon keeps writing at its old offset, so the log fills with NULs and the startup lines are lost. Use append mode. | `src/ipc.rs:263` | fixed in step 8 |
 | 3 | A proof failure (`PermissionDenied`) is handled like "nothing listening". UIDM spawns a daemon that cannot bind, then retries for about 15 s. | `src/ipc.rs:102-125` | fixed in step 8 |
 | 4 | The disconnect error does not wrap, so it pushes Reconnect off-screen. There is no "restart daemon" action. | `src/bin/uidm-gui.rs:3691-3694` | fixed in #123 |
