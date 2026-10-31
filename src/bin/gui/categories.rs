@@ -136,7 +136,7 @@ pub fn show(ui: &mut egui::Ui, panel: &Panel, tree: &mut Tree, filter: &mut Filt
     }
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(tr("Categories")).size(12.5));
+        ui.label(tr("Categories"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let close = ui
                 .add_enabled(panel.connected, egui::Button::new("×").frame(false))
@@ -269,7 +269,7 @@ fn row(ui: &mut egui::Ui, depth: usize, expander: Option<bool>, icon: Icon, text
     x += 12.0;
     let icon_rect = Rect::from_min_size(Pos2::new(x, rect.center().y - 7.0), Vec2::splat(14.0));
     x += 18.0;
-    let galley = painter.layout_no_wrap(text.to_string(), egui::FontId::proportional(12.5), visuals.text_color());
+    let galley = painter.layout_no_wrap(text.to_string(), egui::TextStyle::Body.resolve(ui.style()), visuals.text_color());
     let label = Rect::from_min_size(Pos2::new(x - 2.0, rect.top() + 1.0), Vec2::new(galley.size().x + 4.0, ROW_HEIGHT - 2.0));
     if selected {
         painter.rect_filled(label, 0.0, visuals.selection.bg_fill);
