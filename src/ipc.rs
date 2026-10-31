@@ -124,6 +124,41 @@ pub fn connect_or_spawn() -> io::Result<TcpStream> {
     ))
 }
 
+/// Stop the running daemon, if any, then start a new one and connect to
+/// it. For a daemon that is up but does not answer or prove itself.
+pub fn restart_daemon() -> io::Result<TcpStream> {
+    stop_daemons()?;
+    // The old one's listener goes with its process.
+    let deadline = Instant::now() + STARTUP_WAIT;
+    while TcpStream::connect(DAEMON_ADDR).is_ok() && Instant::now() < deadline {
+        thread::sleep(STARTUP_POLL);
+    }
+    connect_or_spawn()
+}
+
+/// End every `uidm-daemon` process this user may end.
+fn stop_daemons() -> io::Result<()> {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("taskkill");
+        c.args(["/F", "/IM", "uidm-daemon.exe"]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("pkill");
+        c.args(["-x", "uidm-daemon"]);
+        c
+    };
+    // A non-zero exit means none was running, which is fine.
+    crate::platform::no_window(&mut cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|_| ())
+}
+
 /// Connect once and run the client side of the handshake. Returns the stream
 /// ready for normal frames only after the daemon has proved itself.
 fn connect_authenticated() -> io::Result<TcpStream> {
