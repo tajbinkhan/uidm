@@ -137,9 +137,10 @@ async function probeStream(url, referrer, timeout = PROBE_TIMEOUT_MS) {
   });
 }
 
-// The video button's menu for tab `tabId`.
-async function videoMenu(tabId, referrer) {
-  const page = videoPageUrl(referrer);
+// The video button's menu for tab `tabId`. Pages in a private window are
+// not recorded, so they stay out of the "last videos" menus.
+async function videoMenu(tabId, referrer, incognito) {
+  const page = !incognito && videoPageUrl(referrer);
   if (page) recordPage(media, tabId, page, Date.now());
   const entries = [...(media.get(tabId) || new Map()).values()];
   const streams = entries.filter((e) => e.kind !== "file");
@@ -197,7 +198,7 @@ function onContentMessage(msg, sender, sendResponse) {
         sendResponse({ connected: false, items: [] });
         return false;
       }
-      videoMenu(tabId, pageUrl).then((items) => sendResponse({ connected: true, items }));
+      videoMenu(tabId, pageUrl, sender.tab.incognito).then((items) => sendResponse({ connected: true, items }));
       return true;
     case "video:download":
       downloadMedia(tabId, msg, pageUrl).then((ok) => sendResponse({ ok }));

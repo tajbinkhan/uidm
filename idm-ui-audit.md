@@ -185,12 +185,12 @@ Build: `cargo clippy --all-targets` reports 0 errors and 11 style warnings. `car
 | # | Defect | Where | Status |
 |---|---|---|---|
 | 1 | GUI shows "could not prove it is the UIDM daemon". The cause is two copies of `daemon.token`: a daemon started from an MSIX-packaged app (here, the Claude desktop app) wrote it into the package's redirected `LocalCache`. The same can happen with Store Firefox launching the native host. | `src/ipc.rs` | confirmed (handshake replayed with both tokens) |
-| 2 | Each failed connect truncates the running daemon's log with `File::create`. The daemon keeps writing at its old offset, so the log fills with NULs and the startup lines are lost. Use append mode. | `src/ipc.rs:263` | confirmed |
-| 3 | A proof failure (`PermissionDenied`) is handled like "nothing listening". UIDM spawns a daemon that cannot bind, then retries for about 15 s. | `src/ipc.rs:102-125` | confirmed |
-| 4 | The disconnect error does not wrap, so it pushes Reconnect off-screen. There is no "restart daemon" action. | `src/bin/uidm-gui.rs:3691-3694` | confirmed (screenshot) |
-| 5 | Audio-only YouTube: `choose_output` checks only the final `.mp3`. An unrelated existing `Song.m4a` (or `.webm`) is reused by yt-dlp, converted, then deleted. | `src/engine/page.rs:376-411` | plausible-high |
-| 6 | Incognito YouTube pages are recorded into the normal profile's "last videos" menus. `videoMenu` doesn't check `sender.tab.incognito`. | `extension/background.js:141` | confirmed (code) |
-| 7 | A 206 response is accepted without checking that `Content-Range` starts at the requested offset. A misbehaving proxy can silently corrupt the file. | `src/engine/http.rs:233` | confirmed (code) |
+| 2 | Each failed connect truncates the running daemon's log with `File::create`. The daemon keeps writing at its old offset, so the log fills with NULs and the startup lines are lost. Use append mode. | `src/ipc.rs:263` | fixed in step 8 |
+| 3 | A proof failure (`PermissionDenied`) is handled like "nothing listening". UIDM spawns a daemon that cannot bind, then retries for about 15 s. | `src/ipc.rs:102-125` | fixed in step 8 |
+| 4 | The disconnect error does not wrap, so it pushes Reconnect off-screen. There is no "restart daemon" action. | `src/bin/uidm-gui.rs:3691-3694` | fixed in #123 |
+| 5 | Audio-only YouTube: `choose_output` checks only the final `.mp3`. An unrelated existing `Song.m4a` (or `.webm`) is reused by yt-dlp, converted, then deleted. | `src/engine/page.rs:376-411` | fixed in step 8 |
+| 6 | Incognito YouTube pages are recorded into the normal profile's "last videos" menus. `videoMenu` doesn't check `sender.tab.incognito`. | `extension/background.js:141` | fixed in step 8 |
+| 7 | A 206 response is accepted without checking that `Content-Range` starts at the requested offset. A misbehaving proxy can silently corrupt the file. | `src/engine/http.rs:233` | fixed in step 8 |
 | 8 | yt-dlp `.part` and `.ytdl` leftovers are not in `files_of`. "Delete with files" leaves them behind, and a restart resumes from stale parts. | `src/engine/mod.rs:903` | plausible |
 | 9 | `yt-dlp -J` probes aren't deduplicated and have no timeout or kill. Reopening the video menu stacks about 100 MB processes. | `uidm-daemon.rs:1533`, `background.js` `probeStream` | plausible |
 | 10 | Page downloads drop the cookies, referrer and login the extension sends, and they bypass the global speed limit and the per-host connection limits. | `src/media/ytdlp.rs`, `src/engine/page.rs` | confirmed (code) |

@@ -236,6 +236,14 @@ pub fn fetch_range(
             resp.status()
         )));
     }
+    // A proxy or server that answers with another range would put its bytes
+    // at the wrong place in the file.
+    let answered = resp.header("content-range").unwrap_or_default().to_string();
+    if parse_content_range_start(&answered) != Some(start) {
+        return Err(EngineError::Protocol(format!(
+            "asked for range {range}, but the server sent \"{answered}\""
+        )));
+    }
     Ok(Box::new(resp.into_reader()))
 }
 
@@ -285,6 +293,12 @@ pub fn fetch_whole(client: &Client, url: &str, headers: &[(String, String)]) -> 
 
 /// Parse the total length out of a `Content-Range: bytes 0-0/12345` header.
 /// Returns `None` for an unknown total (`.../*`).
+/// The first byte of a `Content-Range: bytes 100-199/1000` value.
+fn parse_content_range_start(value: &str) -> Option<u64> {
+    let range = value.trim().strip_prefix("bytes")?.trim_start();
+    range.split('-').next()?.trim().parse::<u64>().ok()
+}
+
 fn parse_content_range_total(value: &str) -> Option<u64> {
     let total = value.rsplit('/').next()?.trim();
     if total == "*" {
@@ -400,7 +414,18 @@ fn map_ureq(e: ureq::Error) -> EngineError {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_content_disposition_filename, parse_content_range_total};
+    use super::{parse_content_disposition_filename, parse_content_range_start, parse_content_range_total};
+
+    #[test]
+    fn content_range_start() {
+        assert_eq!(parse_content_range_start("bytes 100-199/1000"), Some(100));
+        assert_eq!(parse_content_range_start("bytes 0-0/*"), Some(0));
+        assert_eq!(parse_content_range_start("  bytes 5-9/10 "), Some(5));
+        // Unsatisfiable or missing ranges have no start.
+        assert_eq!(parse_content_range_start("bytes */1000"), None);
+        assert_eq!(parse_content_range_start(""), None);
+        assert_eq!(parse_content_range_start("items 0-1/2"), None);
+    }
 
     #[test]
     fn content_range_total() {
