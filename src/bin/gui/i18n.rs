@@ -119,6 +119,7 @@ mod tests {
         include_str!("../uidm-gui.rs"),
         include_str!("addurl.rs"),
         include_str!("answers.rs"),
+        include_str!("categories.rs"),
         include_str!("columns.rs"),
         include_str!("connections.rs"),
         include_str!("droptarget.rs"),

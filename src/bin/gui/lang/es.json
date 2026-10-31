@@ -231,8 +231,6 @@
   "No speed limit": "Sin límite de velocidad",
   "All downloads ({count})": "Todas las descargas ({count})",
   "Queues": "Colas",
-  "{name} ({count}, started)": "{name} ({count}, iniciada)",
-  "Manage queues...": "Administrar colas...",
   "No downloads here match. Press Escape to see them all.": "Ninguna descarga coincide. Pulse Esc para verlas todas.",
   "No downloads in this category.": "No hay descargas en esta categoría.",
   "A queue's downloads stay in its run order": "Las descargas de una cola mantienen su orden de ejecución",

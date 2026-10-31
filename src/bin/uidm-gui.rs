@@ -19,6 +19,8 @@
 mod addurl;
 #[path = "gui/answers.rs"]
 mod answers;
+#[path = "gui/categories.rs"]
+mod categories;
 #[path = "gui/columns.rs"]
 mod columns;
 #[path = "gui/connections.rs"]
@@ -71,6 +73,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use categories::Filter;
 use i18n::{tr, trf};
 use eframe::egui;
 #[cfg(windows)]
@@ -505,6 +508,8 @@ enum Action {
     OpenImport,
     OpenExport,
     OpenGrabber,
+    /// Open a saved grabber project.
+    OpenGrabProject(String),
     Grab(GrabRequest),
     CancelGrab,
     /// A click on a download's name: select only it, or with Ctrl add or
@@ -532,15 +537,6 @@ enum Action {
         id: u64,
         changes: Properties,
     },
-}
-
-/// Which downloads the list shows.
-#[derive(Clone, PartialEq)]
-enum Filter {
-    All,
-    Category(String),
-    /// A queue's downloads, in its order.
-    Queue(u64),
 }
 
 struct App {
@@ -575,6 +571,8 @@ struct App {
     language: Option<String>,
     /// Which downloads the list shows.
     filter: Filter,
+    /// The categories tree between frames.
+    tree: categories::Tree,
     /// The Queues dialog, while it is open.
     queues_dialog: Option<queues::QueuesDialog>,
     /// The New link dialog: the download and the address typed so far.
@@ -1346,7 +1344,8 @@ impl App {
             tray_shown: None,
             appearance: None,
             language: None,
-            filter: Filter::All,
+            filter: Filter::default(),
+            tree: categories::Tree::default(),
             queues_dialog: None,
             refresh: None,
             batch: None,
@@ -1730,7 +1729,7 @@ impl App {
             }
             Action::DeleteQueue(id) => {
                 if self.filter == Filter::Queue(id) {
-                    self.filter = Filter::All;
+                    self.filter = Filter::default();
                 }
                 send(&self.writer, &Incoming::DeleteQueue { id });
             }
@@ -1869,6 +1868,16 @@ impl App {
             Action::OpenGrabber => {
                 if self.grabber.is_none() {
                     self.grabber = Some(tools::GrabDialog::new());
+                }
+            }
+            Action::OpenGrabProject(name) => {
+                let project = uidm::grab::projects_dir().and_then(|d| uidm::grab::Project::load(&d, &name));
+                match project {
+                    Ok(p) => self.grabber = Some(tools::GrabDialog::open(p)),
+                    Err(e) => {
+                        self.shared.lock().unwrap().last_error =
+                            Some(trf!("Could not open {name}: {error}", name = name, error = e));
+                    }
                 }
             }
             Action::Grab(req) => {
@@ -3706,58 +3715,49 @@ impl eframe::App for App {
             ui.add_space(4.0);
         });
 
-        // Category of each row, from its file name, and the sidebar to filter by
-        // it.
-        let category = |e: &DownloadEntry| -> String {
-            settings
-                .as_ref()
-                .map_or(GENERAL, |s| s.listed_under(e.category.as_deref(), &display_name(e), &e.url))
-                .to_string()
-        };
+        // Category of each row, from its file name, and the tree to filter by
+        // it. Until the daemon sends its settings the tree uses the defaults.
+        let shown_settings = settings.clone().unwrap_or_default();
+        let listed: Vec<String> = rows
+            .iter()
+            .map(|e| shown_settings.listed_under(e.category.as_deref(), &display_name(e), &e.url).to_string())
+            .collect();
         let queue_list = self.shared.lock().unwrap().queues.clone();
         // With the panel hidden, nothing is left to pick another view with.
-        if settings.as_ref().is_some_and(|s| !s.categories_panel) {
-            self.filter = Filter::All;
+        if !shown_settings.categories_panel {
+            self.filter = Filter::default();
         }
-        if let Some(s) = settings.as_ref().filter(|s| s.categories_panel) {
-            let mut names: Vec<String> = s.categories.iter().map(|c| c.name.clone()).collect();
-            names.push(GENERAL.to_string());
-            let gone = match &self.filter {
-                Filter::Category(name) => !names.contains(name),
-                Filter::Queue(id) => !queue_list.iter().any(|q| q.id == *id),
-                Filter::All => false,
-            };
-            if gone {
-                self.filter = Filter::All;
+        let gone = match &self.filter {
+            Filter::Downloads { category: Some(name), .. } => {
+                !shown_settings.categories.iter().any(|c| c.name == *name) && !listed.contains(name)
             }
-            egui::SidePanel::left("categories")
-                .resizable(false)
-                .exact_width(170.0)
-                .show(ctx, |ui| {
-                    ui.add_space(6.0);
-                    let all = trf!("All downloads ({count})", count = rows.len());
-                    ui.selectable_value(&mut self.filter, Filter::All, all);
-                    ui.add_space(4.0);
-                    for name in names {
-                        let count = rows.iter().filter(|e| category(e) == name).count();
-                        let label = format!("{name} ({count})");
-                        ui.selectable_value(&mut self.filter, Filter::Category(name), label);
-                    }
-                    ui.add_space(10.0);
-                    ui.weak(tr("Queues"));
-                    for q in &queue_list {
-                        let label = if q.running {
-                            trf!("{name} ({count}, started)", name = q.name, count = q.order.len())
-                        } else {
-                            format!("{} ({})", q.name, q.order.len())
-                        };
-                        ui.selectable_value(&mut self.filter, Filter::Queue(q.id), label);
-                    }
-                    ui.add_space(4.0);
-                    if ui.add_enabled(connected, egui::Button::new(tr("Manage queues..."))).clicked() {
-                        actions.push(Action::OpenQueues(None));
-                    }
-                });
+            Filter::Queue(id) => connected && !queue_list.iter().any(|q| q.id == *id),
+            Filter::Downloads { category: None, .. } => false,
+        };
+        if gone {
+            self.filter = Filter::default();
+        }
+        if shown_settings.categories_panel {
+            let panel = categories::Panel {
+                categories: shown_settings.categories.iter().map(|c| c.name.clone()).collect(),
+                listed: &listed,
+                queues: &queue_list,
+                connected,
+            };
+            let width = self.layout.categories_width.unwrap_or(categories::DEFAULT_WIDTH);
+            let shown = egui::SidePanel::left("categories")
+                .resizable(true)
+                .default_width(width)
+                .width_range(100.0..=400.0)
+                .show(ctx, |ui| categories::show(ui, &panel, &mut self.tree, &mut self.filter, &mut actions));
+            if shown.inner.hide {
+                self.menu_command(menubar::Command::ToggleCategories, &rows, settings.as_ref(), &mut actions);
+            }
+            let dragged = shown.response.rect.width();
+            if (dragged - width).abs() >= 1.0 {
+                self.layout.categories_width = Some(dragged);
+                self.layout_unsaved = true;
+            }
         }
         let current_queue = match &self.filter {
             Filter::Queue(id) => queue_list.iter().find(|q| q.id == *id).cloned(),
@@ -3769,8 +3769,7 @@ impl eframe::App for App {
                 .iter()
                 .filter_map(|id| rows.iter().find(|e| e.id == *id))
                 .collect(),
-            (Filter::Category(name), _) => rows.iter().filter(|e| category(e) == *name).collect(),
-            _ => rows.iter().collect(),
+            _ => rows.iter().zip(&listed).filter(|(e, c)| self.filter.keeps(e, c)).map(|(e, _)| e).collect(),
         };
 
         find::shortcuts(ctx, &mut self.find);

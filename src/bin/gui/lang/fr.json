@@ -231,8 +231,6 @@
   "No speed limit": "Pas de limite de vitesse",
   "All downloads ({count})": "Tous les téléchargements ({count})",
   "Queues": "Files d'attente",
-  "{name} ({count}, started)": "{name} ({count}, démarrée)",
-  "Manage queues...": "Gérer les files d'attente...",
   "No downloads here match. Press Escape to see them all.": "Aucun téléchargement ne correspond. Appuyez sur Échap pour tout afficher.",
   "No downloads in this category.": "Aucun téléchargement dans cette catégorie.",
   "A queue's downloads stay in its run order": "Les téléchargements d'une file restent dans leur ordre d'exécution",
