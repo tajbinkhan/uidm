@@ -2,31 +2,34 @@
 //!
 //! - Proxies come from the settings: none, the system proxy (the Windows
 //!   Internet settings, with their bypass list and any configuration script
-//!   or automatic detection), a configuration script, or ones set by hand. A
-//!   captured download can also use the proxy the browser reported.
+//!   or automatic detection; on macOS and Linux the `http_proxy`,
+//!   `https_proxy`, `ftp_proxy`, `all_proxy` and `no_proxy` variables), a
+//!   configuration script, or ones set by hand. A captured download can also
+//!   use the proxy the browser reported.
 //! - Site logins pair a site pattern, optionally with a path, with a
-//!   username; the password lives in Windows Credential Manager. When a
+//!   username; the password lives in Windows Credential Manager, or on macOS
+//!   and Linux in UIDM's own encrypted `credentials.bin`. When a
 //!   server answers 401, the engine sends the matching login with HTTP Basic
 //!   or Digest, to the host that asked and to no other.
 //!
 //! Each proxy's password is kept apart from the settings, encrypted with
 //! DPAPI.
 
-use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::ptr;
 
 use base64::Engine as _;
 use md5::Md5;
 use sha2::Sha256;
 
 use crate::dpapi;
+#[cfg(windows)]
 use crate::registry;
 
 /// Where the Windows Internet settings keep the system proxy.
+#[cfg(windows)]
 pub const INTERNET_SETTINGS: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
 /// Whether `host` belongs to the site `pattern`. `example.com` and
@@ -133,6 +136,10 @@ pub struct ProxyRules {
     /// `scheme://host:port` of a SOCKS proxy (scheme `socks4`, `socks4a` or
     /// `socks5`), for the URLs whose scheme has no proxy of its own.
     pub socks: Option<String>,
+    /// `host:port` of the FTP proxy when Windows' setting names one with
+    /// `ftp=`. Get System copies it to the FTP proxy field; `ftp://`
+    /// downloads use `NetConfig::ftp_proxy`.
+    pub ftp: Option<String>,
     /// Hosts reached directly: patterns with `*`, and `<local>` for names
     /// without a dot.
     pub bypass: Vec<String>,
@@ -232,8 +239,8 @@ impl ProxyRules {
 }
 
 /// Read Windows' proxy setting: `host:port` for everything, or
-/// `http=host:port;https=host:port;socks=host:port` per scheme. Windows'
-/// SOCKS proxies speak SOCKS4.
+/// `http=host:port;https=host:port;ftp=host:port;socks=host:port` per
+/// scheme. Windows' SOCKS proxies speak SOCKS4.
 pub fn parse_proxy_server(s: &str) -> ProxyRules {
     let mut rules = ProxyRules::default();
     let s = s.trim();
@@ -255,6 +262,7 @@ pub fn parse_proxy_server(s: &str) -> ProxyRules {
         match scheme.trim().to_ascii_lowercase().as_str() {
             "http" => rules.http = Some(addr),
             "https" => rules.https = Some(addr),
+            "ftp" => rules.ftp = Some(addr),
             "socks" => rules.socks = Some(format!("socks4://{addr}")),
             _ => {}
         }
@@ -264,6 +272,7 @@ pub fn parse_proxy_server(s: &str) -> ProxyRules {
 
 /// The system proxy from the Internet settings under `key`, if one is on.
 /// Automatic configuration scripts are not read.
+#[cfg(windows)]
 pub fn system_proxy_at(key: &str) -> Option<ProxyRules> {
     if registry::get_dword(key, "ProxyEnable").ok().flatten() != Some(1) {
         return None;
@@ -276,10 +285,19 @@ pub fn system_proxy_at(key: &str) -> Option<ProxyRules> {
     (rules.http.is_some() || rules.https.is_some() || rules.socks.is_some()).then_some(rules)
 }
 
-/// The Windows proxy setting: its fixed proxies, and its configuration
+/// The system's fixed proxies, without a configuration script: the
+/// Windows Internet settings, or the proxy variables elsewhere.
+pub fn system_fixed_proxy() -> Option<ProxyRules> {
+    #[cfg(windows)]
+    return system_proxy_at(INTERNET_SETTINGS);
+    #[cfg(not(windows))]
+    return proxy_from_env(|name| std::env::var(name).ok());
+}
+
+/// The system proxy: its fixed proxies, and on Windows its configuration
 /// script or automatic detection, which comes first.
 pub fn system_proxy() -> Option<ProxyRules> {
-    let fixed = system_proxy_at(INTERNET_SETTINGS);
+    let fixed = system_fixed_proxy();
     match crate::pac::windows_source() {
         Some(source) => Some(ProxyRules {
             pac: Some(source),
@@ -287,6 +305,47 @@ pub fn system_proxy() -> Option<ProxyRules> {
         }),
         None => fixed,
     }
+}
+
+/// The proxies the `http_proxy`, `https_proxy`, `ftp_proxy`, `all_proxy`
+/// and `no_proxy` variables name (lower case first, as curl reads them),
+/// with `var` reading one. `all_proxy` is the SOCKS proxy when it says
+/// `socks`, else the proxy for http and https alike.
+pub fn proxy_from_env(var: impl Fn(&str) -> Option<String>) -> Option<ProxyRules> {
+    let get = |name: &str| {
+        var(name).or_else(|| var(&name.to_ascii_uppercase())).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    };
+    // `http://host:port/` to `host:port`; SOCKS keeps its scheme.
+    let addr = |v: String| {
+        let v = v.strip_prefix("http://").or_else(|| v.strip_prefix("https://")).map(str::to_string).unwrap_or(v);
+        v.trim_end_matches('/').to_string()
+    };
+    let mut rules = ProxyRules::default();
+    if let Some(all) = get("all_proxy") {
+        if all.to_ascii_lowercase().starts_with("socks") {
+            rules.socks = Some(all.trim_end_matches('/').to_string());
+        } else {
+            rules.http = Some(addr(all.clone()));
+            rules.https = Some(addr(all));
+        }
+    }
+    if let Some(http) = get("http_proxy") {
+        rules.http = Some(addr(http));
+    }
+    if let Some(https) = get("https_proxy") {
+        rules.https = Some(addr(https));
+    }
+    rules.ftp = get("ftp_proxy").map(addr);
+    if let Some(none) = get("no_proxy") {
+        rules.bypass = none
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            // `.corp.net` means the domain and its hosts.
+            .map(|s| if s.starts_with('.') { format!("*{s}") } else { s.to_string() })
+            .collect();
+    }
+    (rules.http.is_some() || rules.https.is_some() || rules.socks.is_some() || rules.ftp.is_some()).then_some(rules)
 }
 
 /// A login for the sites matching `site`.
@@ -463,39 +522,7 @@ pub fn authorization(challenges: &[String], login: &Login, method: &str, url: &s
     None
 }
 
-// --- Windows Credential Manager, for site login passwords --------------------
-
-const CRED_TYPE_GENERIC: u32 = 1;
-const CRED_PERSIST_LOCAL_MACHINE: u32 = 2;
-const ERROR_NOT_FOUND: i32 = 1168;
-
-#[repr(C)]
-struct Credential {
-    flags: u32,
-    kind: u32,
-    target_name: *mut u16,
-    comment: *mut u16,
-    last_written: [u32; 2],
-    blob_size: u32,
-    blob: *mut u8,
-    persist: u32,
-    attribute_count: u32,
-    attributes: *mut c_void,
-    target_alias: *mut u16,
-    user_name: *mut u16,
-}
-
-#[link(name = "advapi32")]
-extern "system" {
-    fn CredWriteW(credential: *const Credential, flags: u32) -> i32;
-    fn CredReadW(target: *const u16, kind: u32, flags: u32, credential: *mut *mut Credential) -> i32;
-    fn CredDeleteW(target: *const u16, kind: u32, flags: u32) -> i32;
-    fn CredFree(buffer: *mut c_void);
-}
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
+// --- Saved passwords: Windows Credential Manager, or an encrypted file ------
 
 /// The Credential Manager entry for a site's login.
 pub fn credential_target(site: &str) -> String {
@@ -517,62 +544,170 @@ pub fn delete_login_password(site: &str) -> io::Result<()> {
     delete_credential(&credential_target(site))
 }
 
-/// Store `password` for `username` in Credential Manager under `target`.
-pub fn save_credential(target: &str, username: &str, password: &str) -> io::Result<()> {
-    let mut target = wide(target);
-    let mut user = wide(username);
-    let mut blob: Vec<u8> = password.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let cred = Credential {
-        flags: 0,
-        kind: CRED_TYPE_GENERIC,
-        target_name: target.as_mut_ptr(),
-        comment: ptr::null_mut(),
-        last_written: [0, 0],
-        blob_size: blob.len() as u32,
-        blob: blob.as_mut_ptr(),
-        persist: CRED_PERSIST_LOCAL_MACHINE,
-        attribute_count: 0,
-        attributes: ptr::null_mut(),
-        target_alias: ptr::null_mut(),
-        user_name: user.as_mut_ptr(),
-    };
-    // SAFETY: every pointer refers to a live buffer for the call.
-    if unsafe { CredWriteW(&cred, 0) } == 0 {
-        return Err(io::Error::last_os_error());
+pub use credentials::{delete_credential, load_credential, save_credential};
+
+#[cfg(windows)]
+mod credentials {
+    use std::ffi::c_void;
+    use std::io;
+    use std::ptr;
+
+    const CRED_TYPE_GENERIC: u32 = 1;
+    const CRED_PERSIST_LOCAL_MACHINE: u32 = 2;
+    const ERROR_NOT_FOUND: i32 = 1168;
+
+    #[repr(C)]
+    struct Credential {
+        flags: u32,
+        kind: u32,
+        target_name: *mut u16,
+        comment: *mut u16,
+        last_written: [u32; 2],
+        blob_size: u32,
+        blob: *mut u8,
+        persist: u32,
+        attribute_count: u32,
+        attributes: *mut c_void,
+        target_alias: *mut u16,
+        user_name: *mut u16,
     }
-    Ok(())
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn CredWriteW(credential: *const Credential, flags: u32) -> i32;
+        fn CredReadW(target: *const u16, kind: u32, flags: u32, credential: *mut *mut Credential) -> i32;
+        fn CredDeleteW(target: *const u16, kind: u32, flags: u32) -> i32;
+        fn CredFree(buffer: *mut c_void);
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Store `password` for `username` in Credential Manager under `target`.
+    pub fn save_credential(target: &str, username: &str, password: &str) -> io::Result<()> {
+        let mut target = wide(target);
+        let mut user = wide(username);
+        let mut blob: Vec<u8> = password.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let cred = Credential {
+            flags: 0,
+            kind: CRED_TYPE_GENERIC,
+            target_name: target.as_mut_ptr(),
+            comment: ptr::null_mut(),
+            last_written: [0, 0],
+            blob_size: blob.len() as u32,
+            blob: blob.as_mut_ptr(),
+            persist: CRED_PERSIST_LOCAL_MACHINE,
+            attribute_count: 0,
+            attributes: ptr::null_mut(),
+            target_alias: ptr::null_mut(),
+            user_name: user.as_mut_ptr(),
+        };
+        // SAFETY: every pointer refers to a live buffer for the call.
+        if unsafe { CredWriteW(&cred, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// The password Credential Manager keeps under `target`, if any.
+    pub fn load_credential(target: &str) -> Option<String> {
+        let target = wide(target);
+        let mut cred: *mut Credential = ptr::null_mut();
+        // SAFETY: on success `cred` points at a block freed with CredFree below.
+        unsafe {
+            if CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut cred) == 0 {
+                return None;
+            }
+            let c = &*cred;
+            let bytes = std::slice::from_raw_parts(c.blob, c.blob_size as usize);
+            let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+            let password = String::from_utf16_lossy(&units);
+            CredFree(cred as *mut c_void);
+            Some(password)
+        }
+    }
+
+    /// Remove what Credential Manager keeps under `target`; a missing entry is
+    /// not an error.
+    pub fn delete_credential(target: &str) -> io::Result<()> {
+        let target = wide(target);
+        // SAFETY: a valid string for the call.
+        if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } == 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(ERROR_NOT_FOUND) {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
 }
 
-/// The password Credential Manager keeps under `target`, if any.
-pub fn load_credential(target: &str) -> Option<String> {
-    let target = wide(target);
-    let mut cred: *mut Credential = ptr::null_mut();
-    // SAFETY: on success `cred` points at a block freed with CredFree below.
-    unsafe {
-        if CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut cred) == 0 {
-            return None;
-        }
-        let c = &*cred;
-        let bytes = std::slice::from_raw_parts(c.blob, c.blob_size as usize);
-        let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
-        let password = String::from_utf16_lossy(&units);
-        CredFree(cred as *mut c_void);
-        Some(password)
-    }
-}
+/// On macOS and Linux, the passwords live in `credentials.bin` in UIDM's
+/// data folder, a JSON map of entry to user name and password, encrypted
+/// like the saved requests (`dpapi`).
+#[cfg(unix)]
+mod credentials {
+    use std::collections::BTreeMap;
+    use std::io;
+    use std::sync::Mutex;
 
-/// Remove what Credential Manager keeps under `target`; a missing entry is
-/// not an error.
-pub fn delete_credential(target: &str) -> io::Result<()> {
-    let target = wide(target);
-    // SAFETY: a valid string for the call.
-    if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } == 0 {
-        let e = io::Error::last_os_error();
-        if e.raw_os_error() != Some(ERROR_NOT_FOUND) {
-            return Err(e);
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize)]
+    struct Entry {
+        username: String,
+        password: String,
+    }
+
+    /// One change at a time, so two saves cannot lose each other's entry.
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    fn path() -> io::Result<std::path::PathBuf> {
+        Ok(crate::platform::data_dir()?.join("credentials.bin"))
+    }
+
+    fn read() -> io::Result<BTreeMap<String, Entry>> {
+        match std::fs::read(path()?) {
+            Ok(sealed) => {
+                let plain = crate::dpapi::unprotect(&sealed)?;
+                serde_json::from_slice(&plain).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(e) => Err(e),
         }
     }
-    Ok(())
+
+    fn write(all: &BTreeMap<String, Entry>) -> io::Result<()> {
+        let plain = serde_json::to_vec(all).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let path = path()?;
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        crate::platform::write_private(&path, &crate::dpapi::protect(&plain)?)
+    }
+
+    /// Store `password` for `username` under `target`.
+    pub fn save_credential(target: &str, username: &str, password: &str) -> io::Result<()> {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all = read()?;
+        all.insert(target.to_string(), Entry { username: username.to_string(), password: password.to_string() });
+        write(&all)
+    }
+
+    /// The password kept under `target`, if any.
+    pub fn load_credential(target: &str) -> Option<String> {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        read().ok()?.remove(target).map(|e| e.password)
+    }
+
+    /// Remove what is kept under `target`; a missing entry is not an error.
+    pub fn delete_credential(target: &str) -> io::Result<()> {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut all = read()?;
+        if all.remove(target).is_some() {
+            write(&all)?;
+        }
+        Ok(())
+    }
 }
 
 // --- The proxies' passwords, encrypted with DPAPI -----------------------------
@@ -694,6 +829,7 @@ mod tests {
             http: Some("proxy:3128".into()),
             https: Some("secure:3129".into()),
             socks: None,
+            ftp: None,
             bypass: vec!["<local>".into(), "*.corp.net".into(), "10.0.0.1".into()],
             http_login: ProxyLogin::new("me@corp", "p:w/d"),
             https_login: ProxyLogin::new("tls", "pw"),
@@ -748,9 +884,32 @@ mod tests {
         assert_eq!(each.http.as_deref(), Some("h:1"));
         assert_eq!(each.https.as_deref(), Some("s:2"));
         assert_eq!(each.socks.as_deref(), Some("socks4://k:3"));
+        assert_eq!(each.ftp.as_deref(), Some("f:4"));
+        assert_eq!(all.ftp, None, "one proxy for all is an HTTP proxy, not an FTP gateway");
         assert_eq!(parse_proxy_server(""), ProxyRules::default());
     }
 
+    #[test]
+    fn system_proxy_from_the_variables() {
+        let vars = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
+        };
+        assert_eq!(proxy_from_env(vars(&[])), None);
+        let rules = proxy_from_env(vars(&[
+            ("http_proxy", "http://h:1/"),
+            ("HTTPS_PROXY", "s:2"),
+            ("no_proxy", "localhost, .corp.net"),
+        ]))
+        .unwrap();
+        assert_eq!((rules.http.as_deref(), rules.https.as_deref()), (Some("h:1"), Some("s:2")));
+        assert_eq!(rules.bypass, ["localhost", "*.corp.net"]);
+        let socks = proxy_from_env(vars(&[("all_proxy", "socks5://k:3")])).unwrap();
+        assert_eq!((socks.socks.as_deref(), socks.http), (Some("socks5://k:3"), None));
+        let all = proxy_from_env(vars(&[("ALL_PROXY", "p:8"), ("http_proxy", "h:1")])).unwrap();
+        assert_eq!((all.http.as_deref(), all.https.as_deref()), (Some("h:1"), Some("p:8")));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn system_proxy_from_the_registry() {
         let key = r"Software\UIDM-test-proxy";

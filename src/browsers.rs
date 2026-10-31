@@ -1,16 +1,23 @@
 //! The browsers UIDM's extension runs in, and the native-messaging
-//! registration that lets each one start `uidm-host.exe`.
+//! registration that lets each one start `uidm-host`.
 //!
-//! A browser finds the host through a registry key under its own
-//! `NativeMessagingHosts` key in `HKEY_CURRENT_USER`, whose default value is
-//! the path of a manifest naming the host and the extension allowed to start
-//! it. Chromium browsers share one manifest; Firefox names extensions by ID,
-//! so it has its own. Setup and `install-host.ps1` register Chrome, Edge and
-//! Firefox; Options can register or remove each browser found.
+//! On Windows a browser finds the host through a registry key under its
+//! own `NativeMessagingHosts` key in `HKEY_CURRENT_USER`, whose default
+//! value is the path of a manifest naming the host and the extension
+//! allowed to start it. Chromium browsers share one manifest; Firefox names
+//! extensions by ID, so it has its own. Setup and `install-host.ps1`
+//! register Chrome, Edge and Firefox.
+//!
+//! On macOS and Linux there is no registry: each browser reads
+//! `com.uidm.host.json` from its own `NativeMessagingHosts` folder, so the
+//! manifest itself is the registration. The packages' `install-host.sh`
+//! registers every browser found. Options can register or remove each
+//! browser on every system.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 use crate::registry;
 
 /// The native-messaging host's name, as the extension connects to it.
@@ -24,7 +31,9 @@ pub const FIREFOX_EXTENSION_ID: &str = "uidm@uidm.local";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Browser {
     pub name: &'static str,
-    /// Where it looks for native-messaging hosts, under `HKEY_CURRENT_USER`.
+    /// Where it looks for native-messaging hosts: a key under
+    /// `HKEY_CURRENT_USER` on Windows, a folder under the home folder
+    /// elsewhere.
     hosts_key: &'static str,
     /// Its profile folder, which shows it is installed for this user: an
     /// environment variable and a path inside the folder it names.
@@ -32,6 +41,7 @@ pub struct Browser {
     firefox: bool,
 }
 
+#[cfg(windows)]
 pub const BROWSERS: [Browser; 5] = [
     Browser {
         name: "Google Chrome",
@@ -67,10 +77,98 @@ pub const BROWSERS: [Browser; 5] = [
 
 /// Chromium browsers that read Chrome's registration instead of keeping
 /// their own, with their profile folders.
+#[cfg(windows)]
 pub const READ_CHROMES: [(&str, (&str, &str)); 2] = [
     ("Vivaldi", ("LOCALAPPDATA", r"Vivaldi\User Data")),
     ("Opera", ("APPDATA", r"Opera Software\Opera Stable")),
 ];
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub const BROWSERS: [Browser; 6] = [
+    Browser {
+        name: "Google Chrome",
+        hosts_key: ".config/google-chrome/NativeMessagingHosts",
+        profile: ("HOME", ".config/google-chrome"),
+        firefox: false,
+    },
+    Browser {
+        name: "Microsoft Edge",
+        hosts_key: ".config/microsoft-edge/NativeMessagingHosts",
+        profile: ("HOME", ".config/microsoft-edge"),
+        firefox: false,
+    },
+    Browser {
+        name: "Mozilla Firefox",
+        hosts_key: ".mozilla/native-messaging-hosts",
+        profile: ("HOME", ".mozilla"),
+        firefox: true,
+    },
+    Browser {
+        name: "Brave",
+        hosts_key: ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+        profile: ("HOME", ".config/BraveSoftware/Brave-Browser"),
+        firefox: false,
+    },
+    Browser {
+        name: "Chromium",
+        hosts_key: ".config/chromium/NativeMessagingHosts",
+        profile: ("HOME", ".config/chromium"),
+        firefox: false,
+    },
+    Browser {
+        name: "Vivaldi",
+        hosts_key: ".config/vivaldi/NativeMessagingHosts",
+        profile: ("HOME", ".config/vivaldi"),
+        firefox: false,
+    },
+];
+
+#[cfg(target_os = "macos")]
+pub const BROWSERS: [Browser; 6] = [
+    Browser {
+        name: "Google Chrome",
+        hosts_key: "Library/Application Support/Google/Chrome/NativeMessagingHosts",
+        profile: ("HOME", "Library/Application Support/Google/Chrome"),
+        firefox: false,
+    },
+    Browser {
+        name: "Microsoft Edge",
+        hosts_key: "Library/Application Support/Microsoft Edge/NativeMessagingHosts",
+        profile: ("HOME", "Library/Application Support/Microsoft Edge"),
+        firefox: false,
+    },
+    Browser {
+        name: "Mozilla Firefox",
+        hosts_key: "Library/Application Support/Mozilla/NativeMessagingHosts",
+        profile: ("HOME", "Library/Application Support/Firefox"),
+        firefox: true,
+    },
+    Browser {
+        name: "Brave",
+        hosts_key: "Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+        profile: ("HOME", "Library/Application Support/BraveSoftware/Brave-Browser"),
+        firefox: false,
+    },
+    Browser {
+        name: "Chromium",
+        hosts_key: "Library/Application Support/Chromium/NativeMessagingHosts",
+        profile: ("HOME", "Library/Application Support/Chromium"),
+        firefox: false,
+    },
+    Browser {
+        name: "Vivaldi",
+        hosts_key: "Library/Application Support/Vivaldi/NativeMessagingHosts",
+        profile: ("HOME", "Library/Application Support/Vivaldi"),
+        firefox: false,
+    },
+];
+
+/// Chromium browsers that read Chrome's registration instead of keeping
+/// their own, with their profile folders.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub const READ_CHROMES: [(&str, (&str, &str)); 1] = [("Opera", ("HOME", ".config/opera"))];
+#[cfg(target_os = "macos")]
+pub const READ_CHROMES: [(&str, (&str, &str)); 1] = [("Opera", ("HOME", "Library/Application Support/com.operasoftware.Opera"))];
 
 fn profile_exists((var, path): (&str, &str)) -> bool {
     std::env::var_os(var).is_some_and(|base| Path::new(&base).join(path).is_dir())
@@ -81,26 +179,38 @@ pub fn chrome_readers() -> Vec<&'static str> {
     READ_CHROMES.iter().filter(|(_, p)| profile_exists(*p)).map(|(name, _)| *name).collect()
 }
 
-/// Where registrations go: the registry keys under `root` (empty for the
-/// real ones; tests use their own) and the manifests in `dir`.
+/// Where registrations go: on Windows the registry keys under `root`
+/// (empty for the real ones; tests use their own) and the manifests in
+/// `dir`; elsewhere the manifests in each browser's folder under `root`
+/// (the home folder; tests use their own).
 #[derive(Debug, Clone)]
 pub struct Registrar {
     root: String,
+    #[cfg_attr(not(windows), allow(dead_code))]
     dir: PathBuf,
-    /// The `uidm-host.exe` the manifests point at.
+    /// The `uidm-host` the manifests point at.
     host: PathBuf,
 }
 
 impl Registrar {
-    /// The real registry, with the manifests in `%LOCALAPPDATA%\UIDM` as
-    /// `install-host.ps1` writes them, for the host next to this program.
+    /// The real registrations for the host next to this program: on
+    /// Windows with the manifests in `%LOCALAPPDATA%\UIDM` as
+    /// `install-host.ps1` writes them, elsewhere in the home folder.
     pub fn for_this_user() -> io::Result<Self> {
-        let dir = crate::history::history_path()?
-            .parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no folder for UIDM's data"))?;
-        let host = std::env::current_exe()?.with_file_name("uidm-host.exe");
-        Ok(Registrar { root: String::new(), dir, host })
+        let dir = crate::platform::data_dir()?;
+        // An AppImage's AppRun starts the host when a browser calls it.
+        let host = match crate::platform::appimage() {
+            Some(image) => image,
+            None => crate::platform::sibling_exe("uidm-host")?,
+        };
+        #[cfg(windows)]
+        let root = String::new();
+        #[cfg(not(windows))]
+        let root = crate::platform::home_dir()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?
+            .display()
+            .to_string();
+        Ok(Registrar { root, dir, host })
     }
 
     #[cfg(test)]
@@ -108,12 +218,20 @@ impl Registrar {
         Registrar { root: root.to_string(), dir, host }
     }
 
+    #[cfg(windows)]
     fn key(&self, b: &Browser) -> String {
         format!(r"{}{}\{HOST_NAME}", self.root, b.hosts_key)
     }
 
+    #[cfg(windows)]
     fn manifest_path(&self, firefox: bool) -> PathBuf {
         self.dir.join(if firefox { format!("{HOST_NAME}.firefox.json") } else { format!("{HOST_NAME}.json") })
+    }
+
+    /// The manifest `b` reads, which is its registration.
+    #[cfg(not(windows))]
+    fn manifest_path(&self, b: &Browser) -> PathBuf {
+        Path::new(&self.root).join(b.hosts_key).join(format!("{HOST_NAME}.json"))
     }
 
     /// Whether `b` is installed for this user.
@@ -121,14 +239,8 @@ impl Registrar {
         profile_exists(b.profile)
     }
 
-    /// Whether `b` has a registration naming a manifest.
-    pub fn registered(&self, b: &Browser) -> bool {
-        registry::get_string(&self.key(b), "").ok().flatten().is_some_and(|m| !m.trim().is_empty())
-    }
-
-    /// Register `b`: write its family's manifest, pointing at the host, and
-    /// its key naming the manifest.
-    pub fn register(&self, b: &Browser) -> io::Result<()> {
+    /// `b`'s manifest, pointing at the host.
+    fn manifest(&self, b: &Browser) -> io::Result<Vec<u8>> {
         if !self.host.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -147,14 +259,61 @@ impl Registrar {
             "path": self.host.display().to_string(),
         });
         manifest.as_object_mut().unwrap().extend(allowed.as_object().unwrap().clone());
+        serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)
+    }
+
+    /// Whether `b`'s registration names this registrar's host.
+    #[cfg_attr(windows, allow(dead_code))]
+    fn points_here(&self, b: &Browser) -> bool {
+        #[cfg(windows)]
+        let path = registry::get_string(&self.key(b), "").ok().flatten().map(PathBuf::from);
+        #[cfg(not(windows))]
+        let path = Some(self.manifest_path(b));
+        let manifest = path.and_then(|p| std::fs::read(p).ok()).and_then(|m| serde_json::from_slice::<serde_json::Value>(&m).ok());
+        manifest.is_some_and(|m| m["path"] == self.host.display().to_string())
+    }
+
+    /// Whether `b` has a registration: its manifest is there.
+    #[cfg(not(windows))]
+    pub fn registered(&self, b: &Browser) -> bool {
+        self.manifest_path(b).is_file()
+    }
+
+    /// Register `b`: write its manifest, pointing at the host.
+    #[cfg(not(windows))]
+    pub fn register(&self, b: &Browser) -> io::Result<()> {
+        let bytes = self.manifest(b)?;
+        crate::settings::write_atomic(&self.manifest_path(b), &bytes)
+    }
+
+    /// Remove `b`'s registration, its manifest.
+    #[cfg(not(windows))]
+    pub fn unregister(&self, b: &Browser) -> io::Result<()> {
+        match std::fs::remove_file(self.manifest_path(b)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether `b` has a registration naming a manifest.
+    #[cfg(windows)]
+    pub fn registered(&self, b: &Browser) -> bool {
+        registry::get_string(&self.key(b), "").ok().flatten().is_some_and(|m| !m.trim().is_empty())
+    }
+
+    /// Register `b`: write its family's manifest, pointing at the host, and
+    /// its key naming the manifest.
+    #[cfg(windows)]
+    pub fn register(&self, b: &Browser) -> io::Result<()> {
+        let bytes = self.manifest(b)?;
         let path = self.manifest_path(b.firefox);
-        let bytes = serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?;
         crate::settings::write_atomic(&path, &bytes)?;
         registry::set_string(&self.key(b), "", &path.display().to_string())
     }
 
     /// Remove `b`'s registration, and the manifest it named when that is
     /// UIDM's own and no other browser still names it.
+    #[cfg(windows)]
     pub fn unregister(&self, b: &Browser) -> io::Result<()> {
         let key = self.key(b);
         let named = registry::get_string(&key, "").ok().flatten();
@@ -173,10 +332,67 @@ impl Registrar {
     }
 }
 
+/// On macOS and Linux, where no Setup registers UIDM: register every
+/// browser found the first time UIDM runs (noted in `browsers.done` in the
+/// data folder, so one the user turns off in Options stays off), and point
+/// registrations at this copy of the host when UIDM has moved, as an
+/// AppImage does. Returns the browsers registered.
+pub fn register_found() -> io::Result<Vec<&'static str>> {
+    if cfg!(windows) {
+        return Ok(Vec::new());
+    }
+    let registrar = Registrar::for_this_user()?;
+    let done = crate::platform::data_dir()?.join("browsers.done");
+    let first = !done.exists();
+    let mut registered = Vec::new();
+    for b in BROWSERS.iter().filter(|b| registrar.installed(b)) {
+        if (first && !registrar.registered(b)) || (registrar.registered(b) && !registrar.points_here(b)) {
+            registrar.register(b)?;
+            registered.push(b.name);
+        }
+    }
+    if first {
+        crate::settings::write_atomic(&done, b"")?;
+    }
+    Ok(registered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(not(windows))]
+    #[test]
+    fn registering_writes_the_manifest_and_removing_deletes_it() {
+        let dir = std::env::temp_dir().join(format!("uidm_browsers_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let host = dir.join("uidm-host");
+        std::fs::write(&host, b"").unwrap();
+        let r = Registrar::new(&dir.display().to_string(), dir.clone(), host.clone());
+        let [chrome, _, firefox, ..] = BROWSERS;
+        assert!(!r.registered(&chrome));
+        r.register(&chrome).unwrap();
+        r.register(&firefox).unwrap();
+        assert!(r.registered(&chrome) && r.registered(&firefox));
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join(chrome.hosts_key).join("com.uidm.host.json")).unwrap()).unwrap();
+        assert_eq!(manifest["path"], host.display().to_string());
+        assert_eq!(manifest["allowed_origins"][0], format!("chrome-extension://{CHROMIUM_EXTENSION_ID}/"));
+        let fx: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join(firefox.hosts_key).join("com.uidm.host.json")).unwrap()).unwrap();
+        assert_eq!(fx["allowed_extensions"][0], FIREFOX_EXTENSION_ID);
+        assert!(r.points_here(&chrome));
+        let moved = Registrar::new(&dir.display().to_string(), dir.clone(), dir.join("elsewhere"));
+        assert!(!moved.points_here(&chrome));
+        r.unregister(&chrome).unwrap();
+        assert!(!r.registered(&chrome) && r.registered(&firefox));
+        r.unregister(&chrome).unwrap();
+        let missing = Registrar::new(&dir.display().to_string(), dir.clone(), dir.join("nope"));
+        assert!(missing.register(&chrome).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
     #[test]
     fn registering_writes_the_key_and_manifest_and_removing_undoes_them() {
         let dir = std::env::temp_dir().join(format!("uidm_browsers_{}", std::process::id()));

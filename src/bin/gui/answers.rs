@@ -221,7 +221,7 @@ mod tests {
 
     fn entry(id: u64, url: &str) -> DownloadEntry {
         serde_json::from_value(serde_json::json!({
-            "id": id, "url": url, "path": format!("C:\\dl\\{id}.zip"), "total": null, "done": 0,
+            "id": id, "url": url, "path": format!("{}{id}.zip", if cfg!(windows) { "C:\\dl\\" } else { "/dl/" }), "total": null, "done": 0,
             "status": "done", "error": null, "resumable": false, "connections": 0,
         }))
         .unwrap()

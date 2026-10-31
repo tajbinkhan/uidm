@@ -1,13 +1,12 @@
-# Builds UIDM for Windows and runs its tests on every push and pull request.
-# The three programs (uidm-host, uidm-daemon, uidm-gui) are uploaded as an
-# artifact together with the browser extension, its Firefox copy and the
-# install script, laid out the way install-host.ps1 expects. The installer,
-# UIDM-Setup-<version>.exe, is uploaded as a second artifact.
+# Builds UIDM and runs its tests on Windows, macOS and Linux on every push
+# and pull request. Nothing is stored: the installers are made by
+# release.yml, which attaches them to a GitHub Release.
 
 name: Build
 
 on:
   push:
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -20,10 +19,20 @@ permissions:
   contents: read
 
 jobs:
-  windows:
-    name: Windows
-    runs-on: windows-latest
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-14
+          - name: Linux
+            os: ubuntu-22.04
     env:
       CARGO_TERM_COLOR: always
     steps:
@@ -35,11 +44,17 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install the Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libssl-dev libxkbcommon-x11-0 libayatana-appindicator3-1
+
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --locked
 
       - name: Test
-        run: cargo test --release --locked
+        run: cargo test --locked
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -48,42 +63,3 @@ jobs:
 
       - name: Test the extension
         run: node --test extension/test/*.test.js
-
-      - name: Collect the build
-        shell: pwsh
-        run: |
-          $out = "dist\uidm"
-          New-Item -ItemType Directory -Force "$out\target\release" | Out-Null
-          Copy-Item target\release\uidm-host.exe, target\release\uidm-daemon.exe, target\release\uidm-gui.exe "$out\target\release"
-          Copy-Item -Recurse extension, host "$out"
-          Copy-Item install-host.ps1, README.md "$out"
-          New-Item -ItemType Directory -Force "$out\installer" | Out-Null
-          Copy-Item installer\make-firefox.ps1 "$out\installer"
-          Remove-Item -Recurse -Force "$out\extension\test"
-          .\installer\make-firefox.ps1 -Out "$out\firefox"
-
-      - name: Upload
-        uses: actions/upload-artifact@v5
-        with:
-          name: uidm-windows
-          path: dist/uidm
-          if-no-files-found: error
-
-      - name: Install Inno Setup
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
-            choco install innosetup --no-progress -y
-            if ($LASTEXITCODE -ne 0) { throw "could not install Inno Setup" }
-          }
-
-      - name: Build the installer
-        shell: pwsh
-        run: .\installer\build.ps1 -SkipBuild
-
-      - name: Upload the installer
-        uses: actions/upload-artifact@v5
-        with:
-          name: uidm-windows-setup
-          path: dist/UIDM-Setup-*.exe
-          if-no-files-found: error

@@ -149,10 +149,22 @@ pub enum SaveTo {
     Folder(String),
 }
 
-/// The Credential Manager entry for a grabber login on the site of `start`.
-pub fn project_login_target(start: &str) -> String {
+/// The Credential Manager entry for the grabber login `user` on the site
+/// of `start`, so two projects on one site keep their own accounts.
+pub fn project_login_target(start: &str, user: &str) -> String {
+    format!("{}/{}", host_login_target(start), user.trim())
+}
+
+/// The entry older versions kept one grabber password per site under.
+fn host_login_target(start: &str) -> String {
     let host = Url::parse(start.trim()).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
     format!("UIDM/grabber/{host}")
+}
+
+/// The saved password of the grabber login `user` on the site of `start`,
+/// or the site's one saved by an older version.
+pub fn project_password(start: &str, user: &str) -> Option<String> {
+    crate::net::load_credential(&project_login_target(start, user)).or_else(|| crate::net::load_credential(&host_login_target(start)))
 }
 
 /// Where and how a crawl is saved for offline browsing.
@@ -437,9 +449,10 @@ pub fn kept_locally(req: &GrabRequest, url: &Url) -> Option<bool> {
 /// The download for found file `f`: waiting, with the page as referrer,
 /// its link text as description when the crawl keeps those, and in the
 /// folder the request saves to: under the mirror folder when the crawl
-/// keeps one, else one category's folder or one folder for every file.
-/// `None` when the mirror skips existing files and this one is there.
-pub fn download_for(req: &GrabRequest, f: &GrabFile) -> Option<crate::protocol::Download> {
+/// keeps one, else one category's folder (from `settings`) or one folder
+/// for every file. `None` when the mirror skips existing files and this
+/// one is there.
+pub fn download_for(req: &GrabRequest, f: &GrabFile, settings: &crate::settings::Settings) -> Option<crate::protocol::Download> {
     let mut d = crate::protocol::Download {
         url: f.url.clone(),
         referrer: Some(f.page.clone()),
@@ -449,7 +462,11 @@ pub fn download_for(req: &GrabRequest, f: &GrabFile) -> Option<crate::protocol::
     };
     match &req.save_to {
         SaveTo::Categories => {}
-        SaveTo::Category(name) => d.category = Some(name.trim().to_string()),
+        SaveTo::Category(name) => {
+            let name = name.trim();
+            d.folder = Some(settings.category_folder(name).display().to_string());
+            d.category = Some(name.to_string());
+        }
         SaveTo::Folder(folder) => d.folder = Some(folder.trim().to_string()),
     }
     if let (Some(m), Ok(url)) = (&req.mirror, Url::parse(&f.url)) {
@@ -470,7 +487,7 @@ pub fn download_for(req: &GrabRequest, f: &GrabFile) -> Option<crate::protocol::
         if on_start_site(req, &f.url) {
             d.login = Some(crate::protocol::DownloadLogin {
                 username: user.to_string(),
-                password: crate::net::load_credential(&project_login_target(&req.start)),
+                password: project_password(&req.start, user),
             });
         }
     }
@@ -1479,13 +1496,19 @@ Crawl-delay: 2.5
             size: None,
             text: Some("The manual".into()),
         };
-        let d = download_for(&request(1), &file).unwrap();
+        let settings = crate::settings::Settings {
+            download_dir: Some(std::env::temp_dir().join("uidm-grab-dl").display().to_string()),
+            ..crate::settings::Settings::default()
+        };
+        let d = download_for(&request(1), &file, &settings).unwrap();
         assert_eq!((d.category, d.folder, d.description), (None, None, None));
         let req = GrabRequest { save_to: SaveTo::Category("Music".into()), link_text: true, ..request(1) };
-        let d = download_for(&req, &file).unwrap();
+        let d = download_for(&req, &file, &settings).unwrap();
         assert_eq!((d.category.as_deref(), d.description.as_deref()), (Some("Music"), Some("The manual")));
+        let music = settings.category_folder("Music").display().to_string();
+        assert_eq!(d.folder.as_deref(), Some(music.as_str()), "a pdf saved to Music goes to Music's folder");
         let req = GrabRequest { save_to: SaveTo::Folder(r"D:\grabbed".into()), ..request(1) };
-        assert_eq!(download_for(&req, &file).unwrap().folder.as_deref(), Some(r"D:\grabbed"));
+        assert_eq!(download_for(&req, &file, &settings).unwrap().folder.as_deref(), Some(r"D:\grabbed"));
         assert!(GrabRequest { save_to: SaveTo::Folder("rel".into()), ..request(1) }.validate().is_err());
         assert!(GrabRequest { save_to: SaveTo::Category(" ".into()), ..request(1) }.validate().is_err());
         assert!(GrabRequest { explore_at_once: 11, ..request(1) }.validate().is_err());
@@ -1692,17 +1715,18 @@ Crawl-delay: 2.5
         assert!(out.contains(r##"href="index.html#part""##));
 
         let file = GrabFile { url: "https://s/docs/guide.pdf".into(), name: "guide.pdf".into(), page: page.to_string(), size: None, text: None };
+        let settings = crate::settings::Settings::default();
         let dir = std::env::temp_dir().join(format!("uidm_mirror_{}", std::process::id()));
         let mirrored = GrabRequest { mirror: Some(Mirror { folder: dir.display().to_string(), pages: true, overwrite: false }), ..req.clone() };
-        let d = download_for(&mirrored, &file).unwrap();
+        let d = download_for(&mirrored, &file, &settings).unwrap();
         assert_eq!(d.folder.as_deref(), Some(dir.join("s").join("docs").display().to_string().as_str()));
         assert_eq!(d.filename.as_deref(), Some("guide.pdf"));
         std::fs::create_dir_all(dir.join("s").join("docs")).unwrap();
         std::fs::write(dir.join("s").join("docs").join("guide.pdf"), b"x").unwrap();
-        assert!(download_for(&mirrored, &file).is_none(), "an existing file is skipped");
+        assert!(download_for(&mirrored, &file, &settings).is_none(), "an existing file is skipped");
         let replace = GrabRequest { mirror: Some(Mirror { overwrite: true, ..mirrored.mirror.clone().unwrap() }), ..req.clone() };
-        assert!(download_for(&replace, &file).is_some());
-        assert_eq!(download_for(&req, &file).unwrap().folder, None, "no mirror: the category decides");
+        assert!(download_for(&replace, &file, &settings).is_some());
+        assert_eq!(download_for(&req, &file, &settings).unwrap().folder, None, "no mirror: the category decides");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

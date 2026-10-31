@@ -5,7 +5,6 @@
 //! of the input's length.
 
 use std::io::{BufRead, BufReader};
-use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,7 +13,6 @@ use std::thread;
 
 use serde::{Deserialize, Serialize};
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// What a video becomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +80,7 @@ fn run_once(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(f64),
 ) -> Result<(), String> {
-    let mut child = Command::new(ffmpeg)
+    let mut child = crate::platform::no_window(&mut Command::new(ffmpeg))
         .args(["-hide_banner", "-nostats", "-y", "-i"])
         .arg(input)
         .args(args)
@@ -91,7 +89,6 @@ fn run_once(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| format!("could not run ffmpeg ({}): {e}", ffmpeg.display()))?;
     // stderr has the input's length and any complaint; read it aside.
@@ -204,11 +201,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("uidm_convert_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let clip = dir.join("clip.mkv");
-        let made = Command::new(&ffmpeg)
+        let made = crate::platform::no_window(&mut Command::new(&ffmpeg))
             .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=2:size=160x120:rate=10"])
             .args(["-f", "lavfi", "-i", "sine=duration=2", "-c:v", "libx264", "-c:a", "aac", "-shortest"])
             .arg(&clip)
-            .creation_flags(CREATE_NO_WINDOW)
             .status()
             .unwrap();
         assert!(made.success());

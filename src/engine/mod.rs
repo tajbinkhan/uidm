@@ -22,7 +22,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1562,7 +1561,7 @@ fn single_once(
 /// single call may write fewer bytes than requested.
 fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> std::io::Result<()> {
     while !buf.is_empty() {
-        let n = file.seek_write(buf, offset)?;
+        let n = crate::platform::write_at(file, buf, offset)?;
         if n == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WriteZero,

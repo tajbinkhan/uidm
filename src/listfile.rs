@@ -168,6 +168,27 @@ fn parse_ef2(text: &str) -> Vec<Download> {
     items
 }
 
+/// The text of a list file read as `bytes`: UTF-16 when it starts with
+/// UTF-16's byte order mark, or when it has no mark but its first
+/// character is ASCII written as UTF-16 little-endian (Windows' "Unicode",
+/// which IDM files can be saved in); else UTF-8, any invalid bytes
+/// replaced.
+pub fn decode(bytes: &[u8]) -> String {
+    let utf16 = |body: &[u8], big_endian: bool| {
+        let units: Vec<u16> = body
+            .chunks_exact(2)
+            .map(|c| if big_endian { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) })
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xFF, 0xFE, body @ ..] => utf16(body, false),
+        [0xFE, 0xFF, body @ ..] => utf16(body, true),
+        [first, 0, ..] if first.is_ascii() && *first != 0 && bytes.len().is_multiple_of(2) => utf16(bytes, false),
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
 /// The downloads in an exported file, in any of the formats, each set to
 /// wait rather than start. Items without a web address, and repeats, are
 /// left out; so is a folder that is not a full path. Also returns how many
@@ -240,6 +261,10 @@ fn keep_valid(candidates: Vec<Download>) -> Result<(Vec<Download>, usize), Strin
 mod tests {
     use super::*;
 
+    /// A full path on this system for a downloads folder and a file in it.
+    const DL: &str = if cfg!(windows) { r"C:\dl" } else { "/dl" };
+    const DL_A_ZIP: &str = if cfg!(windows) { r"C:\dl\a.zip" } else { "/dl/a.zip" };
+
     fn entry(id: u64, url: &str, path: Option<&str>, status: Status) -> DownloadEntry {
         DownloadEntry {
             id,
@@ -269,7 +294,7 @@ mod tests {
 
     #[test]
     fn json_round_trip() {
-        let a = entry(1, "https://x/a.zip", Some(r"C:\dl\a.zip"), Status::Done);
+        let a = entry(1, "https://x/a.zip", Some(DL_A_ZIP), Status::Done);
         let b = entry(2, "https://x/b.iso?sig=1", None, Status::Failed);
         let json = export_json(&[&a, &b]);
         assert!(json.contains("\"uidm_list\": 1"));
@@ -278,7 +303,7 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].url, "https://x/a.zip");
         assert_eq!(items[0].filename.as_deref(), Some("a.zip"));
-        assert_eq!(items[0].folder.as_deref(), Some(r"C:\dl"));
+        assert_eq!(items[0].folder.as_deref(), Some(DL));
         assert_eq!(items[0].start, Some(false), "nothing starts on import");
         assert_eq!(items[1].filename, None);
         assert_eq!(items[1].start, Some(false));
@@ -314,7 +339,7 @@ mod tests {
     fn exports_never_hold_secrets() {
         // A list entry carries no cookies or headers to leak; the export has
         // exactly the fields of a list item.
-        let a = entry(1, "https://x/a.zip", Some(r"C:\dl\a.zip"), Status::Done);
+        let a = entry(1, "https://x/a.zip", Some(DL_A_ZIP), Status::Done);
         let value: serde_json::Value = serde_json::from_str(&export_json(&[&a])).unwrap();
         let mut keys: Vec<&str> = value["items"][0].as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort();
@@ -369,8 +394,23 @@ mod tests {
     }
 
     #[test]
+    fn idm_files_saved_as_utf16() {
+        let le = |text: &str| text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+        let be = |text: &str| text.encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>();
+        let plain = EF2.trim_start_matches('\u{feff}');
+        // EF2 starts with a byte order mark, which encodes as FF FE / FE FF.
+        for bytes in [le(EF2), be(EF2), le(plain)] {
+            let text = decode(&bytes);
+            assert_eq!(text.trim_start_matches('\u{feff}'), plain);
+            assert_eq!(import(&text).unwrap().0.len(), 2);
+        }
+        assert_eq!(decode(EF2.as_bytes()), EF2, "UTF-8 stays as it is");
+        assert_eq!(decode(b"https://x/a.zip\n"), "https://x/a.zip\n");
+    }
+
+    #[test]
     fn ef2_round_trip() {
-        let mut a = entry(1, "https://x/a.zip", Some(r"C:\dl\a.zip"), Status::Done);
+        let mut a = entry(1, "https://x/a.zip", Some(DL_A_ZIP), Status::Done);
         a.referrer = Some("https://x/downloads".into());
         a.login_user = Some("me".into());
         let b = entry(2, "https://x/b.iso", None, Status::Failed);

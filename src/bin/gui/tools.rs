@@ -34,7 +34,7 @@ pub fn pick_text_file(ctx: &egui::Context, title: &'static str, slot: &Loaded) {
         };
         let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let read = std::fs::read(&path)
-            .map(|b| (name, String::from_utf8_lossy(&b).into_owned()))
+            .map(|b| (name, uidm::listfile::decode(&b)))
             .map_err(|e| trf!("Could not read {path}: {error}", path = path.display(), error = e));
         *slot.lock().unwrap() = Some(read);
         ctx.request_repaint();
@@ -808,12 +808,12 @@ impl GrabDialog {
     }
 
     /// Keep a new project password in Credential Manager, for the start
-    /// site.
+    /// site and user name.
     fn store_login(&mut self) -> Result<(), String> {
         if !self.login_on || !self.login_changed {
             return Ok(());
         }
-        let target = grab::project_login_target(&self.start);
+        let target = grab::project_login_target(&self.start, &self.login_user);
         uidm::net::save_credential(&target, self.login_user.trim(), &self.login_password)
             .map_err(|e| trf!("Could not save the password: {error}", error = e))?;
         self.login_changed = false;
@@ -854,15 +854,15 @@ impl GrabDialog {
     }
 }
 
-/// Draw the site grabber. `categories` are the category names to save
-/// into; `done` the addresses of the finished downloads in the list, for
+/// Draw the site grabber. `settings` give the categories to save into
+/// and their folders; `done` the addresses of the finished downloads in the list, for
 /// counting what was downloaded. Returns false once it is closed (a
 /// running crawl is stopped first).
 pub fn grab_dialog(
     ctx: &egui::Context,
     d: &mut GrabDialog,
     queues: &[Queue],
-    categories: &[String],
+    settings: &uidm::settings::Settings,
     done: &HashSet<String>,
     connected: bool,
     actions: &mut Vec<Action>,
@@ -885,7 +885,7 @@ pub fn grab_dialog(
                 replace = project_bar(ui, d);
                 ui.separator();
             }
-            grab_body(ui, d, queues, categories, done, connected, actions, &mut close, &mut again);
+            grab_body(ui, d, queues, settings, done, connected, actions, &mut close, &mut again);
         });
     if let Some(next) = replace {
         *d = next;
@@ -1007,7 +1007,7 @@ fn grab_body(
     ui: &mut egui::Ui,
     d: &mut GrabDialog,
     queues: &[Queue],
-    categories: &[String],
+    settings: &uidm::settings::Settings,
     done: &HashSet<String>,
     connected: bool,
     actions: &mut Vec<Action>,
@@ -1067,7 +1067,10 @@ fn grab_body(
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut d.login_on, tr("Log in to the start site as"));
                         ui.add_enabled_ui(d.login_on, |ui| {
-                            ui.add(egui::TextEdit::singleline(&mut d.login_user).hint_text(tr("User name")).desired_width(110.0));
+                            // The password is kept per user name: another name needs its own.
+                            if ui.add(egui::TextEdit::singleline(&mut d.login_user).hint_text(tr("User name")).desired_width(110.0)).changed() {
+                                d.login_changed = true;
+                            }
                             let hint = if d.login_changed { tr("Password") } else { tr("Password (unchanged)") };
                             let pw = ui.add(egui::TextEdit::singleline(&mut d.login_password).password(true).hint_text(hint).desired_width(120.0));
                             if pw.changed() {
@@ -1174,10 +1177,10 @@ fn grab_body(
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut d.save_choice, SaveChoice::Category, tr("All files to the folder of this category:"));
                         if d.save_category.is_empty() {
-                            d.save_category = categories.first().cloned().unwrap_or_else(|| uidm::settings::GENERAL.to_string());
+                            d.save_category = settings.categories.first().map_or(uidm::settings::GENERAL, |c| c.name.as_str()).to_string();
                         }
                         egui::ComboBox::from_id_salt("grab_save_category").selected_text(d.save_category.as_str()).show_ui(ui, |ui| {
-                            for c in categories.iter().map(String::as_str).chain([uidm::settings::GENERAL]) {
+                            for c in settings.categories.iter().map(|c| c.name.as_str()).chain([uidm::settings::GENERAL]) {
                                 ui.selectable_value(&mut d.save_category, c.to_string(), c);
                             }
                         });
@@ -1376,22 +1379,8 @@ fn grab_body(
                         }
                     }
                     view => {
-                        for (group, members) in group_files(files, view == ResultsView::ByPage) {
-                            let ticked = members.iter().filter(|&&i| checked[i]).count();
-                            let title = trf!("{group} ({ticked} of {count} ticked)", group = group, ticked = ticked, count = members.len());
-                            egui::CollapsingHeader::new(title).id_salt(("grab_group", &group)).default_open(true).show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    if ui.small_button(tr("Tick all")).clicked() {
-                                        members.iter().for_each(|&i| checked[i] = true);
-                                    }
-                                    if ui.small_button(tr("Tick none")).clicked() {
-                                        members.iter().for_each(|&i| checked[i] = false);
-                                    }
-                                });
-                                for &i in &members {
-                                    row(ui, &files[i], &mut checked[i]);
-                                }
-                            });
+                        for node in &file_tree(files, view == ResultsView::ByPage) {
+                            tree_ui(ui, node, files, checked, &row);
                         }
                     }
                 }
@@ -1410,7 +1399,7 @@ fn grab_body(
                         .iter()
                         .zip(checked.iter())
                         .filter(|(_, c)| **c)
-                        .filter_map(|(f, _)| grab::download_for(&req, f))
+                        .filter_map(|(f, _)| grab::download_for(&req, f, settings))
                         .collect();
                     // The queue downloads as many at once as the grabber says.
                     if let Some(q) = queues.iter().find(|q| q.id == d.queue && q.max_concurrent != req.download_at_once as usize) {
@@ -1437,23 +1426,90 @@ fn grab_body(
     }
 }
 
-/// The found files grouped by the page that links to them, or by the
-/// folder of their address: each group's name and its files' places in
-/// `files`, in the order first met.
-fn group_files(files: &[GrabFile], by_page: bool) -> Vec<(String, Vec<usize>)> {
-    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
-    for (i, f) in files.iter().enumerate() {
-        let key = if by_page {
-            f.page.clone()
-        } else {
-            f.url.rsplit_once('/').map_or(f.url.clone(), |(folder, _)| format!("{folder}/"))
-        };
-        match groups.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, members)) => members.push(i),
-            None => groups.push((key, vec![i])),
+/// A branch of the results tree: a site, folder or page, the found files
+/// right under it (their places in `files`) and its branches.
+#[derive(Debug, Default, PartialEq)]
+struct TreeNode {
+    name: String,
+    files: Vec<usize>,
+    children: Vec<TreeNode>,
+}
+
+impl TreeNode {
+    /// The places of every file under this branch, its branches' too.
+    fn all_files(&self) -> Vec<usize> {
+        let mut out = self.files.clone();
+        for c in &self.children {
+            out.extend(c.all_files());
         }
+        out
     }
-    groups
+}
+
+/// The found files as a tree of the pages that link to them, or of the
+/// folders of their addresses: site, then each part of the path, in the
+/// order first met. A branch with one branch and no files of its own is
+/// joined to it, so `site/a/b/` shows as one line.
+fn file_tree(files: &[GrabFile], by_page: bool) -> Vec<TreeNode> {
+    let mut root = TreeNode::default();
+    for (i, f) in files.iter().enumerate() {
+        let key = if by_page { f.page.as_str() } else { f.url.rsplit_once('/').map_or(f.url.as_str(), |(folder, _)| folder) };
+        let path = key.split_once("://").map_or(key, |(_, rest)| rest);
+        let mut node = &mut root;
+        for part in path.split('/').filter(|p| !p.is_empty()) {
+            let at = match node.children.iter().position(|c| c.name == part) {
+                Some(at) => at,
+                None => {
+                    node.children.push(TreeNode { name: part.to_string(), ..TreeNode::default() });
+                    node.children.len() - 1
+                }
+            };
+            node = &mut node.children[at];
+        }
+        node.files.push(i);
+    }
+    fn join(mut node: TreeNode) -> TreeNode {
+        while node.files.is_empty() && node.children.len() == 1 {
+            let child = node.children.pop().unwrap();
+            node.name = format!("{}/{}", node.name, child.name);
+            node.files = child.files;
+            node.children = child.children;
+        }
+        node.children = node.children.into_iter().map(join).collect();
+        node
+    }
+    // Files right under the root have no site: shown as a branch of their own.
+    let mut top: Vec<TreeNode> = root.children.into_iter().map(join).collect();
+    if !root.files.is_empty() {
+        top.insert(0, TreeNode { name: "/".to_string(), files: root.files, children: Vec::new() });
+    }
+    top
+}
+
+/// Draw `node` of the results tree and its branches, each with how many of
+/// its files are ticked and buttons to tick them all or none; `row` draws a
+/// file.
+fn tree_ui(ui: &mut egui::Ui, node: &TreeNode, files: &[GrabFile], checked: &mut [bool], row: &dyn Fn(&mut egui::Ui, &GrabFile, &mut bool)) {
+    let members = node.all_files();
+    let ticked = members.iter().filter(|&&i| checked[i]).count();
+    let title = trf!("{group} ({ticked} of {count} ticked)", group = node.name, ticked = ticked, count = members.len());
+    let id = ui.id().with(("grab_tree", &node.name));
+    egui::CollapsingHeader::new(title).id_salt(id).default_open(true).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            if ui.small_button(tr("Tick all")).clicked() {
+                members.iter().for_each(|&i| checked[i] = true);
+            }
+            if ui.small_button(tr("Tick none")).clicked() {
+                members.iter().for_each(|&i| checked[i] = false);
+            }
+        });
+        for child in &node.children {
+            tree_ui(ui, child, files, checked, row);
+        }
+        for &i in &node.files {
+            row(ui, &files[i], &mut checked[i]);
+        }
+    });
 }
 
 /// The named filters: picking one fills the types; Add, Edit and Delete
@@ -1552,4 +1608,42 @@ pub fn clipboard_offer(ctx: &egui::Context, url: &str, connected: bool, actions:
             });
         });
     !answered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn found(url: &str, page: &str) -> GrabFile {
+        GrabFile { url: url.into(), name: url.rsplit('/').next().unwrap().into(), page: page.into(), size: None, text: None }
+    }
+
+    #[test]
+    fn results_tree_nests_folders_and_joins_lone_branches() {
+        let files = [
+            found("https://s/docs/a/one.pdf", "https://s/docs/"),
+            found("https://s/docs/a/two.pdf", "https://s/docs/a/"),
+            found("https://s/docs/b/three.pdf", "https://s/docs/a/"),
+            found("https://s/top.zip", "https://s/"),
+            found("https://other/x/y/z/four.zip", "https://s/docs/"),
+        ];
+        let tree = file_tree(&files, false);
+        let names: Vec<&str> = tree.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["s", "other/x/y/z"], "a lone chain shows as one line");
+        let s = &tree[0];
+        assert_eq!(s.files, [3]);
+        assert_eq!(s.children.len(), 1);
+        let docs = &s.children[0];
+        assert_eq!(docs.name, "docs");
+        assert_eq!(docs.children.iter().map(|n| (n.name.as_str(), n.files.clone())).collect::<Vec<_>>(), [("a", vec![0, 1]), ("b", vec![2])]);
+        assert_eq!(s.all_files(), [3, 0, 1, 2]);
+
+        let by_page = file_tree(&files, true);
+        assert_eq!(by_page.len(), 1);
+        let site = &by_page[0];
+        assert_eq!((site.name.as_str(), site.files.clone()), ("s", vec![3]));
+        let docs = &site.children[0];
+        assert_eq!((docs.name.as_str(), docs.files.clone()), ("docs", vec![0, 4]));
+        assert_eq!((docs.children[0].name.as_str(), docs.children[0].files.clone()), ("a", vec![1, 2]));
+    }
 }

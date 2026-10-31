@@ -268,9 +268,14 @@ mod tests {
         assert!(type_text("a.zip").ends_with("(.zip)") || type_text("a.zip") == ".zip");
         assert_eq!(type_text("README"), "No file type");
         assert!(super::super::win::file_type_name("").is_none());
-        // Windows always knows text files, by some name in its language.
+        // Windows always knows text files, by some name in its language;
+        // elsewhere the extension alone is shown.
         let txt = type_text("notes.txt");
-        assert!(txt.ends_with(" (.txt)") && txt.len() > " (.txt)".len(), "{txt}");
+        if cfg!(windows) {
+            assert!(txt.ends_with(" (.txt)") && txt.len() > " (.txt)".len(), "{txt}");
+        } else {
+            assert_eq!(txt, ".txt");
+        }
     }
 
     fn entry(status: Status) -> DownloadEntry {

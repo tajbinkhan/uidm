@@ -21,7 +21,11 @@ mod answers;
 mod columns;
 #[path = "gui/connections.rs"]
 mod connections;
+#[cfg(windows)]
 #[path = "gui/droptarget.rs"]
+mod droptarget;
+#[cfg(not(windows))]
+#[path = "gui/droptarget_other.rs"]
 mod droptarget;
 #[path = "gui/find.rs"]
 mod find;
@@ -45,14 +49,16 @@ mod theme;
 mod tools;
 #[path = "gui/tray.rs"]
 mod tray;
+#[cfg(windows)]
 #[path = "gui/win.rs"]
+mod win;
+#[cfg(not(windows))]
+#[path = "gui/win_other.rs"]
 mod win;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpStream;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -60,6 +66,7 @@ use std::time::{Duration, Instant};
 use columns::Column;
 use i18n::{tr, trf};
 use eframe::egui;
+#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use uidm::app::MAX_MESSAGE_BYTES;
 use uidm::notify::Sound;
@@ -98,7 +105,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("UIDM")
-            .with_visible(!minimized)
+            // Elsewhere "hidden" is minimized, which needs a visible window.
+            .with_visible(!minimized || !cfg!(windows))
             .with_icon(egui::IconData {
                 rgba: ICON_RGBA.to_vec(),
                 width: ICON_SIZE,
@@ -112,9 +120,18 @@ fn main() -> eframe::Result {
         "UIDM",
         options,
         Box::new(move |cc| {
+            #[cfg(windows)]
             if let Ok(handle) = cc.window_handle() {
                 if let RawWindowHandle::Win32(h) = handle.as_raw() {
                     win::set_window(h.hwnd.get());
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                win::set_context(&cc.egui_ctx);
+                // Started hidden in the tray: minimized here (see win_other).
+                if minimized {
+                    win::hide();
                 }
             }
             theme::apply(&cc.egui_ctx);
@@ -352,7 +369,7 @@ impl Shared {
                     self.segments.remove(id);
                 }
             }
-            Outgoing::Error { message } => self.last_error = Some(message.clone()),
+            Outgoing::Error { message } | Outgoing::Rejected { message, .. } => self.last_error = Some(message.clone()),
             _ => {}
         }
     }
@@ -1643,11 +1660,7 @@ impl App {
                 send(&self.writer, &Incoming::PreviewZip { id });
             }
             Action::ShowInFolder(path) => {
-                // Explorer parses /select itself, so pass the argument raw with
-                // the path quoted. Windows paths cannot contain a double quote.
-                let _ = Command::new("explorer")
-                    .raw_arg(format!("/select,\"{path}\""))
-                    .spawn();
+                let _ = uidm::platform::reveal(std::path::Path::new(&path));
             }
             Action::Reconnect => self.connect(),
             Action::OpenOptions => {
@@ -1885,16 +1898,9 @@ impl App {
             if !connected && d.running() {
                 d.failed(tr("The connection to the UIDM daemon was lost.").into());
             }
-            let categories: Vec<String> = self
-                .shared
-                .lock()
-                .unwrap()
-                .settings
-                .as_ref()
-                .map(|s| s.categories.iter().map(|c| c.name.clone()).collect())
-                .unwrap_or_default();
+            let settings = self.shared.lock().unwrap().settings.clone().unwrap_or_default();
             let done: HashSet<String> = rows.iter().filter(|e| e.status == Status::Done).map(|e| e.url.clone()).collect();
-            if !tools::grab_dialog(ctx, d, &queue_list, &categories, &done, connected, actions) {
+            if !tools::grab_dialog(ctx, d, &queue_list, &settings, &done, connected, actions) {
                 self.grabber = None;
             }
         }
@@ -2576,7 +2582,10 @@ fn general_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft, queues: &[Queue]) {
         ui.end_row();
 
         ui.label("");
-        ui.checkbox(&mut draft.start_with_windows, tr("Start with Windows, in the tray"));
+        ui.checkbox(
+            &mut draft.start_with_windows,
+            if cfg!(windows) { tr("Start with Windows, in the tray") } else { tr("Start when I sign in, in the tray") },
+        );
         ui.end_row();
 
         ui.label("");
@@ -2857,14 +2866,18 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
 /// System does. Windows' SOCKS proxies speak SOCKS4. Its configuration
 /// script is not read: it picks a proxy per address.
 fn get_system_proxy(draft: &mut OptionsDraft) {
-    let Some(rules) = uidm::net::system_proxy_at(uidm::net::INTERNET_SETTINGS) else {
-        draft.error = Some(tr("Windows has no proxy server turned on.").to_string());
+    let Some(rules) = uidm::net::system_fixed_proxy() else {
+        draft.error = Some(
+            if cfg!(windows) { tr("Windows has no proxy server turned on.") } else { tr("No proxy is set in http_proxy, https_proxy or all_proxy.") }
+                .to_string(),
+        );
         return;
     };
     draft.proxy_mode = ProxyMode::Manual;
     draft.proxy_http = rules.http.clone().unwrap_or_default();
     // An HTTPS proxy the same as the HTTP one is left to fall back to it.
     draft.proxy_https = rules.https.clone().filter(|s| rules.http.as_ref() != Some(s)).unwrap_or_default();
+    draft.proxy_ftp = rules.ftp.clone().unwrap_or_default();
     draft.proxy_socks5 = rules
         .socks
         .as_deref()
@@ -3321,9 +3334,9 @@ fn on_message(shared: &Arc<Mutex<Shared>>, ctx: &egui::Context, msg: &Outgoing) 
     ctx.request_repaint();
 }
 
-/// Open a file with its program, as Explorer does.
+/// Open a file with its program, as a double-click does.
 fn open_file(path: &str) {
-    let _ = Command::new("explorer").arg(path).spawn();
+    let _ = uidm::platform::open(path.as_ref());
 }
 
 /// An http, https or ftp address with no spaces.
@@ -3510,7 +3523,7 @@ impl eframe::App for App {
         }
         let tooltip = self.shared.lock().unwrap().tooltip();
         if tooltip != self.tooltip {
-            tray::set_tooltip(&tooltip);
+            tray::set_tooltip(tooltip.clone());
             self.tooltip = tooltip;
         }
         if let Some(s) = &settings {

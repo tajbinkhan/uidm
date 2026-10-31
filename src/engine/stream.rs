@@ -15,7 +15,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -38,8 +37,6 @@ use crate::net::NetConfig;
 const MAX_PLAYLIST_BYTES: u64 = 16 * 1024 * 1024;
 /// Report progress at most this often.
 const REPORT_INTERVAL: Duration = Duration::from_millis(250);
-/// The flag that keeps ffmpeg from opening a console window.
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// The folder a stream's segments wait in while it downloads.
 fn parts_dir(output: &Path) -> PathBuf {
@@ -315,12 +312,11 @@ fn finish(
             // ADTS AAC from MPEG-TS needs reframing to go in an MP4.
             cmd.args(["-bsf:a", "aac_adtstoasc"]);
         }
-        let out = cmd
+        let out = crate::platform::no_window(&mut cmd)
             .arg(output)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|e| EngineError::Io(format!("could not run ffmpeg ({}): {e}", ffmpeg.display())))?;
         if !out.status.success() {
@@ -919,6 +915,9 @@ mod tests {
     
         /// A stand-in for ffmpeg: it records its arguments next to itself
         /// and writes the output file, or fails with a message.
+        /// A stand-in for ffmpeg that notes its arguments in `args.txt`
+        /// and writes "video" to the last one, or fails like ffmpeg.
+        #[cfg(windows)]
         fn fake_ffmpeg(dir: &Path, fail: bool) -> PathBuf {
             let bat = dir.join("ffmpeg.bat");
             let body = if fail {
@@ -928,6 +927,20 @@ mod tests {
             };
             fs::write(&bat, body).unwrap();
             bat
+        }
+
+        #[cfg(unix)]
+        fn fake_ffmpeg(dir: &Path, fail: bool) -> PathBuf {
+            use std::os::unix::fs::PermissionsExt;
+            let script = dir.join("ffmpeg");
+            let body = if fail {
+                "#!/bin/sh\necho Invalid data found when processing input >&2\nexit 1\n".to_string()
+            } else {
+                "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/args.txt\"\nfor last; do :; done\necho video > \"$last\"\n".to_string()
+            };
+            fs::write(&script, body).unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+            script
         }
 
         fn dash_site() -> HashMap<String, Vec<u8>> {

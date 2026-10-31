@@ -1,4 +1,5 @@
-//! User settings, kept in `%APPDATA%\UIDM\settings.json`.
+//! User settings, kept in `settings.json` in UIDM's settings folder
+//! (`%APPDATA%\UIDM` on Windows; see `platform::config_dir`).
 //!
 //! The daemon loads them at start and owns them: clients read them with
 //! `get_settings` and change them with `set_settings`, and every client hears
@@ -658,7 +659,8 @@ impl Default for Settings {
             sound_failed_file: String::new(),
             sound_queue_file: String::new(),
             scan_after_download: false,
-            scanner: Scanner::Defender,
+            // Defender is Windows' own; elsewhere the user names a scanner.
+            scanner: if cfg!(windows) { Scanner::Defender } else { Scanner::Custom },
             scanner_command: String::new(),
             proxy_mode: ProxyMode::None,
             proxy_http: String::new(),
@@ -905,6 +907,9 @@ impl Settings {
         if self.scan_after_download && self.scanner == Scanner::Custom {
             crate::scan::parse_command(&self.scanner_command)?;
         }
+        if self.scan_after_download && self.scanner == Scanner::Defender && !cfg!(windows) {
+            return Err("Microsoft Defender is only on Windows. Choose a scanner program such as clamscan.".into());
+        }
         Ok(())
     }
 
@@ -1047,8 +1052,8 @@ impl Settings {
         changed
     }
 
-    /// ffmpeg.exe: the one set in Options if it exists, otherwise the first
-    /// on `PATH`.
+    /// ffmpeg: the one set in Options if it exists, otherwise the first on
+    /// `PATH`.
     pub fn ffmpeg(&self) -> Option<PathBuf> {
         let set = self.ffmpeg_path.trim();
         if !set.is_empty() {
@@ -1056,7 +1061,7 @@ impl Settings {
         }
         let path = std::env::var_os("PATH")?;
         std::env::split_paths(&path)
-            .map(|dir| dir.join("ffmpeg.exe"))
+            .map(|dir| dir.join(crate::platform::exe_name("ffmpeg")))
             .find(|p| p.is_file())
     }
 
@@ -1159,17 +1164,15 @@ fn is_host_port(s: &str) -> bool {
         && port.parse::<u16>().is_ok_and(|p| p > 0)
 }
 
-/// `%APPDATA%\UIDM\settings.json`.
+/// `settings.json` in UIDM's settings folder (`%APPDATA%\UIDM` on Windows).
 pub fn settings_path() -> io::Result<PathBuf> {
-    let base = std::env::var_os("APPDATA")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "APPDATA is not set"))?;
-    Ok(PathBuf::from(base).join("UIDM").join("settings.json"))
+    Ok(crate::platform::config_dir()?.join("settings.json"))
 }
 
 /// The current user's Downloads folder, or the temp dir if it can't be found.
 pub fn default_downloads_dir() -> PathBuf {
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        let dir = PathBuf::from(profile).join("Downloads");
+    if let Some(home) = crate::platform::home_dir() {
+        let dir = home.join("Downloads");
         if dir.is_dir() {
             return dir;
         }
@@ -1201,6 +1204,16 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// A Windows full path as a full path on this system: `C:\a\b` stays
+    /// on Windows and is `/a/b` elsewhere.
+    fn full(windows: &str) -> String {
+        if cfg!(windows) {
+            windows.to_string()
+        } else {
+            windows[2..].replace('\\', "/")
+        }
+    }
+
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("uidm_settings_{}_{name}", std::process::id()))
     }
@@ -1227,7 +1240,7 @@ mod tests {
     fn save_load_roundtrip() {
         let path = temp_path("roundtrip.json");
         let s = Settings {
-            download_dir: Some("C:\\Downloads\\UIDM".into()),
+            download_dir: Some(full("C:\\Downloads\\UIDM")),
             connections: 12,
             max_concurrent: 5,
             speed_limit_enabled: true,
@@ -1240,7 +1253,7 @@ mod tests {
             start_while_asking: true,
             add_only: true,
             general_remember_folder: true,
-            general_last_folder: Some("D:\\Misc".into()),
+            general_last_folder: Some(full("D:\\Misc")),
             later_queue: Some(4),
             categories: vec![Category::new("Books", &["epub"])],
             capture_types: vec!["zip".into()],
@@ -1254,12 +1267,12 @@ mod tests {
             sound_on_done: true,
             sound_on_failed: true,
             sound_on_queue_done: true,
-            sound_done_file: "C:\\Windows\\Media\\tada.wav".into(),
+            sound_done_file: full("C:\\Windows\\Media\\tada.wav"),
             sound_failed_file: String::new(),
-            sound_queue_file: "C:\\Windows\\Media\\chimes.wav".into(),
+            sound_queue_file: full("C:\\Windows\\Media\\chimes.wav"),
             scan_after_download: true,
             scanner: Scanner::Custom,
-            scanner_command: "C:\\scan.exe {path}".into(),
+            scanner_command: full("C:\\scan.exe") + " {path}",
             proxy_mode: ProxyMode::Manual,
             proxy_http: "proxy:3128".into(),
             proxy_https: String::new(),
@@ -1295,13 +1308,13 @@ mod tests {
             video_view: PanelView::Mini,
             video_protected_note: false,
             browser_menu_hidden: vec!["all_links".into()],
-            ffmpeg_path: "C:\\ffmpeg\\bin\\ffmpeg.exe".into(),
+            ffmpeg_path: full("C:\\ffmpeg\\bin\\ffmpeg.exe"),
             confirm_remove: false,
             remove_deletes_files: true,
             server_file_date: false,
             resume_ignores_date: true,
             manual_user_agent: USER_AGENT_PRESETS[0].1.into(),
-            temp_dir: Some("D:\\UIDM temp".into()),
+            temp_dir: Some(full("D:\\UIDM temp")),
             capture_skip_key: CaptureKey::SHIFT,
             capture_force_key: CaptureKey { insert: true, ..CaptureKey::CTRL },
             capture_keys_left_click: true,
@@ -1637,12 +1650,13 @@ mod tests {
     fn sounds_are_wav_files_or_the_system_sound() {
         let with = |file: &str| Settings { sound_failed_file: file.into(), ..Settings::default() };
         assert!(with("").validate().is_ok());
-        assert!(with(r"C:\Windows\Media\chord.WAV").validate().is_ok());
-        assert!(with(r"C:\music\song.mp3").validate().is_err());
+        assert!(with(&full(r"C:\Windows\Media\chord.WAV")).validate().is_ok());
+        assert!(with(&full(r"C:\music\song.mp3")).validate().is_err());
         assert!(with("chord.wav").validate().is_err());
         assert_eq!(with("").sound_file(crate::notify::Sound::Failed), None);
-        assert_eq!(with(r"C:\a.wav").sound_file(crate::notify::Sound::Failed), Some(PathBuf::from(r"C:\a.wav")));
-        assert_eq!(with(r"C:\a.wav").sound_file(crate::notify::Sound::Done), None);
+        let a = full(r"C:\a.wav");
+        assert_eq!(with(&a).sound_file(crate::notify::Sound::Failed), Some(PathBuf::from(&a)));
+        assert_eq!(with(&a).sound_file(crate::notify::Sound::Done), None);
     }
 
     #[test]

@@ -132,9 +132,7 @@ pub fn save_requests(path: &Path, requests: &HashMap<u64, Download>) -> io::Resu
 }
 
 fn local_data_dir() -> io::Result<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
-    Ok(PathBuf::from(base).join("UIDM"))
+    crate::platform::data_dir()
 }
 
 /// `%LOCALAPPDATA%\UIDM\history.json`.

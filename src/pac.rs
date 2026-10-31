@@ -2,9 +2,13 @@
 //! fetches and runs the script (`WinHttpGetProxyForUrl`), from a URL or,
 //! for WPAD, from wherever the network says. Answers are cached per host
 //! for a while, so each request does not run the script again.
+//! On macOS and Linux there is no script runner, so a script falls back
+//! to the fixed proxies.
 
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::ffi::c_void;
+#[cfg(windows)]
 use std::ptr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -25,13 +29,20 @@ pub struct NoScript;
 /// How long one host's answer is kept.
 const CACHE_FOR: Duration = Duration::from_secs(10 * 60);
 
+#[cfg(windows)]
 const WINHTTP_ACCESS_TYPE_NO_PROXY: u32 = 1;
+#[cfg(windows)]
 const WINHTTP_ACCESS_TYPE_NAMED_PROXY: u32 = 3;
+#[cfg(windows)]
 const WINHTTP_AUTOPROXY_AUTO_DETECT: u32 = 0x1;
+#[cfg(windows)]
 const WINHTTP_AUTOPROXY_CONFIG_URL: u32 = 0x2;
+#[cfg(windows)]
 const WINHTTP_AUTO_DETECT_TYPE_DHCP: u32 = 0x1;
+#[cfg(windows)]
 const WINHTTP_AUTO_DETECT_TYPE_DNS_A: u32 = 0x2;
 
+#[cfg(windows)]
 #[repr(C)]
 struct AutoProxyOptions {
     flags: u32,
@@ -42,6 +53,7 @@ struct AutoProxyOptions {
     auto_logon_if_challenged: i32,
 }
 
+#[cfg(windows)]
 #[repr(C)]
 struct ProxyInfo {
     access_type: u32,
@@ -49,6 +61,7 @@ struct ProxyInfo {
     proxy_bypass: *mut u16,
 }
 
+#[cfg(windows)]
 #[repr(C)]
 struct IeProxyConfig {
     auto_detect: i32,
@@ -57,6 +70,7 @@ struct IeProxyConfig {
     proxy_bypass: *mut u16,
 }
 
+#[cfg(windows)]
 #[link(name = "winhttp")]
 extern "system" {
     fn WinHttpOpen(agent: *const u16, access: u32, proxy: *const u16, bypass: *const u16, flags: u32) -> *mut c_void;
@@ -70,11 +84,13 @@ extern "system" {
     fn WinHttpGetIEProxyConfigForCurrentUser(config: *mut IeProxyConfig) -> i32;
 }
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn GlobalFree(mem: *mut c_void) -> *mut c_void;
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -83,6 +99,7 @@ fn wide(s: &str) -> Vec<u16> {
 ///
 /// SAFETY: `p` is null or a NUL-terminated string from WinHTTP that no one
 /// else frees.
+#[cfg(windows)]
 unsafe fn take(p: *mut u16) -> Option<String> {
     if p.is_null() {
         return None;
@@ -98,6 +115,7 @@ unsafe fn take(p: *mut u16) -> Option<String> {
 
 /// The script Windows' Internet settings point at, if any: a configuration
 /// script URL, or automatic detection.
+#[cfg(windows)]
 pub fn windows_source() -> Option<PacSource> {
     let mut c = IeProxyConfig {
         auto_detect: 0,
@@ -118,6 +136,7 @@ pub fn windows_source() -> Option<PacSource> {
 
 /// The proxy WinHTTP's first answer names, as a URL ureq understands.
 /// `None` connects directly.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn to_proxy_url(list: &str) -> Option<String> {
     let first = list.split([';', ' ']).map(str::trim).find(|s| !s.is_empty())?;
     if first.eq_ignore_ascii_case("direct") {
@@ -138,6 +157,18 @@ fn to_proxy_url(list: &str) -> Option<String> {
 
 /// Ask WinHTTP, without the cache. `Err` when no script could be found or
 /// run, so the caller can fall back.
+/// Without WinHTTP there is no script runner: the fixed proxies apply.
+#[cfg(not(windows))]
+pub fn windows_source() -> Option<PacSource> {
+    None
+}
+
+#[cfg(not(windows))]
+fn ask(_source: &PacSource, _url: &str) -> Result<Option<String>, NoScript> {
+    Err(NoScript)
+}
+
+#[cfg(windows)]
 fn ask(source: &PacSource, url: &str) -> Result<Option<String>, NoScript> {
     let agent = wide("UIDM");
     // SAFETY: plain calls with valid strings; the session is closed below.
@@ -214,8 +245,11 @@ pub fn proxy_for(source: &PacSource, url: &str) -> Result<Option<String>, NoScri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::io::{Read, Write};
+    #[cfg(windows)]
     use std::net::TcpListener;
+    #[cfg(windows)]
     use std::thread;
 
     #[test]
@@ -227,6 +261,8 @@ mod tests {
         assert_eq!(to_proxy_url(""), None);
     }
 
+    /// WinHTTP runs the script; elsewhere there is nothing to run it.
+    #[cfg(windows)]
     #[test]
     fn a_served_script_picks_the_proxy_and_is_cached() {
         const SCRIPT: &str = "function FindProxyForURL(url, host) {\n  if (host == \"direct.test\") return \"DIRECT\";\n  return \"PROXY proxy.test:3128\";\n}\n";
