@@ -130,6 +130,7 @@ mod tests {
         include_str!("progress.rs"),
         include_str!("properties.rs"),
         include_str!("queues.rs"),
+        include_str!("toolbar.rs"),
         include_str!("tools.rs"),
         include_str!("tray.rs"),
         // Labels the window passes through `tr`.

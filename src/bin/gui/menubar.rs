@@ -43,6 +43,8 @@ pub enum Command {
     Options,
     ToggleCategories,
     Arrange(Option<Sort>),
+    /// View > Toolbar: small buttons (true) or large ones.
+    ToolbarSmall(bool),
     ToggleTrayIcon,
     Columns,
     ToggleDarkMode,
@@ -81,6 +83,7 @@ pub struct State {
     /// Every queue: id, name and whether it is running.
     pub queues: Vec<(u64, String, bool)>,
     pub sort: Option<Sort>,
+    pub toolbar_small: bool,
     pub dark: bool,
 }
 
@@ -233,6 +236,13 @@ pub fn model(s: &State) -> Vec<Node> {
                 arrange(tr("By &Description"), Some(Column::Description)),
                 arrange(tr("By Save &Path"), Some(Column::SaveTo)),
                 arrange(tr("By Parent &Web Page"), Some(Column::Referrer)),
+            ],
+        ),
+        menu(
+            tr("&Toolbar"),
+            vec![
+                check(tr("&Large Buttons"), Command::ToolbarSmall(false), true, !s.toolbar_small),
+                check(tr("&Small Buttons"), Command::ToolbarSmall(true), true, s.toolbar_small),
             ],
         ),
         check(tr("Do&n't show the tray icon"), Command::ToggleTrayIcon, set.is_some(), set.is_some_and(|c| !c.tray_icon)),

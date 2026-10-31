@@ -100,6 +100,9 @@ pub struct Layout {
     /// Other columns fit their content, and text columns are `TEXT_WIDTH`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub widths: BTreeMap<Column, f32>,
+    /// The toolbar has small icon-only buttons rather than large labeled ones.
+    #[serde(default)]
+    pub toolbar_small: bool,
 }
 
 impl Default for Layout {
@@ -108,6 +111,7 @@ impl Default for Layout {
             columns: Column::DEFAULT.to_vec(),
             sort: None,
             widths: BTreeMap::new(),
+            toolbar_small: false,
         }
     }
 }
