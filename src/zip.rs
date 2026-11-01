@@ -73,9 +73,13 @@ pub fn list(total: u64, mut read: impl FnMut(u64, u64) -> Result<Vec<u8>, String
         return Ok(Vec::new());
     }
     // The directory is often inside the tail already read.
-    let dir = if offset >= tail_start {
-        let from = (offset - tail_start) as usize;
-        tail[from..from + size as usize].to_vec()
+    // A server may send less of the tail than asked; then the directory is
+    // read on its own.
+    let in_tail = (offset >= tail_start)
+        .then(|| (offset - tail_start) as usize)
+        .and_then(|from| tail.get(from..from + size as usize));
+    let dir = if let Some(dir) = in_tail {
+        dir.to_vec()
     } else {
         read(offset, offset + size - 1)?
     };

@@ -278,6 +278,11 @@ pub fn dialog(
                     if let Some((i, url)) = d.editing.take() {
                         let url = url.trim().to_string();
                         if crate::is_download_url(&url) {
+                            // The page's cookies belong to the link's own
+                            // site; pointed at another, it goes without them.
+                            if !same_origin(&d.links[i].url, &url) {
+                                d.links[i].cookies = None;
+                            }
                             d.links[i].url = url;
                             d.error = None;
                         } else {
@@ -374,6 +379,14 @@ pub fn dialog(
             });
         });
     open && !close
+}
+
+/// Whether two addresses share a scheme, host and port.
+fn same_origin(a: &str, b: &str) -> bool {
+    match (url::Url::parse(a), url::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

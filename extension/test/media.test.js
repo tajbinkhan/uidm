@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { classifyMedia, recordMedia, recordPage, videoPageUrl, pageTitle, recentMedia, mediaMenu, videoButtonAllowed, titleFileName, MEDIA_PER_TAB } = require("../media.js");
+const { mediaFileExtension, classifyMedia, recordMedia, recordPage, videoPageUrl, pageTitle, recentMedia, mediaMenu, videoButtonAllowed, titleFileName, MEDIA_PER_TAB } = require("../media.js");
 const { loadWorker } = require("./harness.js");
 
 const same = (a, b) => assert.equal(JSON.stringify(a), JSON.stringify(b));
@@ -15,6 +15,14 @@ const response = (url, type, extra = {}) => ({
     { name: "Content-Type", value: type },
     ...Object.entries(extra.headers || {}).map(([name, value]) => ({ name, value })),
   ],
+});
+
+test("a saved media file only ever gets a media extension", () => {
+  assert.equal(mediaFileExtension({ url: "https://a/clip.webm", mime: "video/webm" }), "webm");
+  // A server can send a program as video; it is saved as a video.
+  assert.equal(mediaFileExtension({ url: "https://a/clip.exe", mime: "video/mp4" }), "mp4");
+  assert.equal(mediaFileExtension({ url: "https://a/run.hta?x=1", mime: "audio/mpeg" }), "mp3");
+  assert.equal(mediaFileExtension({ url: "https://a/stream", mime: "audio/ogg" }), "ogg");
 });
 
 test("responses are sorted into streams, files and the rest", () => {

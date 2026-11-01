@@ -79,6 +79,9 @@ pub fn parse_duration(s: &str) -> Option<f64> {
     Some(secs)
 }
 
+/// The widest number a segment template may ask for (`$Number%020d$`).
+const MAX_FIELD_WIDTH: usize = 20;
+
 /// Fill a template's `$RepresentationID$`, `$Number$`, `$Time$` and
 /// `$Bandwidth$`, with an optional `%0Nd` width, and `$$`.
 pub fn fill(template: &str, id: &str, number: u64, time: u64, bandwidth: u64) -> String {
@@ -93,12 +96,15 @@ pub fn fill(template: &str, id: &str, number: u64, time: u64, bandwidth: u64) ->
         };
         let tag = &after[..end];
         let (name, format) = tag.split_once('%').unwrap_or((tag, ""));
+        // A manifest can ask for any width; a few hundred zeros would only
+        // make the address fail, and billions would take all the memory.
         let width: usize = format
             .strip_prefix('0')
             .unwrap_or(format)
             .trim_end_matches('d')
-            .parse()
-            .unwrap_or(1);
+            .parse::<usize>()
+            .unwrap_or(1)
+            .min(MAX_FIELD_WIDTH);
         match name {
             "" => out.push('$'),
             "RepresentationID" => out.push_str(id),

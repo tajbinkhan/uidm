@@ -41,11 +41,24 @@ const captured = new Map();
 // started is matched to its request here (see post.js).
 const posts = [];
 const postTypes = new Map();
+// Private-window tabs. Firefox marks webRequest events from them, Chrome
+// does not, so they are followed here: what happens in them stays out of
+// UIDM and out of the "recent videos" menus of normal windows.
+const privateTabs = new Set();
+const isPrivate = (tabId) => privateTabs.has(tabId);
+if (chrome.tabs) {
+  const note = (tab) => tab && tab.incognito && privateTabs.add(tab.id);
+  chrome.tabs.query({}).then((tabs) => tabs.forEach(note)).catch(() => {});
+  chrome.tabs.onCreated.addListener(note);
+  chrome.tabs.onUpdated.addListener((_id, _change, tab) => note(tab));
+  chrome.tabs.onRemoved.addListener((id) => privateTabs.delete(id));
+}
+
 if (chrome.webRequest) {
   const frames = { urls: ["<all_urls>"], types: ["main_frame", "sub_frame"] };
   chrome.webRequest.onBeforeRequest.addListener(
     (d) => {
-      if (d.method !== "POST" || d.incognito) return;
+      if (d.method !== "POST" || d.incognito || isPrivate(d.tabId)) return;
       const now = Date.now();
       prunePosts(posts, now);
       posts.push({ id: d.requestId, url: d.url, time: now, requestBody: d.requestBody });
@@ -71,7 +84,7 @@ const media = new Map();
 if (chrome.webRequest) {
   chrome.webRequest.onHeadersReceived.addListener(
     (d) => {
-      if (d.tabId < 0 || d.incognito) return;
+      if (d.tabId < 0 || d.incognito || isPrivate(d.tabId)) return;
       const found = classifyMedia(d, rules);
       if (found) {
         recordMedia(media, d.tabId, d.url, found, Date.now());
@@ -165,8 +178,7 @@ async function downloadMedia(tabId, msg, referrer) {
   const proxy = await browserProxy();
   if (proxy) download.proxy = proxy;
   if (entry.kind === "file") {
-    const ext = extensionOf(urlPath(entry.url)) || (entry.mime.startsWith("audio/") ? "mp3" : "mp4");
-    download.filename = titleFileName(msg.title, ext);
+    download.filename = titleFileName(msg.title, mediaFileExtension(entry));
   } else {
     const soundOnly = ["m4a", "mp3"].includes(msg.audioOnly) ? msg.audioOnly : null;
     const title = entry.kind === "page" ? pageTitle(msg.title) : msg.title;
@@ -183,6 +195,12 @@ async function downloadMedia(tabId, msg, referrer) {
 // A content script's request. Pages are untrusted, so a content script can
 // only ask about its own tab and choose among the media the worker saw.
 function onContentMessage(msg, sender, sendResponse) {
+  // Nothing from a private window goes to UIDM: its buttons stay off and
+  // a forced link opens in the browser.
+  if (sender.tab.incognito) {
+    sendResponse({ enabled: false, connected: false, ok: false, items: [] });
+    return false;
+  }
   const tabId = sender.tab.id;
   const pageUrl = sender.url || sender.tab.url || "";
   switch (msg && msg.type) {
@@ -860,6 +878,8 @@ async function downloadRecent({ tabId, entry }) {
 chrome.runtime.onInstalled.addListener(buildMenus);
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  // A private window's links and media stay out of UIDM, like its downloads.
+  if (tab && tab.incognito) return;
   if (info.menuItemId === "uidm-last-video") {
     const [last] = recentMedia(media, 1);
     if (last) await downloadRecent(last);

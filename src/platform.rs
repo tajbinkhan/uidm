@@ -214,9 +214,64 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Mark `path` as downloaded from `url`, as browsers do: on Windows its
+/// `Zone.Identifier` stream says it came from the internet, so SmartScreen
+/// checks a program before it runs and Office opens a document in
+/// Protected View. A drive without streams (FAT) keeps no mark, which is
+/// not an error. Elsewhere this does nothing.
+pub fn mark_from_internet(path: &std::path::Path, url: &str, referrer: Option<&str>) {
+    #[cfg(windows)]
+    {
+        let Some(host_url) = zone_url(url) else {
+            return;
+        };
+        let mut zone = String::from("[ZoneTransfer]\r\nZoneId=3\r\n");
+        if let Some(referrer) = referrer.and_then(zone_url) {
+            zone.push_str(&format!("ReferrerUrl={referrer}\r\n"));
+        }
+        zone.push_str(&format!("HostUrl={host_url}\r\n"));
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        let _ = std::fs::write(stream, zone);
+    }
+    #[cfg(not(windows))]
+    let _ = (path, url, referrer);
+}
+
+/// `url` as a Zone.Identifier records it: web and FTP addresses only, with
+/// any user name and password taken out.
+#[cfg(windows)]
+fn zone_url(url: &str) -> Option<String> {
+    let mut parsed = url::Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https" | "ftp") {
+        return None;
+    }
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    Some(parsed.to_string().replace(['\r', '\n'], ""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn downloads_are_marked_as_from_the_internet() {
+        let dir = std::env::temp_dir().join(format!("uidm-motw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.exe");
+        std::fs::write(&file, b"x").unwrap();
+        mark_from_internet(&file, "https://user:pw@example.com/a.exe", Some("https://example.com/page"));
+        let mut stream = file.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        let zone = std::fs::read_to_string(stream).unwrap();
+        assert!(zone.contains("ZoneId=3"));
+        assert!(zone.contains("HostUrl=https://example.com/a.exe"));
+        assert!(zone.contains("ReferrerUrl=https://example.com/page"));
+        assert!(!zone.contains("pw"), "no password in the mark");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn programs_are_named_for_the_system() {

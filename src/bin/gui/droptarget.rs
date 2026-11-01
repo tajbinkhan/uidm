@@ -186,6 +186,7 @@ extern "system" {
     fn GetModuleHandleW(name: *const u16) -> *mut c_void;
     fn GlobalLock(mem: *mut c_void) -> *mut c_void;
     fn GlobalUnlock(mem: *mut c_void) -> i32;
+    fn GlobalSize(mem: *mut c_void) -> usize;
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -500,8 +501,11 @@ unsafe fn read_text(data: *mut c_void) -> Option<String> {
         if medium.tymed == TYMED_HGLOBAL && !medium.data.is_null() {
             let p = GlobalLock(medium.data) as *const u16;
             if !p.is_null() {
+                // Up to the NUL, but never past the end of the block: the
+                // program that dragged it may have left the NUL out.
+                let max = GlobalSize(medium.data) / 2;
                 let mut len = 0;
-                while *p.add(len) != 0 {
+                while len < max && *p.add(len) != 0 {
                     len += 1;
                 }
                 text = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, len)));

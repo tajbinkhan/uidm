@@ -18,6 +18,9 @@ use crate::net::{self, Login};
 const TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The longest FTP reply line read; real ones are well under a kilobyte.
+const MAX_REPLY_LINE: u64 = 64 * 1024;
+
 /// Whether `url` is an FTP address.
 pub fn is_ftp(url: &str) -> bool {
     url.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("ftp://"))
@@ -133,10 +136,12 @@ impl Control {
         Ok((c, path))
     }
 
-    /// One reply, joining the lines of a multi-line one.
+    /// One reply, joining the lines of a multi-line one. Each line is read up
+    /// to `MAX_REPLY_LINE` bytes, so a server sending one endless line cannot
+    /// fill the memory.
     fn reply(&mut self) -> Result<(u16, String), EngineError> {
         let mut line = String::new();
-        if self.reader.read_line(&mut line).map_err(io)? == 0 {
+        if self.reader.by_ref().take(MAX_REPLY_LINE).read_line(&mut line).map_err(io)? == 0 {
             return Err(EngineError::Io("the FTP server closed the connection".into()));
         }
         let code: u16 = line
@@ -148,7 +153,7 @@ impl Control {
             let end = format!("{code} ");
             loop {
                 let mut next = String::new();
-                if self.reader.read_line(&mut next).map_err(io)? == 0 {
+                if self.reader.by_ref().take(MAX_REPLY_LINE).read_line(&mut next).map_err(io)? == 0 {
                     return Err(EngineError::Io("the FTP server closed the connection".into()));
                 }
                 if next.starts_with(&end) {
