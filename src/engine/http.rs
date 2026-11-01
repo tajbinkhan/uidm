@@ -160,6 +160,13 @@ impl Client {
                 let needs = || EngineError::NeedsLogin(host.clone(), realm.clone());
                 let login = net::find_login(&self.logins, &asked).ok_or_else(needs)?;
                 let auth = net::authorization(&challenges, login, method, &asked, &cnonce()).ok_or_else(needs)?;
+                // Basic sends the password as it is: over plain http it goes
+                // only with a login allowed there, else the user is asked.
+                // A server, or someone on the way, cannot downgrade a login
+                // saved for https by offering only Basic.
+                if auth.starts_with("Basic ") && !asked.starts_with("https:") && !login.plain {
+                    return Err(needs());
+                }
                 match build(&asked, Some(&auth)) {
                     Err(ureq::Error::Status(401, _)) => Err(EngineError::LoginRejected(host, realm)),
                     other => other.map_err(map_ureq),

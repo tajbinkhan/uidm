@@ -104,7 +104,9 @@ impl Control {
         }
 
         let from_url = (!parsed.username().is_empty()).then(|| (decode(parsed.username()), decode(parsed.password().unwrap_or(""))));
-        let saved = net::find_login(&opts.logins, url).map(|l| (l.username.clone(), l.password.clone()));
+        // FTP sends the password as it is, so a saved login goes only if
+        // allowed on plain connections.
+        let saved = net::find_login(&opts.logins, url).filter(|l| l.plain).map(|l| (l.username.clone(), l.password.clone()));
         let given = from_url.is_some() || saved.is_some();
         let (user, pass) = from_url.or(saved).unwrap_or_else(|| ("anonymous".into(), "uidm@".into()));
         if has_control(&user) || has_control(&pass) {
@@ -487,15 +489,18 @@ mod tests {
         assert_eq!(probe(&with_user, &FtpOptions::default()).unwrap().total, Some(10));
         let wrong = s.url.replace("ftp://", "ftp://ann:nope@");
         assert!(matches!(probe(&wrong, &FtpOptions::default()), Err(EngineError::LoginRejected(..))));
-        let saved = FtpOptions {
+        let saved = |plain| FtpOptions {
             logins: vec![Login {
                 site: "127.0.0.1".into(),
                 username: "ann".into(),
                 password: "p@ss".into(),
+                plain,
             }],
             ..FtpOptions::default()
         };
-        assert_eq!(probe(&s.url, &saved).unwrap().total, Some(10));
+        // A saved login goes to FTP only when allowed on plain connections.
+        assert!(matches!(probe(&s.url, &saved(false)), Err(EngineError::NeedsLogin(..))));
+        assert_eq!(probe(&s.url, &saved(true)).unwrap().total, Some(10));
     }
 
     #[test]

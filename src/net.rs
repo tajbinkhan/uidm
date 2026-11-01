@@ -354,6 +354,11 @@ pub struct Login {
     pub site: String,
     pub username: String,
     pub password: String,
+    /// It may go where it can be read on the way: as Basic authentication
+    /// over plain http, and to FTP servers, which take passwords as they
+    /// are. A saved login needs the user's say-so for that; one typed for a
+    /// download is meant for its address.
+    pub plain: bool,
 }
 
 /// A login pattern split into its site and its path (`""` for none):
@@ -932,6 +937,7 @@ mod tests {
             site: site.into(),
             username: "Mufasa".into(),
             password: "Circle Of Life".into(),
+            plain: false,
         }
     }
 
