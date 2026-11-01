@@ -2177,15 +2177,22 @@ mod tests {
             };
             let server = TestServer::start_with(b"<a href=x.pdf>".to_vec(), behavior);
             assert!(fetch(&server.url, &[], &NetConfig::default(), 1024).is_err());
-            let net = NetConfig {
+            let net = |plain| NetConfig {
                 logins: vec![crate::net::Login {
                     site: "127.0.0.1".into(),
                     username: "ann".into(),
                     password: "secret".into(),
+                    plain,
                 }],
                 ..NetConfig::default()
             };
-            assert_eq!(fetch(&server.url, &[], &net, 1024).unwrap().body, b"<a href=x.pdf>");
+            // Basic over plain http: a saved login goes only when allowed
+            // there; otherwise the user is asked.
+            assert!(matches!(
+                fetch(&server.url, &[], &net(false), 1024),
+                Err(EngineError::NeedsLogin(..))
+            ));
+            assert_eq!(fetch(&server.url, &[], &net(true), 1024).unwrap().body, b"<a href=x.pdf>");
         }
 
         #[test]
@@ -2399,6 +2406,7 @@ mod tests {
                 site: site.into(),
                 username: username.into(),
                 password: password.into(),
+                plain: true,
             }
         }
 

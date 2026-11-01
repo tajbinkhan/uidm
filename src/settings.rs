@@ -191,6 +191,11 @@ pub struct SiteLogin {
     /// A new password to store; `None` keeps the stored one.
     #[serde(default, skip_serializing)]
     pub password: Option<String>,
+    /// Also send it where it can be read on the way: as Basic
+    /// authentication over plain http, and to FTP servers. Off, it goes
+    /// only over https, or as Digest, which never sends the password.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plain: bool,
 }
 
 /// The most connections UIDM opens to the hosts matching `site` (such as
@@ -1298,6 +1303,7 @@ mod tests {
                 site: "files.example.com".into(),
                 username: "ann".into(),
                 password: None,
+                plain: false,
             }],
             clipboard_monitor: true,
             clipboard_start: true,
@@ -1573,6 +1579,7 @@ mod tests {
                 site: "example.com".into(),
                 username: "ann".into(),
                 password: Some("login-secret".into()),
+                plain: false,
             }],
             ..Settings::default()
         };
@@ -1598,6 +1605,7 @@ mod tests {
             site: site.into(),
             username: user.into(),
             password: None,
+            plain: false,
         };
         assert!(with(&|s| s.site_logins = vec![login("a.com", "u")]).is_ok());
         assert!(with(&|s| s.site_logins = vec![login("a.com", " ")]).is_err());

@@ -23,6 +23,9 @@ pub struct LoginPrompt {
     username: String,
     password: String,
     save: bool,
+    /// One of the downloads is on a plain http or FTP address, so a saved
+    /// login is allowed on plain connections: that is where it was used.
+    pub plain: bool,
 }
 
 impl LoginPrompt {
@@ -34,6 +37,7 @@ impl LoginPrompt {
             username,
             password: String::new(),
             save: !own_site,
+            plain: false,
         }
     }
 
@@ -46,12 +50,14 @@ impl LoginPrompt {
         if save {
             if let Some(s) = settings {
                 let mut s = s.clone();
+                let old = s.site_logins.iter_mut().find(|l| l.site.eq_ignore_ascii_case(&self.wanted.host));
                 let login = SiteLogin {
                     site: self.wanted.host.clone(),
                     username: username.clone(),
                     password: Some(self.password.clone()),
+                    plain: self.plain || old.as_ref().is_some_and(|l| l.plain),
                 };
-                match s.site_logins.iter_mut().find(|l| l.site.eq_ignore_ascii_case(&self.wanted.host)) {
+                match old {
                     Some(old) => *old = login,
                     None => s.site_logins.push(login),
                 }
@@ -166,12 +172,26 @@ mod tests {
     }
 
     #[test]
+    fn a_login_saved_from_plain_http_may_go_there_again() {
+        for plain in [false, true] {
+            let mut p = LoginPrompt::new(vec![3], wanted("files.example.com"), false, "ann".into());
+            p.password = "secret".into();
+            p.plain = plain;
+            match &p.answer(Some(&Settings::default()))[0] {
+                Action::QuickSettings(s) => assert_eq!(s.site_logins[0].plain, plain),
+                _ => panic!("expected the login saved"),
+            }
+        }
+    }
+
+    #[test]
     fn save_puts_it_in_the_site_logins() {
         let mut settings = Settings::default();
         settings.site_logins.push(SiteLogin {
             site: "FILES.example.com".into(),
             username: "old".into(),
             password: None,
+            plain: false,
         });
         // Another site than the link's: saved whatever the box says.
         let mut p = LoginPrompt::new(vec![3], wanted("files.example.com"), false, "ann".into());

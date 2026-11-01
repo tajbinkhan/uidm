@@ -1638,6 +1638,8 @@ impl Daemon {
                     site: host.to_string(),
                     username: user.to_string(),
                     password: grab::project_password(&req.start, user).unwrap_or_default(),
+                    // Given for this project's start site.
+                    plain: true,
                 });
             }
         }
@@ -2868,6 +2870,7 @@ impl Daemon {
                     site: l.site.trim().to_string(),
                     username: l.username.clone(),
                     password: net::load_login_password(&l.site)?,
+                    plain: l.plain,
                 })
             })
             .collect();
@@ -2880,6 +2883,8 @@ impl Daemon {
                 site: host,
                 username: l.username.clone(),
                 password: l.password.clone().unwrap_or_default(),
+                // Typed for this download, so meant for its address.
+                plain: true,
             });
         }
         NetConfig {

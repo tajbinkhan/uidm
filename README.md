@@ -328,7 +328,10 @@ tests, not in a running Firefox.
   password; a site can name one of its folders, such as
   `example.com/private/*`, to use another login there. When a server asks
   for a login (HTTP Basic or Digest), UIDM sends the matching one to that
-  site and no other. Without one (or when the
+  site and no other. A saved login goes over plain http as Basic, or to an
+  FTP server, only with its **Plain connections** box ticked, since there
+  the password can be read on the way; a login saved from **Log in to the
+  site** for a plain http or FTP link has it ticked. Without one (or when the
   server refuses it) the download stops, and the window asks: **Log in to
   the site** shows the site and the realm it named, takes a user name and
   password, and retries the download with them. They stay the download's
@@ -956,7 +959,11 @@ properties) replaces the site logins for its host. A request goes out
 without credentials. On a 401, UIDM picks the login for the address that
 answered and sends the request again, once, straight to that URL,
 with `Authorization` for the `WWW-Authenticate` challenge: Digest (MD5,
-MD5-sess, SHA-256, with `qop=auth`) when offered, else Basic. ureq never
+MD5-sess, SHA-256, with `qop=auth`) when offered, else Basic. Basic over
+plain http, and any FTP login, needs a login allowed on plain connections
+(a download's own login always is); otherwise the download asks for one,
+so a server offering only Basic cannot draw out a password saved for
+https. ureq never
 carries `Authorization` across a redirect, so a login never reaches another
 host. No login for the host fails with "This site needs a login: <host>",
 and a refused login with "The login for <host> was refused"; neither is

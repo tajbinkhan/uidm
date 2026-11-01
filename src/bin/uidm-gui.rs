@@ -839,6 +839,8 @@ struct LoginDraft {
     password: String,
     /// Added in this dialog, so it has no stored password yet.
     new: bool,
+    /// Also sent over plain http (as Basic) and to FTP servers.
+    plain: bool,
 }
 
 /// One category being edited.
@@ -1036,6 +1038,7 @@ impl OptionsDraft {
                     username: l.username.clone(),
                     password: String::new(),
                     new: false,
+                    plain: l.plain,
                 })
                 .collect(),
             folder: s.download_dir.clone().unwrap_or_default(),
@@ -1207,6 +1210,7 @@ impl OptionsDraft {
                     site: l.site.trim().to_ascii_lowercase(),
                     username: l.username.trim().to_string(),
                     password: (!l.password.is_empty()).then(|| l.password.clone()),
+                    plain: l.plain,
                 })
                 .collect(),
             file_exists: self.file_exists,
@@ -2028,7 +2032,9 @@ impl App {
                     .or_else(|| first.login_user.clone())
                     .unwrap_or_default();
                 let ids = same.iter().map(|(e, _)| e.id).collect();
-                self.login = Some(login::LoginPrompt::new(ids, wanted, own_site, username));
+                let mut prompt = login::LoginPrompt::new(ids, wanted, own_site, username);
+                prompt.plain = same.iter().any(|(e, _)| !e.url.to_ascii_lowercase().starts_with("https:"));
+                self.login = Some(prompt);
             }
         }
         if let Some(p) = self.login.as_mut() {
@@ -2929,13 +2935,16 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
     ui.strong(tr("Site logins"));
     ui.weak(tr("Sent only to a site that asks for a login, and only to that site."));
     let mut remove = None;
-    egui::Grid::new("logins").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+    egui::Grid::new("logins").num_columns(5).spacing([8.0, 6.0]).show(ui, |ui| {
         for (i, l) in draft.logins.iter_mut().enumerate() {
             ui.add_sized([180.0, 20.0], egui::TextEdit::singleline(&mut l.site).hint_text("example.com"))
                 .on_hover_text(tr("A server, or one of its folders such as example.com/private/*. The longest match wins."));
             ui.add_sized([120.0, 20.0], egui::TextEdit::singleline(&mut l.username).hint_text(tr("User name")));
             let hint = if l.new { tr("Password") } else { tr("Password (unchanged)") };
             ui.add_sized([150.0, 20.0], egui::TextEdit::singleline(&mut l.password).password(true).hint_text(hint));
+            ui.checkbox(&mut l.plain, tr("Plain connections")).on_hover_text(tr(
+                "Also send it over plain http and to FTP servers, where it can be read on the way. Off, it goes only over https.",
+            ));
             if ui.small_button(tr("Remove")).clicked() {
                 remove = Some(i);
             }
@@ -2951,6 +2960,7 @@ fn connection_tab(ui: &mut egui::Ui, draft: &mut OptionsDraft) {
             username: String::new(),
             password: String::new(),
             new: true,
+            plain: false,
         });
     }
 }
