@@ -1245,7 +1245,9 @@ fn run_segmented(
         for _ in 0..workers {
             let agent = agent.clone();
             let url = url.clone();
-            let headers = req.headers.clone();
+            // The browser's cookies and a login go on only if the probe
+            // was not redirected to another site.
+            let headers = stream::headers_for(&req.url, &req.headers, &url).into_owned();
             let output = output.clone();
             let sidecar = sidecar.clone();
             let shared = Arc::clone(&shared);
@@ -1541,7 +1543,8 @@ fn single_once(
     reporter: &Reporter,
     limiter: &Throttle,
 ) -> Result<(), EngineError> {
-    let mut reader = http::fetch_whole(agent, &probe.final_url, &req.headers)?;
+    let headers = stream::headers_for(&req.url, &req.headers, &probe.final_url);
+    let mut reader = http::fetch_whole(agent, &probe.final_url, &headers)?;
     let mut file = File::create(output)?;
     let mut buf = vec![0u8; BUF_SIZE];
     let mut done = 0u64;
@@ -1594,7 +1597,7 @@ fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> std::io::Result<()>
 /// Create the output file if needed and size it to `total` without truncating
 /// bytes an earlier run already wrote.
 fn ensure_file_len(output: &std::path::Path, total: u64) -> std::io::Result<()> {
-    let file = OpenOptions::new().create(true).write(true).open(output)?;
+    let file = OpenOptions::new().create(true).write(true).truncate(false).open(output)?;
     if file.metadata()?.len() != total {
         file.set_len(total)?;
     }
@@ -1629,7 +1632,8 @@ fn derive_filename(url: &str) -> String {
 
 /// Strip characters Windows forbids in filenames.
 fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    let clean = name
+        .chars()
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
             c if (c as u32) < 0x20 => '_',
@@ -1638,12 +1642,40 @@ fn sanitize_filename(name: &str) -> String {
         .collect::<String>()
         .trim()
         .trim_matches('.')
-        .to_string()
+        .to_string();
+    not_a_device(clean)
+}
+
+/// `name`, with `_` in front if Windows would take it for a device such as
+/// `CON`, `NUL` or `COM1`, with or without an extension: writing to one of
+/// those reaches the device, not a file.
+pub(crate) fn not_a_device(name: String) -> String {
+    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix)
+            .is_some_and(|n| matches!(n, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "\u{b9}" | "\u{b2}" | "\u{b3}"))
+    };
+    if DEVICES.contains(&stem.as_str()) || numbered("COM") || numbered("LPT") {
+        format!("_{name}")
+    } else {
+        name
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_names_are_not_kept() {
+        assert_eq!(sanitize_filename("CON"), "_CON");
+        assert_eq!(sanitize_filename("nul.txt"), "_nul.txt");
+        assert_eq!(sanitize_filename("Com1.mp4"), "_Com1.mp4");
+        assert_eq!(sanitize_filename("LPT9"), "_LPT9");
+        assert_eq!(sanitize_filename("console.log"), "console.log");
+        assert_eq!(sanitize_filename("COM10.txt"), "COM10.txt");
+    }
 
     #[test]
     fn effective_connections_bounds() {

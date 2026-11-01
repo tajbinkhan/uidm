@@ -332,7 +332,7 @@ fn safe_part(part: &str) -> String {
     if clean.is_empty() || clean == "." || clean == ".." {
         "_".to_string()
     } else {
-        clean
+        crate::engine::not_a_device(clean)
     }
 }
 
@@ -504,6 +504,27 @@ pub fn on_start_site(req: &GrabRequest, url: &str) -> bool {
     };
     let domain = start.strip_prefix("www.").unwrap_or(&start);
     here == start || (req.subdomains && (here == domain || here.ends_with(&format!(".{domain}"))))
+}
+
+/// Whether `url` is on this computer or the local network: `localhost`, or
+/// a loopback, private, link-local or unique-local address.
+fn local_host(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(d)) => {
+            let d = d.to_ascii_lowercase();
+            d == "localhost" || d.ends_with(".localhost") || d.ends_with(".local")
+        }
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified(),
+        Some(url::Host::Ipv6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback() || v4.is_private() || v4.is_link_local())
+        }
+        None => false,
+    }
 }
 
 /// Whether `url` passes an include list (empty passes all) and an exclude
@@ -1057,6 +1078,11 @@ pub fn crawl(
         let host = u.host_str().unwrap_or("").to_ascii_lowercase();
         host == start_host || (req.subdomains && (host == domain || host.ends_with(&format!(".{domain}"))))
     };
+    // A page on the internet may link to this computer or the local
+    // network (a router's page, a local service); the crawl goes there only
+    // when it started there.
+    let local_start = local_host(&start);
+    let reachable = |u: &Url| local_start || !local_host(u);
     // The folder the crawl may not go above.
     let start_dir = start.path().rsplit_once('/').map_or("/".to_string(), |(dir, _)| format!("{dir}/"));
     // The files kept so far, by name (as indexes into `out.files`), to spot
@@ -1170,6 +1196,7 @@ pub fn crawl(
                     if !types.keeps(&ext)
                         || !passes(file.as_str(), &req.files_only, &req.files_skip)
                         || (req.files_this_site && !on_site(&file))
+                        || !reachable(&file)
                     {
                         continue;
                     }
@@ -1223,6 +1250,9 @@ pub fn crawl(
                     });
                 }
                 for next in pages {
+                    if !reachable(&next) {
+                        continue;
+                    }
                     let here_site = on_site(&next);
                     let exact = next.host_str().unwrap_or("").eq_ignore_ascii_case(&start_host);
                     // How far it may go: on the start site, `depth` links (or

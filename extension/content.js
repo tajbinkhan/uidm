@@ -57,7 +57,9 @@ function makeMini(button) {
   addEventListener("blur", () => (insert = false));
 
   function onClick(ev) {
-    if (ev.button > 1) return;
+    // A page's script can send a click with the force key "held"; only the
+    // user's own clicks count.
+    if (!ev.isTrusted || ev.button > 1) return;
     const link = ev.composedPath().find((n) => n instanceof HTMLAnchorElement && n.href);
     if (!link || !/^https?:/i.test(link.href)) return;
     const action = keyAction(keys, {

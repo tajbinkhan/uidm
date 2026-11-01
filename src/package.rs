@@ -132,8 +132,18 @@ fn quote(arg: &str) -> String {
 }
 
 /// `s` as a single-quoted PowerShell string, which expands nothing.
+/// PowerShell also reads the typographic single quotes as quotes, so each
+/// is doubled like the plain one.
 fn powershell_string(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+    let mut out = String::from('\'');
+    for c in s.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
 }
 
 #[cfg(test)]
@@ -154,6 +164,7 @@ mod tests {
     fn powershell_strings_expand_nothing() {
         assert_eq!(powershell_string(r#""C:\a b\x.exe" --log"#), r#"'"C:\a b\x.exe" --log'"#);
         assert_eq!(powershell_string("it's $HOME"), "'it''s $HOME'");
+        assert_eq!(powershell_string("O\u{2019}Brien"), "'O\u{2019}\u{2019}Brien'");
     }
 
     #[test]

@@ -23,8 +23,8 @@
 //! the port cannot answer step 2, so the host gives up before relaying any
 //! browser frame, and the squatter learns only a random nonce.
 
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -251,7 +251,7 @@ pub fn send_handshake(stream: &mut TcpStream, msg: &Handshake) -> io::Result<()>
 
 /// Read one handshake frame, capped at `AUTH_MAX_BYTES`. A close or anything
 /// that is not a handshake message is an error.
-pub fn recv_handshake(stream: &mut TcpStream) -> io::Result<Handshake> {
+pub fn recv_handshake(stream: &mut impl Read) -> io::Result<Handshake> {
     let raw = read_message(stream, AUTH_MAX_BYTES)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -325,9 +325,56 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// The daemon's log, in the temp folder.
+/// The daemon's log: in the temp folder on Windows, which is the user's
+/// own; elsewhere in UIDM's data folder, as `/tmp` is shared by every user
+/// and the log holds download addresses.
 pub fn daemon_log() -> PathBuf {
-    std::env::temp_dir().join("uidm-daemon.log")
+    if cfg!(windows) {
+        return std::env::temp_dir().join("uidm-daemon.log");
+    }
+    crate::platform::data_dir()
+        .map(|d| d.join("uidm-daemon.log"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("uidm-daemon.log"))
+}
+
+/// Open the daemon's log for adding to its end, readable only by the user
+/// on Unix.
+pub fn open_daemon_log() -> io::Result<File> {
+    let log = daemon_log();
+    if let Some(dir) = log.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(log)
+}
+
+/// A reader over a handshake that fails once `until` has passed, however
+/// slowly the bytes come: each read waits only for the time left. A plain
+/// read timeout starts again with every byte, so a client sending one byte
+/// at a time could hold a daemon thread for an hour.
+pub struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: Instant,
+}
+
+impl<'a> Deadline<'a> {
+    pub fn new(stream: &'a TcpStream, until: Instant) -> Self {
+        Deadline { stream, until }
+    }
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "the handshake took too long"));
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        (&mut &*self.stream).read(buf)
+    }
 }
 
 /// Launch `uidm-daemon` from the host's own directory as a detached
@@ -345,7 +392,7 @@ fn spawn_daemon() -> io::Result<()> {
         args.push(crate::package::LOG_ARG.to_string());
         return crate::package::spawn_outside(&program, &args);
     }
-    let log = fs::OpenOptions::new().create(true).append(true).open(daemon_log())?;
+    let log = open_daemon_log()?;
     let mut daemon = crate::platform::program_command("uidm-daemon")?;
 
     crate::platform::detach(&mut daemon)

@@ -158,8 +158,19 @@ function recordMedia(store, tabId, url, found, now) {
 }
 
 // A file's type for people: "MP4 video".
+// The extension a saved media file gets: the address's when it is a media
+// type, else the one the server's type names, else mp4 or mp3. A server can
+// send "clip.exe" as video/mp4; the saved file must not end in .exe.
+function mediaFileExtension(entry) {
+  const fromUrl = extensionOf(urlPath(entry.url));
+  if (MEDIA_FILE_EXTENSIONS[fromUrl]) return fromUrl;
+  const fromMime = mimeExtension(entry.mime);
+  if (MEDIA_FILE_EXTENSIONS[fromMime]) return fromMime;
+  return (entry.mime || "").startsWith("audio/") ? "mp3" : "mp4";
+}
+
 function fileLabel(entry) {
-  const ext = extensionOf(urlPath(entry.url)) || (entry.mime.split("/")[1] || "").replace(/^x-/, "");
+  const ext = mediaFileExtension(entry);
   const audio = entry.mime.startsWith("audio/") || MEDIA_FILE_EXTENSIONS[ext] === "audio";
   if (!ext) return audio ? uiText("audioFile") : uiText("videoFile");
   return audio ? uiText("audioFileType", ext.toUpperCase()) : uiText("videoFileType", ext.toUpperCase());
@@ -274,5 +285,5 @@ function titleFileName(title, ext) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { classifyMedia, recordMedia, recordPage, videoPageUrl, pageTitle, recentMedia, mediaLabel, mediaMenu, videoButtonAllowed, titleFileName, responseSize, uiText, MEDIA_PER_TAB };
+  module.exports = { mediaFileExtension, classifyMedia, recordMedia, recordPage, videoPageUrl, pageTitle, recentMedia, mediaLabel, mediaMenu, videoButtonAllowed, titleFileName, responseSize, uiText, MEDIA_PER_TAB };
 }

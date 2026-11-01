@@ -86,8 +86,18 @@ const CONFIRM_FALLBACK: Duration = Duration::from_secs(20);
 /// How long answering a save-as dialog waits for the download it started
 /// early to stop, before starting over without its bytes.
 const EARLY_STOP_WAIT: Duration = Duration::from_secs(15);
-/// The folder early downloads are written in, inside the temporary folder.
+/// The folder early downloads are written in, inside the temporary folder
+/// when UIDM's data folder cannot be had.
 const EARLY_FOLDER: &str = "UIDM early";
+
+/// Where early downloads go: UIDM's own data folder, which only this user
+/// can write. The temporary folder is shared by every user on Linux, where
+/// another user could read the files or plant a link under the folder.
+fn early_root() -> PathBuf {
+    uidm::platform::data_dir()
+        .map(|d| d.join("early"))
+        .unwrap_or_else(|_| std::env::temp_dir().join(EARLY_FOLDER))
+}
 /// A failure is announced after this long, so a download the browser
 /// extension takes back (and removes) right away is not announced at all.
 const FAILED_GRACE: Duration = Duration::from_secs(1);
@@ -224,7 +234,9 @@ impl Hub {
             let _ = self.wake.send(());
         }
         match msg {
-            Outgoing::Done { id, .. } => {
+            Outgoing::Done { id, url, path, .. } => {
+                let referrer = table.get(*id).and_then(|e| e.referrer.clone());
+                uidm::platform::mark_from_internet(Path::new(path), url, referrer.as_deref());
                 self.requests.lock().unwrap().remove(id);
                 let _ = self.notes.send(Note::Finished(*id));
             }
@@ -2129,8 +2141,11 @@ impl Daemon {
     fn start_early(&self, id: u64, download: Download, filename: &str) {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(EARLY_FOLDER).join(format!("{}-{n}", std::process::id()));
-        if let Err(e) = std::fs::create_dir_all(&dir) {
+        let root = early_root();
+        let dir = root.join(format!("{}-{n}", std::process::id()));
+        // A new folder each time: one that is already there, or a link in
+        // its place, makes this fail rather than be written through.
+        if let Err(e) = std::fs::create_dir_all(&root).and_then(|()| std::fs::create_dir(&dir)) {
             eprintln!("[uidm-daemon] could not start #{id} early: {e}");
             return;
         }
@@ -2907,6 +2922,18 @@ impl Daemon {
         Ok(new)
     }
 
+    /// The settings as they are, with only the video button's fields taken
+    /// from `asked`. The browser extension changes nothing else, and only
+    /// the window changes settings at large: a browser connection, from an
+    /// extension that is not UIDM's or a bug in it, must not point the virus
+    /// scanner, ffmpeg, folders or proxy somewhere else.
+    fn with_video_button(&self, asked: &Settings) -> Settings {
+        let mut settings = self.settings.lock().unwrap().clone();
+        settings.video_button = asked.video_button;
+        settings.video_button_excluded_sites = asked.video_button_excluded_sites.clone();
+        settings
+    }
+
     fn set_settings(&self, mut new: Settings) -> Result<(), String> {
         new.validate()?;
         // Only the daemon notes update checks; a window's copy may be older.
@@ -3166,9 +3193,9 @@ fn handle_client(mut stream: TcpStream, daemon: &Arc<Daemon>, token: &str) {
 
 /// Run the daemon side of the handshake described in `uidm::ipc`.
 fn authenticate(stream: &mut TcpStream, token: &str) -> io::Result<()> {
-    stream.set_read_timeout(Some(AUTH_TIMEOUT))?;
-
-    let client_nonce = match ipc::recv_handshake(stream)? {
+    // The whole handshake gets AUTH_TIMEOUT, not each read of it.
+    let until = Instant::now() + AUTH_TIMEOUT;
+    let client_nonce = match ipc::recv_handshake(&mut ipc::Deadline::new(stream, until))? {
         Handshake::AuthHello { client_nonce } => client_nonce,
         _ => return Err(denied("first frame was not auth_hello")),
     };
@@ -3183,7 +3210,7 @@ fn authenticate(stream: &mut TcpStream, token: &str) -> io::Result<()> {
     )?;
 
     let expected = ipc::proof(token, HOST_LABEL, &client_nonce, &server_nonce);
-    match ipc::recv_handshake(stream)? {
+    match ipc::recv_handshake(&mut ipc::Deadline::new(stream, until))? {
         Handshake::Auth { proof } if ipc::ct_eq(proof.as_bytes(), expected.as_bytes()) => {}
         _ => return Err(denied("missing or wrong auth proof")),
     }
@@ -3425,7 +3452,11 @@ fn dispatch(raw: &[u8], daemon: &Arc<Daemon>, client: u64, reply: &Sender<Vec<u8
         Incoming::GetSettings => send(&Outgoing::Settings {
             settings: daemon.settings.lock().unwrap().clone(),
         }),
-        Incoming::SetSettings { settings } => match daemon.set_settings(settings) {
+        Incoming::SetSettings { settings } => match daemon.set_settings(if daemon.hub.windows.lock().unwrap().contains(&client) {
+            settings
+        } else {
+            daemon.with_video_button(&settings)
+        }) {
             Ok(()) => eprintln!("[uidm-daemon] settings changed"),
             Err(message) => send(&Outgoing::Error { message }),
         },
@@ -3559,7 +3590,7 @@ fn free_path(path: &Path, overwrite: bool) -> PathBuf {
 /// Delete the folders of early downloads a previous run left behind, except
 /// those holding the partial file of a download in the list.
 fn clean_early_folders(daemon: &Daemon) {
-    let Ok(dirs) = std::fs::read_dir(std::env::temp_dir().join(EARLY_FOLDER)) else {
+    let Ok(dirs) = std::fs::read_dir(early_root()) else {
         return;
     };
     let partials: Vec<PathBuf> = daemon

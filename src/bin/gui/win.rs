@@ -84,6 +84,7 @@ pub fn file_type_name(ext: &str) -> Option<String> {
 extern "system" {
     fn GlobalLock(mem: *mut c_void) -> *mut c_void;
     fn GlobalUnlock(mem: *mut c_void) -> i32;
+    fn GlobalSize(mem: *mut c_void) -> usize;
     fn GetUserPreferredUILanguages(flags: u32, count: *mut u32, buffer: *mut u16, size: *mut u32) -> i32;
 }
 
@@ -159,8 +160,11 @@ pub fn clipboard_text() -> Option<String> {
         if !handle.is_null() {
             let ptr = GlobalLock(handle) as *const u16;
             if !ptr.is_null() {
+                // Up to the NUL, but never past the end of the block: the
+                // program that put it there may have left the NUL out.
+                let max = GlobalSize(handle) / 2;
                 let mut len = 0;
-                while *ptr.add(len) != 0 {
+                while len < max && *ptr.add(len) != 0 {
                     len += 1;
                 }
                 text = Some(String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len)));

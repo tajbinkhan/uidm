@@ -221,7 +221,7 @@ pub fn import(text: &str) -> Result<(Vec<Download>, usize), String> {
             .map(|item| Download {
                 url: item.url,
                 filename: item.filename.filter(|n| !n.trim().is_empty()),
-                folder: item.folder.filter(|f| Path::new(f).is_absolute()),
+                folder: item.folder.filter(|f| safe_folder(Path::new(f))),
                 referrer: item.referrer.filter(|r| batch::is_web_url(r)),
                 description: item.description.filter(|d| !d.trim().is_empty()),
                 start: Some(false),
@@ -257,12 +257,46 @@ fn keep_valid(candidates: Vec<Download>) -> Result<(Vec<Download>, usize), Strin
     Ok((items, rejected))
 }
 
+/// Whether an imported list may save a file in `folder`. A list can come
+/// from anywhere, so it keeps a folder only inside the user's home and out
+/// of hidden and application folders: not the Startup folder, which runs
+/// what is put in it, nor `~/.config/autostart`, nor a network share,
+/// which would send the user's Windows login to its server.
+fn safe_folder(folder: &Path) -> bool {
+    use std::path::Component;
+    let Some(home) = crate::platform::home_dir() else {
+        return false;
+    };
+    if !folder.is_absolute() || !folder.starts_with(&home) {
+        return false;
+    }
+    folder.strip_prefix(&home).is_ok_and(|inside| {
+        inside.components().all(|c| match c {
+            Component::Normal(part) => {
+                let part = part.to_string_lossy();
+                !part.starts_with('.') && !part.eq_ignore_ascii_case("AppData") && !part.eq_ignore_ascii_case("Library")
+            }
+            _ => false,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn imported_folders_stay_in_the_home_folder() {
+        let home = crate::platform::home_dir().unwrap();
+        assert!(safe_folder(&home.join("Downloads").join("Music")));
+        assert!(!safe_folder(&home.join("AppData").join("Roaming").join("Startup")));
+        assert!(!safe_folder(&home.join(".config").join("autostart")));
+        assert!(!safe_folder(&home.join("Downloads").join("..").join("AppData")));
+        assert!(!safe_folder(Path::new(r"\\server\share")));
+        assert!(!safe_folder(Path::new("relative")));
+    }
+
     /// A full path on this system for a downloads folder and a file in it.
-    const DL: &str = if cfg!(windows) { r"C:\dl" } else { "/dl" };
     const DL_A_ZIP: &str = if cfg!(windows) { r"C:\dl\a.zip" } else { "/dl/a.zip" };
 
     fn entry(id: u64, url: &str, path: Option<&str>, status: Status) -> DownloadEntry {
@@ -303,7 +337,8 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].url, "https://x/a.zip");
         assert_eq!(items[0].filename.as_deref(), Some("a.zip"));
-        assert_eq!(items[0].folder.as_deref(), Some(DL));
+        // The folder is outside the home folder, so the import drops it.
+        assert_eq!(items[0].folder, None);
         assert_eq!(items[0].start, Some(false), "nothing starts on import");
         assert_eq!(items[1].filename, None);
         assert_eq!(items[1].start, Some(false));

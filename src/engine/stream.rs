@@ -49,11 +49,15 @@ fn refused(e: String) -> EngineError {
     EngineError::Refused(e)
 }
 
+/// The largest encrypted segment decrypted in memory. Real HLS segments are
+/// a few megabytes.
+const MAX_ENCRYPTED_SEGMENT: u64 = 256 * 1024 * 1024;
+
 /// The download's headers for a request to `url`. The cookies and any
 /// `Authorization` were given for `added` (the address the stream was added
 /// with), so they go only to its origin, never to another server a playlist
 /// or manifest names.
-fn headers_for<'a>(added: &str, headers: &'a [(String, String)], url: &str) -> Cow<'a, [(String, String)]> {
+pub(super) fn headers_for<'a>(added: &str, headers: &'a [(String, String)], url: &str) -> Cow<'a, [(String, String)]> {
     let same_origin = match (Url::parse(added), Url::parse(url)) {
         (Ok(a), Ok(b)) => a.origin() == b.origin(),
         _ => false,
@@ -469,6 +473,11 @@ impl Fetching<'_> {
         drop(file);
         if let Some(key) = &s.key {
             let k = self.key(&key.url)?;
+            // Decrypting reads the segment whole, and the server picks its
+            // size: a huge one would take all the memory.
+            if fs::metadata(&tmp)?.len() > MAX_ENCRYPTED_SEGMENT {
+                return Err(EngineError::Protocol("an encrypted segment is too large to decrypt".into()));
+            }
             let mut data = fs::read(&tmp)?;
             let plain = decrypt(&k, &key.iv, &mut data)?;
             fs::write(&tmp, plain)?;

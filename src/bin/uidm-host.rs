@@ -32,6 +32,42 @@ use uidm::ipc;
 use uidm::protocol::{read_message, write_frame};
 use uidm::settings::{default_downloads_dir, FileExists, Folders, DEFAULT_CONNECTIONS};
 
+/// The requests UIDM's browser extension sends. The host passes only these
+/// on: anything else from the browser, which an extension that is not
+/// UIDM's could send, never reaches the daemon.
+const BROWSER_OPS: &[&str] = &[
+    "hello",
+    "list",
+    "get_settings",
+    "set_settings",
+    "add",
+    "confirm",
+    "cancel",
+    "retry",
+    "remove",
+    "refresh_link",
+    "cancel_refresh",
+    "probe_media",
+    "pick_links",
+    "rendered",
+    "cookies",
+];
+
+/// A frame from the browser as it may go to the daemon, or `None` to drop
+/// it. A `hello` loses any `client`, so a browser connection is never taken
+/// for the desktop window, which may change every setting.
+fn from_browser(frame: &[u8]) -> Option<Vec<u8>> {
+    let mut msg: serde_json::Value = serde_json::from_slice(frame).ok()?;
+    let op = msg.get("op")?.as_str()?;
+    if !BROWSER_OPS.contains(&op) {
+        return None;
+    }
+    if op == "hello" {
+        msg.as_object_mut()?.remove("client");
+    }
+    serde_json::to_vec(&msg).ok()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("download") {
@@ -67,6 +103,10 @@ fn run_relay() -> io::Result<()> {
     loop {
         match read_message(&mut input, MAX_MESSAGE_BYTES)? {
             Some(frame) => {
+                let Some(frame) = from_browser(&frame) else {
+                    eprintln!("[uidm-host] dropped a request the extension does not send");
+                    continue;
+                };
                 if write_frame(&mut to_daemon, &frame).is_err() {
                     eprintln!("[uidm-host] daemon connection lost");
                     break;
@@ -163,5 +203,32 @@ fn print_progress(p: Progress, ok: &AtomicBool) {
         Progress::Failed { error, .. } => eprintln!("\n[failed] {error}"),
         Progress::Canceled { .. } => eprintln!("\n[canceled]"),
         Progress::NameTaken { path, .. } => eprintln!("\n[failed] {} already exists", path.display()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::from_browser;
+
+    fn op(frame: &[u8]) -> Option<serde_json::Value> {
+        from_browser(frame).map(|f| serde_json::from_slice(&f).unwrap())
+    }
+
+    #[test]
+    fn only_the_extensions_requests_pass() {
+        assert!(op(br#"{"op":"add","url":"https://a/b.zip"}"#).is_some());
+        assert!(op(br#"{"op":"set_settings","settings":{}}"#).is_some());
+        // Requests only the window sends stay out.
+        assert!(op(br#"{"op":"save_queue","queue":{}}"#).is_none());
+        assert!(op(br#"{"op":"convert","id":1}"#).is_none());
+        assert!(op(br#"not json"#).is_none());
+        assert!(op(br#"{"url":"no op"}"#).is_none());
+    }
+
+    #[test]
+    fn a_browser_is_never_taken_for_the_window() {
+        let hello = op(br#"{"op":"hello","client":"window","version":"1"}"#).unwrap();
+        assert_eq!(hello.get("client"), None);
+        assert_eq!(hello["version"], "1");
     }
 }

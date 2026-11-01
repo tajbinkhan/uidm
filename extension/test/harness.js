@@ -74,7 +74,7 @@ function loadWorker({ firefox = false } = {}) {
       onBeforeSendHeaders: event(),
       onHeadersReceived: event(),
     },
-    tabs: { onRemoved: event(), onUpdated: event() },
+    tabs: { onRemoved: event(), onUpdated: event(), onCreated: event(), query: async () => [] },
     downloads: {
       onCreated: event(),
       cancel: async (id) => browserCalls.push(["cancel", id]),
