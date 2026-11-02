@@ -86,6 +86,12 @@ pub struct MediaInfo {
     /// Why the stream cannot be downloaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The address answered with something that is not a playlist or a
+    /// manifest at all: a `.m3u8` a page's script decodes itself, or one the
+    /// browser caught that is no stream. The menu leaves it out when there is
+    /// something to download beside it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub not_stream: bool,
 }
 
 impl MediaInfo {

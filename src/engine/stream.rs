@@ -127,7 +127,10 @@ pub fn probe(url: &str, headers: &[(String, String)], net: &NetConfig) -> MediaI
         Err(e) => return MediaInfo::failed(None, e.to_string()),
     };
     match sniff(&text) {
-        None => MediaInfo::failed(None, "This address is not an HLS playlist or a DASH manifest.".into()),
+        None => MediaInfo {
+            not_stream: true,
+            ..MediaInfo::failed(None, "This address is not an HLS playlist or a DASH manifest.".into())
+        },
         Some(MediaKind::Page) => unreachable!("sniff finds only streams"),
         Some(MediaKind::Dash) => match dash::parse(&text, &base) {
             Ok(m) => dash::describe(&m),

@@ -343,3 +343,20 @@ test("choosing the sound alone sends an audio_only stream", async () => {
   assert.equal(add.filename, "Talk.mp3");
   assert.equal(add.media.audio_only, "mp3");
 });
+test("an address that is no stream is left out when another can be downloaded", () => {
+  const entries = [
+    { id: 1, url: "https://v.net/real.m3u8", kind: "hls", time: 1 },
+    { id: 2, url: "https://v.net/coded.m3u8", kind: "hls", time: 2 },
+  ];
+  const notStream = { error: "This address is not an HLS playlist or a DASH manifest.", not_stream: true };
+  const infos = new Map([
+    ["https://v.net/real.m3u8", { video: [{ id: "", label: "Default" }], audio: [] }],
+    ["https://v.net/coded.m3u8", notStream],
+  ]);
+  const menu = mediaMenu(entries, infos);
+  same(menu.map((i) => i.entry), [1]);
+  assert.equal("notStream" in menu[0], false);
+  // Alone, it stays, so the menu says why there is nothing to download.
+  const alone = mediaMenu([entries[1]], new Map([["https://v.net/coded.m3u8", notStream]]));
+  same(alone.map((i) => [i.entry, i.error]), [[2, notStream.error]]);
+});

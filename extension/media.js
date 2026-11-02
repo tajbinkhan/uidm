@@ -210,7 +210,9 @@ function mediaLabel(entry) {
 // stream's (or video page's) URL to what UIDM said it offers (a MediaInfo). Each item is
 // { entry, label, options: [{ label, size, video, audio }], drm, error }.
 // A stream that is one quality of another listed stream (an HLS variant
-// playlist the player loaded after its master playlist) is left out.
+// playlist the player loaded after its master playlist) is left out, and so
+// is an address UIDM found is no stream at all, unless nothing else can be
+// downloaded.
 function mediaMenu(entries, infos) {
   const parts = new Set();
   for (const info of infos.values()) {
@@ -230,7 +232,7 @@ function mediaMenu(entries, infos) {
       continue;
     }
     if (info.drm || info.error) {
-      items.push({ entry: e.id, label, options: [], drm: !!info.drm, error: info.error || "" });
+      items.push({ entry: e.id, label, options: [], drm: !!info.drm, error: info.error || "", notStream: !!info.not_stream });
       continue;
     }
     // An audio choice only matters with several; the best video is first.
@@ -261,7 +263,8 @@ function mediaMenu(entries, infos) {
     }
     items.push({ entry: e.id, label, options });
   }
-  return items;
+  const usable = items.some((i) => i.options.length > 0);
+  return items.filter((i) => !(usable && i.notStream)).map(({ notStream, ...i }) => i);
 }
 
 // Whether the video button shows on a page at `url` under UIDM's `rules`.
