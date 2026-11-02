@@ -343,3 +343,59 @@ test("choosing the sound alone sends an audio_only stream", async () => {
   assert.equal(add.filename, "Talk.mp3");
   assert.equal(add.media.audio_only, "mp3");
 });
+test("an address that is no stream is left out when another can be downloaded", () => {
+  const entries = [
+    { id: 1, url: "https://v.net/real.m3u8", kind: "hls", time: 1 },
+    { id: 2, url: "https://v.net/coded.m3u8", kind: "hls", time: 2 },
+  ];
+  const notStream = { error: "This address is not an HLS playlist or a DASH manifest.", not_stream: true };
+  const infos = new Map([
+    ["https://v.net/real.m3u8", { video: [{ id: "", label: "Default" }], audio: [] }],
+    ["https://v.net/coded.m3u8", notStream],
+  ]);
+  const menu = mediaMenu(entries, infos);
+  same(menu.map((i) => i.entry), [1]);
+  assert.equal("notStream" in menu[0], false);
+  // Alone, it stays, so the menu says why there is nothing to download.
+  const alone = mediaMenu([entries[1]], new Map([["https://v.net/coded.m3u8", notStream]]));
+  same(alone.map((i) => [i.entry, i.error]), [[2, notStream.error]]);
+});
+
+test("a video file caught under a playlist's name is offered and sent as a file", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "uidm-daemon", version: "x" });
+  w.chrome.webRequest.onHeadersReceived.fire({
+    tabId: 7,
+    url: "https://v.net/movie.m3u8?t=1",
+    type: "xmlhttprequest",
+    responseHeaders: [{ name: "Content-Type", value: "application/vnd.apple.mpegurl" }],
+  });
+  const menu = await new Promise((resolve) => {
+    const asked = w.content({ type: "video:menu" }, 7);
+    setTimeout(() => {
+      const probe = w.sent.find((m) => m.op === "probe_media");
+      w.port.onMessage.fire({ op: "media_info", request: probe.request, info: { video: [], audio: [], file: { ext: "mp4", size: 5000000 } } });
+    }, 0);
+    asked.then(resolve);
+  });
+  same(menu.items.map((i) => [i.label, i.options.map((o) => [o.label, o.size])]), [["MP4 video", [["Download", 5000000]]]]);
+  await w.content({ type: "video:download", entry: menu.items[0].entry, title: "Film" }, 7);
+  const add = w.sent.find((m) => m.op === "add");
+  assert.equal(add.url, "https://v.net/movie.m3u8?t=1");
+  assert.equal(add.filename, "Film.mp4");
+  assert.equal(add.media, undefined);
+  // It is a file now: the next menu does not probe it again.
+  const before = w.sent.filter((m) => m.op === "probe_media").length;
+  await w.content({ type: "video:menu" }, 7);
+  assert.equal(w.sent.filter((m) => m.op === "probe_media").length, before);
+});
+
+test("a whole file's type comes from what UIDM found in it", () => {
+  const { adoptFile } = require("../media.js");
+  const entry = { id: 1, url: "https://v.net/x.m3u8", kind: "hls", mime: "audio/mpegurl", size: 0, time: 1 };
+  assert.equal(adoptFile(entry, { file: { ext: "ts", size: 10 } }), true);
+  assert.equal(mediaFileExtension(entry), "ts");
+  same(mediaMenu([entry], new Map()).map((i) => i.label), ["TS video"]);
+  assert.equal(adoptFile({ kind: "hls" }, { file: { ext: "exe" } }), false);
+  assert.equal(adoptFile({ kind: "hls" }, { video: [] }), false);
+});

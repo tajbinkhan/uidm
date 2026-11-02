@@ -161,7 +161,7 @@ async function videoMenu(tabId, referrer, incognito) {
   await Promise.all(
     streams.map(async (e) => {
       const info = await probeStream(e.url, referrer, e.kind === "page" ? PAGE_PROBE_TIMEOUT_MS : PROBE_TIMEOUT_MS);
-      if (info) infos.set(e.url, info);
+      if (info && !adoptFile(e, info)) infos.set(e.url, info);
     }),
   );
   return mediaMenu(entries, infos);

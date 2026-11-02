@@ -53,6 +53,9 @@ const MEDIA_FILE_EXTENSIONS = {
   wmv: "video",
   flv: "video",
   "3gp": "video",
+  // Only for a whole file UIDM found under a playlist's name: .ts segments
+  // stay out (SEGMENT_EXTENSIONS).
+  ts: "video",
   aac: "audio",
   mp3: "audio",
   m4a: "audio",
@@ -162,6 +165,7 @@ function recordMedia(store, tabId, url, found, now) {
 // type, else the one the server's type names, else mp4 or mp3. A server can
 // send "clip.exe" as video/mp4; the saved file must not end in .exe.
 function mediaFileExtension(entry) {
+  if (MEDIA_FILE_EXTENSIONS[entry.ext]) return entry.ext;
   const fromUrl = extensionOf(urlPath(entry.url));
   if (MEDIA_FILE_EXTENSIONS[fromUrl]) return fromUrl;
   const fromMime = mimeExtension(entry.mime);
@@ -171,9 +175,23 @@ function mediaFileExtension(entry) {
 
 function fileLabel(entry) {
   const ext = mediaFileExtension(entry);
-  const audio = entry.mime.startsWith("audio/") || MEDIA_FILE_EXTENSIONS[ext] === "audio";
+  const audio = (entry.mime || "").startsWith("audio/") || MEDIA_FILE_EXTENSIONS[ext] === "audio";
   if (!ext) return audio ? uiText("audioFile") : uiText("videoFile");
   return audio ? uiText("audioFileType", ext.toUpperCase()) : uiText("videoFileType", ext.toUpperCase());
+}
+
+// When UIDM found that a stream entry is really a whole video or audio file
+// (`info.file`: a page loaded an MP4 under a .m3u8 name or a playlist's
+// type), the entry becomes that file, downloaded as one. Returns whether it
+// did.
+function adoptFile(entry, info) {
+  const file = info && info.file;
+  if (entry.kind === "page" || !file || !MEDIA_FILE_EXTENSIONS[file.ext]) return false;
+  entry.kind = "file";
+  entry.ext = file.ext;
+  entry.mime = "";
+  if (!entry.size && file.size) entry.size = file.size;
+  return true;
 }
 
 // Remember that tab `tabId` shows the video page `url` (from videoPageUrl).
@@ -210,7 +228,9 @@ function mediaLabel(entry) {
 // stream's (or video page's) URL to what UIDM said it offers (a MediaInfo). Each item is
 // { entry, label, options: [{ label, size, video, audio }], drm, error }.
 // A stream that is one quality of another listed stream (an HLS variant
-// playlist the player loaded after its master playlist) is left out.
+// playlist the player loaded after its master playlist) is left out, and so
+// is an address UIDM found is no stream at all, unless nothing else can be
+// downloaded.
 function mediaMenu(entries, infos) {
   const parts = new Set();
   for (const info of infos.values()) {
@@ -230,7 +250,7 @@ function mediaMenu(entries, infos) {
       continue;
     }
     if (info.drm || info.error) {
-      items.push({ entry: e.id, label, options: [], drm: !!info.drm, error: info.error || "" });
+      items.push({ entry: e.id, label, options: [], drm: !!info.drm, error: info.error || "", notStream: !!info.not_stream });
       continue;
     }
     // An audio choice only matters with several; the best video is first.
@@ -261,7 +281,8 @@ function mediaMenu(entries, infos) {
     }
     items.push({ entry: e.id, label, options });
   }
-  return items;
+  const usable = items.some((i) => i.options.length > 0);
+  return items.filter((i) => !(usable && i.notStream)).map(({ notStream, ...i }) => i);
 }
 
 // Whether the video button shows on a page at `url` under UIDM's `rules`.
@@ -285,5 +306,5 @@ function titleFileName(title, ext) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { mediaFileExtension, classifyMedia, recordMedia, recordPage, videoPageUrl, pageTitle, recentMedia, mediaLabel, mediaMenu, videoButtonAllowed, titleFileName, responseSize, uiText, MEDIA_PER_TAB };
+  module.exports = { adoptFile, mediaFileExtension, classifyMedia, recordMedia, recordPage, videoPageUrl, pageTitle, recentMedia, mediaLabel, mediaMenu, videoButtonAllowed, titleFileName, responseSize, uiText, MEDIA_PER_TAB };
 }

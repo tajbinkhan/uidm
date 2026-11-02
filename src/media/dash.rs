@@ -369,6 +369,8 @@ pub fn describe(m: &Manifest) -> MediaInfo {
         duration: m.duration,
         drm,
         error,
+        not_stream: false,
+        file: None,
     }
 }
 

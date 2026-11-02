@@ -30,7 +30,7 @@ use super::{
     backoff, choose_output, derive_filename, fetch_with, http, numbered_name, sanitize_filename, CancelToken,
     DownloadRequest, EngineError, Progress, Reporter, Saved, Shared, BUF_SIZE, MAX_CONNECTIONS, MAX_RETRIES,
 };
-use crate::media::{dash, hls, sniff, MediaChoice, MediaInfo, MediaKind, MediaOption, Segment, Track, DRM_REFUSED};
+use crate::media::{dash, hls, sniff, MediaChoice, MediaFile, MediaInfo, MediaKind, MediaOption, Segment, Track, DRM_REFUSED};
 use crate::net::NetConfig;
 
 /// Most bytes read of a playlist or manifest.
@@ -116,18 +116,52 @@ fn load_tracks(
     }
 }
 
+/// Bytes read before deciding whether an address is a playlist, a manifest
+/// or a media file.
+const SNIFF_BYTES: u64 = 64 * 1024;
+
+/// The playlist or manifest at `url` as text, or, when it is something else,
+/// what to tell the browser about it: a whole media file (which pages load
+/// under `.m3u8` names and playlist types too) or no stream at all. Only its
+/// first bytes are read then, not a whole video.
+fn read_playlist(
+    agent: &http::Client,
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<Result<(String, String), MediaInfo>, EngineError> {
+    let (base, size, reader) = http::get_sized(agent, url, headers)?;
+    let mut reader = reader.take(MAX_PLAYLIST_BYTES);
+    let mut body = Vec::new();
+    (&mut reader).take(SNIFF_BYTES).read_to_end(&mut body)?;
+    if sniff(&String::from_utf8_lossy(&body)).is_none() {
+        if let Some(ext) = crate::media::sniff_file(&body) {
+            return Ok(Err(MediaInfo {
+                file: Some(MediaFile { ext: ext.into(), size }),
+                ..MediaInfo::default()
+            }));
+        }
+        return Ok(Err(MediaInfo {
+            not_stream: true,
+            ..MediaInfo::failed(None, "This address is not an HLS playlist or a DASH manifest.".into())
+        }));
+    }
+    reader.read_to_end(&mut body)?;
+    Ok(Ok((base, String::from_utf8_lossy(&body).into_owned())))
+}
+
 /// What a stream offers, for the browser's quality menu.
 pub fn probe(url: &str, headers: &[(String, String)], net: &NetConfig) -> MediaInfo {
     let agent = match http::Client::new(net, url) {
         Ok(a) => a,
         Err(e) => return MediaInfo::failed(None, e.to_string()),
     };
-    let (base, text) = match get_text(&agent, url, headers) {
-        Ok(t) => t,
+    let (base, text) = match read_playlist(&agent, url, headers) {
+        Ok(Ok(t)) => t,
+        Ok(Err(info)) => return info,
         Err(e) => return MediaInfo::failed(None, e.to_string()),
     };
     match sniff(&text) {
-        None => MediaInfo::failed(None, "This address is not an HLS playlist or a DASH manifest.".into()),
+        None => unreachable!("read_playlist reads only playlists and manifests"),
         Some(MediaKind::Page) => unreachable!("sniff finds only streams"),
         Some(MediaKind::Dash) => match dash::parse(&text, &base) {
             Ok(m) => dash::describe(&m),
@@ -922,6 +956,22 @@ mod tests {
             assert_eq!(labels, ["720p, 3.0 Mbps", "360p, 900 kbps"]);
             assert_eq!(info.video[0].size, Some(7_500_000));
             fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_file_under_a_playlist_name_is_probed_as_a_file() {
+            let mut mp4 = b"\0\0\0\x20ftypisom".to_vec();
+            mp4.resize(300_000, 7);
+            let mut files = HashMap::new();
+            files.insert("/f/movie.m3u8".into(), mp4);
+            files.insert("/f/page.m3u8".into(), b"<html>no</html>".to_vec());
+            let server = TestServer::start_files(files);
+            let info = probe(&format!("{}/f/movie.m3u8", server.url), &[], &NetConfig::default());
+            assert_eq!(info.file, Some(MediaFile { ext: "mp4".into(), size: Some(300_000) }));
+            assert_eq!(info.error, None);
+            let info = probe(&format!("{}/f/page.m3u8", server.url), &[], &NetConfig::default());
+            assert!(info.not_stream);
+            assert_eq!(info.file, None);
         }
     
         /// A stand-in for ffmpeg: it records its arguments next to itself

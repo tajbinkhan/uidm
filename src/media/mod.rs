@@ -86,6 +86,26 @@ pub struct MediaInfo {
     /// Why the stream cannot be downloaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The address answered with something that is not a playlist or a
+    /// manifest at all: a `.m3u8` a page's script decodes itself, or one the
+    /// browser caught that is no stream. The menu leaves it out when there is
+    /// something to download beside it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub not_stream: bool,
+    /// The address is a whole video or audio file, not a stream, though its
+    /// name or type said it was a playlist: the browser downloads it as a
+    /// file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<MediaFile>,
+}
+
+/// A whole video or audio file found where a stream was expected.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaFile {
+    /// Its type, as a file extension: `mp4`, `ts`, `webm`.
+    pub ext: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
 }
 
 impl MediaInfo {
@@ -194,6 +214,40 @@ pub fn sniff(text: &str) -> Option<MediaKind> {
     }
 }
 
+/// The kind of video or audio file that starts with `head`, as a file
+/// extension, or `None` when it is no media file UIDM knows.
+pub fn sniff_file(head: &[u8]) -> Option<&'static str> {
+    let at = |i: usize, sig: &[u8]| head.get(i..i + sig.len()) == Some(sig);
+    if at(4, b"ftyp") {
+        return Some(if at(8, b"M4A ") { "m4a" } else { "mp4" });
+    }
+    if at(0, &[0x1a, 0x45, 0xdf, 0xa3]) {
+        let doc = &head[..head.len().min(64)];
+        return Some(if doc.windows(8).any(|w| w == b"matroska") { "mkv" } else { "webm" });
+    }
+    // MPEG-TS: 188-byte packets, each starting with 0x47.
+    if head.len() >= 377 && head[0] == 0x47 && head[188] == 0x47 && head[376] == 0x47 {
+        return Some("ts");
+    }
+    if at(0, b"FLV") {
+        return Some("flv");
+    }
+    if at(0, b"OggS") {
+        return Some("ogg");
+    }
+    if at(0, b"RIFF") && at(8, b"WAVE") {
+        return Some("wav");
+    }
+    if at(0, b"ID3") {
+        return Some("mp3");
+    }
+    match head {
+        [0xff, b, ..] if b & 0xf6 == 0xf0 => Some("aac"),
+        [0xff, b, ..] if b & 0xe0 == 0xe0 => Some("mp3"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +275,23 @@ mod tests {
         assert_eq!(sniff("\u{feff}#EXTM3U\n"), Some(MediaKind::Hls));
         assert_eq!(sniff("<?xml version=\"1.0\"?>\n<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\">"), Some(MediaKind::Dash));
         assert_eq!(sniff("<html>"), None);
+    }
+
+    #[test]
+    fn sniffing_files() {
+        assert_eq!(sniff_file(b"\0\0\0\x20ftypisom\0\0\x02\0"), Some("mp4"));
+        assert_eq!(sniff_file(b"\0\0\0\x20ftypM4A \0\0\0\0"), Some("m4a"));
+        let mut ts = vec![0u8; 400];
+        ts[0] = 0x47;
+        ts[188] = 0x47;
+        ts[376] = 0x47;
+        assert_eq!(sniff_file(&ts), Some("ts"));
+        assert_eq!(sniff_file(&[0x47; 100]), None);
+        assert_eq!(sniff_file(b"\x1a\x45\xdf\xa3\x01\x42\x82\x84webm"), Some("webm"));
+        assert_eq!(sniff_file(b"\x1a\x45\xdf\xa3\x01\x42\x82\x88matroska"), Some("mkv"));
+        assert_eq!(sniff_file(b"ID3\x04"), Some("mp3"));
+        assert_eq!(sniff_file(&[0xff, 0xf1, 0x50]), Some("aac"));
+        assert_eq!(sniff_file(b"<html><body>"), None);
+        assert_eq!(sniff_file(b"#EXTM3U"), None);
     }
 }
