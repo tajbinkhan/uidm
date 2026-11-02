@@ -370,6 +370,7 @@ pub fn describe(m: &Manifest) -> MediaInfo {
         drm,
         error,
         not_stream: false,
+        file: None,
     }
 }
 

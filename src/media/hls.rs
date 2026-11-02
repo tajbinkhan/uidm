@@ -304,6 +304,7 @@ pub fn describe(master: &Master, duration: Option<f64>) -> MediaInfo {
         drm: master.drm,
         error: master.drm.then(|| DRM_REFUSED.to_string()),
         not_stream: false,
+        file: None,
     }
 }
 

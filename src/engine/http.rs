@@ -289,6 +289,18 @@ pub fn get(client: &Client, url: &str, headers: &[(String, String)]) -> Result<G
     Ok((final_url, content_type, Box::new(resp.into_reader())))
 }
 
+/// What `get_sized` returns: the final URL, the body's length when the
+/// server gives it, and the body.
+pub type GotSized = (String, Option<u64>, Box<dyn Read + Send>);
+
+/// Send a GET, with the body's length when the server gives it.
+pub fn get_sized(client: &Client, url: &str, headers: &[(String, String)]) -> Result<GotSized, EngineError> {
+    let resp = client.send("GET", url, headers, None, None)?;
+    let final_url = resp.get_url().to_string();
+    let length = resp.header("content-length").and_then(|v| v.trim().parse::<u64>().ok());
+    Ok((final_url, length, Box::new(resp.into_reader())))
+}
+
 /// Fetch the whole body in one stream, for servers without range support.
 pub fn fetch_whole(client: &Client, url: &str, headers: &[(String, String)]) -> Result<Box<dyn Read + Send>, EngineError> {
     if super::ftp::is_ftp(url) {
