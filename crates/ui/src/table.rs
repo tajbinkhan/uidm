@@ -202,7 +202,7 @@ pub fn drag_out(response: &egui::Response, path: &str) {
         return;
     }
     response.ctx.data_mut(|d| d.insert_temp(key, true));
-    if Path::new(path).is_file() {
+    if crate::ports::ports().files.is_file(Path::new(path)) {
         crate::win::drag_file(path);
     }
 }

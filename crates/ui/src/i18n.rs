@@ -97,7 +97,7 @@ mod tests {
 
     /// The sources the window's strings come from.
     const SOURCES: &[&str] = &[
-        include_str!("../uidm-gui.rs"),
+        include_str!("lib.rs"),
         include_str!("addurl.rs"),
         include_str!("answers.rs"),
         include_str!("banner.rs"),
@@ -119,11 +119,11 @@ mod tests {
         include_str!("tools.rs"),
         include_str!("tray.rs"),
         // Labels the window passes through `tr`.
-        include_str!("../../../../domain/src/queue.rs"),
-        include_str!("../../../../domain/src/settings.rs"),
-        include_str!("../../../../infrastructure/src/settings.rs"),
-        include_str!("../../../../domain/src/grab.rs"),
-        include_str!("../../../../infrastructure/src/grab.rs"),
+        include_str!("../../domain/src/queue.rs"),
+        include_str!("../../domain/src/settings.rs"),
+        include_str!("../../infrastructure/src/settings.rs"),
+        include_str!("../../domain/src/grab.rs"),
+        include_str!("../../infrastructure/src/grab.rs"),
     ];
 
     /// The `{name}` placeholders in a string, sorted.
@@ -219,6 +219,25 @@ mod tests {
             }
         }
         found
+    }
+
+    #[test]
+    fn every_source_with_strings_is_scanned() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("i18n.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            if !looked_up(&source).is_empty() {
+                assert!(
+                    SOURCES.contains(&source.as_str()),
+                    "{} looks up strings but is not in SOURCES",
+                    path.display()
+                );
+            }
+        }
     }
 
     /// Strings that were already untranslated when this check came in

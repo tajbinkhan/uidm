@@ -62,6 +62,10 @@ tracing.workspace = true
 # tracing-appender.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 
+# The window's file and folder pickers (IFileOpenDialog on Windows, through
+# windows-sys, so it builds on windows-gnu; panels on macOS).
+rfd = { version = "0.15.4", default-features = false }
+
 # WinRT toast notifications from the daemon, DPAPI, the registry.
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
@@ -71,3 +75,7 @@ windows.workspace = true
 trash = "5"
 # The local time zone for queue schedules (localtime_r).
 libc = "0.2"
+
+# The pickers' GTK backend on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.15.4", default-features = false, features = ["gtk3"] }

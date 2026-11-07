@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::egui;
-use uidm_application::window::{GrabLibrary, ListFormat};
+use uidm_application::window::{FileKind, GrabLibrary, ListFormat};
 
 use crate::pending::Pending;
 use uidm_domain::batch::{self, Wildcard, MAX_BATCH, MAX_WILDCARD_SIZE};
@@ -27,17 +27,16 @@ pub type Loaded = Arc<Mutex<Option<Result<(String, String), String>>>>;
 pub fn pick_text_file(ctx: &egui::Context, title: &'static str, slot: &Loaded) {
     let (slot, ctx) = (Arc::clone(slot), ctx.clone());
     thread::spawn(move || {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title(title)
-            .add_filter(tr("Lists"), &["txt", "json", "ef2"])
-            .add_filter(tr("All files"), &["*"])
-            .pick_file()
-        else {
+        let kinds = [FileKind::new(tr("Lists"), &["txt", "json", "ef2"]), FileKind::new(tr("All files"), &["*"])];
+        let ports = crate::ports::ports();
+        let Some(path) = ports.pickers.pick_file(title, &kinds, None) else {
             return;
         };
         let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let read = std::fs::read(&path)
-            .map(|b| (name, crate::ports::ports().lists.decode(&b)))
+        let read = ports
+            .lists
+            .read(&path)
+            .map(|text| (name, text))
             .map_err(|e| trf!("Could not read {path}: {error}", path = path.display(), error = e));
         *slot.lock().unwrap() = Some(read);
         ctx.request_repaint();
@@ -528,15 +527,13 @@ pub fn export_dialog(
                     let (slot, ctx) = (Arc::clone(&d.result), ui.ctx().clone());
                     let title = tr("Export the download list");
                     thread::spawn(move || {
-                        let Some(path) = rfd::FileDialog::new()
-                            .set_title(title)
-                            .set_file_name(default)
-                            .add_filter(ext, &[ext])
-                            .save_file()
-                        else {
+                        let ports = crate::ports::ports();
+                        let Some(path) = ports.pickers.save_file(title, default, &[FileKind::new(ext, &[ext])]) else {
                             return;
                         };
-                        let result = std::fs::write(&path, text)
+                        let result = ports
+                            .lists
+                            .write(&path, &text)
                             .map(|_| trf!("Saved {count} downloads to {path}.", count = count, path = path.display()))
                             .map_err(|e| trf!("Could not save {path}: {error}", path = path.display(), error = e));
                         *slot.lock().unwrap() = Some(result);
@@ -1511,13 +1508,9 @@ fn project_bar(ui: &mut egui::Ui, d: &mut GrabDialog, lists: &GrabLists) -> Opti
                 // The picker blocks, so it gets its own thread.
                 let (slot, ctx, start) = (Arc::clone(&d.file_picked), ui.ctx().clone(), dir.map(|l| l.folder()));
                 thread::spawn(move || {
-                    let mut dialog = rfd::FileDialog::new()
-                        .set_title(tr("Open a grabber project"))
-                        .add_filter(tr("Grabber projects"), &["json"]);
-                    if let Some(start) = start {
-                        dialog = dialog.set_directory(start);
-                    }
-                    if let Some(file) = dialog.pick_file() {
+                    let kinds = [FileKind::new(tr("Grabber projects"), &["json"])];
+                    let title = tr("Open a grabber project");
+                    if let Some(file) = crate::ports::ports().pickers.pick_file(title, &kinds, start.as_deref()) {
                         *slot.lock().unwrap() = Some(file);
                         ctx.request_repaint();
                     }

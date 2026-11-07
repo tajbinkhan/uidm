@@ -149,11 +149,8 @@ pub fn open_file_button(ui: &mut egui::Ui, field: &str, slot: &Picked) {
         let (slot, ctx) = (Arc::clone(slot), ui.ctx().clone());
         let start = picker_folder(field);
         std::thread::spawn(move || {
-            let mut dialog = rfd::FileDialog::new().set_title(tr("Open this file when done"));
-            if let Some(folder) = start {
-                dialog = dialog.set_directory(folder);
-            }
-            if let Some(file) = dialog.pick_file() {
+            let title = tr("Open this file when done");
+            if let Some(file) = crate::ports::ports().pickers.pick_file(title, &[], start.as_deref()) {
                 *slot.lock().unwrap() = Some(file);
                 ctx.request_repaint();
             }

@@ -267,8 +267,13 @@ fn safe_folder(folder: &Path) -> bool {
 pub struct ListFormats;
 
 impl uidm_application::window::ListFiles for ListFormats {
-    fn decode(&self, bytes: &[u8]) -> String {
-        decode(bytes)
+    fn read(&self, path: &std::path::Path) -> Result<String, uidm_application::window::ListError> {
+        std::fs::read(path).map(|b| decode(&b)).map_err(|e| uidm_application::window::ListError(e.to_string()))
+    }
+
+    fn write(&self, path: &std::path::Path, text: &str) -> Result<(), uidm_application::window::ListError> {
+        crate::settings::write_atomic(path, text.as_bytes())
+            .map_err(|e| uidm_application::window::ListError(e.to_string()))
     }
 
     fn import(&self, text: &str) -> Result<(Vec<Download>, usize), uidm_application::window::ListError> {
@@ -288,6 +293,21 @@ impl uidm_application::window::ListFiles for ListFormats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_written_list_reads_back() {
+        use uidm_application::window::ListFiles;
+        let dir = std::env::temp_dir().join(format!("uidm_listfile_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("list.txt");
+        let text = "http://127.0.0.1/a.zip
+http://127.0.0.1/b.zip
+";
+        ListFormats.write(&path, text).unwrap();
+        assert_eq!(ListFormats.read(&path).unwrap(), text);
+        assert!(ListFormats.read(&dir.join("missing.txt")).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn imported_folders_stay_in_the_home_folder() {

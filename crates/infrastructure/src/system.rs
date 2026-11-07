@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use uidm_application::window::{SystemProxy, SystemServices};
+use uidm_application::window::{SystemFonts, SystemProxy, SystemServices};
 use uidm_domain::ports::FilesError;
 use uidm_domain::settings::Sound;
 
@@ -11,6 +11,13 @@ use uidm_domain::settings::Sound;
 pub struct ThisSystem;
 
 impl SystemServices for ThisSystem {
+    fn fonts(&self) -> SystemFonts {
+        // Segoe UI and Consolas, from the Windows font folder, so nothing
+        // is bundled. Elsewhere egui's own fonts are used.
+        let read = |file: &str| crate::paths::fonts_dir().and_then(|d| std::fs::read(d.join(file)).ok());
+        SystemFonts { text: read("segoeui.ttf"), code: read("consola.ttf") }
+    }
+
     fn fixed_proxy(&self) -> Option<SystemProxy> {
         let rules = crate::net::system_fixed_proxy()?;
         Some(SystemProxy {

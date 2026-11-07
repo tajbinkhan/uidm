@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn mono_of_the_real_icon_is_64_by_64() {
-        let rgba = include_bytes!("../../../../../assets/icon-64.rgba");
+        let rgba = include_bytes!("../../../assets/icon-64.rgba");
         assert_eq!(Style::Mono.apply(rgba).len(), 64 * 64 * 4);
     }
 }

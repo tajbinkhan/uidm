@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn every_help_link_names_a_readme_section() {
-        let readme = include_str!("../../../../../README.md");
+        let readme = include_str!("../../../README.md");
         let anchors: Vec<String> =
             readme.lines().filter_map(|l| l.strip_prefix('#')).map(|l| anchor(l.trim_start_matches('#'))).collect();
         for link in [SCHEDULER, GRABBER, TUTORIALS, CAPTURE] {

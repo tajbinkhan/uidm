@@ -197,6 +197,15 @@ pub fn gui_log() -> PathBuf {
     log_for(instance().as_deref(), GUI_LOG)
 }
 
+/// The Windows font folder, which the window's fonts come from. Elsewhere
+/// the window draws with egui's own.
+pub fn fonts_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    return std::env::var_os("WINDIR").map(|w| PathBuf::from(w).join("Fonts"));
+    #[cfg(not(windows))]
+    None
+}
+
 /// The folder the window keeps its layout and the drop target's place in:
 /// `%LOCALAPPDATA%\UIDM` on Windows, shared by every instance. Elsewhere
 /// the window keeps neither.

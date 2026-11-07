@@ -1579,7 +1579,7 @@ is a failed scan, as is one that runs over 10 minutes.
 | Path | What it is |
 | --- | --- |
 | `crates/` | The workspace, one crate per layer of `AGENTS.md`: `domain`, `application`, `infrastructure`, `ui`, `app` |
-| `crates/app/src/bin/uidm-gui.rs` | Desktop window |
+| `crates/app/src/bin/uidm-gui.rs` | Desktop window: builds its adapters and starts `uidm-ui` |
 | `crates/app/src/bin/uidm-host.rs` | Native-messaging relay, `send` for other programs, and CLI test mode |
 | `crates/app/src/bin/uidm-daemon.rs` | Daemon: server, auth, download list, retry/remove, idle exit |
 | `crates/infrastructure/src/state.rs` | `DownloadTable`, kept by both the daemon and the window |
@@ -1597,11 +1597,11 @@ is a failed scan, as is one that runs over 10 minutes.
 | `crates/infrastructure/src/batch.rs` | URL patterns, pasted lists and the clipboard link rule |
 | `crates/infrastructure/src/listfile.rs` | Exporting and importing the download list |
 | `crates/infrastructure/src/grab.rs` | The site grabber's crawler and `robots.txt` |
-| `crates/app/src/bin/gui/` | The window's tray icon, queue controls, tools (batch, import, export, grabber, clipboard) and Win32 helpers |
+| `crates/ui/src/` | The window's views, state and messages: the main window, its dialogs, tray icon, queue controls, tools (batch, import, export, grabber, clipboard) and Win32 helpers |
 | `crates/infrastructure/src/ipc.rs` | Daemon address, start-up, token file, HMAC handshake |
 | `crates/infrastructure/src/app.rs` | Request building and event mapping |
 | `crates/infrastructure/src/protocol.rs` | Framing and message types |
-| `crates/app/src/bin/gui/i18n.rs`, `crates/app/src/bin/gui/lang/` | The window's text in other languages, one JSON table each |
+| `crates/ui/src/i18n.rs`, `crates/ui/src/lang/` | The window's text in other languages, one JSON table each |
 | `crates/infrastructure/src/engine/` | Queue, segments, resume sidecar, speed limiter, HTTP, streams (`stream.rs`) |
 | `extension/` | MV3 extension: capture, context menu, popup |
 | `extension/_locales/` | The extension's text in each language |
@@ -1658,7 +1658,7 @@ $env:UIDM_INSTANCE = "test"; .\target\debug\uidm-gui.exe
 ```
 
 A string the window shows needs its German, Spanish and French translations
-in `crates/app/src/bin/gui/lang/`; a test fails for one without them.
+in `crates/ui/src/lang/`; a test fails for one without them.
 `lang/untranslated.json` lists the strings that were untranslated before
 that test came in, and an entry leaves the list once it is translated.
 
@@ -1726,9 +1726,9 @@ cargo run --release --bin uidm-host -- download https://example.com/file.zip
 
 The window's strings are written in English in the code, and that English is
 each string's ID: `tr("Save")`, or `trf!("{count} files", count = n)` for text
-with values. A language is one JSON file in `crates/app/src/bin/gui/lang/`, mapping each
+with values. A language is one JSON file in `crates/ui/src/lang/`, mapping each
 English string to its translation, plus a line in `LANGUAGES` in
-`crates/app/src/bin/gui/i18n.rs`; a missing string shows in English. The tests check that
+`crates/ui/src/i18n.rs`; a missing string shows in English. The tests check that
 every key is still used and keeps its `{placeholders}`. The extension's text is
 in `extension/_locales/<code>/messages.json`, as Chrome expects; its tests
 check that every locale has the same messages as `en`. egui draws text without

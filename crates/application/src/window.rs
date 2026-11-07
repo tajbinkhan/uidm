@@ -1,6 +1,7 @@
 //! What the desktop window needs besides its daemon connection (see
 //! `daemon::DaemonClient`): ports for its own files, the grabber's library,
-//! list files, the settings' disk checks and the operating system.
+//! list files, the settings' disk checks, file pickers and the operating
+//! system.
 
 use std::path::{Path, PathBuf};
 
@@ -82,8 +83,11 @@ pub struct ListError(pub String);
 
 /// Exporting and importing the download list.
 pub trait ListFiles: Send + Sync {
-    /// The text of a list file, whatever its encoding.
-    fn decode(&self, bytes: &[u8]) -> String;
+    /// The text of the list file at `path`, whatever its encoding.
+    fn read(&self, path: &Path) -> Result<String, ListError>;
+
+    /// Save `text` as the list file at `path`, replacing it whole.
+    fn write(&self, path: &Path, text: &str) -> Result<(), ListError>;
 
     /// The downloads in a list's `text`, and how many lines were not
     /// downloads.
@@ -91,6 +95,35 @@ pub trait ListFiles: Send + Sync {
 
     /// `entries` written as `format`.
     fn export(&self, format: ListFormat, entries: &[&DownloadEntry]) -> String;
+}
+
+/// A kind of file a picker offers: its name, such as "Lists", and its
+/// extensions without the dot, or `*` for any file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileKind {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+impl FileKind {
+    pub fn new(name: &str, extensions: &[&str]) -> FileKind {
+        FileKind { name: name.to_string(), extensions: extensions.iter().map(|e| e.to_string()).collect() }
+    }
+}
+
+/// The system's dialogs for choosing a file or folder. Each call waits
+/// until the user chooses or cancels, so the window calls them on a worker.
+/// `None` means the user cancelled.
+pub trait FilePicker: Send + Sync {
+    /// A folder, starting in `start` when given.
+    fn pick_folder(&self, title: &str, start: Option<&Path>) -> Option<PathBuf>;
+
+    /// An existing file of one of `kinds` (any file when empty), starting
+    /// in `start` when given.
+    fn pick_file(&self, title: &str, kinds: &[FileKind], start: Option<&Path>) -> Option<PathBuf>;
+
+    /// Where to save a new file, suggesting the name `name`.
+    fn save_file(&self, title: &str, name: &str, kinds: &[FileKind]) -> Option<PathBuf>;
 }
 
 /// The checks of the settings that look at the disk.
@@ -119,8 +152,21 @@ pub struct SystemProxy {
     pub bypass: Vec<String>,
 }
 
+/// The system's fonts the window draws with, as font files: `None` for
+/// one that is missing, where egui's own takes over.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SystemFonts {
+    /// The font for text (Segoe UI on Windows).
+    pub text: Option<Vec<u8>>,
+    /// The font for code and fixed-width columns (Consolas on Windows).
+    pub code: Option<Vec<u8>>,
+}
+
 /// What the window asks of the operating system.
 pub trait SystemServices: Send + Sync {
+    /// The fonts the window draws with, read once as it opens.
+    fn fonts(&self) -> SystemFonts;
+
     /// The system's fixed proxies, without a configuration script. `None`
     /// when none is set.
     fn fixed_proxy(&self) -> Option<SystemProxy>;

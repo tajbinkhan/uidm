@@ -27,6 +27,7 @@
 //! - `update`: checking GitHub for a newer release.
 //! - `package`: keeping the daemon out of an app package's copy of AppData.
 //! - `logging`: each program's log file in the data folder.
+//! - `pickers`: the system's file and folder dialogs, for the window.
 //! - `server`: the daemon's listening socket, its clients and their handshake.
 //! - `wire`: mapping the wire messages to and from the application's commands and events.
 //! - `probes`, `browser_bridge`, `crawler`: the `Probes`, `Browser` and
@@ -65,6 +66,7 @@ pub mod pac;
 #[cfg(windows)]
 pub mod package;
 pub mod paths;
+pub mod pickers;
 pub mod platform;
 pub mod power;
 pub mod power_control;

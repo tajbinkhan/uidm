@@ -86,9 +86,10 @@ const CONTROL_RADIUS: u8 = 2;
 /// Windows and dialogs.
 const WINDOW_RADIUS: u8 = 4;
 
-/// Sets the fonts, sizes, spacing and both color sets.
-pub fn apply(ctx: &egui::Context) {
-    ctx.set_fonts(fonts());
+/// Sets the fonts (the system's `system`, where it has them), sizes,
+/// spacing and both color sets.
+pub fn apply(ctx: &egui::Context, system: uidm_application::window::SystemFonts) {
+    ctx.set_fonts(fonts(system));
     for theme in [Theme::Light, Theme::Dark] {
         let palette = if theme == Theme::Dark { &DARK } else { &LIGHT };
         ctx.style_mut_of(theme, |style| {
@@ -139,16 +140,15 @@ pub fn progress_bar(ui: &mut egui::Ui, bar: egui::ProgressBar) -> egui::Response
     .inner
 }
 
-/// Segoe UI for text and Consolas for code, read from the Windows font folder
-/// so nothing is bundled. egui's own fonts stay behind them for any glyph they
-/// lack, and take over if the files are missing.
-fn fonts() -> FontDefinitions {
+/// The system's fonts for text and code (Segoe UI and Consolas on Windows).
+/// egui's own fonts stay behind them for any glyph they lack, and take over
+/// where the system has none.
+fn fonts(system: uidm_application::window::SystemFonts) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
-    let dir = std::env::var_os("WINDIR").map(|w| std::path::Path::new(&w).join("Fonts"));
-    for (name, file, family) in
-        [("segoe-ui", "segoeui.ttf", FontFamily::Proportional), ("consolas", "consola.ttf", FontFamily::Monospace)]
+    for (name, bytes, family) in
+        [("system-text", system.text, FontFamily::Proportional), ("system-code", system.code, FontFamily::Monospace)]
     {
-        let Some(bytes) = dir.as_ref().and_then(|d| std::fs::read(d.join(file)).ok()) else {
+        let Some(bytes) = bytes else {
             continue;
         };
         fonts.font_data.insert(name.to_owned(), Arc::new(FontData::from_owned(bytes)));

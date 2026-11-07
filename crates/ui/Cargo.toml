@@ -5,7 +5,37 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Never uidm-infrastructure (AGENTS.md section 3).
+# Never uidm-infrastructure (AGENTS.md section 3): the window reaches the disk,
+# the system and the daemon through the ports in uidm-application.
 [dependencies]
 uidm-domain.workspace = true
 uidm-application.workspace = true
+# The column layout and tray style the window saves, and the translation
+# tables.
+serde.workspace = true
+serde_json.workspace = true
+# Parsing the addresses pasted or dropped into the window.
+url.workspace = true
+percent-encoding.workspace = true
+# Immediate-mode GUI for the desktop window. Pure Rust; the default glow
+# backend renders through OpenGL.
+eframe = "0.31.1"
+# The download list's table: resizable columns and whole-row selection.
+egui_extras = { version = "0.31.1", default-features = false }
+# System tray icon and its menu (Win32 underneath, builds on windows-gnu;
+# GTK on Linux, without libxdo, which only menu shortcuts need).
+tray-icon = { version = "0.21", default-features = false }
+# The window's HWND, to show and hide it from the tray while egui is idle.
+raw-window-handle = "0.6"
+
+# Drag and drop out of the window, its taskbar button and its menu bar.
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+# The window's clipboard reads outside egui (egui uses it too).
+[target.'cfg(unix)'.dependencies]
+arboard = { version = "3.7.0", default-features = false }
+
+# GTK's loop for the tray icon, which tray-icon builds on there.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"

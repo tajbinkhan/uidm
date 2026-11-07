@@ -9,7 +9,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use uidm_application::window::{BrowserRegistry, GrabLibrary, ListFiles, SettingsChecks, SystemServices, WindowFiles};
+use uidm_application::window::{
+    BrowserRegistry, FilePicker, GrabLibrary, ListFiles, SettingsChecks, SystemServices, WindowFiles,
+};
 use uidm_domain::ports::{Clock, DownloadFiles, FileOpener, GrabDownloads, SaveFolders, Timestamps};
 use uidm_domain::queue::Moment;
 
@@ -41,6 +43,8 @@ pub struct Ports {
     pub system: Arc<dyn SystemServices>,
     /// Registering UIDM with the browsers.
     pub browsers: Arc<dyn BrowserRegistry>,
+    /// The system's file and folder dialogs, called on workers.
+    pub pickers: Arc<dyn FilePicker>,
 }
 
 impl Ports {
@@ -86,12 +90,14 @@ pub fn ports() -> &'static Ports {
 /// Stand-ins for the tests: UTC as the local time, a Downloads folder in
 /// the temporary folder, every folder writable, no files opened or saved,
 /// no grabber library, empty lists and a system without proxies, wake
-/// timers or sounds, and no browsers.
+/// timers or sounds, no browsers, and pickers the user always cancels.
 #[cfg(test)]
 mod fakes {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use uidm_application::window::{BrowserSlot, IdentifiedBrowser, ListError, ListFormat, SystemProxy};
+    use uidm_application::window::{
+        BrowserSlot, FileKind, IdentifiedBrowser, ListError, ListFormat, SystemFonts, SystemProxy,
+    };
     use uidm_domain::download::{Download, DownloadEntry};
     use uidm_domain::grab::{GrabFile, GrabRequest};
     use uidm_domain::ports::{FilesError, SettingsError};
@@ -165,8 +171,11 @@ mod fakes {
     }
 
     impl ListFiles for Temp {
-        fn decode(&self, bytes: &[u8]) -> String {
-            String::from_utf8_lossy(bytes).into_owned()
+        fn read(&self, path: &Path) -> Result<String, ListError> {
+            Err(ListError(format!("{} is not read in tests", path.display())))
+        }
+        fn write(&self, path: &Path, _: &str) -> Result<(), ListError> {
+            Err(ListError(format!("{} is not written in tests", path.display())))
         }
         fn import(&self, _: &str) -> Result<(Vec<Download>, usize), ListError> {
             Ok((Vec::new(), 0))
@@ -186,6 +195,9 @@ mod fakes {
     }
 
     impl SystemServices for Temp {
+        fn fonts(&self) -> SystemFonts {
+            SystemFonts::default()
+        }
         fn fixed_proxy(&self) -> Option<SystemProxy> {
             None
         }
@@ -201,6 +213,18 @@ mod fakes {
         fn play(&self, _: Sound, _: Option<&Path>) {}
         fn save_credential(&self, _: &str, _: &str, _: &str) -> Result<(), FilesError> {
             Ok(())
+        }
+    }
+
+    impl FilePicker for Temp {
+        fn pick_folder(&self, _: &str, _: Option<&Path>) -> Option<PathBuf> {
+            None
+        }
+        fn pick_file(&self, _: &str, _: &[FileKind], _: Option<&Path>) -> Option<PathBuf> {
+            None
+        }
+        fn save_file(&self, _: &str, _: &str, _: &[FileKind]) -> Option<PathBuf> {
+            None
         }
     }
 
@@ -245,6 +269,7 @@ mod fakes {
             checks: Arc::new(Temp),
             system: Arc::new(Temp),
             browsers: Arc::new(Temp),
+            pickers: Arc::new(Temp),
         }
     }
 }

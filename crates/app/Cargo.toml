@@ -16,7 +16,7 @@ name = "uidm-daemon"
 path = "src/bin/uidm-daemon.rs"
 
 # Desktop window that lists and controls downloads; another daemon client.
-# Its views move to uidm-ui later (AGENTS.md section 16).
+# Its views are in uidm-ui; this binary wires them to the adapters.
 [[bin]]
 name = "uidm-gui"
 path = "src/bin/uidm-gui.rs"
@@ -25,37 +25,10 @@ path = "src/bin/uidm-gui.rs"
 uidm-domain.workspace = true
 uidm-application.workspace = true
 uidm-infrastructure.workspace = true
+uidm-ui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-url.workspace = true
-base64.workspace = true
-percent-encoding.workspace = true
 # The binaries' log events; `uidm_infrastructure::logging` writes them.
 tracing.workspace = true
-# Immediate-mode GUI for the desktop window. Pure Rust; the default glow
-# backend renders through OpenGL.
+# The window's run result, which `uidm-gui`'s main returns.
 eframe = "0.31.1"
-# The download list's table: resizable columns and whole-row selection.
-egui_extras = { version = "0.31.1", default-features = false }
-# Native folder picker for the Options dialog (IFileOpenDialog on Windows,
-# through windows-sys, so it builds on windows-gnu).
-rfd = { version = "0.15.4", default-features = false }
-# System tray icon and its menu (Win32 underneath, builds on windows-gnu;
-# GTK on Linux, without libxdo, which only menu shortcuts need).
-tray-icon = { version = "0.21", default-features = false }
-# The window's HWND, to show and hide it from the tray while egui is idle.
-raw-window-handle = "0.6"
-
-# Drag and drop out of the window and its taskbar button.
-[target.'cfg(windows)'.dependencies]
-windows.workspace = true
-
-# The window's clipboard reads outside egui (egui uses it too).
-[target.'cfg(unix)'.dependencies]
-arboard = { version = "3.7.0", default-features = false }
-
-# The folder picker's GTK backend on Linux (macOS uses its own panels), and
-# GTK's loop for the tray icon, which tray-icon builds on there.
-[target.'cfg(target_os = "linux")'.dependencies]
-rfd = { version = "0.15.4", default-features = false, features = ["gtk3"] }
-gtk = "0.18"
