@@ -287,6 +287,21 @@ impl udm_application::window::ListFiles for ListFormats {
         std::fs::read(path).map(|b| decode(&b)).map_err(|e| udm_application::window::ListError(e.to_string()))
     }
 
+    fn read_bytes(&self, path: &std::path::Path, max: u64) -> Result<Vec<u8>, udm_application::window::ReadError> {
+        use std::io::Read;
+        use udm_application::window::{ListError, ReadError};
+        let failed = |e: std::io::Error| ReadError::Failed(ListError(e.to_string()));
+        let file = std::fs::File::open(path).map_err(failed)?;
+        // Read one byte past the limit, so a file that grew since it was
+        // picked is still refused.
+        let mut bytes = Vec::new();
+        file.take(max.saturating_add(1)).read_to_end(&mut bytes).map_err(failed)?;
+        if bytes.len() as u64 > max {
+            return Err(ReadError::TooBig { max });
+        }
+        Ok(bytes)
+    }
+
     fn write(&self, path: &std::path::Path, text: &str) -> Result<(), udm_application::window::ListError> {
         crate::settings::write_atomic(path, text.as_bytes())
             .map_err(|e| udm_application::window::ListError(e.to_string()))
@@ -323,6 +338,17 @@ http://127.0.0.1/b.zip
         ListFormats.write(&path, text).unwrap();
         assert_eq!(ListFormats.read(&path).unwrap(), text);
         assert!(ListFormats.read(&dir.join("missing.txt")).is_err());
+        assert_eq!(ListFormats.read_bytes(&path, 1024).unwrap(), text.as_bytes());
+        let size = text.len() as u64;
+        assert_eq!(ListFormats.read_bytes(&path, size).unwrap().len() as u64, size);
+        assert_eq!(
+            ListFormats.read_bytes(&path, size - 1),
+            Err(udm_application::window::ReadError::TooBig { max: size - 1 })
+        );
+        assert!(matches!(
+            ListFormats.read_bytes(&dir.join("missing.torrent"), 10),
+            Err(udm_application::window::ReadError::Failed(_))
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -368,6 +394,8 @@ http://127.0.0.1/b.zip
             from_browser: false,
             on_done: None,
             validator: None,
+            country: None,
+            torrent: None,
         }
     }
 

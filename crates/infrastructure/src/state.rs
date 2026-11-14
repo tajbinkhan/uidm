@@ -47,16 +47,19 @@ impl DerefMut for DownloadTable {
 fn change_of(msg: &Outgoing) -> Option<Change<'_>> {
     Some(match msg {
         Outgoing::Added { id, url } => Change::Added { id: *id, url: url.as_str() },
-        Outgoing::Started { id, url, path, total, resumable, connections, partial, validator } => Change::Started {
-            id: *id,
-            url: url.as_str(),
-            path,
-            total: *total,
-            resumable: *resumable,
-            connections: *connections,
-            partial: partial.as_deref(),
-            validator: validator.as_ref(),
-        },
+        Outgoing::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
+            Change::Started {
+                id: *id,
+                url: url.as_str(),
+                path,
+                total: *total,
+                resumable: *resumable,
+                connections: *connections,
+                partial: partial.as_deref(),
+                validator: validator.as_ref(),
+                country: *country,
+            }
+        }
         Outgoing::Progress { id, url, done, total, parts, .. } => {
             Change::Progress { id: *id, url: url.as_str(), done: *done, total: *total, parts: *parts }
         }
@@ -69,6 +72,8 @@ fn change_of(msg: &Outgoing) -> Option<Change<'_>> {
             Change::NameTaken { id: *id, url: url.as_str(), path, total: *total }
         }
         Outgoing::Removed { id } => Change::Removed { id: *id },
+        Outgoing::TorrentInfo { id, url, info } => Change::TorrentInfo { id: *id, url: url.as_str(), info },
+        Outgoing::TorrentStats { id, url, stats } => Change::TorrentStats { id: *id, url: url.as_str(), stats },
         Outgoing::Updated { item } => Change::Updated(item),
         Outgoing::Downloads { items } => Change::Downloads(items),
         Outgoing::Hello { .. }
@@ -105,7 +110,9 @@ fn change_of(msg: &Outgoing) -> Option<Change<'_>> {
         | Outgoing::UpdateFailed { .. }
         | Outgoing::GrabProgress { .. }
         | Outgoing::GrabDone { .. }
-        | Outgoing::Remote { .. } => return None,
+        | Outgoing::Remote { .. }
+        | Outgoing::Debrid { .. }
+        | Outgoing::DebridRefused { .. } => return None,
     })
 }
 
@@ -131,6 +138,7 @@ mod tests {
             connections: 4,
             partial: None,
             validator: None,
+            country: None,
         }
     }
 

@@ -59,7 +59,7 @@ pub enum GalleryError {
     #[error("{0} is not an http or https page.")]
     NotWebPage(String),
     /// gallery-dl is nowhere to be found.
-    #[error("Image galleries need gallery-dl. Install it in UDM's Options > General, or put gallery-dl next to UDM.")]
+    #[error("Image galleries need gallery-dl. Install it in UDM's Options > Tools, or put gallery-dl next to UDM.")]
     Missing,
     /// gallery-dl knows no site like this page's.
     #[error("gallery-dl does not know this site.")]

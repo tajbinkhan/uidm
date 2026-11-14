@@ -51,13 +51,15 @@ export const commands = {
 	/**  Download File Info's Start Download or Download Later. */
 	answerDownload: (answer: AnswerInput_Deserialize) => __TAURI_INVOKE<null>("answer_download", { answer }),
 	/**
-	 *  Whether UDM may save in the folder Download File Info's Save As names,
-	 *  checked on a worker since it writes a probe file there.
+	 *  Whether UDM may save in the folder Download File Info's Save As names
+	 *  (for a torrent of one file, the folder it holds), checked on a worker
+	 *  since it writes a probe file there.
 	 */
 	checkSaveFolder: (saveAs: string) => __TAURI_INVOKE<FolderAccess>("check_save_folder", { saveAs }),
 	/**
 	 *  Download File Info's Browse: another folder for the file, keeping its
-	 *  name. `None` when the user cancels.
+	 *  name; for a torrent of one file, the folder alone. `None` when the user
+	 *  cancels.
 	 */
 	pickSaveFolder: (saveAs: string) => __TAURI_INVOKE<string | null>("pick_save_folder", { saveAs }),
 	/**  Confirm deletion's Yes. */
@@ -76,6 +78,11 @@ export const commands = {
 	pickPath: (kind: PickKind, start: string) => __TAURI_INVOKE<string | null>("pick_path", { kind, start }),
 	/**  Install or update a tool: yt-dlp, ffmpeg or gallery-dl. */
 	installTool: (tool: ToolKey) => __TAURI_INVOKE<null>("install_tool", { tool }),
+	/**
+	 *  Check account: ask the debrid service about the account, with the key
+	 *  typed in the field, or else the stored one. The answer shows on the page.
+	 */
+	checkDebrid: (service: DebridChoice, key: string) => __TAURI_INVOKE<null>("check_debrid", { service, key }),
 	/**
 	 *  Ask how remote control stands, as Options' Remote page does while it
 	 *  is open.
@@ -239,6 +246,25 @@ export const commands = {
 	dragFile: (id: Id) => __TAURI_INVOKE<null>("drag_file", { id }),
 	/**  The answer to the offer to keep a download in the browser. */
 	answerException: (choice: ExceptionChoice, dontShow: boolean) => __TAURI_INVOKE<null>("answer_exception", { choice, dontShow }),
+	/**
+	 *  Tick (`chosen`) or untick a torrent's files `indexes`: in Download File
+	 *  Info before it starts, or in the download window, where the torrent
+	 *  takes the new choice at once.
+	 */
+	pickTorrentFiles: (indexes: number[], chosen: boolean) => __TAURI_INVOKE<null>("pick_torrent_files", { indexes, chosen }),
+	/**
+	 *  The download window's seeding limits: the torrent's own, or the
+	 *  settings'.
+	 */
+	setSeedLimits: (limits: SeedLimitsInput) => __TAURI_INVOKE<null>("set_seed_limits", { limits }),
+	/**  The download window's Stop seeding. */
+	stopSeeding: () => __TAURI_INVOKE<null>("stop_seeding"),
+	/**
+	 *  Tasks > Open torrent file: a `.torrent` file the user picks, read on a
+	 *  worker and sent to the daemon, which adds its torrent as it adds any
+	 *  download. Nothing when the user cancels.
+	 */
+	openTorrentFile: () => __TAURI_INVOKE<null>("open_torrent_file"),
 };
 
 /* Types */
@@ -257,6 +283,60 @@ export type AboutView = {
 	installTitle: string,
 	checking: boolean,
 	connected: boolean,
+};
+
+/**
+ *  A network adapter as Options keeps it: its id, and the name to say
+ *  which one is down once it is gone.
+ */
+export type AdapterDraft = AdapterDraft_Serialize | AdapterDraft_Deserialize;
+
+/**
+ *  A network adapter as Options keeps it: its id, and the name to say
+ *  which one is down once it is gone.
+ */
+export type AdapterDraft_Deserialize = {
+	id: string,
+	name: string,
+	/**
+	 *  The user chose it again, now that another connection has its name
+	 *  (`AdapterRow::renewable`): it is the connection to go through from
+	 *  now on.
+	 */
+	renew?: boolean,
+};
+
+/**
+ *  A network adapter as Options keeps it: its id, and the name to say
+ *  which one is down once it is gone.
+ */
+export type AdapterDraft_Serialize = {
+	id: string,
+	name: string,
+	/**
+	 *  The user chose it again, now that another connection has its name
+	 *  (`AdapterRow::renewable`): it is the connection to go through from
+	 *  now on.
+	 */
+	renew: boolean,
+};
+
+/**  A network adapter as Options lists it. */
+export type AdapterRow = {
+	id: string,
+	name: string,
+	/**
+	 *  What the list shows: its name and addresses, or that it is not
+	 *  connected.
+	 */
+	label: string,
+	/**  Connections can go through it now. */
+	up: boolean,
+	/**
+	 *  The chosen adapter's numbered name (`utun3`) is another connection
+	 *  now: it can be chosen again, to go through that one.
+	 */
+	renewable: boolean,
 };
 
 /**  Add URL ("Enter new address to download"). */
@@ -375,6 +455,13 @@ export type Can = {
 	openWith: boolean,
 	/**  A finished row's file can be dragged out of the window (Windows). */
 	dragOut: boolean,
+	/**
+	 *  One torrent is selected, whose download window shows its files,
+	 *  peers and seeding.
+	 */
+	torrent: boolean,
+	/**  A seeding torrent is selected. */
+	stopSeeding: boolean,
 	connected: boolean,
 };
 
@@ -447,7 +534,7 @@ export type ColumnHead_Serialize = {
 };
 
 /**  The list's columns, in the order the window saves them. */
-export type ColumnKey = "name" | "queue" | "size" | "progress" | "speed" | "timeLeft" | "status" | "lastTry" | "saveTo" | "page" | "referrer" | "description";
+export type ColumnKey = "name" | "queue" | "size" | "progress" | "speed" | "timeLeft" | "status" | "lastTry" | "saveTo" | "page" | "referrer" | "description" | "country";
 
 /**  What Convert makes from a finished video. */
 export type ConvertTarget = "mp4" | "mp3" | "m4a" | "opus" | "flac";
@@ -474,12 +561,64 @@ export type CssVar = {
 	value: string,
 };
 
+/**  A debrid service Options offers. */
+export type DebridChoice = "realDebrid" | "allDebrid" | "premiumize";
+
+/**  A debrid service as Options lists it. */
+export type DebridServiceRow = {
+	service: DebridChoice,
+	/**  Its own name, untranslated. */
+	name: string,
+	/**  Where its users find their API key. */
+	keyPage: string,
+};
+
+/**  Options' Debrid page beyond the settings. */
+export type DebridView = DebridView_Serialize | DebridView_Deserialize;
+
+/**  Options' Debrid page beyond the settings. */
+export type DebridView_Deserialize = {
+	services: DebridServiceRow[],
+	/**
+	 *  The service a key is stored for; the key itself is never sent. A key
+	 *  is stored for one service and goes to no other.
+	 */
+	keyService?: DebridChoice | null,
+	/**  Check account is waiting for the service. */
+	checking: boolean,
+	/**  What the last check said. */
+	check?: Banner | null,
+};
+
+/**  Options' Debrid page beyond the settings. */
+export type DebridView_Serialize = {
+	services: DebridServiceRow[],
+	/**
+	 *  The service a key is stored for; the key itself is never sent. A key
+	 *  is stored for one service and goes to no other.
+	 */
+	keyService: DebridChoice | null,
+	/**  Check account is waiting for the service. */
+	checking: boolean,
+	/**  What the last check said. */
+	check: Banner | null,
+};
+
 /**  A paired phone. */
 export type DeviceRow = {
 	id: Id,
 	name: string,
 	/**  When it was paired and last seen. */
 	detail: string,
+};
+
+/**  Where host names are looked up. */
+export type DnsDraft = "system" | "cloudflare" | "google" | "quad9" | "custom";
+
+/**  A resolver Options offers. */
+export type DnsRow = {
+	value: DnsDraft,
+	label: string,
 };
 
 /**  Download complete. */
@@ -501,8 +640,43 @@ export type DownloadControl = "pause" | "resume" |
 /**  Stop it and close the window; it stays in the list. */
 "cancel";
 
+/**
+ *  A change to a download window: the view without its torrent's lists
+ *  when the rest changed, and the lists' changes.
+ */
+export type DownloadPatch = DownloadPatch_Serialize | DownloadPatch_Deserialize;
+
+/**
+ *  A change to a download window: the view without its torrent's lists
+ *  when the rest changed, and the lists' changes.
+ */
+export type DownloadPatch_Deserialize = {
+	/**
+	 *  The new view; its torrent's lists are empty, and the window keeps its
+	 *  own with `torrent`'s changes.
+	 */
+	view?: DownloadView_Deserialize | null,
+	torrent?: TorrentPatch_Deserialize | null,
+};
+
+/**
+ *  A change to a download window: the view without its torrent's lists
+ *  when the rest changed, and the lists' changes.
+ */
+export type DownloadPatch_Serialize = {
+	/**
+	 *  The new view; its torrent's lists are empty, and the window keeps its
+	 *  own with `torrent`'s changes.
+	 */
+	view: DownloadView_Serialize | null,
+	torrent: TorrentPatch_Serialize | null,
+};
+
 /**  A download's progress window. */
-export type DownloadView = {
+export type DownloadView = DownloadView_Serialize | DownloadView_Deserialize;
+
+/**  A download's progress window. */
+export type DownloadView_Deserialize = {
 	id: Id,
 	title: string,
 	address: string,
@@ -512,6 +686,8 @@ export type DownloadView = {
 	speed: string,
 	timeLeft: string,
 	resume: string,
+	/**  The server's country, its flag and code; empty when unknown. */
+	country: string,
 	fraction: number,
 	running: boolean,
 	canResume: boolean,
@@ -522,6 +698,35 @@ export type DownloadView = {
 	speedTab: boolean,
 	doneTab: boolean,
 	details: boolean,
+	/**  A torrent's files, peers, trackers, pieces and seeding. */
+	torrent?: TorrentView_Deserialize | null,
+};
+
+/**  A download's progress window. */
+export type DownloadView_Serialize = {
+	id: Id,
+	title: string,
+	address: string,
+	status: string,
+	size: string,
+	downloaded: string,
+	speed: string,
+	timeLeft: string,
+	resume: string,
+	/**  The server's country, its flag and code; empty when unknown. */
+	country: string,
+	fraction: number,
+	running: boolean,
+	canResume: boolean,
+	saveTo: string,
+	segments: SegmentView[],
+	limit: LimitView,
+	onDone: OnDoneView,
+	speedTab: boolean,
+	doneTab: boolean,
+	details: boolean,
+	/**  A torrent's files, peers, trackers, pieces and seeding. */
+	torrent: TorrentView_Serialize | null,
 };
 
 /**  The drop target. */
@@ -569,7 +774,13 @@ export type ExportScope = "queue" | "selected" | "all";
  *  The settings UDM has beyond IDM's pages: speed limits, how downloads
  *  behave, the browser's buttons, archives, tools and remote control.
  */
-export type ExtrasDraft = {
+export type ExtrasDraft = ExtrasDraft_Serialize | ExtrasDraft_Deserialize;
+
+/**
+ *  The settings UDM has beyond IDM's pages: speed limits, how downloads
+ *  behave, the browser's buttons, archives, tools and remote control.
+ */
+export type ExtrasDraft_Deserialize = {
 	maxConcurrent: number,
 	limitOn: boolean,
 	limitKb: number,
@@ -613,6 +824,120 @@ export type ExtrasDraft = {
 	remoteAll: boolean,
 	/**  The addresses to listen on otherwise, separated by spaces or commas. */
 	remoteAddresses: string,
+	debridOn: boolean,
+	debridService?: DebridChoice | null,
+	/**
+	 *  A new API key to store; empty keeps the stored one. It comes empty:
+	 *  the stored key never crosses to the webview.
+	 */
+	debridKey: string,
+	/**  Remove the stored key. */
+	debridForget: boolean,
+	/**
+	 *  The network adapter every connection is bound to; `None` lets the
+	 *  system choose.
+	 */
+	adapter?: AdapterDraft_Deserialize | null,
+	dns: DnsDraft,
+	/**  The custom DNS over HTTPS resolver's address. */
+	dnsUrl: string,
+	/**  Listen on `torrent_port`, rather than a free port each start. */
+	torrentPortFixed: boolean,
+	torrentPort: number,
+	torrentDht: boolean,
+	torrentUpnp: boolean,
+	torrentLocalPeers: boolean,
+	torrentPeersOn: boolean,
+	torrentPeers: number,
+	torrentUploadOn: boolean,
+	torrentUploadKb: number,
+	seedRatioOn: boolean,
+	seedRatio: number,
+	seedMinutesOn: boolean,
+	seedMinutes: number,
+	catchTorrentFiles: boolean,
+};
+
+/**
+ *  The settings UDM has beyond IDM's pages: speed limits, how downloads
+ *  behave, the browser's buttons, archives, tools and remote control.
+ */
+export type ExtrasDraft_Serialize = {
+	maxConcurrent: number,
+	limitOn: boolean,
+	limitKb: number,
+	limitOnStartup: boolean,
+	perFileOn: boolean,
+	perFileKb: number,
+	limitWhileActive: boolean,
+	idleMinutes: number,
+	notify: NotifyChoice,
+	fileExists: FileExistsChoice,
+	/**  File types started without asking, separated by spaces or commas. */
+	autoStartTypes: string,
+	resumeAtStartup: boolean,
+	serverFileDateCreated: boolean,
+	progressStartTab: StartTabChoice,
+	confirmRemove: boolean,
+	removeDeletesFiles: boolean,
+	/**  The interface size, in percent. */
+	textSize: number,
+	captureMinSizeKb: number,
+	selectionButton: SelectionChoice,
+	selectionSites: string,
+	videoExcludedSites: string,
+	videoMinSizeKb: number,
+	videoAutoTypes: string,
+	socksHttps: boolean,
+	socksFtp: boolean,
+	remoteDns: boolean,
+	proxyBypass: string,
+	browserProxyAfterErrors: boolean,
+	unpackAuto: boolean,
+	unpackTo: UnpackChoice,
+	unpackFolder: string,
+	unpackRecycle: boolean,
+	sevenZipPath: string,
+	ffmpegPath: string,
+	ytdlpAutoUpdate: boolean,
+	remoteEnabled: boolean,
+	remotePort: number,
+	/**  Listen on every network interface. */
+	remoteAll: boolean,
+	/**  The addresses to listen on otherwise, separated by spaces or commas. */
+	remoteAddresses: string,
+	debridOn: boolean,
+	debridService: DebridChoice | null,
+	/**
+	 *  A new API key to store; empty keeps the stored one. It comes empty:
+	 *  the stored key never crosses to the webview.
+	 */
+	debridKey: string,
+	/**  Remove the stored key. */
+	debridForget: boolean,
+	/**
+	 *  The network adapter every connection is bound to; `None` lets the
+	 *  system choose.
+	 */
+	adapter: AdapterDraft_Serialize | null,
+	dns: DnsDraft,
+	/**  The custom DNS over HTTPS resolver's address. */
+	dnsUrl: string,
+	/**  Listen on `torrent_port`, rather than a free port each start. */
+	torrentPortFixed: boolean,
+	torrentPort: number,
+	torrentDht: boolean,
+	torrentUpnp: boolean,
+	torrentLocalPeers: boolean,
+	torrentPeersOn: boolean,
+	torrentPeers: number,
+	torrentUploadOn: boolean,
+	torrentUploadKb: number,
+	seedRatioOn: boolean,
+	seedRatio: number,
+	seedMinutesOn: boolean,
+	seedMinutes: number,
+	catchTorrentFiles: boolean,
 };
 
 export type FileExistsChoice = "rename" | "overwrite" | "ask";
@@ -983,7 +1308,9 @@ export type ListAction =
 /**  Remove every finished download from the list. */
 { action: "deleteCompleted" } | { action: "redownload" } | { action: "startQueue"; id: Id } | { action: "stopQueue"; id: Id } | 
 /**  Select every row shown. */
-{ action: "selectAll" };
+{ action: "selectAll" } | 
+/**  Stop the selected torrents' seeding. */
+{ action: "stopSeeding" };
 
 /**  View > Font's choice. */
 export type ListFontInput = {
@@ -1201,6 +1528,33 @@ export type MainView_Serialize = {
 	chrome: MainChrome_Serialize,
 };
 
+/**  Options' Network page beyond the settings. */
+export type NetworkView = NetworkView_Serialize | NetworkView_Deserialize;
+
+/**  Options' Network page beyond the settings. */
+export type NetworkView_Deserialize = {
+	/**
+	 *  The adapters, the chosen one first when it is not there now; `None`
+	 *  while they are read.
+	 */
+	adapters?: AdapterRow[] | null,
+	/**  Why they could not be read. */
+	adaptersError?: string | null,
+	resolvers: DnsRow[],
+};
+
+/**  Options' Network page beyond the settings. */
+export type NetworkView_Serialize = {
+	/**
+	 *  The adapters, the chosen one first when it is not there now; `None`
+	 *  while they are read.
+	 */
+	adapters: AdapterRow[] | null,
+	/**  Why they could not be read. */
+	adaptersError: string | null,
+	resolvers: DnsRow[],
+};
+
 export type NotifyChoice = "off" | "toast" | "dialog";
 
 /**  The Options on completion tab's choices. */
@@ -1296,7 +1650,7 @@ export type OptionsDraft_Deserialize = {
 	logins: LoginDraft[],
 	sounds: SoundDraft[],
 	/**  What UDM adds to IDM's pages, on pages of its own. */
-	extras: ExtrasDraft,
+	extras: ExtrasDraft_Deserialize,
 };
 
 /**  The settings the Options window edits. */
@@ -1367,7 +1721,7 @@ export type OptionsDraft_Serialize = {
 	logins: LoginDraft[],
 	sounds: SoundDraft[],
 	/**  What UDM adds to IDM's pages, on pages of its own. */
-	extras: ExtrasDraft,
+	extras: ExtrasDraft_Serialize,
 };
 
 /**  The Options window. */
@@ -1402,6 +1756,8 @@ export type OptionsView_Deserialize = {
 	creationTime: boolean,
 	/**  A portable copy, which does not start when the user signs in. */
 	portable: boolean,
+	debrid: DebridView_Deserialize,
+	network: NetworkView_Deserialize,
 };
 
 /**  The Options window. */
@@ -1433,6 +1789,8 @@ export type OptionsView_Serialize = {
 	creationTime: boolean,
 	/**  A portable copy, which does not start when the user signs in. */
 	portable: boolean,
+	debrid: DebridView_Serialize,
+	network: NetworkView_Serialize,
 };
 
 /**  A package's menu in the categories tree. */
@@ -1470,22 +1828,44 @@ export type PasswordView = {
 };
 
 /**
- *  A change to a view. The main window's list changes row by row; the
- *  small windows are sent whole.
+ *  A change to a view. The main window's list, and a torrent's lists,
+ *  change row by row; the other windows are sent whole.
  */
 export type Patch = Patch_Serialize | Patch_Deserialize;
 
 /**
- *  A change to a view. The main window's list changes row by row; the
- *  small windows are sent whole.
+ *  A change to a view. The main window's list, and a torrent's lists,
+ *  change row by row; the other windows are sent whole.
  */
-export type Patch_Deserialize = { window: "main"; patch: MainPatch_Deserialize } | { window: "whole"; patch: View_Deserialize };
+export type Patch_Deserialize = { window: "main"; patch: MainPatch_Deserialize } | 
+/**  A download window: its torrent's lists change row by row. */
+{ window: "download"; patch: DownloadPatch_Deserialize } | 
+/**  Download File Info: its torrent's files change row by row. */
+{ window: "saveAs"; patch: SaveAsPatch_Deserialize } | { window: "whole"; patch: View_Deserialize };
 
 /**
- *  A change to a view. The main window's list changes row by row; the
- *  small windows are sent whole.
+ *  A change to a view. The main window's list, and a torrent's lists,
+ *  change row by row; the other windows are sent whole.
  */
-export type Patch_Serialize = { window: "main"; patch: MainPatch_Serialize } | { window: "whole"; patch: View_Serialize };
+export type Patch_Serialize = { window: "main"; patch: MainPatch_Serialize } | 
+/**  A download window: its torrent's lists change row by row. */
+{ window: "download"; patch: DownloadPatch_Serialize } | 
+/**  Download File Info: its torrent's files change row by row. */
+{ window: "saveAs"; patch: SaveAsPatch_Serialize } | { window: "whole"; patch: View_Serialize };
+
+/**  One peer a torrent is connected to. */
+export type PeerRow = {
+	/**  `ip:port`, which also tells the rows apart. */
+	address: string,
+	/**  The program it says it is. */
+	client: string,
+	downSpeed: string,
+	upSpeed: string,
+	downloaded: string,
+	uploaded: string,
+	/**  TCP, uTP or SOCKS. */
+	transport: string,
+};
 
 /**
  *  What the pickers' Add sends: the ticked rows, where, and whether to
@@ -1811,6 +2191,11 @@ export type Row_Deserialize = {
 	saveTo: string,
 	page: string,
 	referrer: string,
+	/**
+	 *  The server's country: its flag and ISO code, such as "🇺🇸 US"; empty
+	 *  when unknown.
+	 */
+	country: string,
 };
 
 /**  One download in the list, each column's text already formatted. */
@@ -1838,6 +2223,88 @@ export type Row_Serialize = {
 	saveTo: string,
 	page: string,
 	referrer: string,
+	/**
+	 *  The server's country: its flag and ISO code, such as "🇺🇸 US"; empty
+	 *  when unknown.
+	 */
+	country: string,
+};
+
+/**
+ *  A change to Download File Info: the view without its torrent's files
+ *  when the rest changed, and the files that changed.
+ */
+export type SaveAsPatch = SaveAsPatch_Serialize | SaveAsPatch_Deserialize;
+
+/**
+ *  A change to Download File Info: the view without its torrent's files
+ *  when the rest changed, and the files that changed.
+ */
+export type SaveAsPatch_Deserialize = {
+	/**
+	 *  The new view; its torrent's file list is empty, and the window keeps
+	 *  its own with `files` and `file_order`.
+	 */
+	view?: SaveAsView_Deserialize | null,
+	files: TorrentFileRow_Deserialize[],
+	fileOrder?: number[] | null,
+};
+
+/**
+ *  A change to Download File Info: the view without its torrent's files
+ *  when the rest changed, and the files that changed.
+ */
+export type SaveAsPatch_Serialize = {
+	/**
+	 *  The new view; its torrent's file list is empty, and the window keeps
+	 *  its own with `files` and `file_order`.
+	 */
+	view: SaveAsView_Serialize | null,
+	files: TorrentFileRow_Serialize[],
+	fileOrder: number[] | null,
+};
+
+/**  Download File Info's part for a torrent: its files to tick. */
+export type SaveAsTorrent = SaveAsTorrent_Serialize | SaveAsTorrent_Deserialize;
+
+/**  Download File Info's part for a torrent: its files to tick. */
+export type SaveAsTorrent_Deserialize = {
+	/**  The file list has not come from the daemon yet. */
+	waiting: boolean,
+	/**  Its files, sorted by path, padding left out. */
+	files: TorrentFileRow_Deserialize[],
+	/**
+	 *  A torrent of one file keeps that file's name: the dialog edits only
+	 *  the folder, `folder`.
+	 */
+	fixedName?: string | null,
+	folder: string,
+	/**  What the ticks add up to, such as "3 of 10 files, 1.20 GB of 4.50 GB". */
+	chosen: string,
+	/**  Nothing is ticked, so the download cannot start. */
+	noneChosen: boolean,
+	/**  A private torrent finds peers through its trackers only. */
+	private: boolean,
+};
+
+/**  Download File Info's part for a torrent: its files to tick. */
+export type SaveAsTorrent_Serialize = {
+	/**  The file list has not come from the daemon yet. */
+	waiting: boolean,
+	/**  Its files, sorted by path, padding left out. */
+	files: TorrentFileRow_Serialize[],
+	/**
+	 *  A torrent of one file keeps that file's name: the dialog edits only
+	 *  the folder, `folder`.
+	 */
+	fixedName: string | null,
+	folder: string,
+	/**  What the ticks add up to, such as "3 of 10 files, 1.20 GB of 4.50 GB". */
+	chosen: string,
+	/**  Nothing is ticked, so the download cannot start. */
+	noneChosen: boolean,
+	/**  A private torrent finds peers through its trackers only. */
+	private: boolean,
 };
 
 /**  Download File Info: where a probed download goes before it starts. */
@@ -1851,7 +2318,10 @@ export type SaveAsView_Deserialize = {
 	url: string,
 	categories: string[],
 	category: string,
-	/**  The file's folder and name, joined. */
+	/**
+	 *  The file's folder and name, joined; for a torrent of one file
+	 *  (`torrent.fixed_name`), Save As holds and sends its folder alone.
+	 */
 	saveAs: string,
 	/**  The folders the list remembers, for the Save As box's list. */
 	folders: string[],
@@ -1869,6 +2339,8 @@ export type SaveAsView_Deserialize = {
 	 *  may not write to.
 	 */
 	canElevate: boolean,
+	/**  A torrent's files to choose from. */
+	torrent?: SaveAsTorrent_Deserialize | null,
 };
 
 /**  Download File Info: where a probed download goes before it starts. */
@@ -1879,7 +2351,10 @@ export type SaveAsView_Serialize = {
 	url: string,
 	categories: string[],
 	category: string,
-	/**  The file's folder and name, joined. */
+	/**
+	 *  The file's folder and name, joined; for a torrent of one file
+	 *  (`torrent.fixed_name`), Save As holds and sends its folder alone.
+	 */
 	saveAs: string,
 	/**  The folders the list remembers, for the Save As box's list. */
 	folders: string[],
@@ -1897,6 +2372,8 @@ export type SaveAsView_Serialize = {
 	 *  may not write to.
 	 */
 	canElevate: boolean,
+	/**  A torrent's files to choose from. */
+	torrent: SaveAsTorrent_Serialize | null,
 };
 
 export type SaveChoice = 
@@ -1942,6 +2419,31 @@ export type SchedulerView_Serialize = {
 	 */
 	wakeWarning: WakeWarning | null,
 	connected: boolean,
+};
+
+/**  A torrent's own seeding limits, or the settings' (`own` false). */
+export type SeedLimitsInput = {
+	own: boolean,
+	ratioOn: boolean,
+	/**  The ratio and the minutes as typed; the shell reads them. */
+	ratio: string,
+	minutesOn: boolean,
+	minutes: string,
+};
+
+/**  When a finished torrent stops seeding, as the download window edits it. */
+export type SeedLimitsView = {
+	/**  Its own limits, rather than the settings'. */
+	own: boolean,
+	ratioOn: boolean,
+	/**  The ratio and the minutes as the fields start with them. */
+	ratio: string,
+	minutesOn: boolean,
+	minutes: string,
+	/**  The settings' limits, in words. */
+	defaults: string,
+	/**  How far it has seeded, in words; empty before it seeds. */
+	progress: string,
 };
 
 /**  One connection's range, for the progress window's strip and table. */
@@ -2009,6 +2511,151 @@ export type ToolRow = {
 	hint: string,
 	installable: boolean,
 	busy: boolean,
+};
+
+/**  One of a torrent's files, as its lists show it. */
+export type TorrentFileRow = TorrentFileRow_Serialize | TorrentFileRow_Deserialize;
+
+/**  One of a torrent's files, as its lists show it. */
+export type TorrentFileRow_Deserialize = {
+	/**  Its number in the torrent, which `pick_torrent_files` takes. */
+	index: number,
+	/**  Its path inside the torrent, with `/` between its folders. */
+	path: string,
+	size: string,
+	/**  Ticked: it downloads. */
+	chosen: boolean,
+	/**  How much of it is here, such as "45.31%"; empty when not told. */
+	progress: string,
+	/**  The same, from 0 to 1. */
+	fraction?: number | null,
+};
+
+/**  One of a torrent's files, as its lists show it. */
+export type TorrentFileRow_Serialize = {
+	/**  Its number in the torrent, which `pick_torrent_files` takes. */
+	index: number,
+	/**  Its path inside the torrent, with `/` between its folders. */
+	path: string,
+	size: string,
+	/**  Ticked: it downloads. */
+	chosen: boolean,
+	/**  How much of it is here, such as "45.31%"; empty when not told. */
+	progress: string,
+	/**  The same, from 0 to 1. */
+	fraction: number | null,
+};
+
+/**
+ *  A change to the lists of a torrent's download window: the rows that
+ *  changed and the new order when rows came, went or moved; the trackers
+ *  and the piece map whole when they changed.
+ */
+export type TorrentPatch = TorrentPatch_Serialize | TorrentPatch_Deserialize;
+
+/**
+ *  A change to the lists of a torrent's download window: the rows that
+ *  changed and the new order when rows came, went or moved; the trackers
+ *  and the piece map whole when they changed.
+ */
+export type TorrentPatch_Deserialize = {
+	files: TorrentFileRow_Deserialize[],
+	fileOrder?: number[] | null,
+	peers: PeerRow[],
+	peerOrder?: string[] | null,
+	trackers?: TrackerRow[] | null,
+	pieces?: number[] | null,
+};
+
+/**
+ *  A change to the lists of a torrent's download window: the rows that
+ *  changed and the new order when rows came, went or moved; the trackers
+ *  and the piece map whole when they changed.
+ */
+export type TorrentPatch_Serialize = {
+	files: TorrentFileRow_Serialize[],
+	fileOrder: number[] | null,
+	peers: PeerRow[],
+	peerOrder: string[] | null,
+	trackers: TrackerRow[] | null,
+	pieces: number[] | null,
+};
+
+/**  The download window's part for a torrent. */
+export type TorrentView = TorrentView_Serialize | TorrentView_Deserialize;
+
+/**  The download window's part for a torrent. */
+export type TorrentView_Deserialize = {
+	/**
+	 *  Where it is: getting its file list, checking, downloading, seeding
+	 *  or finished, in words.
+	 */
+	phase: string,
+	/**  It seeds now, so Stop seeding works. */
+	seeding: boolean,
+	downSpeed: string,
+	upSpeed: string,
+	timeLeft: string,
+	ratio: string,
+	uploaded: string,
+	/**  Peers connected, and every peer known. */
+	peersLine: string,
+	/**  How many pieces are here, and their size. */
+	piecesLine: string,
+	private: boolean,
+	/**  Why the files show no progress, or are not listed yet. */
+	filesNote: string,
+	/**  The files, sorted by path, padding left out. */
+	files: TorrentFileRow_Deserialize[],
+	/**  The files can be ticked and unticked now. */
+	canChoose: boolean,
+	/**  The busiest connected peers first. */
+	peers: PeerRow[],
+	trackers: TrackerRow[],
+	/**  The piece map's cells, each 0 to 100: the share of its pieces here. */
+	pieces: number[],
+	limits: SeedLimitsView,
+};
+
+/**  The download window's part for a torrent. */
+export type TorrentView_Serialize = {
+	/**
+	 *  Where it is: getting its file list, checking, downloading, seeding
+	 *  or finished, in words.
+	 */
+	phase: string,
+	/**  It seeds now, so Stop seeding works. */
+	seeding: boolean,
+	downSpeed: string,
+	upSpeed: string,
+	timeLeft: string,
+	ratio: string,
+	uploaded: string,
+	/**  Peers connected, and every peer known. */
+	peersLine: string,
+	/**  How many pieces are here, and their size. */
+	piecesLine: string,
+	private: boolean,
+	/**  Why the files show no progress, or are not listed yet. */
+	filesNote: string,
+	/**  The files, sorted by path, padding left out. */
+	files: TorrentFileRow_Serialize[],
+	/**  The files can be ticked and unticked now. */
+	canChoose: boolean,
+	/**  The busiest connected peers first. */
+	peers: PeerRow[],
+	trackers: TrackerRow[],
+	/**  The piece map's cells, each 0 to 100: the share of its pieces here. */
+	pieces: number[],
+	limits: SeedLimitsView,
+};
+
+/**  One of a torrent's trackers. */
+export type TrackerRow = {
+	url: string,
+	/**  Used or skipped, in words. */
+	state: string,
+	skipped: boolean,
 };
 
 export type TreeIcon = "allDownloads" | { category: FileIcon } | "unfinished" | "finished" | "grabber" | "queues" | "queue";
@@ -2116,10 +2763,10 @@ export type VideoTypeDraft = {
 export type View = View_Serialize | View_Deserialize;
 
 /**  A window's whole view, by its kind. */
-export type View_Deserialize = { window: "main"; view: MainView_Deserialize } | { window: "addUrl"; view: AddUrlView_Deserialize } | { window: "saveAs"; view: SaveAsView_Deserialize } | { window: "download"; view: DownloadView } | { window: "done"; view: DoneView } | { window: "remove"; view: RemoveView } | { window: "about"; view: AboutView } | { window: "options"; view: OptionsView_Deserialize } | { window: "scheduler"; view: SchedulerView_Deserialize } | { window: "grabber"; view: GrabberView_Deserialize } | { window: "batch"; view: BatchView } | { window: "links"; view: LinksView } | { window: "properties"; view: PropertiesView } | { window: "dropTarget"; view: DropView } | { window: "login"; view: LoginView } | { window: "countdown"; view: CountdownView } | { window: "refresh"; view: RefreshView_Deserialize } | { window: "password"; view: PasswordView } | { window: "pickLinks"; view: PickLinksView } | { window: "pickVideos"; view: PickVideosView } | { window: "gallery"; view: GalleryView_Deserialize } | { window: "zipPreview"; view: ZipView_Deserialize } | { window: "exception"; view: ExceptionView };
+export type View_Deserialize = { window: "main"; view: MainView_Deserialize } | { window: "addUrl"; view: AddUrlView_Deserialize } | { window: "saveAs"; view: SaveAsView_Deserialize } | { window: "download"; view: DownloadView_Deserialize } | { window: "done"; view: DoneView } | { window: "remove"; view: RemoveView } | { window: "about"; view: AboutView } | { window: "options"; view: OptionsView_Deserialize } | { window: "scheduler"; view: SchedulerView_Deserialize } | { window: "grabber"; view: GrabberView_Deserialize } | { window: "batch"; view: BatchView } | { window: "links"; view: LinksView } | { window: "properties"; view: PropertiesView } | { window: "dropTarget"; view: DropView } | { window: "login"; view: LoginView } | { window: "countdown"; view: CountdownView } | { window: "refresh"; view: RefreshView_Deserialize } | { window: "password"; view: PasswordView } | { window: "pickLinks"; view: PickLinksView } | { window: "pickVideos"; view: PickVideosView } | { window: "gallery"; view: GalleryView_Deserialize } | { window: "zipPreview"; view: ZipView_Deserialize } | { window: "exception"; view: ExceptionView };
 
 /**  A window's whole view, by its kind. */
-export type View_Serialize = { window: "main"; view: MainView_Serialize } | { window: "addUrl"; view: AddUrlView_Serialize } | { window: "saveAs"; view: SaveAsView_Serialize } | { window: "download"; view: DownloadView } | { window: "done"; view: DoneView } | { window: "remove"; view: RemoveView } | { window: "about"; view: AboutView } | { window: "options"; view: OptionsView_Serialize } | { window: "scheduler"; view: SchedulerView_Serialize } | { window: "grabber"; view: GrabberView_Serialize } | { window: "batch"; view: BatchView } | { window: "links"; view: LinksView } | { window: "properties"; view: PropertiesView } | { window: "dropTarget"; view: DropView } | { window: "login"; view: LoginView } | { window: "countdown"; view: CountdownView } | { window: "refresh"; view: RefreshView_Serialize } | { window: "password"; view: PasswordView } | { window: "pickLinks"; view: PickLinksView } | { window: "pickVideos"; view: PickVideosView } | { window: "gallery"; view: GalleryView_Serialize } | { window: "zipPreview"; view: ZipView_Serialize } | { window: "exception"; view: ExceptionView };
+export type View_Serialize = { window: "main"; view: MainView_Serialize } | { window: "addUrl"; view: AddUrlView_Serialize } | { window: "saveAs"; view: SaveAsView_Serialize } | { window: "download"; view: DownloadView_Serialize } | { window: "done"; view: DoneView } | { window: "remove"; view: RemoveView } | { window: "about"; view: AboutView } | { window: "options"; view: OptionsView_Serialize } | { window: "scheduler"; view: SchedulerView_Serialize } | { window: "grabber"; view: GrabberView_Serialize } | { window: "batch"; view: BatchView } | { window: "links"; view: LinksView } | { window: "properties"; view: PropertiesView } | { window: "dropTarget"; view: DropView } | { window: "login"; view: LoginView } | { window: "countdown"; view: CountdownView } | { window: "refresh"; view: RefreshView_Serialize } | { window: "password"; view: PasswordView } | { window: "pickLinks"; view: PickLinksView } | { window: "pickVideos"; view: PickVideosView } | { window: "gallery"; view: GalleryView_Serialize } | { window: "zipPreview"; view: ZipView_Serialize } | { window: "exception"; view: ExceptionView };
 
 /**
  *  The warning that the power plan turns wake timers off, and how to turn

@@ -293,7 +293,7 @@ pub(super) fn run(
     shared: &Shared,
 ) -> Result<Saved, EngineError> {
     if choice.audio_only.is_some() && req.ffmpeg.is_none() {
-        return Err(refused("Saving only the sound needs ffmpeg. Install it, or choose it in Options > General."));
+        return Err(refused("Saving only the sound needs ffmpeg. Install it, or choose it in Options > Tools."));
     }
     let (main, extra, subtitles) = load_tracks(agent, req, choice)?;
     // For the sound alone, a separate audio track is all that is fetched.
@@ -323,6 +323,7 @@ pub(super) fn run(
         last_modified: None,
         suggested_filename: None,
         content_type: None,
+        server: None,
     };
     let claim = choose_output(&shared.claimed, &dir, &filename, req, &probe)?;
     let output = claim.path.clone();
@@ -366,6 +367,7 @@ pub(super) fn run(
         connections: workers,
         partial: (parts != beside).then(|| parts.clone()),
         validator: None,
+        country: None,
     });
     fetch_all(id, token, agent, req, &jobs, workers, reporter, shared)?;
     if token.load(Ordering::Relaxed) {
@@ -401,7 +403,7 @@ pub(super) fn run(
     };
     let _ = fs::remove_dir_all(&parts);
     drop(claim);
-    Ok(Saved { path: output, note })
+    Ok(Saved { path: output, note, complete: true })
 }
 
 /// A subtitle track joined into one WebVTT file.
@@ -827,6 +829,9 @@ mod tests {
                 reuse_partial: None,
                 host_limit: None,
                 elevate: false,
+                resolve: None,
+                torrent_files: None,
+                torrent_uploaded: ByteCount::ZERO,
             }
         }
 

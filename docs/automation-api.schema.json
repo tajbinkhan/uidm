@@ -111,7 +111,8 @@
       "required": ["op", "url"],
       "properties": {
         "op": { "const": "add" },
-        "url": { "description": "An http, https, ftp or ftps address.", "type": "string" },
+        "url": { "description": "An http, https, ftp or ftps address, or a torrent's magnet link (magnet:?xt=urn:btih:...).", "type": "string" },
+        "torrent_file": { "description": "A .torrent file's contents, base64-encoded: the torrent is added, and url is replaced by its magnet link (send that link as url).", "type": "string" },
         "folder": { "description": "A full path to save in, instead of the category's folder.", "type": "string" },
         "filename": { "description": "The name to save as.", "type": "string" },
         "headers": { "description": "Request headers, name to value.", "type": "object", "additionalProperties": { "type": "string" } },
@@ -133,7 +134,8 @@
           "headers": { "Accept-Language": "en" }, "connections": 4,
           "checksum": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "ask": false, "duplicate": "new_name" },
-        { "op": "add", "url": "https://example.com/b.zip", "start": false, "queue": 1 }
+        { "op": "add", "url": "https://example.com/b.zip", "start": false, "queue": 1 },
+        { "op": "add", "url": "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=Album", "ask": false }
       ]
     },
     "list": {
@@ -301,9 +303,10 @@
         "path": { "type": "string" },
         "total": { "type": ["integer", "null"], "minimum": 0 },
         "resumable": { "type": "boolean" },
-        "connections": { "type": "integer", "minimum": 0 }
+        "connections": { "type": "integer", "minimum": 0 },
+        "country": { "description": "The ISO 3166-1 code of the server's country, from the address table UDM ships; left out when unknown, private or reached through a proxy.", "type": "string", "pattern": "^[A-Z]{2}$" }
       },
-      "examples": [{ "op": "started", "id": 7, "url": "https://example.com/a.iso", "path": "D:\\Downloads\\a.iso", "total": 1048576, "resumable": true, "connections": 4 }]
+      "examples": [{ "op": "started", "id": 7, "url": "https://example.com/a.iso", "path": "D:\\Downloads\\a.iso", "total": 1048576, "resumable": true, "connections": 4, "country": "US" }]
     },
     "progress": {
       "description": "Sent a few times a second while a download runs.",

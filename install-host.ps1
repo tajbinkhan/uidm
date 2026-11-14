@@ -5,10 +5,14 @@
 #
 #   .\install-host.ps1
 #   .\install-host.ps1 -NoShortcut
-#   .\install-host.ps1 -ExtensionId <id>   # only if you changed the manifest key
+#   .\install-host.ps1 -ExtensionId <id>[,<id>...]   # only if you changed the manifest key
 #
-# The extension's manifest carries a fixed public key, so its ID is always
-# epmjakacaejhdhldkpbjnakhfmjjbhfm and you do not need to pass one. Firefox
+# The extension's manifest carries a fixed public key, so the unpacked
+# extension's ID is always epmjakacaejhdhldkpbjnakhfmjjbhfm and you do not
+# need to pass one. The host lets in every ID in $ExtensionId: the unpacked
+# one first, then the ones the stores give their copies, which must match
+# CHROMIUM_EXTENSION_IDS in crates\infrastructure\src\browsers.rs (a test
+# there checks it; docs\extension-stores.md). Firefox
 # loads a copy of the extension with its own manifest; its ID is
 # udm@udm.local. In the repository the two are extension\chromium and
 # extension\firefox; a portable copy has them as extension and firefox.
@@ -21,13 +25,16 @@
 # there, so this script is only needed to register again or to -Uninstall.
 
 param(
-    [string]$ExtensionId = "epmjakacaejhdhldkpbjnakhfmjjbhfm",
+    [string[]]$ExtensionId = @("epmjakacaejhdhldkpbjnakhfmjjbhfm"),
     [string]$FirefoxId = "udm@udm.local",
     [switch]$NoShortcut,
     [switch]$Uninstall
 )
 
 $ErrorActionPreference = "Stop"
+# "-ExtensionId a,b" reaches the script as one string under powershell -File,
+# so split each on commas.
+$ExtensionId = @($ExtensionId | ForEach-Object { $_ -split "," } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $root = $PSScriptRoot
 $release = Join-Path $root "target\release"
 $hostName = "com.udm.host"
@@ -89,14 +96,14 @@ if ($exes | Where-Object { -not (Test-Path $_) }) {
     }
 }
 
-# The host manifest points the browser at udm-host.exe and names the only
-# extension allowed to launch it.
+# The host manifest points the browser at udm-host.exe and names the
+# extensions allowed to launch it.
 $manifest = [ordered]@{
     name            = $hostName
     description     = "UDM download manager native-messaging host"
     type            = "stdio"
     path            = Join-Path $release "udm-host.exe"
-    allowed_origins = @("chrome-extension://$ExtensionId/")
+    allowed_origins = @($ExtensionId | ForEach-Object { "chrome-extension://$_/" })
 }
 New-Item -ItemType Directory -Force (Split-Path $manifestPath) | Out-Null
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -Path $manifestPath -Encoding utf8
@@ -139,7 +146,7 @@ Write-Host ""
 Write-Host "Next: load the extension once."
 Write-Host "  1. Open chrome://extensions (or edge://extensions) and turn on Developer mode."
 Write-Host "  2. Click 'Load unpacked' and choose $chromiumExtension."
-Write-Host "  3. Its ID should read $ExtensionId."
+Write-Host "  3. Its ID should read $($ExtensionId[0])."
 Write-Host "In Firefox, open about:debugging, choose This Firefox, then Load Temporary Add-on,"
 Write-Host "pick $(Join-Path $firefoxExtension 'manifest.json'), and allow it to access all websites."
 if ($portable) {

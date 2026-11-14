@@ -59,7 +59,11 @@ under [Build](building.md#build), run this from this folder:
 That builds the programs if needed, registers UDM with Chrome, Edge and
 Firefox, and adds **UDM** to the Start menu.
 
-Either way, load the extension once:
+Either way, add the extension to the browser once. It is not in the Chrome
+Web Store or on Firefox Add-ons yet. Once it is listed there, this page links
+to it and installing it from the store takes the place of the steps below;
+UDM then lets in both the store's copy and the one loaded by hand. Until then,
+load it by hand:
 
 1. Open `chrome://extensions` (or `edge://extensions`) and turn on
    **Developer mode**.
@@ -69,7 +73,9 @@ Either way, load the extension once:
 3. Check that its ID reads `epmjakacaejhdhldkpbjnakhfmjjbhfm`. The manifest
    carries a fixed public key, so the ID is the same on every machine.
 
-After updating, reload the extension on the extensions page. It asks for
+After updating, reload the extension on the extensions page. What it does
+with each permission, and that nothing it reads leaves your computer, is in
+its [privacy policy](privacy.md). It asks for
 `webRequest` (to send downloads started by a form as the same POST, to send
 UDM the browser's whole request, and to notice the videos a page loads),
 `webNavigation` (to find the frame a link in an `about:blank` frame belongs
@@ -81,15 +87,15 @@ content script runs on every page for the video button; it does nothing
 until a video plays.
 
 For streamed videos to end up as one `.mp4`, install
-[ffmpeg](https://ffmpeg.org/): **Install ffmpeg** in **Options > General**
+[ffmpeg](https://ffmpeg.org/): **Install ffmpeg** in **Options > Tools**
 downloads the official build the yt-dlp project makes and checks it against
 its published checksum (on Windows and Linux), or put `ffmpeg.exe` on `PATH`,
-or choose it in **Options > General**. Without it UDM still downloads
+or choose it in **Options > Tools**. Without it UDM still downloads
 streams, as `.ts` files or as separate video and audio files.
 
 Videos on YouTube, Facebook, Instagram, Vimeo and the other sites
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) reads need yt-dlp as well:
-**Install yt-dlp** in **Options > General** downloads yt-dlp's own release
+**Install yt-dlp** in **Options > Tools** downloads yt-dlp's own release
 for your system and checks it the same way, and **Keep yt-dlp up to date**
 updates it once a day. `winget install yt-dlp.yt-dlp` installs it with
 ffmpeg and Deno too, which yt-dlp uses to read YouTube's player; Setup offers
@@ -160,7 +166,8 @@ the app: in Finder, right-click UDM, **Show Package Contents**, then
 `Contents/Resources/extension` (Chrome, Edge, Brave) or
 `Contents/Resources/firefox`. In Chrome's **Load unpacked** dialog,
 Cmd+Shift+G and `/Applications/UDM.app/Contents/Resources/extension` gets
-there directly.
+there directly. Safari's extension comes inside the app; [Safari](#safari)
+says how to turn it on.
 
 ## Linux
 
@@ -203,8 +210,9 @@ file that differs, is missing or is extra, and fails if there is any; the
 extension's tests, CI and the package builds run it. Setup and `install-host.ps1` register UDM with
 Firefox (under
 `HKCU\Software\Mozilla\NativeMessagingHosts`, with a host manifest that names
-that ID). Until the extension is signed by Mozilla, load it for each Firefox
-session:
+that ID). Once the extension is listed on Firefox Add-ons, install it from
+there: Mozilla signs that copy, so it stays installed when Firefox closes, and
+it keeps the same ID. Until then, load it for each Firefox session:
 
 1. Open `about:debugging`, choose **This Firefox**, then **Load Temporary
    Add-on...**, and pick `manifest.json` in the `firefox` folder.
@@ -215,7 +223,8 @@ session:
 
 Known gaps in Firefox:
 
-- A temporary add-on is removed when Firefox closes.
+- A temporary add-on is removed when Firefox closes, until the signed copy
+  is listed on Firefox Add-ons.
 - Firefox has no way to hide its download panel, as Chrome's `downloads.ui`
   does. It needs it less: it lets the extension cancel a download at its
   headers (`webRequestBlocking`, which only the Firefox copy asks for), so
@@ -224,6 +233,38 @@ Known gaps in Firefox:
 
 These were checked against a stand-in for the browser API in the extension's
 tests, not in a running Firefox.
+
+## Safari
+
+Safari 16.4 or later on macOS gets the extension from UDM.app itself: the
+disk image's app holds it as an app extension (`Contents/PlugIns/UDM
+Extension.appex`), made by Xcode's converter from `extension/safari`, a copy
+of the extension with its own manifest (`node installer/make-safari.js` makes
+it from `extension/chromium` and `extension/safari.json`, and
+`--check` tells whether it is current, as for Firefox). To turn it on:
+
+1. Open UDM once from **Applications**, so macOS finds the extension in it.
+2. UDM is signed ad hoc, not by a registered developer, so Safari hides the
+   extension until you allow unsigned extensions: turn on **Show features
+   for web developers** in **Safari > Settings > Advanced**, then choose
+   **Develop > Allow Unsigned Extensions** (in Safari 17 and later it is also
+   under **Safari > Settings > Developer**). Safari asks for your password,
+   and turns it off again each time it quits.
+3. In **Safari > Settings > Extensions**, tick **UDM**, then allow it on
+   every website (**Edit Websites...**, or **Always Allow on Every Website**
+   when Safari asks).
+
+Safari has no downloads API, so the extension cannot take a download the
+browser started. Instead it takes a link to a file as it is clicked, when
+the file's type is in UDM's captured types; other links open as usual. The
+context menu, **Download all links** and the popup work as in Chrome, and
+the video button as far as Safari lets the extension see a page's requests.
+Safari's native messages go to the app extension, not to a program Safari
+starts, and the app extension cannot send the extension anything of its
+own, so the extension keeps a request out that the app extension answers
+when UDM has news. The app extension runs `udm-host` inside Safari's
+sandbox, where it cannot start the daemon: UDM must already be running.
+[Known gaps](known-gaps.md) lists the rest.
 
 ---
 

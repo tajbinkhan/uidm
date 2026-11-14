@@ -284,8 +284,19 @@ fn open_append(path: &Path) -> io::Result<File> {
 }
 
 /// `text` with the password of every `scheme://user:password@host` in it
-/// replaced by `***`. The user name and the rest of the address stay.
+/// replaced by `***` (the user name and the rest of the address stay), and
+/// every magnet link without its trackers and peers, whose addresses may
+/// carry a private tracker's passkey.
 pub fn redact(text: &str) -> Cow<'_, str> {
+    match redact_passwords(text) {
+        Cow::Borrowed(text) => udm_domain::torrent::scrub_magnets(text),
+        Cow::Owned(text) => Cow::Owned(udm_domain::torrent::scrub_magnets(&text).into_owned()),
+    }
+}
+
+/// `text` with the password of every `scheme://user:password@host` in it
+/// replaced by `***`.
+fn redact_passwords(text: &str) -> Cow<'_, str> {
     let mut out = String::new();
     let mut done = 0;
     let mut from = 0;
@@ -335,6 +346,13 @@ mod tests {
             "proxy http://u:***@proxy:8080 then socks5://v:***@[::1]:1080"
         );
         assert_eq!(redact("ftp://bob:pw@h"), "ftp://bob:***@h");
+    }
+
+    #[test]
+    fn redact_hides_magnet_links_trackers() {
+        let line = "add url=magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=A&tr=https://t.example/announce/PASSKEY1 done";
+        let out = redact(line);
+        assert!(!out.contains("PASSKEY1") && out.contains("dn=A") && out.ends_with(" done"), "{out}");
     }
 
     #[test]

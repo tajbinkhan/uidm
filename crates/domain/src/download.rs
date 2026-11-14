@@ -14,6 +14,7 @@ use crate::id::{DownloadId, QueueId};
 use crate::media::MediaChoice;
 use crate::queue::WhenDone;
 use crate::settings::{Duplicate, FileExists, Settings, SPEED_LIMIT_RANGE_KBPS};
+use crate::torrent::{FileSelection, TorrentEntry};
 use serde::{Deserialize, Serialize};
 
 fn yes() -> bool {
@@ -73,6 +74,10 @@ pub struct Answer {
     /// not write there itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub elevate: bool,
+    /// For a torrent: the files to download; missing keeps the choice it
+    /// has (every file, unless chosen before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<FileSelection>,
 }
 
 impl Answer {
@@ -92,6 +97,7 @@ impl Answer {
             remember_duplicate: false,
             remember_queue: false,
             elevate: false,
+            files: None,
         }
     }
 }
@@ -212,6 +218,15 @@ pub struct Download {
     /// file is moved there after a UAC prompt.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub elevate: bool,
+    /// For a torrent: the files to download; missing downloads every file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_files: Option<FileSelection>,
+    /// A `.torrent` file's contents, base64-encoded, from a client that read
+    /// it from disk (`udm-cli add file.torrent`). The daemon keeps the file
+    /// and makes `url` the torrent's magnet link before it takes the
+    /// download; `url` may be anything until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_file: Option<String>,
 }
 
 /// How the browser reaches the web, as its extension reads it
@@ -521,6 +536,15 @@ pub struct DownloadEntry {
     /// checked, so a synchronizing queue can tell whether it changed since.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validator: Option<Validator>,
+    /// The country of the server its last start connected to, from the
+    /// address table UDM ships; `None` when unknown, private or reached
+    /// through a proxy.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::country::read_lenient")]
+    pub country: Option<crate::country::CountryCode>,
+    /// What a torrent download keeps besides: its info hash, files, chosen
+    /// files, phase and seeding. `None` for every other download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent: Option<TorrentEntry>,
 }
 
 /// What a server says identifies one version of a file: its size, ETag and
@@ -618,7 +642,7 @@ pub enum DownloadError {
     StartedWhileSaving,
     #[error("Only a finished download whose file is still there can be converted.")]
     NotConvertible,
-    #[error("Converting needs ffmpeg. Install it, or choose it in Options > General.")]
+    #[error("Converting needs ffmpeg. Install it, or choose it in Options > Tools.")]
     NoFfmpeg,
     #[error("download {0} is not waiting to be started")]
     NotWaiting(DownloadId),
@@ -638,6 +662,9 @@ pub enum DownloadError {
     /// It left the list, but its files could not go to the Recycle Bin.
     #[error("Removed {url} from the list, but its files stay: {reason}")]
     FilesStay { url: String, reason: String },
+    /// A torrent's files could not be chosen, or the torrent not used.
+    #[error(transparent)]
+    Torrent(crate::torrent::TorrentError),
 }
 
 /// Why a partial download cannot continue from a new link. The window
@@ -728,6 +755,35 @@ impl DownloadEntry {
         true
     }
 
+    /// Take in what a torrent download's metadata says: its files (keeping
+    /// the files chosen that it still has) and, before it has run, its size.
+    pub fn set_torrent_info(&mut self, info: &crate::torrent::TorrentInfo) {
+        let torrent = self.torrent.get_or_insert_with(|| TorrentEntry::new(info.info_hash));
+        torrent.files = info.files.clone();
+        torrent.selection = torrent.selection.take().and_then(|s| s.within(info.files.len()));
+        if torrent.phase == crate::torrent::TorrentPhase::Metadata {
+            torrent.phase = crate::torrent::TorrentPhase::Checking;
+        }
+        if self.done.is_zero() {
+            self.total = Some(torrent.selected_size());
+        }
+    }
+
+    /// Choose which of a torrent download's files to download. Refused for
+    /// a download that is no torrent or whose files are not known yet.
+    pub fn select_torrent_files(&mut self, files: FileSelection) -> Result<(), crate::torrent::TorrentError> {
+        let torrent = self.torrent.as_mut().ok_or(crate::torrent::TorrentError::NoFiles)?;
+        let count = torrent.files.len();
+        if count == 0 {
+            return Err(crate::torrent::TorrentError::NoFiles);
+        }
+        let files = FileSelection::parse(&files.indexes().collect::<Vec<_>>(), count)?;
+        torrent.selection = Some(files);
+        let size = torrent.selected_size();
+        self.total = Some(size);
+        Ok(())
+    }
+
     /// Take the save-as dialog's answer: the category and description it
     /// gives, and the file name and folder chosen (each keeping the
     /// proposed one when missing). It then waits to be started. Only a
@@ -741,6 +797,13 @@ impl DownloadEntry {
     ) -> Result<(), DownloadError> {
         if !self.status.waits() {
             return Err(DownloadError::NotWaiting(self.id));
+        }
+        // A torrent of one file writes it under the torrent's own name.
+        if let (Some(chosen), Some(fixed)) = (filename, self.torrent.as_ref().and_then(|t| t.files.single_name())) {
+            let chosen = crate::filename::sanitize_filename(chosen).map(FileName::into_string);
+            if chosen.is_some_and(|c| c != fixed) {
+                return Err(DownloadError::Torrent(crate::torrent::TorrentError::NameFixed(fixed.to_string())));
+            }
         }
         let path = if filename.is_none() && folder.is_none() {
             // Keep whatever it already has: a chosen file, a partial file,
@@ -987,8 +1050,13 @@ impl PropertiesPlan {
 
 /// Whether two download addresses name the same file: equal once parsed (so
 /// the case of the scheme and host and a default port do not matter) and with
-/// the fragment, which never reaches the server, dropped.
+/// the fragment, which never reaches the server, dropped. Two magnet links
+/// are the same torrent when their info hashes are equal.
 pub fn same_address(a: &Link, b: &Link) -> bool {
+    let hash = |u: &Link| u.address().and_then(Address::magnet).map(|m| m.info_hash);
+    if let (Some(x), Some(y)) = (hash(a), hash(b)) {
+        return x == y;
+    }
     let key = |u: &Link| match url::Url::parse(u.as_str().trim()) {
         Ok(mut parsed) => {
             parsed.set_fragment(None);
@@ -1035,6 +1103,31 @@ impl Duplicate {
 }
 
 impl Download {
+    /// The same download as a torrent's: its address becomes the torrent's
+    /// magnet link and its name the torrent's. What it asked of the web (its
+    /// cookies, headers, form body, login and stream) goes; where it is saved,
+    /// its queue and its note stay.
+    pub fn into_torrent(self, magnet: &crate::torrent::MagnetLink, name: &str) -> Download {
+        Download {
+            url: Link::from(magnet.to_uri_within(crate::torrent::MAX_MADE_MAGNET)),
+            filename: Some(name.to_string()),
+            referrer: self.referrer,
+            page: self.page,
+            start: self.start,
+            queue: self.queue,
+            folder: self.folder,
+            file_exists: self.file_exists,
+            duplicate: self.duplicate,
+            description: self.description,
+            category: self.category,
+            speed_limit: self.speed_limit,
+            ask: self.ask,
+            elevate: self.elevate,
+            torrent_files: self.torrent_files,
+            ..Download::default()
+        }
+    }
+
     /// How many connections it opens: its own number, brought into
     /// `CONNECTIONS_RANGE`, or `setting` when it has none.
     pub fn connections_or(&self, setting: usize) -> usize {
@@ -1116,6 +1209,12 @@ impl Download {
     /// running download's file cannot be replaced under it, so overwriting
     /// one points at it instead.
     pub fn settle_duplicate(&mut self, old: &DownloadEntry, choice: Duplicate) -> DuplicateStep {
+        // One torrent is one download: the client holds it once, so another
+        // copy is never added, nor does it replace the one there (which would
+        // forget the torrent's kept file and resume data).
+        if self.url.address().is_some_and(Address::is_torrent) {
+            return DuplicateStep::UseExisting;
+        }
         match choice {
             Duplicate::Ask | Duplicate::NewName => {
                 self.file_exists = Some(FileExists::Rename);
@@ -1149,6 +1248,10 @@ pub struct CommandLine {
     /// that starts UDM does this; one that finds it running does not.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quit_after: bool,
+    /// The `.torrent` file given on the command line, read whole: `download`
+    /// is its torrent. It travels as `download`'s `torrent_file`.
+    #[serde(skip)]
+    pub metainfo: Option<Vec<u8>>,
 }
 
 impl CommandLine {

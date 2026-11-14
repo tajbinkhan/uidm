@@ -43,6 +43,15 @@
 </table>
 
 <p align="center">
+  <a href="docs/images/main-light.webp">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/images/main-dark.webp">
+      <img src="docs/images/main-light.webp" alt="UDM's main window: the toolbar, the categories, and a list of downloads with two running at 2.7 and 5.3 MB/s, one queued and one interrupted" width="840">
+    </picture>
+  </a>
+</p>
+
+<p align="center">
   <a href="https://github.com/tajbinkhan/UDM/releases/latest"><img src="https://img.shields.io/github/v/release/tajbinkhan/UDM?logo=github" alt="Latest release"></a>
   <a href="https://github.com/tajbinkhan/UDM/releases"><img src="https://img.shields.io/github/downloads/tajbinkhan/UDM/total?logo=github" alt="Downloads"></a>
   <a href="https://github.com/tajbinkhan/UDM/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/tajbinkhan/UDM/build.yml?logo=github&label=ci" alt="CI"></a>
@@ -50,8 +59,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/tajbinkhan/UDM" alt="MIT license"></a>
 </p>
 
-| 🚀 [Download](#download) | ⚡ [Why switch](#why-switch-from-idm) | ✨ [What it does](#what-it-does) | 📜 [Help pages](docs/README.md) | 🛠️ [For developers](#for-developers) |
-| --- | --- | --- | --- | --- |
+| 🚀 [Download](#download) | ⚡ [Why switch](#why-switch-from-idm) | 🖼️ [Screenshots](#screenshots) | ✨ [What it does](#what-it-does) | 📜 [Help pages](docs/README.md) | 🛠️ [For developers](#for-developers) |
+| --- | --- | --- | --- | --- | --- |
 
 ## Why switch from IDM?
 
@@ -79,6 +88,30 @@ ranges, UDM took 3.3 s and IDM 16.1 s. When the server was slow to answer, UDM t
 <p align="center">
   <img src="docs/bench/results/2026-11-12-windows-idm/chart.svg" alt="Median seconds to download a 64 MiB file in eight server scenarios, for UDM, IDM, curl and wget" width="600">
 </p>
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center" width="50%"><a href="docs/images/save-as-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/save-as-dark.webp"><img src="docs/images/save-as-light.webp" alt="The Download File Info dialog with a file's address, category, save-as path and size" width="400"></picture></a><br><sub><b>Download File Info</b>: the name, category and folder of a caught download</sub></td>
+    <td align="center" width="50%"><a href="docs/images/download-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/download-dark.webp"><img src="docs/images/download-light.webp" alt="A download's window showing its progress and its connections" width="400"></picture></a><br><sub><b>The download window</b>, with its connections at work</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="50%"><a href="docs/images/video-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/video-dark.webp"><img src="docs/images/video-light.webp" alt="A video in the browser with UDM's Download this video button and its list of qualities and subtitles" width="400"></picture></a><br><sub><b>Download this video</b> over a player in the browser, with each quality</sub></td>
+    <td align="center" width="50%"><a href="docs/images/scheduler-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/scheduler-dark.webp"><img src="docs/images/scheduler-light.webp" alt="The Scheduler with the main queue set to start at 11:00 PM daily and shut down when done" width="400"></picture></a><br><sub><b>The Scheduler</b>: a queue that starts at 11 PM and shuts down when done</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="50%"><a href="docs/images/options-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/options-dark.webp"><img src="docs/images/options-light.webp" alt="The General page of UDM's Options" width="400"></picture></a><br><sub><b>Options</b>, with the settings IDM users know</sub></td>
+    <td align="center" width="50%"><a href="docs/images/linux-light.webp"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/linux-dark.webp"><img src="docs/images/linux-light.webp" alt="UDM's main window running on Linux, with two downloads in progress" width="400"></picture></a><br><sub><b>On Linux</b>: the real window, in a plain X11 session</sub></td>
+  </tr>
+</table>
+
+Light or dark follows your system here, as in UDM. Step by step:
+[your first download](docs/guides/first-download.md) ·
+[catch browser downloads](docs/guides/catch-browser-downloads.md) ·
+[download overnight](docs/guides/download-overnight.md) ·
+[a video from a page](docs/guides/video-from-a-page.md) ·
+[resume a broken download](docs/guides/resume-a-broken-download.md)
 
 ## Download
 
@@ -124,7 +157,7 @@ To save streamed videos as one `.mp4`, install [ffmpeg](https://ffmpeg.org/). Fo
 Facebook, Instagram, Vimeo, playlists and the other sites it reads, also install
 [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
-The easy way is **Options > General**. Its **Install yt-dlp** and **Install ffmpeg** buttons
+The easy way is **Options > Tools**. Its **Install yt-dlp** and **Install ffmpeg** buttons
 download the official builds. They also check each build against its published checksum (for
 ffmpeg, on Windows and Linux). On Windows, `winget install yt-dlp.yt-dlp` installs both, and Setup
 offers to run it for you ([more](docs/install.md#windows)).
@@ -172,7 +205,13 @@ settings, download list and half-finished downloads move over on the first start
   17 languages.
 - **No ads, no trial, no account**. Free and open source.
 
-Step by step: [install](docs/install.md) · [using UDM](docs/using-udm.md) ·
+Guides: [your first download](docs/guides/first-download.md) ·
+[catch browser downloads](docs/guides/catch-browser-downloads.md) ·
+[download overnight](docs/guides/download-overnight.md) ·
+[a video from a page](docs/guides/video-from-a-page.md) ·
+[resume a broken download](docs/guides/resume-a-broken-download.md)
+
+In depth: [install](docs/install.md) · [using UDM](docs/using-udm.md) ·
 [what the extension takes](docs/browser-capture.md) ·
 [videos, batches and the site grabber](docs/streams-batches-and-grabber.md) ·
 [queues and the scheduler](docs/queues-and-scheduler.md) · [all help pages](docs/README.md)

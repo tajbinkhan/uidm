@@ -57,6 +57,13 @@ pub fn plan(state: &AppState, action: ListAction) -> Plan {
         ListAction::StartQueue { id } => p.commands.push(Command::StartQueue { id: QueueId::new(id.0) }),
         ListAction::StopQueue { id } => p.commands.push(Command::StopQueue { id: QueueId::new(id.0) }),
         ListAction::SelectAll => p.messages.push(UiMessage::SelectAll),
+        ListAction::StopSeeding => {
+            p.commands.extend(
+                selected()
+                    .filter(|e| crate::projection::torrent::is_seeding(e))
+                    .map(|e| Command::StopSeeding { id: e.id }),
+            );
+        }
     }
     p
 }
@@ -113,6 +120,25 @@ mod tests {
         apply(&mut s, UiMessage::Daemon { event: Box::new(Event::Settings { settings }), at: Instant::now(), unix: 0 });
         let p = plan(&s, ListAction::Delete);
         assert!(p.messages.is_empty() && p.commands.len() == 1);
+    }
+
+    #[test]
+    fn stop_seeding_stops_the_seeding_torrents_only() {
+        let mut s = state(&[Status::Done, Status::Done, Status::Downloading]);
+        for (id, phase) in
+            [(1, udm_domain::torrent::TorrentPhase::Seeding), (3, udm_domain::torrent::TorrentPhase::Seeding)]
+        {
+            let mut e = s.table.get(DownloadId::new(id)).cloned().unwrap();
+            let mut t = udm_domain::torrent::TorrentEntry::new(udm_domain::torrent::InfoHash::from_bytes([1; 20]));
+            t.phase = phase;
+            e.torrent = Some(t);
+            apply(
+                &mut s,
+                UiMessage::Daemon { event: Box::new(Event::Updated { item: e }), at: Instant::now(), unix: 0 },
+            );
+        }
+        let p = plan(&s, ListAction::StopSeeding);
+        assert!(matches!(p.commands[..], [Command::StopSeeding { id }] if id == DownloadId::new(1)));
     }
 
     #[test]

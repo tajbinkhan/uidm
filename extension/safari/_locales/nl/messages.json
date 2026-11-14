@@ -1,0 +1,341 @@
+{
+  "extDescription": {
+    "message": "Browserdownloads naar de downloadmanager UDM sturen."
+  },
+  "downloadWithUdm": {
+    "message": "Downloaden met UDM"
+  },
+  "downloadLaterWithUdm": {
+    "message": "Later downloaden met UDM"
+  },
+  "downloadGalleryWithUdm": {
+    "message": "Galerij downloaden met UDM"
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "Alle links downloaden met UDM"
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "De geselecteerde links downloaden met UDM"
+  },
+  "udmDisconnected": {
+    "message": "UDM is niet meer verbonden"
+  },
+  "captureDownloads": {
+    "message": "Downloads overnemen"
+  },
+  "captureDownloadsTitle": {
+    "message": "Downloads die de browser start naar UDM sturen"
+  },
+  "captureInTab": {
+    "message": "Overnemen in dit tabblad"
+  },
+  "captureInTabTitle": {
+    "message": "Schakel overname uit om de downloads van dit tabblad aan de browser over te laten"
+  },
+  "captureOffInTab": {
+    "message": "Uit in dit tabblad"
+  },
+  "statusConnected": {
+    "message": "Verbonden. Downloads die je in de browser start, gaan naar UDM."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Verbonden. Overname is uitgeschakeld, dus de browser houdt zijn eigen downloads."
+  },
+  "statusNotConnected": {
+    "message": "Niet verbonden met UDM. Downloads blijven in de browser."
+  },
+  "statusNotConnectedReason": {
+    "message": "Niet verbonden met UDM: $REASON$. Downloads blijven in de browser.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Je volgende download geeft $NAME$ een nieuwe link.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Niet meer wachten"
+  },
+  "skipNextDownload": {
+    "message": "Volgende download overslaan"
+  },
+  "skipNextDownloadTitle": {
+    "message": "De volgende download in de browser laten"
+  },
+  "dontSkip": {
+    "message": "Niet overslaan"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "De volgende download blijft in de browser"
+  },
+  "allLinks": {
+    "message": "Alle links op deze pagina"
+  },
+  "allLinksTitle": {
+    "message": "De links van deze pagina in UDM weergeven om te kiezen welke je wilt downloaden"
+  },
+  "videoButton": {
+    "message": "Videoknop"
+  },
+  "videoButtonTitle": {
+    "message": "Een downloadknop boven video's die in de browser worden afgespeeld"
+  },
+  "videoButtonOnSite": {
+    "message": "op $SITE$",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Plak een download-URL"
+  },
+  "download": {
+    "message": "Downloaden"
+  },
+  "noDownloads": {
+    "message": "Nog geen downloads."
+  },
+  "stateQueued": {
+    "message": "In wachtrij"
+  },
+  "stateDownloading": {
+    "message": "Downloaden"
+  },
+  "stateDone": {
+    "message": "Voltooid"
+  },
+  "stateFailed": {
+    "message": "Mislukt"
+  },
+  "stateCanceled": {
+    "message": "Geannuleerd"
+  },
+  "stateInterrupted": {
+    "message": "Onderbroken"
+  },
+  "stateConfirming": {
+    "message": "Wacht op jou in UDM"
+  },
+  "stateWaiting": {
+    "message": "Wacht om te starten"
+  },
+  "threatFound": {
+    "message": "Bedreiging gevonden"
+  },
+  "start": {
+    "message": "Starten"
+  },
+  "cancel": {
+    "message": "Annuleren"
+  },
+  "retry": {
+    "message": "Opnieuw proberen"
+  },
+  "remove": {
+    "message": "Verwijderen"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "Deze video downloaden"
+  },
+  "videoButtonHelp": {
+    "message": "Help bij de videoknop"
+  },
+  "videoButtonClose": {
+    "message": "Sluiten voor deze video"
+  },
+  "lookingForVideo": {
+    "message": "Video zoeken..."
+  },
+  "subtitles": {
+    "message": "Ondertitels:"
+  },
+  "videoProtected": {
+    "message": "Deze video is beveiligd met DRM, dus UDM downloadt hem niet."
+  },
+  "streamProtected": {
+    "message": "Beveiligd met DRM; UDM downloadt dit niet."
+  },
+  "udmNotConnected": {
+    "message": "UDM is niet actief of niet verbonden."
+  },
+  "noVideoFound": {
+    "message": "Nog geen video gevonden. Laat hem even afspelen en probeer het dan opnieuw."
+  },
+  "sentToUdm": {
+    "message": "Naar UDM verzonden."
+  },
+  "couldNotReachUdm": {
+    "message": "Kan UDM niet bereiken."
+  },
+  "hlsStream": {
+    "message": "HLS-stream"
+  },
+  "dashStream": {
+    "message": "DASH-stream"
+  },
+  "hdsStream": {
+    "message": "HDS-stream"
+  },
+  "youtubeVideo": {
+    "message": "YouTube-video"
+  },
+  "facebookVideo": {
+    "message": "Facebook-video"
+  },
+  "instagramVideo": {
+    "message": "Instagram-video"
+  },
+  "vimeoVideo": {
+    "message": "Vimeo-video"
+  },
+  "mediaNoAnswer": {
+    "message": "UDM heeft niet geantwoord."
+  },
+  "soundOnly": {
+    "message": "Alleen geluid ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "$TYPE$-video",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "$TYPE$-audio",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "Video"
+  },
+  "audioFile": {
+    "message": "Audio"
+  },
+  "takeoverFailed": {
+    "message": "UDM kan de download niet overnemen"
+  },
+  "takeoverNotConnected": {
+    "message": "UDM is niet actief of niet verbonden, dus de browser downloadt $FILE$.",
+    "placeholders": {
+      "file": { "content": "$1" }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM kan $FILE$ niet starten ($REASON$), dus de browser downloadt het.",
+    "placeholders": {
+      "file": { "content": "$1" },
+      "reason": { "content": "$2" }
+    }
+  },
+  "dontShowAgain": {
+    "message": "Niet meer weergeven"
+  },
+  "takeoverClickToStop": {
+    "message": "Klik op deze melding om deze niet meer weer te geven."
+  },
+  "downloadLastVideo": {
+    "message": "De laatste video downloaden met UDM"
+  },
+  "recentVideos": {
+    "message": "Recente video's (UDM)"
+  },
+  "downloadPageWithUdm": {
+    "message": "Pagina downloaden met UDM"
+  },
+  "noLinksFound": {
+    "message": "Geen links gevonden op deze pagina."
+  },
+  "noSelectedLinksFound": {
+    "message": "Geen links gevonden in de selectie."
+  },
+  "linksUnreadable": {
+    "message": "De browser staat UDM niet toe de links van deze pagina te lezen."
+  },
+  "cannotReachUdm": {
+    "message": "Kan UDM niet bereiken. Is UDM actief?"
+  },
+  "cannotReachUdmReason": {
+    "message": "Kan UDM niet bereiken ($REASON$).",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "De browser downloadt het in plaats daarvan."
+  },
+  "browserDownloadsHeading": {
+    "message": "Downloaden in de browser"
+  },
+  "sendToUdm": {
+    "message": "Naar UDM sturen"
+  },
+  "pageVideo": {
+    "message": "Video op deze pagina"
+  },
+  "playlistTitled": {
+    "message": "Afspeellijst: $TITLE$ ($COUNT$ video's)",
+    "placeholders": {
+      "title": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  },
+  "playlistVideos": {
+    "message": "Afspeellijst ($COUNT$ video's)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "chooseVideos": {
+    "message": "Video's kiezen in UDM..."
+  }
+}

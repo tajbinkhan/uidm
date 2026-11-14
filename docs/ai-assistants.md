@@ -16,7 +16,7 @@ you ask for do. Everything stays on your computer.
 | Tool | What it does |
 | --- | --- |
 | `list_downloads` | Lists the downloads (id, file name, status, bytes done and in all, address, saved path, error) and the queues (id, name, started or not, the downloads in it). It can keep only one status, such as `failed`. |
-| `add_download` | Adds a link (`http`, `https`, `ftp` or `ftps`). Without a queue it starts now; with one (by name or id) it waits there until that queue starts. It can take a folder (a full path) and a file name. No dialog opens, and an address already in the list is downloaded again under a numbered name. |
+| `add_download` | Adds a link (`http`, `https`, `ftp` or `ftps`, or a torrent's `magnet:` link). Without a queue it starts now; with one (by name or id) it waits there until that queue starts. It can take a folder (a full path) and a file name. No dialog opens, and an address already in the list is downloaded again under a numbered name. |
 | `pause_download` | Stops a running download and keeps what it has, or with `all`, stops every running download and started queue. |
 | `resume_download` | Starts a stopped, failed or waiting download again from where it stopped, or with `all`, everything a pause stopped. A stopped download goes on as a new download with a new id, as Retry does in the window. |
 | `remove_download` | Takes a download out of the list. Its file stays on disk unless `delete_files` is `true`. |

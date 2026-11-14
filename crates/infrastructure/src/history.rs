@@ -205,6 +205,8 @@ mod tests {
             from_browser: false,
             on_done: None,
             validator: None,
+            country: None,
+            torrent: None,
         }
     }
 
@@ -231,6 +233,23 @@ mod tests {
         assert_eq!(h.items[0].page.as_deref(), Some("https://x/list"));
         assert_eq!(h.items[1].referrer.as_deref(), Some("https://x/frame"));
         assert_eq!(h.items[1].page.as_deref(), Some("https://x/article"));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_country_that_is_not_one_loads_as_none() {
+        let path = temp_path("country.json");
+        let mut odd = serde_json::to_value(entry(1, Status::Done)).unwrap();
+        odd["country"] = "Germany".into();
+        let mut number = serde_json::to_value(entry(2, Status::Done)).unwrap();
+        number["country"] = 49.into();
+        let mut good = serde_json::to_value(entry(3, Status::Done)).unwrap();
+        good["country"] = "de".into();
+        let history = serde_json::json!({ "next_id": 4, "items": [odd, number, good] });
+        fs::write(&path, serde_json::to_vec(&history).unwrap()).unwrap();
+        let h = History::load(&path).unwrap();
+        let countries: Vec<_> = h.items.iter().map(|e| e.country.map(|c| c.to_string())).collect();
+        assert_eq!(countries, [None, None, Some("DE".to_string())], "the rows load all the same");
         fs::remove_file(&path).ok();
     }
 

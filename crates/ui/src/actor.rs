@@ -60,6 +60,12 @@ pub enum Inbox {
     /// The Download File Info dialog's answer.
     Answer {
         answer: Box<udm_domain::download::Answer>,
+        reply: Sender<Result<(), contract::InvokeError>>,
+    },
+    /// Whether Download File Info of download `id` gives a folder alone,
+    /// for a torrent of one file.
+    FolderOnly {
+        id: DownloadId,
         reply: Sender<bool>,
     },
     /// Remove the downloads Confirm deletion asked about, and with
@@ -80,6 +86,13 @@ pub enum Inbox {
         id: DownloadId,
         bytes_per_sec: Option<u64>,
         remember: bool,
+    },
+    /// Tick or untick a torrent download's files in its download window.
+    ChooseTorrentFiles {
+        id: DownloadId,
+        indexes: Vec<usize>,
+        chosen: bool,
+        reply: Sender<Result<(), contract::InvokeError>>,
     },
     /// A progress window's Options on completion.
     OnDone {
@@ -315,6 +328,8 @@ pub struct Ports {
     pub window_files: Arc<dyn WindowFiles>,
     /// Registering UDM with the browsers.
     pub browsers: Arc<dyn BrowserRegistry>,
+    /// The network adapters, for Options.
+    pub adapters: Arc<dyn udm_domain::ports::NetworkAdapters>,
     /// The theme files.
     pub themes: Arc<dyn ThemeFiles>,
     /// Problem reports.
@@ -741,7 +756,11 @@ impl Actor {
     /// offered in Add URL.
     fn clipboard_text(&mut self, text: &str) {
         let Some(settings) = self.state.settings.as_ref().filter(|s| s.clipboard_monitor) else { return };
-        let Some(url) = udm_domain::batch::clipboard_link(text, &settings.capture_types) else { return };
+        let Some(url) =
+            udm_domain::batch::clipboard_link(text, &settings.capture_types, settings.torrents.catch_torrent_files)
+        else {
+            return;
+        };
         let url = url.to_string();
         if self.clipboard_last.as_deref() == Some(url.as_str()) {
             return;
@@ -806,6 +825,15 @@ impl Actor {
         thread::spawn(move || {
             let read = read_browsers(&*registry, &added);
             let _ = outbox.send(Inbox::Ui(UiMessage::BrowsersRead(Some(Box::new(read)))));
+        });
+    }
+
+    /// Read the network adapters on a worker.
+    fn read_adapters(&mut self) {
+        let (outbox, adapters) = (self.outbox.clone(), Arc::clone(&self.ports.adapters));
+        thread::spawn(move || {
+            let read = adapters.list();
+            let _ = outbox.send(Inbox::Ui(UiMessage::AdaptersRead(read)));
         });
     }
 
@@ -1120,12 +1148,27 @@ impl Actor {
                 tracing::info!(window = %label, "window subscribed");
                 // Options shows the tools, remote control and the browsers.
                 if label == Label::Options {
+                    apply(&mut self.state, UiMessage::OptionsOpened);
                     self.send(Command::ListTools);
                     self.send(Command::RemoteStatus);
                     self.read_browsers();
+                    self.read_adapters();
                 }
                 if let Label::Properties(id) = label {
                     self.read_type_name(id);
+                }
+                // A torrent's windows list its files, which rows do not carry.
+                if let Label::SaveAs(id) | Label::Download(id) = label {
+                    let torrent = self.state.table.get(id).and_then(|e| e.torrent.as_ref());
+                    let known = torrent.is_some_and(|t| t.phase != udm_domain::torrent::TorrentPhase::Metadata);
+                    let asked = self.state.files_asked.contains(&id) || self.state.files_missing.contains(&id);
+                    if known
+                        && !asked
+                        && !self.state.torrent_info.contains_key(&id)
+                        && self.send(Command::TorrentFiles { id })
+                    {
+                        apply(&mut self.state, UiMessage::FilesAsked(id));
+                    }
                 }
                 self.subscribers.insert(label, Subscriber { channel, seq: 0, last: None, look: None });
                 self.update_wake_watch();
@@ -1183,13 +1226,25 @@ impl Actor {
                     let _ = r.send(sent);
                 }
             }
-            Inbox::Answer { answer, reply } => {
+            Inbox::Answer { mut answer, reply } => {
                 let id = answer.id;
+                // A torrent's ticked files; none ticked sends nothing.
+                if let Some(known) = self.state.torrent_info.get(&id) {
+                    let picks = crate::torrents::picks_of(&self.state, id);
+                    match crate::torrents::answer_files(&known.info, picks.as_ref()) {
+                        Ok(files) => answer.files = files,
+                        Err(e) => {
+                            let text = crate::errors::text::torrent(self.lang(), &e);
+                            let _ = reply.send(Err(crate::errors::invalid_text(text)));
+                            return;
+                        }
+                    }
+                }
                 let sent = self.send(udm_application::daemon::Command::Confirm(*answer));
                 if sent {
                     apply(&mut self.state, UiMessage::Answered(id));
                 }
-                let _ = reply.send(sent);
+                let _ = reply.send(if sent { Ok(()) } else { Err(crate::errors::offline(self.lang())) });
             }
             Inbox::Remove { delete_files, dont_ask } => {
                 for c in actions::remove(&self.state, delete_files) {
@@ -1229,6 +1284,24 @@ impl Actor {
             }
             Inbox::OnDone { id, on_done } => {
                 self.send(Command::SetOnDone { id, on_done });
+            }
+            Inbox::FolderOnly { id, reply } => {
+                let _ = reply.send(crate::torrents::folder_only(&self.state, id));
+            }
+            Inbox::ChooseTorrentFiles { id, indexes, chosen, reply } => {
+                let lang = self.lang();
+                let result = match crate::torrents::choose(&self.state, id, &indexes, chosen) {
+                    Ok(files) => {
+                        if self.send(Command::SelectTorrentFiles { id, files: files.clone() }) {
+                            apply(&mut self.state, UiMessage::TorrentChosen { id, files });
+                            Ok(())
+                        } else {
+                            Err(crate::errors::offline(lang))
+                        }
+                    }
+                    Err(e) => Err(crate::errors::invalid_text(crate::errors::text::torrent(lang, &e))),
+                };
+                let _ = reply.send(result);
             }
             Inbox::OpenWindow(kind) => {
                 let label = match kind {
@@ -1327,10 +1400,20 @@ impl Actor {
                 let result = match self.state.settings.as_ref().map(|s| crate::options::settings(&draft, s)) {
                     None => Err(crate::errors::offline(lang)),
                     Some(Err(e)) => Err(crate::errors::options(lang, &e)),
-                    Some(Ok(settings)) => match self.send(Command::SetSettings { settings }) {
-                        true => Ok(()),
-                        false => Err(crate::errors::offline(lang)),
-                    },
+                    Some(Ok(mut settings)) => {
+                        if let Some(Ok(adapters)) = &self.state.services.adapters {
+                            crate::options::renew_adapter(&draft, &mut settings, adapters);
+                        }
+                        // The debrid key goes on its own, after the
+                        // settings, and only when it changes.
+                        let key = crate::options::debrid_key(&draft);
+                        let sent = self.send(Command::SetSettings { settings })
+                            && key.is_none_or(|command| self.send(command));
+                        match sent {
+                            true => Ok(()),
+                            false => Err(crate::errors::offline(lang)),
+                        }
+                    }
                 };
                 let _ = reply.send(result);
             }
@@ -1582,7 +1665,7 @@ impl Actor {
         let wanted = windows::wanted(&self.state);
         let lang = self.lang();
         for label in wanted.difference(&self.opened.clone()) {
-            match windows::open(&self.app, *label, lang) {
+            match windows::open_sized(&self.app, *label, lang, windows::size(&self.state, *label)) {
                 Ok(_) => {
                     self.opened.insert(*label);
                 }
@@ -1617,6 +1700,7 @@ impl Actor {
             now: Instant::now(),
             unix: self.ports.times.unix_now(),
             downloads: self.downloads.clone(),
+            flags: !cfg!(windows),
         };
         let index = crate::i18n::LANGUAGES.iter().position(|l| l.code == ctx.lang.code).unwrap_or(0);
         self.ports.language.store(index, Ordering::Relaxed);
@@ -1644,6 +1728,12 @@ impl Actor {
                     let new_look = (sub.look.as_ref() != Some(&look)).then(|| look.clone());
                     let patch = match (before, &view) {
                         (View::Main(a), View::Main(b)) => main::diff(a, b).map(Patch::Main),
+                        (View::Download(a), View::Download(b)) => {
+                            projection::torrent::diff_download(a, b).map(|p| Patch::Download(Box::new(p)))
+                        }
+                        (View::SaveAs(a), View::SaveAs(b)) => {
+                            projection::torrent::diff_save_as(a, b).map(|p| Patch::SaveAs(Box::new(p)))
+                        }
                         (a, b) if a != b => Some(Patch::Whole(b.clone())),
                         _ => None,
                     };

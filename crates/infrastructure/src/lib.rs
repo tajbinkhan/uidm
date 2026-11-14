@@ -45,6 +45,7 @@
 // test exemptions do not cover (AGENTS.md section 9).
 #![cfg_attr(test, allow(clippy::todo, clippy::unimplemented, clippy::unreachable))]
 
+pub mod adapters;
 pub mod app;
 pub mod autostart;
 pub mod background;
@@ -55,10 +56,13 @@ pub mod clipboard;
 pub mod clock;
 pub mod connect;
 pub mod conversions;
+pub mod country;
 pub mod crash;
 pub mod crawler;
 pub mod daemon_args;
 pub mod daemon_client;
+pub mod debrid;
+pub mod doh;
 pub mod dpapi;
 pub mod elevate;
 pub mod engine;
@@ -93,6 +97,7 @@ pub mod quota;
 pub mod recycle;
 #[cfg(windows)]
 pub mod registry;
+pub mod route;
 pub mod scan;
 pub mod server;
 pub mod settings;
@@ -101,6 +106,7 @@ pub mod store;
 pub mod system;
 pub mod themes;
 pub mod tool;
+pub mod torrent;
 pub mod transfers;
 pub mod unpack;
 pub mod update;

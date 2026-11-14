@@ -608,6 +608,7 @@ mod tests {
             now: std::time::Instant::now(),
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
+            flags: true,
         };
         let v = view(&ctx, &s);
         assert_eq!(v.phase, GrabPhase::Done);

@@ -23,10 +23,38 @@ use crate::registry;
 
 /// The native-messaging host's name, as the extension connects to it.
 pub const HOST_NAME: &str = "com.udm.host";
-/// The Chromium extension's ID, fixed by the key in its manifest.
-pub const CHROMIUM_EXTENSION_ID: &str = "epmjakacaejhdhldkpbjnakhfmjjbhfm";
-/// The Firefox extension's ID, from `extension/firefox.json`.
+/// The Chromium extension IDs the host lets in. The first is the unpacked
+/// copy's, fixed by the key in `extension/chromium/manifest.json`, which
+/// developers and Load unpacked keep using. A store assigns a listed copy
+/// an ID of its own: add the Chrome Web Store's (and any other store's)
+/// after it, here and in the files `every_file_lets_in_the_same_extensions`
+/// names (`docs/extension-stores.md`).
+pub const CHROMIUM_EXTENSION_IDS: &[&str] = &["epmjakacaejhdhldkpbjnakhfmjjbhfm"];
+/// The Firefox extension's ID, from `extension/firefox.json`. addons.mozilla.org
+/// keeps the ID the manifest gives, so the signed copy has it too.
 pub const FIREFOX_EXTENSION_ID: &str = "udm@udm.local";
+
+/// The key and value of the host manifest that name the extensions allowed
+/// to start the host: Firefox's by ID, Chromium's by origin.
+fn allowed_extensions(firefox: bool) -> (&'static str, serde_json::Value) {
+    if firefox {
+        ("allowed_extensions", serde_json::json!([FIREFOX_EXTENSION_ID]))
+    } else {
+        let origins: Vec<String> =
+            CHROMIUM_EXTENSION_IDS.iter().map(|id| format!("chrome-extension://{id}/")).collect();
+        ("allowed_origins", serde_json::json!(origins))
+    }
+}
+
+/// Whether the host manifest `manifest` lets in every extension UDM allows
+/// now. One that lets in more stays as it is: an ID passed to
+/// `install-host.ps1`, a manifest edited by hand, or another copy of UDM
+/// that knows a newer list.
+fn lets_in_all(manifest: &serde_json::Value, firefox: bool) -> bool {
+    let (key, allowed) = allowed_extensions(firefox);
+    let listed = manifest[key].as_array();
+    allowed.as_array().is_some_and(|wanted| wanted.iter().all(|w| listed.is_some_and(|l| l.contains(w))))
+}
 
 /// A browser UDM can register with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -542,25 +570,23 @@ impl Registrar {
         if !self.host.is_file() {
             return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is missing", self.host.display())));
         }
-        let allowed = if b.firefox {
-            serde_json::json!({ "allowed_extensions": [FIREFOX_EXTENSION_ID] })
-        } else {
-            serde_json::json!({ "allowed_origins": [format!("chrome-extension://{CHROMIUM_EXTENSION_ID}/")] })
-        };
+        let (key, allowed) = allowed_extensions(b.firefox);
         let mut manifest = serde_json::json!({
             "name": HOST_NAME,
             "description": "UDM download manager native-messaging host",
             "type": "stdio",
             "path": self.host.display().to_string(),
         });
-        // Both are object literals, so both are objects.
-        if let (Some(manifest), Some(allowed)) = (manifest.as_object_mut(), allowed.as_object()) {
-            manifest.extend(allowed.clone());
+        // An object literal, so an object.
+        if let Some(manifest) = manifest.as_object_mut() {
+            manifest.insert(key.to_string(), allowed);
         }
         serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)
     }
 
-    /// Whether `b`'s registration names this registrar's host.
+    /// Whether `b`'s registration names this registrar's host and lets in
+    /// every extension UDM allows now, so that a registration made before a
+    /// store's ID was added is written again.
     #[cfg_attr(windows, allow(dead_code))]
     fn points_here(&self, b: &Browser) -> bool {
         #[cfg(windows)]
@@ -569,7 +595,7 @@ impl Registrar {
         let path = Some(self.manifest_path(b));
         let manifest =
             path.and_then(|p| std::fs::read(p).ok()).and_then(|m| serde_json::from_slice::<serde_json::Value>(&m).ok());
-        manifest.is_some_and(|m| m["path"] == self.host.display().to_string())
+        manifest.is_some_and(|m| m["path"] == self.host.display().to_string() && lets_in_all(&m, b.firefox))
     }
 
     /// Whether `b` has a registration: its manifest is there.
@@ -690,7 +716,8 @@ fn move_old_registrations_with(registrar: &Registrar) -> io::Result<Vec<&'static
 /// runs (noted in `browsers.done` in the data folder, so one the user turns
 /// off in Options stays off), and point registrations at this copy of the
 /// host when UDM has moved, as an AppImage does or a USB stick that gets
-/// another drive letter. Returns the browsers registered.
+/// another drive letter, or when it lets in other extensions than UDM does
+/// now (a store's ID was added). Returns the browsers registered.
 ///
 /// A copy named by `UDM_INSTANCE` registers nothing: every copy shares the
 /// browsers' one `com.udm.host` manifest, so a test build would take the
@@ -900,6 +927,105 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The strings in double quotes in `text`.
+    fn quoted(text: &str) -> Vec<String> {
+        text.split('"').skip(1).step_by(2).map(str::to_string).collect()
+    }
+
+    /// The value of `#define <name> ...` in Setup's script `setup`, worked
+    /// out as Inno Setup's preprocessor does for what it holds: strings in
+    /// double quotes and the names of other defines, joined with `+`.
+    fn setup_define(setup: &str, name: &str) -> String {
+        let prefix = format!("#define {name} ");
+        let line = setup.lines().find(|l| l.starts_with(&prefix)).unwrap_or_else(|| panic!("no #define {name}"));
+        line[prefix.len()..]
+            .split('+')
+            .map(|part| {
+                let part = part.trim();
+                match part.strip_prefix('"').and_then(|p| p.strip_suffix('"')) {
+                    Some(text) => text.to_string(),
+                    None => setup_define(setup, part),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_manifest_that_lets_in_more_is_kept_and_one_that_lacks_an_id_is_not() {
+        let (_, allowed) = allowed_extensions(false);
+        let mut origins = allowed.as_array().unwrap().clone();
+        assert!(lets_in_all(&serde_json::json!({ "allowed_origins": origins }), false));
+        origins.push(serde_json::json!("chrome-extension://another/"));
+        assert!(lets_in_all(&serde_json::json!({ "allowed_origins": origins }), false));
+        origins.remove(0);
+        assert!(!lets_in_all(&serde_json::json!({ "allowed_origins": origins }), false));
+        assert!(!lets_in_all(&serde_json::json!({}), false));
+        assert!(!lets_in_all(&serde_json::json!({ "allowed_origins": "x" }), false));
+        assert!(lets_in_all(&serde_json::json!({ "allowed_extensions": [FIREFOX_EXTENSION_ID, "other@x"] }), true));
+        assert!(!lets_in_all(&serde_json::json!({ "allowed_extensions": ["other@x"] }), true));
+    }
+
+    /// A file of the repository, by its path from the root.
+    fn repo_file(path: &str) -> String {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        std::fs::read_to_string(root.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"))
+    }
+
+    // Every file that registers the host lets in the same extensions as
+    // `register`, so a store's ID added in one place cannot be missed in
+    // another (docs/extension-stores.md).
+    #[test]
+    fn every_file_lets_in_the_same_extensions() {
+        let ids: std::collections::BTreeSet<&str> = CHROMIUM_EXTENSION_IDS.iter().copied().collect();
+        assert_eq!(ids.len(), CHROMIUM_EXTENSION_IDS.len(), "an ID is listed twice");
+
+        let host: serde_json::Value = serde_json::from_str(&repo_file("host/com.udm.host.json")).unwrap();
+        assert_eq!(host["allowed_origins"], allowed_extensions(false).1, "host/com.udm.host.json");
+        let firefox_host: serde_json::Value =
+            serde_json::from_str(&repo_file("host/com.udm.host.firefox.json")).unwrap();
+        assert_eq!(firefox_host["allowed_extensions"], allowed_extensions(true).1, "host/com.udm.host.firefox.json");
+
+        let listed: Vec<String> = CHROMIUM_EXTENSION_IDS.iter().map(|id| id.to_string()).collect();
+        let setup = repo_file("installer/windows/udm.iss");
+        let setup_ids: Vec<String> =
+            setup_define(&setup, "ChromiumIds").split_whitespace().map(str::to_string).collect();
+        assert_eq!(setup_ids, listed, "ChromiumIds in udm.iss");
+        assert_eq!(setup_define(&setup, "ExtensionId"), CHROMIUM_EXTENSION_IDS[0], "ExtensionId in udm.iss");
+        assert_eq!(setup_define(&setup, "FirefoxId"), FIREFOX_EXTENSION_ID, "FirefoxId in udm.iss");
+
+        let script = repo_file("install-host.ps1");
+        let param = |name: &str| {
+            let line = script
+                .lines()
+                .map(str::trim)
+                .find(|l| l.contains(&format!("]${name} =")))
+                .unwrap_or_else(|| panic!("no ${name} in install-host.ps1"));
+            quoted(line)
+        };
+        assert_eq!(param("ExtensionId"), listed, "$ExtensionId in install-host.ps1");
+        assert_eq!(param("FirefoxId"), [FIREFOX_EXTENSION_ID], "$FirefoxId in install-host.ps1");
+        assert!(
+            repo_file("installer/linux/AppRun").contains(&format!("\"$2\" = \"{FIREFOX_EXTENSION_ID}\"")),
+            "installer/linux/AppRun"
+        );
+
+        let changes: serde_json::Value = serde_json::from_str(&repo_file("extension/firefox.json")).unwrap();
+        assert_eq!(changes["browser_specific_settings"]["gecko"]["id"], FIREFOX_EXTENSION_ID);
+
+        // The unpacked copy's ID is the one its manifest's key gives: the
+        // first 32 hex digits of the key's SHA-256, written with a to p.
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        let manifest: serde_json::Value = serde_json::from_str(&repo_file("extension/chromium/manifest.json")).unwrap();
+        let key = base64::engine::general_purpose::STANDARD.decode(manifest["key"].as_str().unwrap()).unwrap();
+        let unpacked: String = sha2::Sha256::digest(&key)[..16]
+            .iter()
+            .flat_map(|b| [b >> 4, b & 15])
+            .map(|n| char::from(b'a' + n))
+            .collect();
+        assert_eq!(CHROMIUM_EXTENSION_IDS[0], unpacked);
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn registering_writes_the_manifest_and_removing_deletes_it() {
@@ -917,12 +1043,28 @@ mod tests {
             serde_json::from_slice(&std::fs::read(dir.join(chrome.hosts_key).join("com.udm.host.json")).unwrap())
                 .unwrap();
         assert_eq!(manifest["path"], host.display().to_string());
-        assert_eq!(manifest["allowed_origins"][0], format!("chrome-extension://{CHROMIUM_EXTENSION_ID}/"));
+        assert_eq!(manifest["allowed_origins"], allowed_extensions(false).1);
+        assert_eq!(manifest["allowed_origins"][0], format!("chrome-extension://{}/", CHROMIUM_EXTENSION_IDS[0]));
         let fx: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join(firefox.hosts_key).join("com.udm.host.json")).unwrap())
                 .unwrap();
         assert_eq!(fx["allowed_extensions"][0], FIREFOX_EXTENSION_ID);
         assert!(r.points_here(&chrome));
+        // A manifest written before a store's ID was added is written again.
+        let path = dir.join(chrome.hosts_key).join("com.udm.host.json");
+        let mut older = manifest.clone();
+        older["allowed_origins"] = serde_json::json!(["chrome-extension://older/"]);
+        std::fs::write(&path, serde_json::to_vec(&older).unwrap()).unwrap();
+        assert!(!r.points_here(&chrome));
+        r.register(&chrome).unwrap();
+        assert!(r.points_here(&chrome));
+        // One that lets in more, such as an ID given to install-host.ps1,
+        // stays as it is.
+        let mut more = manifest.clone();
+        more["allowed_origins"].as_array_mut().unwrap().push(serde_json::json!("chrome-extension://more/"));
+        std::fs::write(&path, serde_json::to_vec(&more).unwrap()).unwrap();
+        assert!(r.points_here(&chrome));
+        r.register(&chrome).unwrap();
         let moved = Registrar::new(&dir.display().to_string(), dir.clone(), dir.join("elsewhere"));
         assert!(!moved.points_here(&chrome));
         r.unregister(&chrome).unwrap();
@@ -951,7 +1093,8 @@ mod tests {
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("com.udm.host.json")).unwrap()).unwrap();
         assert_eq!(manifest["path"], host.display().to_string());
-        assert_eq!(manifest["allowed_origins"][0], format!("chrome-extension://{CHROMIUM_EXTENSION_ID}/"));
+        assert_eq!(manifest["allowed_origins"], allowed_extensions(false).1);
+        assert_eq!(manifest["allowed_origins"][0], format!("chrome-extension://{}/", CHROMIUM_EXTENSION_IDS[0]));
         let fx: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.join("com.udm.host.firefox.json")).unwrap()).unwrap();
         assert_eq!(fx["allowed_extensions"][0], FIREFOX_EXTENSION_ID);

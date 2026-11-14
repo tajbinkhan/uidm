@@ -47,6 +47,9 @@
       <div class="box">
         <p>{t('UDM is free software under the MIT license.')}</p>
         {#if view.daemon}<p>{t('Background service: version {version}', { version: view.daemon })}</p>{/if}
+        <p class="credit">
+          {t('Server countries come from ip-location-db, with data from the Number Resource Organization (nro.net) under the CC BY 4.0 license.')}
+        </p>
       </div>
     </div>
   {/if}
@@ -90,12 +93,17 @@
 
   .box {
     margin-top: 8px;
-    height: 74px;
+    min-height: 74px;
     padding: 6px 8px;
     border: 1px solid var(--border);
   }
 
   .box p {
     margin: 0 0 4px;
+  }
+
+  .credit {
+    font-size: 11px;
+    color: var(--fg-muted);
   }
 </style>

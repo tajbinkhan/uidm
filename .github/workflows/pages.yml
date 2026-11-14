@@ -1,7 +1,7 @@
 # Publishes UDM's project page (site/) to GitHub Pages at
 # https://tajbinkhan.github.io/UDM/ whenever it changes on main. The page is
 # plain HTML and CSS; the logo and the social preview image are copied in from
-# assets/ so they are kept in one place.
+# assets/, and the screenshots from docs/images/, so they are kept in one place.
 
 name: Pages
 
@@ -12,6 +12,7 @@ on:
       - site/**
       - assets/icon-256.png
       - assets/social-preview.png
+      - docs/images/**
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -41,6 +42,8 @@ jobs:
           mkdir -p _site
           cp site/index.html site/style.css site/robots.txt site/sitemap.xml _site/
           cp assets/icon-256.png assets/social-preview.png _site/
+          mkdir -p _site/images
+          cp docs/images/*.webp _site/images/
 
       - uses: actions/configure-pages@v5
 

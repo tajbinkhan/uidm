@@ -1,0 +1,341 @@
+{
+  "extDescription": {
+    "message": "將瀏覽器下載傳送給 UDM 下載管理員。"
+  },
+  "downloadWithUdm": {
+    "message": "使用 UDM 下載"
+  },
+  "downloadLaterWithUdm": {
+    "message": "使用 UDM 稍後下載"
+  },
+  "downloadGalleryWithUdm": {
+    "message": "使用 UDM 下載圖庫"
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "使用 UDM 下載所有連結"
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "使用 UDM 下載選取的連結"
+  },
+  "udmDisconnected": {
+    "message": "UDM 已中斷連線"
+  },
+  "captureDownloads": {
+    "message": "攔截下載"
+  },
+  "captureDownloadsTitle": {
+    "message": "將瀏覽器開始的下載傳送給 UDM"
+  },
+  "captureInTab": {
+    "message": "在此索引標籤中攔截"
+  },
+  "captureInTabTitle": {
+    "message": "關閉攔截，讓此索引標籤的下載交由瀏覽器處理"
+  },
+  "captureOffInTab": {
+    "message": "此索引標籤已關閉"
+  },
+  "statusConnected": {
+    "message": "已連線。您在瀏覽器中開始的下載會交給 UDM。"
+  },
+  "statusConnectedCaptureOff": {
+    "message": "已連線。攔截已關閉，因此下載仍由瀏覽器處理。"
+  },
+  "statusNotConnected": {
+    "message": "未連線到 UDM。下載會留在瀏覽器中。"
+  },
+  "statusNotConnectedReason": {
+    "message": "未連線到 UDM：$REASON$。下載會留在瀏覽器中。",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "您的下一個下載將成為 $NAME$ 的新連結。",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "停止等候"
+  },
+  "skipNextDownload": {
+    "message": "略過下一個下載"
+  },
+  "skipNextDownloadTitle": {
+    "message": "讓下一個下載留在瀏覽器中"
+  },
+  "dontSkip": {
+    "message": "不要略過"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "下一個下載會留在瀏覽器中"
+  },
+  "allLinks": {
+    "message": "此頁面上的所有連結"
+  },
+  "allLinksTitle": {
+    "message": "在 UDM 中列出此頁面的連結，以挑選要下載的項目"
+  },
+  "videoButton": {
+    "message": "視訊按鈕"
+  },
+  "videoButtonTitle": {
+    "message": "在瀏覽器中播放的視訊上顯示下載按鈕"
+  },
+  "videoButtonOnSite": {
+    "message": "在 $SITE$ 上",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "貼上下載 URL"
+  },
+  "download": {
+    "message": "下載"
+  },
+  "noDownloads": {
+    "message": "尚無下載。"
+  },
+  "stateQueued": {
+    "message": "已排入佇列"
+  },
+  "stateDownloading": {
+    "message": "下載中"
+  },
+  "stateDone": {
+    "message": "完成"
+  },
+  "stateFailed": {
+    "message": "失敗"
+  },
+  "stateCanceled": {
+    "message": "已取消"
+  },
+  "stateInterrupted": {
+    "message": "已中斷"
+  },
+  "stateConfirming": {
+    "message": "正在 UDM 中等候您回應"
+  },
+  "stateWaiting": {
+    "message": "等候開始"
+  },
+  "threatFound": {
+    "message": "發現威脅"
+  },
+  "start": {
+    "message": "開始"
+  },
+  "cancel": {
+    "message": "取消"
+  },
+  "retry": {
+    "message": "重試"
+  },
+  "remove": {
+    "message": "移除"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "下載此視訊"
+  },
+  "videoButtonHelp": {
+    "message": "視訊按鈕說明"
+  },
+  "videoButtonClose": {
+    "message": "對此視訊關閉按鈕"
+  },
+  "lookingForVideo": {
+    "message": "正在尋找視訊..."
+  },
+  "subtitles": {
+    "message": "字幕："
+  },
+  "videoProtected": {
+    "message": "此視訊受 DRM 保護，因此 UDM 不會下載。"
+  },
+  "streamProtected": {
+    "message": "受 DRM 保護；UDM 不會下載。"
+  },
+  "udmNotConnected": {
+    "message": "UDM 未執行或未連線。"
+  },
+  "noVideoFound": {
+    "message": "尚未找到視訊。請讓它播放一下，然後再試一次。"
+  },
+  "sentToUdm": {
+    "message": "已傳送給 UDM。"
+  },
+  "couldNotReachUdm": {
+    "message": "無法連線到 UDM。"
+  },
+  "hlsStream": {
+    "message": "HLS 串流"
+  },
+  "dashStream": {
+    "message": "DASH 串流"
+  },
+  "hdsStream": {
+    "message": "HDS 串流"
+  },
+  "youtubeVideo": {
+    "message": "YouTube 視訊"
+  },
+  "facebookVideo": {
+    "message": "Facebook 視訊"
+  },
+  "instagramVideo": {
+    "message": "Instagram 視訊"
+  },
+  "vimeoVideo": {
+    "message": "Vimeo 視訊"
+  },
+  "mediaNoAnswer": {
+    "message": "UDM 沒有回應。"
+  },
+  "soundOnly": {
+    "message": "僅音訊 ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "$TYPE$ 視訊",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "$TYPE$ 音訊",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "視訊"
+  },
+  "audioFile": {
+    "message": "音訊"
+  },
+  "takeoverFailed": {
+    "message": "UDM 無法接手此下載"
+  },
+  "takeoverNotConnected": {
+    "message": "UDM 未執行或未連線，因此由瀏覽器下載 $FILE$。",
+    "placeholders": {
+      "file": { "content": "$1" }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM 無法開始 $FILE$ ($REASON$)，因此改由瀏覽器下載。",
+    "placeholders": {
+      "file": { "content": "$1" },
+      "reason": { "content": "$2" }
+    }
+  },
+  "dontShowAgain": {
+    "message": "不要再顯示"
+  },
+  "takeoverClickToStop": {
+    "message": "按一下此通知即可不再顯示。"
+  },
+  "downloadLastVideo": {
+    "message": "使用 UDM 下載最後一個視訊"
+  },
+  "recentVideos": {
+    "message": "最近的視訊 (UDM)"
+  },
+  "downloadPageWithUdm": {
+    "message": "使用 UDM 下載頁面"
+  },
+  "noLinksFound": {
+    "message": "此頁面上找不到連結。"
+  },
+  "noSelectedLinksFound": {
+    "message": "選取範圍中找不到連結。"
+  },
+  "linksUnreadable": {
+    "message": "瀏覽器不允許 UDM 讀取此頁面的連結。"
+  },
+  "cannotReachUdm": {
+    "message": "無法連線到 UDM。UDM 是否正在執行？"
+  },
+  "cannotReachUdmReason": {
+    "message": "無法連線到 UDM ($REASON$)。",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "改由瀏覽器下載。"
+  },
+  "browserDownloadsHeading": {
+    "message": "正在瀏覽器中下載"
+  },
+  "sendToUdm": {
+    "message": "傳送給 UDM"
+  },
+  "pageVideo": {
+    "message": "此頁面上的影片"
+  },
+  "playlistTitled": {
+    "message": "播放清單：$TITLE$（$COUNT$ 部影片）",
+    "placeholders": {
+      "title": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  },
+  "playlistVideos": {
+    "message": "播放清單（$COUNT$ 部影片）",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "chooseVideos": {
+    "message": "在 UDM 中選擇影片..."
+  }
+}

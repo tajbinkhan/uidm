@@ -1,6 +1,7 @@
 <!-- A download's progress window: its status, speed limiter and what
      happens when it is done, the progress bar, and with its details the
-     connections' ranges. -->
+     connections' ranges. A torrent's adds its files, peers, trackers,
+     pieces and seeding, and has no connections to show. -->
 <script lang="ts">
   import { closeWindow, controlDownload, fitHeight, messageOf, setDownloadLimit, setDownloadOnDone } from '../../ipc';
   import type { DownloadView, Then } from '../../ipc/types';
@@ -9,12 +10,14 @@
   import Window from '../../components/Window.svelte';
   import Tabs from '../../components/Tabs.svelte';
   import ProgressBar from '../../components/ProgressBar.svelte';
+  import TorrentPage from './TorrentPage.svelte';
 
   const WIDTH = 552;
   const SHORT = 244;
   const TALL = 413;
 
   const view: DownloadView | null = $derived(projection.view?.window === 'download' ? projection.view.view : null);
+  const torrent = $derived(view?.torrent ?? null);
 
   let tab = $state('status');
   let details: boolean | null = $state(null);
@@ -31,8 +34,8 @@
       limit = { on: view.limit.on, kb: view.limit.kbPerSec, remember: view.limit.remember };
       onDone = { ...view.onDone };
       if (view.onDone.then === 'sleep' || view.onDone.then === 'hibernate') off = view.onDone.then;
-      details = view.details;
-      if (view.details) void fitHeight(WIDTH, TALL);
+      details = view.details && !view.torrent;
+      if (details) void fitHeight(WIDTH, TALL);
       loaded = true;
     }
   });
@@ -40,6 +43,15 @@
   const tabs = $derived(
     [
       { key: 'status', label: t('Download status') },
+      ...(torrent
+        ? [
+            { key: 'files', label: t('Files') },
+            { key: 'peers', label: t('Peers') },
+            { key: 'trackers', label: t('Trackers') },
+            { key: 'pieces', label: t('Pieces') },
+            { key: 'seeding', label: t('Seeding') },
+          ]
+        : []),
       ...(view?.speedTab ? [{ key: 'speed', label: t('Speed Limiter') }] : []),
       ...(view?.doneTab ? [{ key: 'done', label: t('Options on completion') }] : []),
     ].filter((x) => !hidden.includes(x.key)),
@@ -71,18 +83,44 @@
 
 <Window onescape={() => void closeWindow()}>
   {#if view}
-    <div class="dialog">
-      <Tabs {tabs} bind:current={tab}>
+    <div class="dialog" class:torrent={!!torrent}>
+      <Tabs {tabs} bind:current={tab} wrap={!!torrent}>
         <div class="page">
-          {#if tab === 'status'}
+          {#if tab === 'status' && torrent}
             <p class="address" title={view.address}>{view.address}</p>
+            <dl class="pairs torrent-pairs">
+              <dt>{t('Status')}</dt>
+              <dd>{view.status}</dd>
+              <dt class="gap">{t('File size')}</dt>
+              <dd class="gap">{view.size}</dd>
+              <dt>{t('Downloaded')}</dt>
+              <dd>{view.downloaded}</dd>
+              <dt>{t('Download speed')}</dt>
+              <dd>{torrent.downSpeed}</dd>
+              <dt>{t('Upload speed')}</dt>
+              <dd>{torrent.upSpeed}</dd>
+              <dt>{t('Time left')}</dt>
+              <dd>{torrent.timeLeft}</dd>
+              <dt class="gap">{t('Uploaded')}</dt>
+              <dd class="gap">{torrent.uploaded}</dd>
+              <dt>{t('Share ratio')}</dt>
+              <dd>{torrent.ratio}</dd>
+              <dt>{t('Peers')}</dt>
+              <dd>{torrent.peersLine}</dd>
+            </dl>
+          {:else if torrent && ['files', 'peers', 'trackers', 'pieces', 'seeding'].includes(tab)}
+            <TorrentPage {torrent} {tab} />
+          {:else if tab === 'status'}
+            <!-- The server's country goes before the address: the page has
+                 no room for another row. -->
+            <p class="address" title={view.address}>
+              {#if view.country}<span class="country" title={t('Server country')}>{view.country}</span>{/if}{view.address}
+            </p>
             <dl class="pairs">
               <dt>{t('Status')}</dt>
               <dd>{view.status}</dd>
-            </dl>
-            <dl class="pairs gap">
-              <dt>{t('File size')}</dt>
-              <dd>{view.size}</dd>
+              <dt class="gap">{t('File size')}</dt>
+              <dd class="gap">{view.size}</dd>
               <dt>{t('Downloaded')}</dt>
               <dd>{view.downloaded}</dd>
               <dt>{t('Transfer rate')}</dt>
@@ -171,7 +209,9 @@
       </Tabs>
       <ProgressBar fraction={view.fraction} />
       <div class="row controls">
-        <button class="btn wide" onclick={toggleDetails}>{details ? t('<< Hide details') : t('Show details >>')}</button>
+        {#if !torrent}
+          <button class="btn wide" onclick={toggleDetails}>{details ? t('<< Hide details') : t('Show details >>')}</button>
+        {/if}
         <span class="grow"></span>
         {#if view.canResume}
           <button class="btn mid" onclick={() => void run(controlDownload('resume'))}>{t('Resume')}</button>
@@ -223,6 +263,29 @@
     gap: 4px;
   }
 
+  /* A torrent's tabs hold lists: the window opens taller for them, and
+     the page takes what the tabs leave, in one row of them or two. */
+  .torrent :global(.tabs) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .torrent :global(.tabs > [role='tabpanel']) {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .torrent .page {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+  }
+
+  .torrent-pairs {
+    row-gap: 2px;
+  }
+
   p {
     margin: 0;
   }
@@ -234,15 +297,15 @@
     white-space: nowrap;
   }
 
+  /* The labels' column grows for a longer label (a wider font than
+     Segoe UI, a longer language) rather than wrap it, which would push the
+     address out of the page. */
   .pairs {
     display: grid;
-    grid-template-columns: 102px 1fr;
+    grid-template-columns: minmax(102px, max-content) 1fr;
+    column-gap: 8px;
     margin: 0;
     row-gap: 1px;
-  }
-
-  .pairs.gap {
-    margin-top: 8px;
   }
 
   dt,
@@ -250,8 +313,20 @@
     margin: 0;
   }
 
+  dt {
+    white-space: nowrap;
+  }
+
+  .gap {
+    margin-top: 8px;
+  }
+
   .resume {
     padding-left: 78px;
+  }
+
+  .country {
+    margin-right: 6px;
   }
 
   .kb {

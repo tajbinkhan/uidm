@@ -106,6 +106,29 @@ jobs:
           node installer/make-firefox.js "$RUNNER_TEMP/firefox-node"
           node installer/make-firefox.js --check "$RUNNER_TEMP/firefox-node"
 
+      # The same for extension/safari, the Safari copy.
+      - name: Check the Safari copy
+        shell: bash
+        run: |
+          node installer/make-safari.js --check
+          node installer/make-safari.js "$RUNNER_TEMP/safari-node"
+          node installer/make-safari.js --check "$RUNNER_TEMP/safari-node"
+
+      # The Safari extension's app extension, with its Swift handler, built
+      # and signed as package.sh does, into a stand-in UDM.app holding this
+      # build's udm-host (macos-15 has Xcode, so its converter must be there).
+      - name: Build the Safari extension
+        if: runner.os == 'macOS'
+        env:
+          UDM_SAFARI: require
+        run: |
+          app="$RUNNER_TEMP/safari-check/UDM.app"
+          mkdir -p "$app/Contents/MacOS"
+          cp target/debug/udm-host "$app/Contents/MacOS/"
+          installer/macos/safari/build.sh "$app" 0.0.0
+          codesign --verify --strict --verbose=2 "$app/Contents/PlugIns/UDM Extension.appex"
+          codesign -d --entitlements - "$app/Contents/PlugIns/UDM Extension.appex" | grep -q com.apple.security.app-sandbox
+
       # Setup's build checks the copy with make-firefox.ps1 instead, in
       # PowerShell 7 and Windows PowerShell 5.1: each must make the same copy
       # as make-firefox.js, and its own check must agree.

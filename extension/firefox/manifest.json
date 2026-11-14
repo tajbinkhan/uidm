@@ -42,6 +42,7 @@
       "post.js",
       "media.js",
       "request.js",
+      "native.js",
       "background.js"
     ]
   },

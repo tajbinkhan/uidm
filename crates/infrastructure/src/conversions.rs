@@ -98,6 +98,7 @@ impl Converter for Conversions {
             connections: 1,
             partial: None,
             validator: None,
+            country: None,
         });
         let stop = Arc::new(AtomicBool::new(false));
         lock(&self.running).insert(new_id, Arc::clone(&stop));

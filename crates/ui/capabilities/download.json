@@ -3,5 +3,5 @@
   "identifier": "download",
   "description": "A download's progress window.",
   "windows": ["download-*"],
-  "permissions": ["allow-subscribe", "allow-report-frontend-error", "allow-heartbeat", "allow-close-window", "allow-control-download", "allow-set-download-limit", "allow-set-download-on-done", "core:window:allow-set-size"]
+  "permissions": ["allow-subscribe", "allow-report-frontend-error", "allow-heartbeat", "allow-close-window", "allow-control-download", "allow-set-download-limit", "allow-set-download-on-done", "allow-pick-torrent-files", "allow-set-seed-limits", "allow-stop-seeding", "core:window:allow-set-size"]
 }

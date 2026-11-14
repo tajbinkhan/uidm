@@ -331,29 +331,44 @@ pub fn parse_list(text: &str) -> Result<(Vec<Address>, usize), BatchError> {
 
 /// The download link in copied `text` worth offering: one http(s) or ftp(s) address,
 /// alone on the clipboard, whose file type is one of `types` (any file type
-/// when `types` is empty).
-pub fn clipboard_link(text: &str, types: &[String]) -> Option<Address> {
+/// when `types` is empty), or a torrent's magnet link. A `.torrent` file's
+/// address is offered whatever the types when `torrents` (the settings take
+/// `.torrent` files as torrents), and as any file otherwise.
+pub fn clipboard_link(text: &str, types: &[String], torrents: bool) -> Option<Address> {
     let url = text.trim();
     if url.contains(char::is_whitespace) || url.len() > 4096 {
         return None;
     }
     let address = Address::parse(url).ok()?;
+    if crate::torrent::starts_like_magnet(url) {
+        return Some(address);
+    }
     let parsed = url::Url::parse(url).ok()?;
     let last = parsed.path_segments()?.next_back()?;
     let (_, ext) = last.rsplit_once('.')?;
     let ext = ext.to_ascii_lowercase();
-    let wanted = !ext.is_empty() && (types.is_empty() || types.contains(&ext));
+    let wanted = !ext.is_empty() && (types.is_empty() || types.contains(&ext) || (torrents && ext == "torrent"));
     wanted.then_some(address)
 }
 
-/// Every http, https, ftp or ftps address in `text`, once each and in order:
-/// copied lines, a web page's text, or addresses in quotes or brackets.
-/// Punctuation that ends a sentence is not taken as part of an address.
+/// Every http, https, ftp or ftps address and every magnet link in `text`,
+/// once each and in order: copied lines, a web page's text, or addresses in
+/// quotes or brackets. Punctuation that ends a sentence is not taken as part
+/// of an address.
 pub fn links_in(text: &str) -> Vec<Address> {
     let mut seen = std::collections::HashSet::new();
     let mut urls = Vec::new();
     let separators = |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | '|');
     for word in text.split(separators) {
+        if let Some(start) = word.to_ascii_lowercase().find("magnet:?") {
+            let link = word[start..].trim_end_matches(['.', ',', ';', '!', ')', ']']);
+            if let Ok(address) = Address::parse(link) {
+                if seen.insert(link.to_string()) {
+                    urls.push(address);
+                }
+            }
+            continue;
+        }
         // An address may follow other text, as in `link:https://...`.
         let lower = word.to_ascii_lowercase();
         let Some(start) = ["https://", "http://", "ftp://", "ftps://"].iter().filter_map(|p| lower.find(p)).min()
@@ -392,10 +407,11 @@ pub fn links_in(text: &str) -> Vec<Address> {
     urls
 }
 
-/// Whether `s` starts like an address UDM can download: http, https,
-/// ftp or ftps.
+/// Whether `s` is an address UDM can download: one that starts like an
+/// http, https, ftp or ftps address, or a magnet link with a BitTorrent
+/// info hash (`torrent::is_magnet`).
 pub fn is_download_url(s: &str) -> bool {
-    is_web_url(s) || is_ftp_url(s)
+    is_web_url(s) || is_ftp_url(s) || crate::torrent::is_magnet(s)
 }
 
 /// Whether `s` starts like an FTP address: `ftp://`, or `ftps://` (FTP over
@@ -569,27 +585,37 @@ mod tests {
     fn clipboard_links() {
         let types = vec!["zip".to_string(), "mp4".to_string()];
         assert_eq!(
-            clipboard_link("  https://x.com/a/file.ZIP?sig=1 \n", &types).as_ref().map(Address::as_str),
+            clipboard_link("  https://x.com/a/file.ZIP?sig=1 \n", &types, true).as_ref().map(Address::as_str),
             Some("https://x.com/a/file.ZIP?sig=1")
         );
-        assert_eq!(clipboard_link("https://x.com/page.html", &types), None);
-        assert_eq!(clipboard_link("https://x.com/", &types), None);
-        assert_eq!(clipboard_link("see https://x.com/a.zip", &types), None);
-        assert_eq!(clipboard_link("https://x.com/a.zip https://x.com/b.zip", &types), None);
+        assert_eq!(clipboard_link("https://x.com/page.html", &types, true), None);
+        assert_eq!(clipboard_link("https://x.com/", &types, true), None);
+        assert_eq!(clipboard_link("see https://x.com/a.zip", &types, true), None);
+        assert_eq!(clipboard_link("https://x.com/a.zip https://x.com/b.zip", &types, true), None);
         assert_eq!(
-            clipboard_link("ftp://x.com/a.zip", &types).as_ref().map(Address::as_str),
+            clipboard_link("ftp://x.com/a.zip", &types, true).as_ref().map(Address::as_str),
             Some("ftp://x.com/a.zip")
         );
         assert_eq!(
-            clipboard_link("ftps://x.com/a.zip", &types).as_ref().map(Address::as_str),
+            clipboard_link("ftps://x.com/a.zip", &types, true).as_ref().map(Address::as_str),
             Some("ftps://x.com/a.zip")
         );
-        assert_eq!(clipboard_link("file://x.com/a.zip", &types), None);
+        assert_eq!(clipboard_link("file://x.com/a.zip", &types, true), None);
         assert_eq!(
-            clipboard_link("https://x.com/a.html", &[]).as_ref().map(Address::as_str),
+            clipboard_link("https://x.com/a.html", &[], true).as_ref().map(Address::as_str),
             Some("https://x.com/a.html")
         );
-        assert_eq!(clipboard_link("https://x.com/download", &[]), None);
+        assert_eq!(clipboard_link("https://x.com/download", &[], true), None);
+        // A torrent is offered whatever the types: its magnet link, or its
+        // `.torrent` file.
+        let magnet = "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=Album";
+        assert_eq!(clipboard_link(magnet, &types, true).as_ref().map(Address::as_str), Some(magnet));
+        assert_eq!(clipboard_link("magnet:?dn=no-hash", &types, true), None);
+        assert_eq!(
+            clipboard_link("https://x.com/a.torrent", &types, true).as_ref().map(Address::as_str),
+            Some("https://x.com/a.torrent")
+        );
+        assert_eq!(clipboard_link("https://x.com/a.torrent", &types, false), None, "a file of a type not offered");
     }
 
     #[test]

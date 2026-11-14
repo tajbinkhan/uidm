@@ -69,9 +69,25 @@ function makeMini(button) {
   if (udmContentAgain) return;
   // The capture_* key settings; none until they arrive.
   let keys = {};
-  chrome.storage.local.get("captureKeys").then((s) => s.captureKeys && (keys = s.captureKeys)).catch(() => {});
+  // Whether magnet links go to UDM as they are clicked: UDM is connected
+  // and capture is on (the worker shares it as `magnetCapture`).
+  let magnetCapture = false;
+  // Where the browser has no downloads API (Safari), whether links to files
+  // are taken as they are clicked, and the capture rules: { on, rules }, as
+  // the worker shares them (shareLinkCapture); none elsewhere.
+  let linkCapture = null;
+  chrome.storage.local
+    .get(["captureKeys", "linkCapture", "magnetCapture"])
+    .then((s) => {
+      if (s.captureKeys) keys = s.captureKeys;
+      if (s.linkCapture) linkCapture = s.linkCapture;
+      magnetCapture = !!s.magnetCapture;
+    })
+    .catch(() => {});
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.captureKeys && changes.captureKeys.newValue) keys = changes.captureKeys.newValue;
+    if (changes.linkCapture) linkCapture = changes.linkCapture.newValue || null;
+    if (changes.magnetCapture) magnetCapture = !!changes.magnetCapture.newValue;
   });
   // Insert and Del are no modifiers, so whether they are down is followed
   // by hand (trackKey, in rules.js).
@@ -120,7 +136,9 @@ function makeMini(button) {
     // user's own clicks count.
     if (!ev.isTrusted || ev.button > 1) return;
     const link = ev.composedPath().find((n) => n instanceof HTMLAnchorElement && n.href);
-    if (!link || !/^https?:/i.test(link.href)) return;
+    if (!link) return;
+    const magnet = isMagnet(link.href);
+    if (!magnet && !/^https?:/i.test(link.href)) return;
     const action = keyAction(keys, {
       alt: ev.altKey,
       ctrl: ev.ctrlKey,
@@ -131,8 +149,33 @@ function makeMini(button) {
       // A click made with Enter has a detail of 0.
       mouse: ev.detail > 0,
     });
-    if (action === "skip") {
+    if (magnet) {
+      // A magnet link is no download the browser reports: UDM takes it as
+      // it is clicked, or the browser opens it as it would have, with the
+      // program it hands magnet links to (the skip keys, a middle click, or
+      // UDM not there).
+      if (action === "skip" || ev.button !== 0 || !magnetCapture) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      chrome.runtime
+        .sendMessage({ type: "link:magnet", url: link.href })
+        .then((r) => r && r.ok)
+        .catch(() => false)
+        .then((ok) => ok || link.click());
+    } else if (action === "skip") {
       chrome.runtime.sendMessage({ type: "link:skip" }).catch(() => {});
+    } else if (action === "" && linkCapture && linkCapture.on && clickTaken(linkCapture.rules, link.href, link.getAttribute("download"), location.href)) {
+      // Safari: the worker hands it to UDM, or the link is clicked again
+      // for the browser to follow as it would have (its target, its
+      // download attribute); that click is not the user's, so it is not
+      // taken again.
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      chrome.runtime
+        .sendMessage({ type: "link:capture", url: link.href, download: link.getAttribute("download") })
+        .then((r) => r && r.ok)
+        .catch(() => false)
+        .then((ok) => ok || link.click());
     } else if (action === "force" && !forceLeavesLink(keys, link.href)) {
 
       ev.preventDefault();

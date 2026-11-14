@@ -1,7 +1,8 @@
 // Renders assets/icon-1024.png, the icon's source, into every other icon
 // file UDM ships: extension/chromium/icons/{16,32,48,128}.png (copied to
-// extension/firefox/icons) and assets/icon-256.png (the tray and window
-// icon). Run make-icon.js afterwards to pack installer/windows/udm.ico.
+// extension/firefox/icons and extension/safari/icons) and
+// assets/icon-256.png (the tray and window icon). Run make-icon.js
+// afterwards to pack installer/windows/udm.ico.
 //
 // It scales the picture on a canvas in headless Chrome, halving it step by
 // step so the small sizes stay sharp. Set CHROME to the browser
@@ -73,3 +74,5 @@ for (const s of [16, 32, 48, 128]) write(`extension/chromium/icons/${s}.png`, Bu
 write("assets/icon-256.png", Buffer.from(out[256].png, "base64"));
 require("./make-firefox.js").makeFirefox();
 console.log("remade extension/firefox");
+require("./make-safari.js").makeSafari();
+console.log("remade extension/safari");

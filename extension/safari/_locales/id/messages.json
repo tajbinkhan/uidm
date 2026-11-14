@@ -1,0 +1,341 @@
+{
+  "extDescription": {
+    "message": "Kirim unduhan browser ke pengelola unduhan UDM."
+  },
+  "downloadWithUdm": {
+    "message": "Unduh dengan UDM"
+  },
+  "downloadLaterWithUdm": {
+    "message": "Unduh nanti dengan UDM"
+  },
+  "downloadGalleryWithUdm": {
+    "message": "Unduh galeri dengan UDM"
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "Unduh semua tautan dengan UDM"
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "Unduh tautan yang dipilih dengan UDM"
+  },
+  "udmDisconnected": {
+    "message": "UDM terputus"
+  },
+  "captureDownloads": {
+    "message": "Tangkap unduhan"
+  },
+  "captureDownloadsTitle": {
+    "message": "Kirim unduhan yang dimulai browser ke UDM"
+  },
+  "captureInTab": {
+    "message": "Tangkap di tab ini"
+  },
+  "captureInTabTitle": {
+    "message": "Nonaktifkan penangkapan agar unduhan tab ini tetap di browser"
+  },
+  "captureOffInTab": {
+    "message": "Nonaktif di tab ini"
+  },
+  "statusConnected": {
+    "message": "Tersambung. Unduhan yang Anda mulai di browser dikirim ke UDM."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Tersambung. Penangkapan nonaktif, jadi browser tetap mengunduh sendiri."
+  },
+  "statusNotConnected": {
+    "message": "Tidak tersambung ke UDM. Unduhan tetap di browser."
+  },
+  "statusNotConnectedReason": {
+    "message": "Tidak tersambung ke UDM: $REASON$. Unduhan tetap di browser.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Unduhan Anda berikutnya memberi $NAME$ tautan baru.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Berhenti menunggu"
+  },
+  "skipNextDownload": {
+    "message": "Lewati unduhan berikutnya"
+  },
+  "skipNextDownloadTitle": {
+    "message": "Biarkan unduhan berikutnya tetap di browser"
+  },
+  "dontSkip": {
+    "message": "Jangan lewati"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "Unduhan berikutnya tetap di browser"
+  },
+  "allLinks": {
+    "message": "Semua tautan di halaman ini"
+  },
+  "allLinksTitle": {
+    "message": "Tampilkan tautan halaman ini di UDM untuk memilih yang akan diunduh"
+  },
+  "videoButton": {
+    "message": "Tombol video"
+  },
+  "videoButtonTitle": {
+    "message": "Tombol unduh di atas video yang diputar di browser"
+  },
+  "videoButtonOnSite": {
+    "message": "di $SITE$",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Tempel URL unduhan"
+  },
+  "download": {
+    "message": "Unduh"
+  },
+  "noDownloads": {
+    "message": "Belum ada unduhan."
+  },
+  "stateQueued": {
+    "message": "Diantrekan"
+  },
+  "stateDownloading": {
+    "message": "Mengunduh"
+  },
+  "stateDone": {
+    "message": "Selesai"
+  },
+  "stateFailed": {
+    "message": "Gagal"
+  },
+  "stateCanceled": {
+    "message": "Dibatalkan"
+  },
+  "stateInterrupted": {
+    "message": "Terputus"
+  },
+  "stateConfirming": {
+    "message": "Menunggu Anda di UDM"
+  },
+  "stateWaiting": {
+    "message": "Menunggu untuk dimulai"
+  },
+  "threatFound": {
+    "message": "Ancaman ditemukan"
+  },
+  "start": {
+    "message": "Mulai"
+  },
+  "cancel": {
+    "message": "Batal"
+  },
+  "retry": {
+    "message": "Coba lagi"
+  },
+  "remove": {
+    "message": "Hapus"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "Unduh video ini"
+  },
+  "videoButtonHelp": {
+    "message": "Bantuan tentang tombol video"
+  },
+  "videoButtonClose": {
+    "message": "Tutup untuk video ini"
+  },
+  "lookingForVideo": {
+    "message": "Mencari video..."
+  },
+  "subtitles": {
+    "message": "Subtitel:"
+  },
+  "videoProtected": {
+    "message": "Video ini dilindungi DRM, jadi UDM tidak akan mengunduhnya."
+  },
+  "streamProtected": {
+    "message": "Dilindungi DRM; UDM tidak akan mengunduhnya."
+  },
+  "udmNotConnected": {
+    "message": "UDM tidak berjalan atau tidak tersambung."
+  },
+  "noVideoFound": {
+    "message": "Belum ada video yang ditemukan. Biarkan video diputar sebentar, lalu coba lagi."
+  },
+  "sentToUdm": {
+    "message": "Dikirim ke UDM."
+  },
+  "couldNotReachUdm": {
+    "message": "Tidak dapat menjangkau UDM."
+  },
+  "hlsStream": {
+    "message": "Stream HLS"
+  },
+  "dashStream": {
+    "message": "Stream DASH"
+  },
+  "hdsStream": {
+    "message": "Stream HDS"
+  },
+  "youtubeVideo": {
+    "message": "Video YouTube"
+  },
+  "facebookVideo": {
+    "message": "Video Facebook"
+  },
+  "instagramVideo": {
+    "message": "Video Instagram"
+  },
+  "vimeoVideo": {
+    "message": "Video Vimeo"
+  },
+  "mediaNoAnswer": {
+    "message": "UDM tidak menjawab."
+  },
+  "soundOnly": {
+    "message": "Hanya suara ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "Video $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "Audio $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "Video"
+  },
+  "audioFile": {
+    "message": "Audio"
+  },
+  "takeoverFailed": {
+    "message": "UDM tidak dapat mengambil alih unduhan"
+  },
+  "takeoverNotConnected": {
+    "message": "UDM tidak berjalan atau tidak tersambung, jadi browser mengunduh $FILE$.",
+    "placeholders": {
+      "file": { "content": "$1" }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM tidak dapat memulai $FILE$ ($REASON$), jadi browser yang mengunduhnya.",
+    "placeholders": {
+      "file": { "content": "$1" },
+      "reason": { "content": "$2" }
+    }
+  },
+  "dontShowAgain": {
+    "message": "Jangan tampilkan lagi"
+  },
+  "takeoverClickToStop": {
+    "message": "Klik pemberitahuan ini agar tidak ditampilkan lagi."
+  },
+  "downloadLastVideo": {
+    "message": "Unduh video terakhir dengan UDM"
+  },
+  "recentVideos": {
+    "message": "Video terbaru (UDM)"
+  },
+  "downloadPageWithUdm": {
+    "message": "Unduh halaman dengan UDM"
+  },
+  "noLinksFound": {
+    "message": "Tidak ada tautan yang ditemukan di halaman ini."
+  },
+  "noSelectedLinksFound": {
+    "message": "Tidak ada tautan yang ditemukan di bagian yang dipilih."
+  },
+  "linksUnreadable": {
+    "message": "Browser tidak mengizinkan UDM membaca tautan halaman ini."
+  },
+  "cannotReachUdm": {
+    "message": "Tidak dapat menjangkau UDM. Apakah UDM sedang berjalan?"
+  },
+  "cannotReachUdmReason": {
+    "message": "Tidak dapat menjangkau UDM ($REASON$).",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "Browser yang mengunduhnya sebagai gantinya."
+  },
+  "browserDownloadsHeading": {
+    "message": "Mengunduh di browser"
+  },
+  "sendToUdm": {
+    "message": "Kirim ke UDM"
+  },
+  "pageVideo": {
+    "message": "Video di halaman ini"
+  },
+  "playlistTitled": {
+    "message": "Daftar putar: $TITLE$ ($COUNT$ video)",
+    "placeholders": {
+      "title": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  },
+  "playlistVideos": {
+    "message": "Daftar putar ($COUNT$ video)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "chooseVideos": {
+    "message": "Pilih video di UDM..."
+  }
+}

@@ -1,11 +1,18 @@
 //! The proxy and logins a download connects with (`config_for`), from the
-//! settings, the download's own login and the proxy its browser reported.
+//! settings, the download's own login and the proxy its browser reported,
+//! and the network adapter and resolver its connections go out by
+//! (`Network::route`).
 
 use std::collections::HashSet;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use udm_domain::sync::LockExt;
 
 use udm_domain::download::Download;
+use udm_domain::network::DnsChoice;
+use udm_domain::ports::NetworkAdapters;
+
+use crate::doh::Doh;
+use crate::route::{Binding, Route};
 
 use crate::net::{self, Login, NetConfig, ProxyKind, ProxyLogin};
 use udm_domain::settings::{ProxyMode, Settings, SocksVersion};
@@ -34,10 +41,82 @@ impl ProxyRetries {
     }
 }
 
+/// What every download's connections share: the browser-proxy retries, and
+/// the network adapters with the DNS over HTTPS resolver.
+#[derive(Default)]
+pub struct NetState {
+    pub retries: ProxyRetries,
+    pub network: Network,
+}
+
+impl NetState {
+    /// The same, with the adapters from `adapters`: for tests.
+    pub fn with_adapters(adapters: Arc<dyn NetworkAdapters>) -> NetState {
+        NetState { retries: ProxyRetries::default(), network: Network::new(adapters) }
+    }
+}
+
+/// The computer's network adapters, and the DNS over HTTPS resolver the
+/// settings choose, kept so its answers are shared by every download.
+pub struct Network {
+    adapters: Arc<dyn NetworkAdapters>,
+    /// The resolver made for a choice and the adapter it is bound to.
+    doh: Mutex<Option<KeptResolver>>,
+}
+
+/// A DNS over HTTPS resolver, with the choice and the adapter it was made
+/// for (with the networks a numbered adapter was on, so one made before
+/// they were noted is not kept).
+type KeptResolver = (DnsChoice, Option<udm_domain::network::AdapterChoice>, Arc<Doh>);
+
+impl Default for Network {
+    fn default() -> Self {
+        Network::new(Arc::new(crate::adapters::SystemAdapters))
+    }
+}
+
+/// How long the system's adapter list is kept for the connections and the
+/// watcher that look at it.
+const ADAPTERS_KEPT: std::time::Duration = std::time::Duration::from_secs(1);
+
+impl Network {
+    pub fn new(adapters: Arc<dyn NetworkAdapters>) -> Network {
+        Network { adapters: Arc::new(crate::adapters::Cached::new(adapters, ADAPTERS_KEPT)), doh: Mutex::new(None) }
+    }
+
+    /// The adapters, for the window's list.
+    pub fn adapters(&self) -> &Arc<dyn NetworkAdapters> {
+        &self.adapters
+    }
+
+    /// How connections go out under `s`: bound to its adapter, if one is
+    /// chosen, and with its resolver.
+    pub fn route(&self, s: &Settings) -> Route {
+        let binding = s.network_adapter.clone().map(|choice| Binding::new(choice, Arc::clone(&self.adapters)));
+        let dns = s.dns.endpoint().map(|endpoint| {
+            let bound = s.network_adapter.clone();
+            let mut kept = self.doh.lock_or_recover();
+            match kept.as_ref() {
+                Some((dns, id, doh)) if *dns == s.dns && *id == bound => Arc::clone(doh),
+                _ => {
+                    let doh = Arc::new(Doh::new(endpoint, binding.clone()));
+                    *kept = Some((s.dns.clone(), bound, Arc::clone(&doh)));
+                    doh
+                }
+            }
+        });
+        Route { binding, dns }
+    }
+}
+
 /// The proxy and logins for `download`. A download from the browser uses
 /// the browser's proxy when the settings say so: always, or once it failed
-/// through UDM's own setting (`retries`).
-pub fn config_for(download: &Download, s: &Settings, retries: &ProxyRetries) -> NetConfig {
+/// through UDM's own setting (`state.retries`). Its connections go out by
+/// the network adapter and resolver the settings choose; while bound to an
+/// adapter, no proxy configuration script is used, since the system fetches
+/// and runs those itself, unbound (the proxies set by hand still apply).
+pub fn config_for(download: &Download, s: &Settings, state: &NetState) -> NetConfig {
+    let retries = &state.retries;
     let browser_wanted =
         s.use_browser_proxy && (!s.browser_proxy_after_errors || retries.contains(download.url.as_str()));
     // The browser's whole setting when it sent one (its direct
@@ -94,6 +173,13 @@ pub fn config_for(download: &Download, s: &Settings, retries: &ProxyRetries) -> 
             })
         }
     });
+    let route = state.network.route(s);
+    let mut proxy = proxy;
+    if route.binding.is_some() {
+        if let Some(rules) = proxy.as_mut() {
+            rules.pac = None;
+        }
+    }
     let manual_ftp = (s.proxy_mode == ProxyMode::Manual).then(|| addr(&s.proxy_ftp)).flatten();
     let mut logins: Vec<Login> = s
         .site_logins
@@ -128,12 +214,13 @@ pub fn config_for(download: &Download, s: &Settings, retries: &ProxyRetries) -> 
             .as_ref()
             .map_or_else(ProxyLogin::default, |_| proxy_login(&s.proxy_ftp_username, ProxyKind::Ftp)),
         ftp_proxy: manual_ftp,
+        route,
     }
 }
 
-impl udm_domain::ports::ProxyFallback for ProxyRetries {
+impl udm_domain::ports::ProxyFallback for NetState {
     fn claim_retry(&self, url: udm_domain::address::Link) -> bool {
-        self.insert(url.into_string())
+        self.retries.insert(url.into_string())
     }
 }
 
@@ -144,8 +231,9 @@ mod tests {
     #[test]
     fn the_browsers_proxy_can_wait_for_a_failure() {
         let d = Download { url: "https://x/a.zip".into(), proxy: Some("http://bp:3128".into()), ..Download::default() };
-        let retries = ProxyRetries::default();
-        let through = |s: &Settings| config_for(&d, s, &retries).proxy.and_then(|p| p.proxy_for(d.url.as_str()));
+        let state = NetState::default();
+        let retries = &state.retries;
+        let through = |s: &Settings| config_for(&d, s, &state).proxy.and_then(|p| p.proxy_for(d.url.as_str()));
         let after = Settings { use_browser_proxy: true, browser_proxy_after_errors: true, ..Settings::default() };
         assert_eq!(through(&after), None, "not before it failed");
         let always = Settings { browser_proxy_after_errors: false, ..after.clone() };
@@ -171,7 +259,7 @@ mod tests {
                 browser_proxy: setting,
                 ..Download::default()
             };
-            config_for(&d, s, &ProxyRetries::default()).proxy.and_then(|p| p.proxy_for(d.url.as_str()))
+            config_for(&d, s, &NetState::default()).proxy.and_then(|p| p.proxy_for(d.url.as_str()))
         };
         // The browser connects directly: so does the download, whatever
         // UDM's own setting and the older field say.
@@ -194,6 +282,39 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_adapter_binds_every_connection_and_drops_configuration_scripts() {
+        use udm_domain::network::{AdapterChoice, AdapterId, DnsChoice};
+        let d = Download { url: "https://x.net/a.zip".into(), ..Download::default() };
+        let state = NetState::default();
+        let plain = Settings {
+            proxy_mode: ProxyMode::Script,
+            proxy_pac_url: "http://wpad/p.pac".into(),
+            ..Settings::default()
+        };
+        let net = config_for(&d, &plain, &state);
+        assert!(net.route.binding.is_none() && net.route.dns.is_none(), "the system's, as before");
+        assert!(net.proxy.and_then(|p| p.pac).is_some());
+
+        let bound = Settings {
+            network_adapter: Some(AdapterChoice {
+                id: AdapterId::parse("wg0").unwrap(),
+                name: "VPN".into(),
+                subnets: Vec::new(),
+            }),
+            dns: DnsChoice::Quad9,
+            ..plain
+        };
+        let net = config_for(&d, &bound, &state);
+        assert_eq!(net.route.binding.as_ref().map(|b| b.choice.id.as_str()), Some("wg0"));
+        assert!(net.proxy.and_then(|p| p.pac).is_none(), "the system would fetch the script unbound");
+        // Every download shares one resolver, and its answers.
+        let again = config_for(&d, &bound, &state);
+        assert!(Arc::ptr_eq(net.route.dns.as_ref().unwrap(), again.route.dns.as_ref().unwrap()));
+        let other = config_for(&d, &Settings { dns: DnsChoice::Google, ..bound }, &state);
+        assert!(!Arc::ptr_eq(net.route.dns.as_ref().unwrap(), other.route.dns.as_ref().unwrap()));
+    }
+
+    #[test]
     fn manual_socks_can_carry_https_and_ftp() {
         let s = Settings {
             proxy_mode: ProxyMode::Manual,
@@ -203,11 +324,15 @@ mod tests {
             ..Settings::default()
         };
         let net = |url: &str, s: &Settings| {
-            config_for(&Download { url: url.into(), ..Download::default() }, s, &ProxyRetries::default())
+            config_for(&Download { url: url.into(), ..Download::default() }, s, &NetState::default())
         };
         let via = |url: &str, s: &Settings| net(url, s).proxy.and_then(|p| p.proxy_for(url));
         assert_eq!(via("http://x.net/a.zip", &s).as_deref(), Some("http://web:8080"));
-        assert_eq!(via("https://x.net/a.zip", &s).as_deref(), Some("socks5://sock:1080"));
+        // SOCKS5 always has the proxy look up names, even with remote DNS
+        // off (that choice is SOCKS4's).
+        assert_eq!(via("https://x.net/a.zip", &s).as_deref(), Some("socks5h://sock:1080"));
+        let local = Settings { proxy_remote_dns: false, ..s.clone() };
+        assert_eq!(via("https://x.net/a.zip", &local).as_deref(), Some("socks5h://sock:1080"));
         let off = Settings { proxy_socks_https: false, ..s.clone() };
         assert_eq!(
             via("https://x.net/a.zip", &off).as_deref(),

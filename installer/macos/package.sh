@@ -7,8 +7,11 @@
 #
 # Runs on a Mac (lipo, sips, iconutil, codesign and hdiutil come with it)
 # with the aarch64-apple-darwin and x86_64-apple-darwin targets installed,
-# and node to check the Firefox copy of the extension. The app is signed ad hoc,
-# not with a Developer ID, so the first start needs right-click > Open.
+# and node to check the Firefox and Safari copies of the extension. With
+# Xcode it also builds the Safari extension into UDM.app
+# (installer/macos/safari/build.sh); without it the app has none, unless
+# UDM_SAFARI=require makes that an error. The app is signed ad hoc, not with
+# a Developer ID, so the first start needs right-click > Open.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -71,9 +74,23 @@ node "$root/installer/make-firefox.js" --check >/dev/null
 mkdir -p "$app/Contents/Resources/extension" "$app/Contents/Resources/firefox"
 cp -R "$root/extension/chromium/." "$app/Contents/Resources/extension/"
 cp -R "$root/extension/firefox/." "$app/Contents/Resources/firefox/"
-cp "$root/README.md" "$app/Contents/Resources/"
+cp "$root/README.md" "$root/THIRD-PARTY-NOTICES.txt" "$app/Contents/Resources/"
 
-codesign --force --deep --sign - "$app"
+# The Safari extension, an app extension in Contents/PlugIns, signed there
+# with its own entitlements. A build that fails leaves it out, so the disk
+# image is still made, unless UDM_SAFARI=require.
+if ! "$root/installer/macos/safari/build.sh" "$app" "$version"; then
+  [ "${UDM_SAFARI:-}" = require ] && exit 1
+  echo "warning: the Safari extension did not build; UDM.app has none" >&2
+  rm -rf "$app/Contents/PlugIns"
+fi
+
+# Signed inside out without --deep, which would sign the Safari extension
+# again without its entitlements: the other programs, then the app.
+for p in udm-daemon udm-host udm-cli udm-mcp; do
+  codesign --force --sign - "$app/Contents/MacOS/$p"
+done
+codesign --force --sign - "$app"
 ln -s /Applications "$work/dmg/Applications"
 dmg="$root/dist/UDM-${version}-macos.dmg"
 rm -f "$dmg"

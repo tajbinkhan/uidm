@@ -7,6 +7,21 @@ keep going after the browser closes.
 
 These pages were the README's manual. Each covers one part of UDM.
 
+## Step by step
+
+Short guides for the first things people do, most with a screenshot:
+
+- **[Your first download](guides/first-download.md)**: adding an address, the save-as dialog,
+  the download window and opening the file.
+- **[Catch browser downloads](guides/catch-browser-downloads.md)**: connecting the extension, and
+  why the browser sometimes keeps a download.
+- **[Download overnight](guides/download-overnight.md)**: a queue that starts at night and turns
+  the computer off when it is done.
+- **[A video from a page](guides/video-from-a-page.md)**: ffmpeg and yt-dlp, the video button, and
+  picking a quality.
+- **[Resume a broken download](guides/resume-a-broken-download.md)**: carrying on after a crash, and
+  giving an expired download a new link.
+
 ## Start here
 
 - **[Install](install.md)**: Setup, the portable zip, the `.dmg`, the Linux packages, loading the
@@ -33,6 +48,8 @@ These pages were the README's manual. Each covers one part of UDM.
 
 - **[What the browser extension takes](browser-capture.md)**: which downloads the extension hands
   to UDM, which it leaves with the browser, and the keys that change that.
+- **[The extension's privacy policy](privacy.md)**: what it reads, that it goes only to UDM on the
+  same computer, and why it asks for each permission.
 - **[Streams, batches and the site grabber](streams-batches-and-grabber.md)**: HLS, DASH and HDS
   videos, YouTube and other video sites through yt-dlp, subtitles, numbered batches, and crawling
   a site for its files.
@@ -40,6 +57,14 @@ These pages were the README's manual. Each covers one part of UDM.
   starting and stopping them by the clock, and what happens when a queue is done.
 - **[Proxies and logins](proxies-and-logins.md)**: the system proxy, manual and SOCKS proxies, PAC
   scripts, and site logins.
+- **[Network adapter, encrypted DNS and the server's country](network.md)**: downloading only
+  through a VPN's adapter, the kill switch when it goes down, DNS over HTTPS, and the country
+  column.
+- **[Torrents and magnet links](torrents.md)**: adding magnet links and `.torrent` files, choosing
+  their files, seeding and its limits, the torrent settings, and what peers can see.
+- **[Debrid accounts](debrid.md)** (experimental): fast downloads from file hosts such as
+  Rapidgator and 1fichier through a Real-Debrid, AllDebrid or Premiumize account, and which links
+  go to the service.
 - **[Notifications and virus scans](notifications-and-virus-scans.md)**: what UDM tells you
   when a download ends, and scanning finished files.
 
@@ -52,6 +77,8 @@ These pages were the README's manual. Each covers one part of UDM.
   [JSON Schema](automation-api.schema.json).
 - **[Building UDM](building.md)**: where the code lives, building and packaging it on each
   system, and adding a language.
+- **[Publishing the extension](extension-stores.md)**: for maintainers, listing the extension in
+  the Chrome Web Store and on Firefox Add-ons, and what changes once it is.
 - **[Help translate](translating.md)**: the languages, which ones wait for review, and how to
   review or add one.
 

@@ -2,6 +2,7 @@
 //! so the frontend shows text it never has to format.
 
 use udm_domain::bytes::ByteCount;
+use udm_domain::country::CountryCode;
 use udm_domain::download::{DownloadEntry, Status};
 use udm_domain::queue;
 
@@ -47,6 +48,23 @@ pub fn date(lang: &'static Language, unix: u64, offset: i64) -> String {
     let minutes = unix as i64 / 60 + offset;
     let ymd = queue::civil_from_days(minutes.div_euclid(1440));
     lang.date_time(ymd, minutes.rem_euclid(1440) as u32)
+}
+
+/// A country as the list shows it: its flag, made of the two regional
+/// indicator symbols for its letters, then its code ("🇩🇪 DE"). Where the
+/// system draws no flags (Windows draws the letters again, "DE DE"), the
+/// code alone (`Ctx::flags`).
+pub fn country(code: CountryCode, flag: bool) -> String {
+    if !flag {
+        return code.to_string();
+    }
+    let flag: String = code
+        .letters()
+        .iter()
+        .filter_map(|l| l.checked_sub(b'A').filter(|n| *n < 26))
+        .filter_map(|n| char::from_u32(0x1F1E6 + u32::from(n)))
+        .collect();
+    format!("{flag} {code}")
 }
 
 /// How far along a download is, from 0 to 1, when that is known.
@@ -129,6 +147,14 @@ pub fn icon_of_extension(ext: &str) -> FileIcon {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_country_shows_its_flag_and_code() {
+        let code = |c: &str| udm_domain::country::CountryCode::parse(c).unwrap();
+        assert_eq!(super::country(code("US"), true), "\u{1F1FA}\u{1F1F8} US");
+        assert_eq!(super::country(code("de"), true), "\u{1F1E9}\u{1F1EA} DE");
+        assert_eq!(super::country(code("de"), false), "DE", "where flags do not draw");
+    }
+
     use super::*;
     use crate::i18n::resolve;
 

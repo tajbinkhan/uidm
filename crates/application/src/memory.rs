@@ -1457,3 +1457,130 @@ impl udm_domain::ports::Timestamps for Seconds {
         self.0.load(Ordering::SeqCst)
     }
 }
+
+/// A debrid service in memory: the hosts it supports, what it makes of each
+/// link, its account, and what it was asked, with the key it was asked with.
+pub struct DebridDesk {
+    pub hosts: Mutex<Result<Vec<String>, udm_domain::debrid::DebridError>>,
+    pub links: HashMap<String, Result<String, udm_domain::debrid::DebridError>>,
+    pub account: Option<udm_domain::debrid::DebridAccount>,
+    /// The calls made: `hosts`, `unrestrict <link>` or `account`, each with
+    /// the service and the key.
+    pub calls: Mutex<Vec<String>>,
+}
+
+impl Default for DebridDesk {
+    fn default() -> Self {
+        DebridDesk {
+            hosts: Mutex::new(Ok(Vec::new())),
+            links: HashMap::new(),
+            account: None,
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl DebridDesk {
+    /// A service supporting `hosts`, unlocking each `(link, direct)`.
+    pub fn new(hosts: &[&str], links: &[(&str, &str)]) -> Self {
+        DebridDesk {
+            hosts: Mutex::new(Ok(hosts.iter().map(|h| h.to_string()).collect())),
+            links: links.iter().map(|(l, d)| (l.to_string(), Ok(d.to_string()))).collect(),
+            ..DebridDesk::default()
+        }
+    }
+
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn note(&self, what: String, service: udm_domain::debrid::DebridService, key: &udm_domain::debrid::DebridKey) {
+        self.calls.lock().unwrap().push(format!("{what} {service} {}", key.expose()));
+    }
+}
+
+impl udm_domain::ports::Debrid for DebridDesk {
+    fn hosts(
+        &self,
+        service: udm_domain::debrid::DebridService,
+        key: &udm_domain::debrid::DebridKey,
+    ) -> Result<udm_domain::debrid::SupportedHosts, udm_domain::debrid::DebridError> {
+        self.note("hosts".into(), service, key);
+        self.hosts.lock().unwrap().clone().map(udm_domain::debrid::SupportedHosts::new)
+    }
+
+    fn unrestrict(
+        &self,
+        service: udm_domain::debrid::DebridService,
+        key: &udm_domain::debrid::DebridKey,
+        link: &udm_domain::address::Address,
+    ) -> Result<udm_domain::debrid::Unrestricted, udm_domain::debrid::DebridError> {
+        self.note(format!("unrestrict {}", link.as_str()), service, key);
+        let direct =
+            self.links.get(link.as_str()).cloned().unwrap_or(Err(udm_domain::debrid::DebridError::HostNotSupported))?;
+        Ok(udm_domain::debrid::Unrestricted {
+            address: udm_domain::address::Address::parse(&direct).unwrap(),
+            filename: Some("file.zip".into()),
+            size: Some(ByteCount::new(1000)),
+        })
+    }
+
+    fn account(
+        &self,
+        service: udm_domain::debrid::DebridService,
+        key: &udm_domain::debrid::DebridKey,
+    ) -> Result<udm_domain::debrid::DebridAccount, udm_domain::debrid::DebridError> {
+        self.note("account".into(), service, key);
+        self.account.clone().ok_or(udm_domain::debrid::DebridError::BadKey)
+    }
+}
+
+/// The debrid key kept in memory, with the service it is for.
+#[derive(Default)]
+pub struct Keyring(pub Mutex<Option<(udm_domain::debrid::DebridService, udm_domain::debrid::DebridKey)>>);
+
+impl Keyring {
+    pub fn holding(service: udm_domain::debrid::DebridService, key: &str) -> Self {
+        Keyring(Mutex::new(udm_domain::debrid::DebridKey::new(key).map(|k| (service, k))))
+    }
+}
+
+impl udm_domain::ports::DebridKeys for Keyring {
+    fn stored(&self) -> Option<udm_domain::debrid::DebridService> {
+        self.0.lock().unwrap().as_ref().map(|(s, _)| *s)
+    }
+
+    fn key(&self, service: udm_domain::debrid::DebridService) -> Option<udm_domain::debrid::DebridKey> {
+        self.0.lock().unwrap().as_ref().filter(|(s, _)| *s == service).map(|(_, k)| k.clone())
+    }
+
+    fn set_key(
+        &self,
+        service: udm_domain::debrid::DebridService,
+        key: &udm_domain::debrid::DebridKey,
+    ) -> Result<(), SettingsError> {
+        *self.0.lock().unwrap() = Some((service, key.clone()));
+        Ok(())
+    }
+
+    fn remove_key(&self) -> Result<(), SettingsError> {
+        *self.0.lock().unwrap() = None;
+        Ok(())
+    }
+}
+
+/// What the user was told about the debrid account.
+#[derive(Default)]
+pub struct Alerts(Mutex<Vec<udm_domain::debrid::Refused>>);
+
+impl Alerts {
+    pub fn heard(&self) -> Vec<udm_domain::debrid::Refused> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl crate::debrid::AccountAlerts for Alerts {
+    fn refused(&self, refused: &udm_domain::debrid::Refused) {
+        self.0.lock().unwrap().push(refused.clone());
+    }
+}

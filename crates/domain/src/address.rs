@@ -1,8 +1,10 @@
 //! Download addresses. `Address` is one UDM can download from: it starts
-//! with `http://`, `https://`, `ftp://` or `ftps://` (in any case), the same check the
-//! daemon makes before it takes a download (`batch::is_download_url`) and
-//! no stricter, so every address accepted before is accepted now. The text
-//! is kept as given, so the files and the wire carry it unchanged.
+//! with `http://`, `https://`, `ftp://` or `ftps://` (in any case), or it is
+//! a magnet link with a BitTorrent info hash (`torrent::MagnetLink`), the
+//! same check the daemon makes before it takes a download
+//! (`batch::is_download_url`) and no stricter, so every address accepted
+//! before is accepted now. The text is kept as given, so the files and the
+//! wire carry it unchanged.
 //!
 //! `Link` is the address a download names, as it was given: an `Address`
 //! when it is one, else the text. Requests from clients, the list's rows
@@ -27,8 +29,8 @@ pub enum AddressError {
     /// The scheme of an address that is not http or https.
     #[error("{0}: addresses are not supported in a stream")]
     Scheme(String),
-    /// Not an http, https or ftp address, so nothing can be downloaded
-    /// from it.
+    /// Not an http, https or ftp address (or a magnet link), so nothing
+    /// can be downloaded from it.
     #[error("{0} is not an http, https or ftp address")]
     NotDownload(String),
 }
@@ -54,9 +56,20 @@ impl Address {
         self.0
     }
 
-    /// Whether it is an http or https address, not ftp or ftps.
+    /// Whether it is an http or https address, not ftp, ftps or a magnet
+    /// link.
     pub fn is_web(&self) -> bool {
         crate::batch::is_web_url(&self.0)
+    }
+
+    /// The magnet link it is, for a torrent download.
+    pub fn magnet(&self) -> Option<crate::torrent::MagnetLink> {
+        crate::torrent::starts_like_magnet(&self.0).then(|| crate::torrent::MagnetLink::parse(&self.0).ok()).flatten()
+    }
+
+    /// Whether it is a torrent's magnet link.
+    pub fn is_torrent(&self) -> bool {
+        crate::torrent::starts_like_magnet(&self.0)
     }
 }
 
@@ -255,7 +268,12 @@ mod tests {
             assert_eq!(a.as_str(), ok, "kept as given");
             assert!(crate::batch::is_download_url(ok));
         }
+        let magnet = "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=a";
+        let a = Address::parse(magnet).unwrap();
+        assert!(a.is_torrent() && !a.is_web() && a.magnet().is_some());
+        assert!(!Address::parse("https://x/").unwrap().is_torrent());
         for bad in [
+            "magnet:?dn=no-hash",
             "",
             "javascript:x",
             "file:///etc/passwd",

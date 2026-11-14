@@ -66,7 +66,7 @@ pub(super) fn run(
     let yt_dlp = ytdlp::find(req.ffmpeg.as_deref()).ok_or_else(|| EngineError::Refused(ytdlp::MISSING.into()))?;
     if choice.audio_only.is_some() && req.ffmpeg.is_none() {
         return Err(EngineError::Refused(
-            "Saving only the sound needs ffmpeg. Install it, or choose it in Options > General.".into(),
+            "Saving only the sound needs ffmpeg. Install it, or choose it in Options > Tools.".into(),
         ));
     }
     let stem = stream::stem(req);
@@ -82,6 +82,7 @@ pub(super) fn run(
         last_modified: None,
         suggested_filename: None,
         content_type: None,
+        server: None,
     };
     let claim = choose_output(&shared.claimed, &dir, &filename, req, &probe)?;
     let output = claim.path.clone();
@@ -98,7 +99,10 @@ pub(super) fn run(
     let working = working_stem(&output, id);
     let template = format!("{}.%(ext)s", ytdlp::literal_template(&working.to_string_lossy()));
     let proxy = req.net.proxy.as_ref().and_then(|p| p.proxy_for(&req.url));
-    let mut cmd = ytdlp::command(&yt_dlp, proxy.as_deref());
+    // Bound to the chosen network adapter through yt-dlp's own option; not
+    // run at all while it is down.
+    let source = req.net.route.source_address()?;
+    let mut cmd = ytdlp::command(&yt_dlp, proxy.as_deref(), source);
     cmd.args(["-f", &ytdlp::format_spec(choice, req.ffmpeg.is_some())])
         .args(["-o", &template])
         .args(["--newline", "--progress", "--progress-template", PROGRESS_TEMPLATE])
@@ -131,6 +135,7 @@ pub(super) fn run(
         connections: 1,
         partial: None,
         validator: None,
+        country: None,
     });
 
     let tally = Arc::new(Mutex::new(Tally::default()));
@@ -204,7 +209,7 @@ pub(super) fn run(
             .to_string()
     });
     drop(claim);
-    Ok(Saved { path, note })
+    Ok(Saved { path, note, complete: true })
 }
 
 /// The name yt-dlp works under for download `id`, without an extension:
@@ -384,7 +389,7 @@ mod tests {
         let url = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
         let ffmpeg = crate::settings::ffmpeg(&Settings::default());
         let yt_dlp = ytdlp::find(ffmpeg.as_deref()).expect("yt-dlp");
-        let info = ytdlp::probe(&yt_dlp, url, None, ytdlp::PROBE_TIMEOUT);
+        let info = ytdlp::probe(&yt_dlp, url, None, None, ytdlp::PROBE_TIMEOUT);
         assert!(info.error.is_none(), "{:?}", info.error);
         assert!(!info.video.is_empty() && !info.audio.is_empty(), "{info:?}");
 
@@ -423,6 +428,9 @@ mod tests {
             reuse_partial: None,
             host_limit: None,
             elevate: false,
+            resolve: None,
+            torrent_files: None,
+            torrent_uploaded: ByteCount::ZERO,
         });
         let mut advanced = 0;
         let path = loop {

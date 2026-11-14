@@ -13,6 +13,8 @@ export type {
   ZipView,
   ToolKey,
   ToolRow,
+  DebridChoice,
+  DebridServiceRow,
   DeviceRow,
   PairingView,
   BrowserRowView,
@@ -84,7 +86,6 @@ export type {
   ColumnKey,
   DoneView,
   DownloadControl,
-  DownloadView,
   FileIcon,
   Id,
   InvokeError,
@@ -96,12 +97,15 @@ export type {
   OpenWindow,
   QueueItem,
   RemoveView,
-  SaveAsView,
   SegmentView,
   SortDir,
   Then,
   Tone,
   TreeIcon,
+  PeerRow,
+  TrackerRow,
+  SeedLimitsView,
+  SeedLimitsInput,
 } from '../bindings';
 
 export type Update = B.Update_Deserialize;
@@ -120,3 +124,11 @@ export type GrabberView = B.GrabberView_Deserialize;
 export type RefreshView = B.RefreshView_Deserialize;
 export type GalleryView = B.GalleryView_Deserialize;
 export type RemoteView = B.RemoteView_Deserialize;
+export type DownloadView = B.DownloadView_Deserialize;
+export type DownloadPatch = B.DownloadPatch_Deserialize;
+export type SaveAsView = B.SaveAsView_Deserialize;
+export type SaveAsPatch = B.SaveAsPatch_Deserialize;
+export type SaveAsTorrent = B.SaveAsTorrent_Deserialize;
+export type TorrentView = B.TorrentView_Deserialize;
+export type TorrentPatch = B.TorrentPatch_Deserialize;
+export type TorrentFileRow = B.TorrentFileRow_Deserialize;

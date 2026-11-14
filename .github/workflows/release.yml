@@ -2,15 +2,20 @@
 # Release. Release files don't count against the repository's storage, and
 # UDM's own update check reads the latest release.
 #
-# To release: set the version in Cargo.toml, write the notes in
-# release-notes/v<version>.md (start from release-notes/TEMPLATE.md), commit,
-# then push a tag that matches it:
+# To release: set the version in Cargo.toml and in
+# extension/chromium/manifest.json (then run node installer/make-firefox.js
+# and node installer/make-safari.js), write the notes in release-notes/v<version>.md (start from
+# release-notes/TEMPLATE.md), commit, then push a tag that matches it:
 #
 #   git tag v0.2.0 && git push origin v0.2.0
 #
 # Started by hand (Actions > Release > Run workflow), it builds the same
 # files without publishing them, as artifacts kept for a day. The `docker`
 # job also pushes the server image to GitHub Container Registry for a tag.
+# The `extension` job makes the zips the browser stores take, which the
+# release carries too, and for a tag the `firefox-store` and `chrome-store`
+# jobs submit them to the stores the repository has keys for
+# (docs/extension-stores.md).
 
 name: Release
 
@@ -101,7 +106,7 @@ jobs:
           Copy-Item -Recurse extension\chromium "$out\extension"
           Copy-Item -Recurse extension\firefox "$out\firefox"
           Copy-Item -Recurse host "$out"
-          Copy-Item install-host.ps1, README.md "$out"
+          Copy-Item install-host.ps1, README.md, THIRD-PARTY-NOTICES.txt "$out"
           # The marker makes the zip a portable copy (docs/portable.md).
           Copy-Item installer\windows\portable.txt "$out"
           Compress-Archive -Path $out -DestinationPath "dist\UDM-$version-windows-portable.zip"
@@ -146,7 +151,11 @@ jobs:
           pnpm --dir frontend install --frozen-lockfile
           pnpm --dir frontend build
 
+      # The runner has Xcode, so UDM.app gets its Safari extension, and a
+      # broken Safari build stops the release (docs/building.md).
       - name: Build the disk image
+        env:
+          UDM_SAFARI: require
         run: installer/macos/package.sh
 
       - uses: actions/upload-artifact@v5
@@ -198,6 +207,51 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: linux
+          path: dist/*
+          retention-days: 1
+          if-no-files-found: error
+
+  # The zips the Chrome Web Store and addons.mozilla.org take
+  # (installer/make-store-zips.js, docs/extension-stores.md), made from the
+  # extension in git. The extension has no build step, so nothing but Node
+  # is needed.
+  extension:
+    name: Extension store zips
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # A store takes each version once, so the zips carry the release's. A
+      # browser's version has only numbers, so a pre-release (v0.6.0-rc.1)
+      # matches the version it leads to (0.6.0) and goes to no store.
+      - name: Check the tag matches the extension's version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(node -p 'require("./extension/chromium/manifest.json").version')
+          if [ "v$version" != "${TAG%%-*}" ]; then
+            echo "::error::The tag $TAG does not match version $version in extension/chromium/manifest.json"
+            exit 1
+          fi
+
+      - name: Test the extension
+        run: node --test extension/test/*.test.js
+
+      - name: Make the store zips
+        run: node installer/make-store-zips.js dist
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: extension
           path: dist/*
           retention-days: 1
           if-no-files-found: error
@@ -255,7 +309,7 @@ jobs:
   publish:
     name: Publish
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [windows, macos, linux]
+    needs: [windows, macos, linux, extension]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -307,3 +361,120 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "UDM $TAG" \
             "$@"
+
+  # The store zips go to each store once the release is out, when the
+  # repository has that store's keys (docs/extension-stores.md says how to
+  # get them). A store without keys is skipped: its zip waits on the release
+  # page to be uploaded by hand. The first listing in each store is always
+  # made by hand. A pre-release tag goes to no store. The two stores are
+  # separate jobs, so one failing does not stop the other.
+  firefox-store:
+    name: Firefox Add-ons
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    needs: [extension, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Secrets cannot be read in `if:`, so this tells the steps below
+      # whether they are there, without showing them.
+      - name: See whether the keys are there
+        id: keys
+        env:
+          KEYS: ${{ secrets.AMO_JWT_ISSUER != '' && secrets.AMO_JWT_SECRET != '' }}
+        run: echo "present=$KEYS" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v5
+        if: steps.keys.outputs.present == 'true'
+        with:
+          name: extension
+          path: dist
+
+      - name: Install Node
+        if: steps.keys.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # web-ext signs the listed version on addons.mozilla.org, which then
+      # reviews it; it does not wait for the review. It reads the keys from
+      # its WEB_EXT_ variables. The zip is the source too: the extension has
+      # no build step.
+      - name: Submit the Firefox copy to addons.mozilla.org
+        if: steps.keys.outputs.present == 'true'
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          mkdir -p build/firefox
+          unzip -q dist/UDM-*-firefox-store.zip -d build/firefox
+          npx --yes web-ext@8.3.0 sign \
+            --source-dir build/firefox \
+            --artifacts-dir build/signed \
+            --channel listed \
+            --approval-timeout 0
+
+  chrome-store:
+    name: Chrome Web Store
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+    needs: [extension, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: See whether the keys are there
+        id: keys
+        env:
+          KEYS: ${{ secrets.CWS_CLIENT_ID != '' && secrets.CWS_CLIENT_SECRET != '' && secrets.CWS_REFRESH_TOKEN != '' && secrets.CWS_PUBLISHER_ID != '' && secrets.CWS_EXTENSION_ID != '' }}
+        run: echo "present=$KEYS" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v5
+        if: steps.keys.outputs.present == 'true'
+        with:
+          name: extension
+          path: dist
+
+      # The Chrome Web Store API v2: an access token from the refresh token,
+      # then upload the zip to the item (waiting while the store still
+      # processes it) and submit it for review, to be published once it
+      # passes. --fail-with-body shows Google's reason when a call fails.
+      - name: Upload the Chromium copy to the Chrome Web Store
+        if: steps.keys.outputs.present == 'true'
+        env:
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+        run: |
+          token=$(curl -sS --fail-with-body https://oauth2.googleapis.com/token \
+            --data-urlencode "client_id=$CWS_CLIENT_ID" \
+            --data-urlencode "client_secret=$CWS_CLIENT_SECRET" \
+            --data-urlencode "refresh_token=$CWS_REFRESH_TOKEN" \
+            --data-urlencode "grant_type=refresh_token" | jq -r '.access_token // empty')
+          if [ -z "$token" ]; then
+            echo "::error::Google gave no access token for the Chrome Web Store keys"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          api=https://chromewebstore.googleapis.com
+          item="publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID"
+          zip=$(ls dist/UDM-*-chromium-store.zip)
+          upload=$(curl -sS --fail-with-body -X POST \
+            -H "Authorization: Bearer $token" -H "Content-Type: application/zip" \
+            --data-binary "@$zip" "$api/upload/v2/$item:upload")
+          echo "$upload"
+          state=$(echo "$upload" | jq -r '.uploadState // empty')
+          tries=0
+          while [ "$state" = IN_PROGRESS ] && [ "$tries" -lt 30 ]; do
+            sleep 10
+            tries=$((tries + 1))
+            state=$(curl -sS --fail-with-body -H "Authorization: Bearer $token" \
+              "$api/v2/$item:fetchStatus" | jq -r '.lastAsyncUploadState // empty')
+          done
+          if [ "$state" != SUCCEEDED ]; then
+            echo "::error::The Chrome Web Store did not take $zip (upload state: ${state:-none})"
+            exit 1
+          fi
+          published=$(curl -sS --fail-with-body -X POST \
+            -H "Authorization: Bearer $token" -H "Content-Length: 0" \
+            "$api/v2/$item:publish")
+          echo "$published"

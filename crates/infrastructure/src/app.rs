@@ -59,6 +59,9 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         reuse_partial: None,
         host_limit,
         elevate: d.elevate,
+        resolve: None,
+        torrent_files: d.torrent_files,
+        torrent_uploaded: udm_domain::bytes::ByteCount::ZERO,
     }
 }
 
@@ -129,16 +132,19 @@ pub fn post_body(d: &Download) -> Option<Vec<u8>> {
 /// Map an engine event to the message sent to clients.
 pub fn progress_to_outgoing(p: Progress) -> Outgoing {
     match p {
-        Progress::Started { id, url, path, total, resumable, connections, partial, validator } => Outgoing::Started {
-            id,
-            url: url.into(),
-            path: path.display().to_string(),
-            total,
-            resumable,
-            connections,
-            partial: partial.map(|p| p.display().to_string()),
-            validator,
-        },
+        Progress::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
+            Outgoing::Started {
+                id,
+                url: url.into(),
+                path: path.display().to_string(),
+                total,
+                resumable,
+                connections,
+                partial: partial.map(|p| p.display().to_string()),
+                validator,
+                country,
+            }
+        }
         Progress::Advanced { id, url, done, total, parts, segments } => {
             Outgoing::Progress { id, url: url.into(), done, total, parts, segments }
         }
@@ -150,6 +156,8 @@ pub fn progress_to_outgoing(p: Progress) -> Outgoing {
         Progress::NameTaken { id, url, path, total } => {
             Outgoing::NameTaken { id, url: url.into(), path: path.display().to_string(), total }
         }
+        Progress::TorrentInfo { id, url, info } => Outgoing::TorrentInfo { id, url: url.into(), info },
+        Progress::TorrentStats { id, url, stats } => Outgoing::TorrentStats { id, url: url.into(), stats },
     }
 }
 

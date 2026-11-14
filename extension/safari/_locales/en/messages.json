@@ -1,0 +1,444 @@
+{
+  "extDescription": {
+    "message": "Send browser downloads to the UDM download manager.",
+    "description": "The extension's description in the browser's extension list and store. UDM is the product name."
+  },
+
+  "downloadWithUdm": {
+    "message": "Download with UDM",
+    "description": "Context menu item on a link, image, video or audio; also the button shown next to selected text that holds links."
+  },
+  "downloadLaterWithUdm": {
+    "message": "Download later with UDM",
+    "description": "Context menu item on a link, image, video or audio: adds it to UDM's queue without starting it."
+  },
+  "downloadGalleryWithUdm": {
+    "message": "Download gallery with UDM",
+    "description": "Context menu item on a page: UDM lists the pictures gallery-dl finds on the page to pick from."
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "Download all links with UDM",
+    "description": "Context menu item on a page: lists the page's links in UDM to pick from."
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "Download the selected links with UDM",
+    "description": "Context menu item on selected text: lists the links in the selection in UDM to pick from."
+  },
+  "udmDisconnected": {
+    "message": "UDM disconnected",
+    "description": "Why the extension is not connected, when the browser gives no reason. Shown as the REASON in statusNotConnectedReason."
+  },
+
+  "captureDownloads": {
+    "message": "Capture downloads",
+    "description": "Popup checkbox: whether downloads the browser starts go to UDM instead."
+  },
+  "captureDownloadsTitle": {
+    "message": "Send downloads the browser starts to UDM",
+    "description": "Tooltip of the captureDownloads checkbox."
+  },
+  "captureInTab": {
+    "message": "Capture in this tab",
+    "description": "Popup checkbox at the top: whether downloads started in the current tab go to UDM, like IDM's toolbar button."
+  },
+  "captureInTabTitle": {
+    "message": "Turn capture off to leave this tab's downloads to the browser",
+    "description": "Tooltip of the captureInTab checkbox."
+  },
+  "captureOffInTab": {
+    "message": "Off in this tab",
+    "description": "Popup note shown next to captureInTab while capture is off in the current tab."
+  },
+  "statusConnected": {
+    "message": "Connected. Downloads you start in the browser go to UDM.",
+    "description": "Popup status line while connected to UDM with capture on."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Connected. Capture is off, so the browser keeps its own downloads.",
+    "description": "Popup status line while connected to UDM with capture off."
+  },
+  "statusNotConnected": {
+    "message": "Not connected to UDM. Downloads stay in the browser.",
+    "description": "Popup status line while UDM cannot be reached and no reason is known."
+  },
+  "statusNotConnectedReason": {
+    "message": "Not connected to UDM: $REASON$. Downloads stay in the browser.",
+    "description": "Popup status line while UDM cannot be reached. REASON is an error message, often from the browser or UDM in English.",
+    "placeholders": {
+      "reason": { "content": "$1", "example": "Specified native messaging host not found" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Your next download gives $NAME$ a new link.",
+    "description": "Popup line while a download in UDM waits for a new link: the next download the browser starts becomes that link.",
+    "placeholders": {
+      "name": { "content": "$1", "example": "setup.exe" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Stop waiting",
+    "description": "Popup button next to refreshWaiting: stop waiting for a new link."
+  },
+  "skipNextDownload": {
+    "message": "Skip next download",
+    "description": "Popup button: the next download the browser starts stays in the browser instead of going to UDM."
+  },
+  "skipNextDownloadTitle": {
+    "message": "Let the next download stay in the browser",
+    "description": "Tooltip of the skipNextDownload button."
+  },
+  "dontSkip": {
+    "message": "Don't skip",
+    "description": "The skipNextDownload button once pressed: undoes it."
+  },
+  "skippingNextDownloadTitle": {
+    "message": "The next download stays in the browser",
+    "description": "Tooltip of the dontSkip button."
+  },
+  "allLinks": {
+    "message": "All links on this page",
+    "description": "Popup button: lists the current page's links in UDM to pick from."
+  },
+  "allLinksTitle": {
+    "message": "List this page's links in UDM to pick the ones to download",
+    "description": "Tooltip of the allLinks button."
+  },
+  "videoButton": {
+    "message": "Video button",
+    "description": "Popup checkbox: whether a download button shows over videos playing in web pages."
+  },
+  "videoButtonTitle": {
+    "message": "A download button over videos playing in the browser",
+    "description": "Tooltip of the videoButton checkbox."
+  },
+  "videoButtonOnSite": {
+    "message": "on $SITE$",
+    "description": "Popup checkbox next to videoButton: whether the video button shows on the current site.",
+    "placeholders": {
+      "site": { "content": "$1", "example": "www.example.com" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Paste a download URL",
+    "description": "Placeholder of the popup's address field."
+  },
+  "download": {
+    "message": "Download",
+    "description": "Popup button that sends the pasted address to UDM; also the video button's menu item for a whole video or audio file."
+  },
+  "noDownloads": {
+    "message": "No downloads yet.",
+    "description": "Popup download list when it is empty."
+  },
+
+  "stateQueued": {
+    "message": "Queued",
+    "description": "State of a download in the popup list: waiting in UDM's queue."
+  },
+  "stateDownloading": {
+    "message": "Downloading",
+    "description": "State of a download in the popup list."
+  },
+  "stateDone": {
+    "message": "Done",
+    "description": "State of a download in the popup list: finished."
+  },
+  "stateFailed": {
+    "message": "Failed",
+    "description": "State of a download in the popup list."
+  },
+  "stateCanceled": {
+    "message": "Canceled",
+    "description": "State of a download in the popup list."
+  },
+  "stateInterrupted": {
+    "message": "Interrupted",
+    "description": "State of a download in the popup list: stopped when UDM closed; it can resume."
+  },
+  "stateConfirming": {
+    "message": "Waiting for you in UDM",
+    "description": "State of a download in the popup list: UDM's window asks the user something about it (the file name is taken)."
+  },
+  "stateWaiting": {
+    "message": "Waiting to start",
+    "description": "State of a download in the popup list: added to UDM without starting it."
+  },
+  "threatFound": {
+    "message": "Threat found",
+    "description": "Popup list: the virus scan found a threat in the downloaded file."
+  },
+  "start": {
+    "message": "Start",
+    "description": "Popup button on a download."
+  },
+  "cancel": {
+    "message": "Cancel",
+    "description": "Popup button on a download."
+  },
+  "retry": {
+    "message": "Retry",
+    "description": "Popup button on a failed, canceled or interrupted download."
+  },
+  "remove": {
+    "message": "Remove",
+    "description": "Popup button on a download: removes it from UDM's list."
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "description": "Popup list: how much of a download has arrived, out of its whole size. Both are sizes such as sizeMB.",
+    "placeholders": {
+      "done": { "content": "$1", "example": "1.5 MB" },
+      "total": { "content": "$2", "example": "10.0 MB" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "description": "A size in bytes.",
+    "placeholders": {
+      "size": { "content": "$1", "example": "512" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "description": "A size in kilobytes (1024 bytes).",
+    "placeholders": {
+      "size": { "content": "$1", "example": "1.5" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "description": "A size in megabytes.",
+    "placeholders": {
+      "size": { "content": "$1", "example": "1.5" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "description": "A size in gigabytes.",
+    "placeholders": {
+      "size": { "content": "$1", "example": "1.5" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "description": "A size in terabytes.",
+    "placeholders": {
+      "size": { "content": "$1", "example": "1.5" }
+    }
+  },
+
+  "downloadVideo": {
+    "message": "Download this video",
+    "description": "The button the extension shows over a video playing in a web page; it opens a menu of what to download."
+  },
+  "videoButtonHelp": {
+    "message": "Help about the video button",
+    "description": "Tooltip of the video button's \"?\", which opens help about it."
+  },
+  "videoButtonClose": {
+    "message": "Close it for this video",
+    "description": "Tooltip of the video button's \"x\", which hides the button for that video until the page loads again."
+  },
+  "lookingForVideo": {
+    "message": "Looking for the video...",
+    "description": "The video button's menu while it asks UDM what the video offers."
+  },
+  "subtitles": {
+    "message": "Subtitles:",
+    "description": "The video button's menu: the label before the subtitle languages a stream offers, each with a checkbox."
+  },
+  "videoProtected": {
+    "message": "This video is protected by DRM, so UDM will not download it.",
+    "description": "The video button's menu for a video with copy protection."
+  },
+  "streamProtected": {
+    "message": "Protected by DRM; UDM will not download it.",
+    "description": "The video button's menu, under a stream with copy protection."
+  },
+  "udmNotConnected": {
+    "message": "UDM is not running or not connected.",
+    "description": "The video button's menu when UDM cannot be reached."
+  },
+  "noVideoFound": {
+    "message": "No video found yet. Let it play for a moment, then try again.",
+    "description": "The video button's menu when the page has not loaded a video the extension recognizes."
+  },
+  "sentToUdm": {
+    "message": "Sent to UDM.",
+    "description": "The video button's menu after a choice was sent to UDM."
+  },
+  "couldNotReachUdm": {
+    "message": "Could not reach UDM.",
+    "description": "The video button's menu when sending a choice to UDM failed."
+  },
+  "hlsStream": {
+    "message": "HLS stream",
+    "description": "The video button's menu: heading for a video streamed with HLS (a technical name)."
+  },
+  "dashStream": {
+    "message": "DASH stream",
+    "description": "The video button's menu: heading for a video streamed with MPEG-DASH (a technical name)."
+  },
+  "hdsStream": {
+    "message": "HDS stream",
+    "description": "The video button's menu: heading for a video streamed with Adobe HTTP Dynamic Streaming (a technical name)."
+  },
+  "youtubeVideo": {
+    "message": "YouTube video",
+    "description": "The video button's menu: heading for a YouTube video, which UDM reads with yt-dlp."
+  },
+  "facebookVideo": {
+    "message": "Facebook video",
+    "description": "The video button's menu: heading for a Facebook video, which UDM reads with yt-dlp."
+  },
+  "instagramVideo": {
+    "message": "Instagram video",
+    "description": "The video button's menu: heading for an Instagram video, which UDM reads with yt-dlp."
+  },
+  "vimeoVideo": {
+    "message": "Vimeo video",
+    "description": "The video button's menu: heading for a Vimeo video, which UDM reads with yt-dlp."
+  },
+  "pageVideo": {
+    "message": "Video on this page",
+    "description": "The video button's menu: heading for a video on a page of another site, which UDM read with yt-dlp."
+  },
+  "playlistTitled": {
+    "message": "Playlist: $TITLE$ ($COUNT$ videos)",
+    "description": "The video button's menu: heading for a playlist or channel UDM read with yt-dlp. TITLE is its name, COUNT how many videos it lists.",
+    "placeholders": {
+      "title": { "content": "$1", "example": "Lectures" },
+      "count": { "content": "$2", "example": "24" }
+    }
+  },
+  "playlistVideos": {
+    "message": "Playlist ($COUNT$ videos)",
+    "description": "The video button's menu: heading for a playlist without a name. COUNT is how many videos it lists.",
+    "placeholders": {
+      "count": { "content": "$1", "example": "24" }
+    }
+  },
+  "chooseVideos": {
+    "message": "Choose videos in UDM...",
+    "description": "The video button's menu item that opens UDM's window to tick the playlist's videos to download."
+  },
+  "mediaNoAnswer": {
+    "message": "UDM did not answer.",
+    "description": "The video button's menu, under a stream UDM gave no details for."
+  },
+  "soundOnly": {
+    "message": "Sound only ($FORMAT$)",
+    "description": "The video button's menu item for a stream's sound without the picture. FORMAT is a file format.",
+    "placeholders": {
+      "format": { "content": "$1", "example": "MP3" }
+    }
+  },
+  "videoFileType": {
+    "message": "$TYPE$ video",
+    "description": "The video button's menu: heading for a video file. TYPE is its file format.",
+    "placeholders": {
+      "type": { "content": "$1", "example": "MP4" }
+    }
+  },
+  "audioFileType": {
+    "message": "$TYPE$ audio",
+    "description": "The video button's menu: heading for an audio file. TYPE is its file format.",
+    "placeholders": {
+      "type": { "content": "$1", "example": "MP3" }
+    }
+  },
+  "videoFile": {
+    "message": "Video",
+    "description": "The video button's menu: heading for a video file of unknown format."
+  },
+  "audioFile": {
+    "message": "Audio",
+    "description": "The video button's menu: heading for an audio file of unknown format."
+  },
+  "takeoverFailed": {
+    "message": "UDM could not take over the download",
+    "description": "Title of the notice shown when UDM could not take a download from the browser, which then downloads it itself."
+  },
+  "takeoverNotConnected": {
+    "message": "UDM is not running or not connected, so the browser downloads $FILE$.",
+    "description": "Body of the notice when UDM is not running or not connected. FILE is the download's file name or address.",
+    "placeholders": {
+      "file": {
+        "content": "$1",
+        "example": "setup.exe"
+      }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM could not start $FILE$ ($REASON$), so the browser downloads it.",
+    "description": "Body of the notice when UDM refused or could not start a download. FILE is the file name or address, REASON is UDM's error message.",
+    "placeholders": {
+      "file": {
+        "content": "$1",
+        "example": "setup.exe"
+      },
+      "reason": {
+        "content": "$2",
+        "example": "server returned HTTP 403"
+      }
+    }
+  },
+  "dontShowAgain": {
+    "message": "Don't show again",
+    "description": "Button on the notice that UDM could not take a download: stop showing such notices."
+  },
+  "takeoverClickToStop": {
+    "message": "Click this notice to stop showing it.",
+    "description": "Added to the notice in browsers whose notices have no buttons (Firefox): clicking the notice stops such notices."
+  },
+  "downloadLastVideo": {
+    "message": "Download the last video with UDM",
+    "description": "Context menu item on a page or video: sends the video or audio the browser loaded last, in any tab, to UDM."
+  },
+  "recentVideos": {
+    "message": "Recent videos (UDM)",
+    "description": "Context menu item on a page or video: a submenu of the last 10 videos or audio files the browser loaded, to send one to UDM."
+  },
+  "downloadPageWithUdm": {
+    "message": "Download page with UDM",
+    "description": "Context menu item on a page or frame: sends the address of the page (or the frame clicked in) itself to UDM."
+  },
+  "noLinksFound": {
+    "message": "No links found on this page.",
+    "description": "Notice when \"Download all links with UDM\" finds no links on the page."
+  },
+  "noSelectedLinksFound": {
+    "message": "No links found in the selection.",
+    "description": "Notice when \"Download selected links with UDM\" finds no links in the selected text."
+  },
+  "linksUnreadable": {
+    "message": "The browser does not let UDM read the links of this page.",
+    "description": "Notice when the extension may not read a page's links (a browser page or the extension store)."
+  },
+  "cannotReachUdm": {
+    "message": "Cannot reach UDM. Is it running?",
+    "description": "Notice when a context menu item or button could not send something to UDM."
+  },
+  "cannotReachUdmReason": {
+    "message": "Cannot reach UDM ($REASON$).",
+    "description": "Notice when a context menu item or button could not send something to UDM. REASON is the browser's error.",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "Native host has exited."
+      }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "The browser downloads it instead.",
+    "description": "Added to the \"Cannot reach UDM\" notice when the browser downloads the link itself."
+  },
+  "browserDownloadsHeading": {
+    "message": "Downloading in the browser",
+    "description": "Popup heading over the browser's own downloads in progress, which can be sent to UDM."
+  },
+  "sendToUdm": {
+    "message": "Send to UDM",
+    "description": "Popup button next to a download in progress in the browser: cancels it in the browser and downloads it with UDM."
+  }
+}

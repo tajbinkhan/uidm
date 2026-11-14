@@ -755,7 +755,7 @@ pub struct Settings {
     /// Send a package's archives to the Recycle Bin once they are unpacked.
     pub unpack_recycle: bool,
     /// Look for a newer yt-dlp once a day and install it, when UDM
-    /// installed yt-dlp (Options > General). Off unless the user turns it on.
+    /// installed yt-dlp (Options > Tools). Off unless the user turns it on.
     #[serde(default)]
     pub ytdlp_auto_update: bool,
     /// Ask before removing downloads from the list.
@@ -879,6 +879,87 @@ pub struct Settings {
     /// every network interface.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_addresses: Vec<String>,
+    /// The debrid account links to file hosts go through (experimental).
+    /// Its API key is stored sealed beside the settings, never here.
+    #[serde(default)]
+    pub debrid: crate::debrid::DebridSettings,
+    /// The network adapter every connection is bound to; when it is down,
+    /// downloads stop rather than use another network. `None` lets the
+    /// system choose, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_adapter: Option<crate::network::AdapterChoice>,
+    /// Where host names are looked up: the system, or a DNS over HTTPS
+    /// resolver.
+    #[serde(default)]
+    pub dns: crate::network::DnsChoice,
+    /// How torrents and magnet links download and seed.
+    #[serde(default)]
+    pub torrents: TorrentSettings,
+}
+
+/// How torrents run: the port peers reach this computer on, how peers are
+/// found, and when seeding stops.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TorrentSettings {
+    /// The port peers connect to (TCP and the DHT's UDP); `None` (or 0)
+    /// takes a free one each time UDM starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Find peers through the DHT, without a tracker.
+    pub dht: bool,
+    /// Ask the router to forward the port to this computer (UPnP). Never
+    /// while downloads are bound to a network adapter.
+    pub upnp: bool,
+    /// Find peers on the local network (Local Service Discovery). Never
+    /// while downloads are bound to a network adapter.
+    pub local_peers: bool,
+    /// The most peers each torrent connects to; `None` lets UDM choose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_peers: Option<u32>,
+    /// The most all torrents upload, in KB/s; `None` for no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_limit_kbps: Option<u64>,
+    /// When a finished torrent stops seeding, unless it has its own limits.
+    pub seed_limits: crate::torrent::SeedLimits,
+    /// Take `.torrent` files the browser downloads (by their type or name)
+    /// as torrents, rather than saving the file.
+    pub catch_torrent_files: bool,
+}
+
+/// The most peers a torrent may be set to connect to.
+pub const MAX_TORRENT_PEERS: u32 = 1000;
+
+impl Default for TorrentSettings {
+    fn default() -> Self {
+        TorrentSettings {
+            port: None,
+            dht: true,
+            upnp: true,
+            local_peers: true,
+            max_peers: None,
+            upload_limit_kbps: None,
+            seed_limits: crate::torrent::SeedLimits::default(),
+            catch_torrent_files: true,
+        }
+    }
+}
+
+impl TorrentSettings {
+    /// The port to listen on, or `None` for any free one.
+    pub fn listen_port(&self) -> Option<u16> {
+        self.port.filter(|p| *p > 0)
+    }
+
+    /// Peers per torrent, between 1 and [`MAX_TORRENT_PEERS`].
+    pub fn peers(&self) -> Option<u32> {
+        self.max_peers.map(|p| p.clamp(1, MAX_TORRENT_PEERS))
+    }
+
+    /// The upload limit in bytes per second, if any.
+    pub fn upload_limit(&self) -> Option<u64> {
+        self.upload_limit_kbps.filter(|k| *k > 0).map(|k| k.saturating_mul(1024))
+    }
 }
 
 fn default_remote_port() -> u16 {
@@ -1020,6 +1101,10 @@ impl Default for Settings {
             remote_enabled: false,
             remote_port: DEFAULT_REMOTE_PORT,
             remote_addresses: Vec::new(),
+            debrid: crate::debrid::DebridSettings::default(),
+            network_adapter: None,
+            dns: crate::network::DnsChoice::System,
+            torrents: TorrentSettings::default(),
         }
     }
 }

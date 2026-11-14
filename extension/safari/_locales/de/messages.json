@@ -1,0 +1,351 @@
+{
+  "extDescription": {
+    "message": "Browser-Downloads an den Download-Manager UDM senden."
+  },
+  "downloadWithUdm": {
+    "message": "Mit UDM herunterladen"
+  },
+  "downloadLaterWithUdm": {
+    "message": "Später mit UDM herunterladen"
+  },
+  "downloadGalleryWithUdm": {
+    "message": "Galerie mit UDM herunterladen"
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "Alle Links mit UDM herunterladen"
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "Ausgewählte Links mit UDM herunterladen"
+  },
+  "udmDisconnected": {
+    "message": "UDM hat die Verbindung getrennt"
+  },
+  "captureDownloads": {
+    "message": "Downloads abfangen"
+  },
+  "captureDownloadsTitle": {
+    "message": "Downloads, die der Browser startet, an UDM senden"
+  },
+  "captureInTab": {
+    "message": "Übernahme in diesem Tab"
+  },
+  "captureInTabTitle": {
+    "message": "Abschalten, damit die Downloads dieses Tabs im Browser bleiben"
+  },
+  "captureOffInTab": {
+    "message": "In diesem Tab aus"
+  },
+  "statusConnected": {
+    "message": "Verbunden. Downloads, die Sie im Browser starten, gehen an UDM."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Verbunden. Das Abfangen ist aus, daher behält der Browser seine Downloads selbst."
+  },
+  "statusNotConnected": {
+    "message": "Nicht mit UDM verbunden. Downloads bleiben im Browser."
+  },
+  "statusNotConnectedReason": {
+    "message": "Nicht mit UDM verbunden: $REASON$. Downloads bleiben im Browser.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Ihr nächster Download wird der neue Link für $NAME$.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Nicht mehr warten"
+  },
+  "skipNextDownload": {
+    "message": "Nächsten Download überspringen"
+  },
+  "skipNextDownloadTitle": {
+    "message": "Den nächsten Download im Browser lassen"
+  },
+  "dontSkip": {
+    "message": "Nicht überspringen"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "Der nächste Download bleibt im Browser"
+  },
+  "allLinks": {
+    "message": "Alle Links der Seite"
+  },
+  "allLinksTitle": {
+    "message": "Die Links dieser Seite in UDM auflisten, um die gewünschten herunterzuladen"
+  },
+  "videoButton": {
+    "message": "Video-Schaltfläche"
+  },
+  "videoButtonTitle": {
+    "message": "Eine Download-Schaltfläche über Videos, die im Browser laufen"
+  },
+  "videoButtonOnSite": {
+    "message": "auf $SITE$",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Download-URL einfügen"
+  },
+  "download": {
+    "message": "Herunterladen"
+  },
+  "noDownloads": {
+    "message": "Noch keine Downloads."
+  },
+  "stateQueued": {
+    "message": "In der Warteschlange"
+  },
+  "stateDownloading": {
+    "message": "Wird heruntergeladen"
+  },
+  "stateDone": {
+    "message": "Fertig"
+  },
+  "stateFailed": {
+    "message": "Fehlgeschlagen"
+  },
+  "stateCanceled": {
+    "message": "Abgebrochen"
+  },
+  "stateInterrupted": {
+    "message": "Unterbrochen"
+  },
+  "stateConfirming": {
+    "message": "Wartet in UDM auf Sie"
+  },
+  "stateWaiting": {
+    "message": "Wartet auf den Start"
+  },
+  "threatFound": {
+    "message": "Bedrohung gefunden"
+  },
+  "start": {
+    "message": "Starten"
+  },
+  "cancel": {
+    "message": "Abbrechen"
+  },
+  "retry": {
+    "message": "Wiederholen"
+  },
+  "remove": {
+    "message": "Entfernen"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "Dieses Video herunterladen"
+  },
+  "videoButtonHelp": {
+    "message": "Hilfe zur Video-Schaltfläche"
+  },
+  "videoButtonClose": {
+    "message": "Für dieses Video schließen"
+  },
+  "lookingForVideo": {
+    "message": "Video wird gesucht..."
+  },
+  "subtitles": {
+    "message": "Untertitel:"
+  },
+  "videoProtected": {
+    "message": "Dieses Video ist durch DRM geschützt, daher lädt UDM es nicht herunter."
+  },
+  "streamProtected": {
+    "message": "Durch DRM geschützt; UDM lädt es nicht herunter."
+  },
+  "udmNotConnected": {
+    "message": "UDM läuft nicht oder ist nicht verbunden."
+  },
+  "noVideoFound": {
+    "message": "Noch kein Video gefunden. Lassen Sie es kurz laufen und versuchen Sie es dann noch einmal."
+  },
+  "sentToUdm": {
+    "message": "An UDM gesendet."
+  },
+  "couldNotReachUdm": {
+    "message": "UDM ist nicht erreichbar."
+  },
+  "hlsStream": {
+    "message": "HLS-Stream"
+  },
+  "dashStream": {
+    "message": "DASH-Stream"
+  },
+  "hdsStream": {
+    "message": "HDS-Stream"
+  },
+  "youtubeVideo": {
+    "message": "YouTube-Video"
+  },
+  "facebookVideo": {
+    "message": "Facebook-Video"
+  },
+  "instagramVideo": {
+    "message": "Instagram-Video"
+  },
+  "vimeoVideo": {
+    "message": "Vimeo-Video"
+  },
+  "pageVideo": {
+    "message": "Video auf dieser Seite",
+    "description": "The video button's menu: heading for a video on a page of another site, which UDM read with yt-dlp."
+  },
+  "playlistTitled": {
+    "message": "Playlist: $TITLE$ ($COUNT$ Videos)",
+    "description": "The video button's menu: heading for a playlist or channel UDM read with yt-dlp. TITLE is its name, COUNT how many videos it lists.",
+    "placeholders": {
+      "title": { "content": "$1", "example": "Lectures" },
+      "count": { "content": "$2", "example": "24" }
+    }
+  },
+  "playlistVideos": {
+    "message": "Playlist ($COUNT$ Videos)",
+    "description": "The video button's menu: heading for a playlist without a name. COUNT is how many videos it lists.",
+    "placeholders": {
+      "count": { "content": "$1", "example": "24" }
+    }
+  },
+  "chooseVideos": {
+    "message": "Videos in UDM auswählen...",
+    "description": "The video button's menu item that opens UDM's window to tick the playlist's videos to download."
+  },
+  "mediaNoAnswer": {
+    "message": "UDM hat nicht geantwortet."
+  },
+  "soundOnly": {
+    "message": "Nur Ton ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "$TYPE$-Video",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "$TYPE$-Audio",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "Video"
+  },
+  "audioFile": {
+    "message": "Audio"
+  },
+  "takeoverFailed": {
+    "message": "UDM konnte den Download nicht übernehmen"
+  },
+  "takeoverNotConnected": {
+    "message": "UDM läuft nicht oder ist nicht verbunden, daher lädt der Browser $FILE$ herunter.",
+    "placeholders": {
+      "file": {
+        "content": "$1",
+        "example": "setup.exe"
+      }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM konnte $FILE$ nicht starten ($REASON$), daher lädt der Browser die Datei herunter.",
+    "placeholders": {
+      "file": {
+        "content": "$1",
+        "example": "setup.exe"
+      },
+      "reason": {
+        "content": "$2",
+        "example": "server returned HTTP 403"
+      }
+    }
+  },
+  "dontShowAgain": {
+    "message": "Nicht mehr anzeigen"
+  },
+  "takeoverClickToStop": {
+    "message": "Klicken Sie auf diesen Hinweis, um ihn nicht mehr anzuzeigen."
+  },
+  "downloadLastVideo": {
+    "message": "Das letzte Video mit UDM herunterladen"
+  },
+  "recentVideos": {
+    "message": "Letzte Videos (UDM)"
+  },
+  "downloadPageWithUdm": {
+    "message": "Seite mit UDM herunterladen"
+  },
+  "noLinksFound": {
+    "message": "Auf dieser Seite wurden keine Links gefunden."
+  },
+  "noSelectedLinksFound": {
+    "message": "In der Markierung wurden keine Links gefunden."
+  },
+  "linksUnreadable": {
+    "message": "Der Browser lässt UDM die Links dieser Seite nicht lesen."
+  },
+  "cannotReachUdm": {
+    "message": "UDM ist nicht erreichbar. Läuft UDM?"
+  },
+  "cannotReachUdmReason": {
+    "message": "UDM ist nicht erreichbar ($REASON$).",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "Native host has exited."
+      }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "Der Browser lädt es stattdessen herunter."
+  },
+  "browserDownloadsHeading": {
+    "message": "Downloads im Browser"
+  },
+  "sendToUdm": {
+    "message": "An UDM senden"
+  }
+}

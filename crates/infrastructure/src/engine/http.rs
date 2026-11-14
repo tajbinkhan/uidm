@@ -29,7 +29,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// they only move bytes between sockets and the engine's threads. An error
 /// if the system would not start it (no threads or no event queue left);
 /// the next request tries again.
-fn runtime() -> Result<&'static tokio::runtime::Runtime, EngineError> {
+pub(crate) fn runtime() -> Result<&'static tokio::runtime::Runtime, EngineError> {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     if let Some(runtime) = RUNTIME.get() {
         return Ok(runtime);
@@ -75,6 +75,9 @@ pub struct Probe {
     pub suggested_filename: Option<String>,
     /// The `Content-Type` the server sends, as it sends it.
     pub content_type: Option<String>,
+    /// The address of the server that answered, when reached directly (a
+    /// proxy's address says nothing about the server's country).
+    pub server: Option<std::net::IpAddr>,
 }
 
 impl Probe {
@@ -95,6 +98,8 @@ struct Response {
     status: u16,
     url: String,
     headers: HeaderMap,
+    /// The address the connection went to.
+    remote: Option<std::net::SocketAddr>,
     /// Taken by `into_reader`.
     inner: Option<reqwest::Response>,
 }
@@ -151,7 +156,12 @@ impl Read for Body {
                     self.close();
                     return Ok(0);
                 }
-                Ok(Err(e)) => return Err(io::Error::other(error_text(&e))),
+                Ok(Err(e)) => {
+                    return Err(match crate::route::refusal_in(&e) {
+                        Some(refusal) => io::Error::other(refusal),
+                        None => io::Error::other(error_text(&e)),
+                    })
+                }
                 Err(_) => return Err(io::Error::new(io::ErrorKind::TimedOut, "timed out")),
             }
         }
@@ -209,6 +219,8 @@ pub struct Client {
     /// How to reach an `ftp://` or `ftps://` address, which goes to the FTP
     /// module.
     ftp: super::ftp::FtpOptions,
+    /// Requests go through a proxy, whose address is not the server's.
+    proxied: bool,
 }
 
 /// Most redirects followed.
@@ -217,10 +229,7 @@ const MAX_REDIRECTS: usize = 8;
 /// The proxy URL `net` gives, as reqwest reads it. SOCKS5 lets the proxy
 /// look up host names, which reqwest calls `socks5h`.
 fn reqwest_proxy(proxy: &str) -> Result<reqwest::Proxy, EngineError> {
-    let proxy = match proxy.get(..9) {
-        Some(p) if p.eq_ignore_ascii_case("socks5://") => format!("socks5h://{}", &proxy[9..]),
-        _ => proxy.to_string(),
-    };
+    let proxy = crate::net::remote_names(proxy.to_string());
     reqwest::Proxy::all(&proxy).map_err(|e| EngineError::Http(format!("bad proxy setting: {e}")))
 }
 
@@ -234,6 +243,8 @@ impl Client {
             Some(p) => Some(reqwest_proxy(&p)?),
             None => None,
         };
+        let proxied = proxy.is_some();
+        let route = net.route.clone();
         let make = move |ntlm: Option<OneConnection>| -> Result<reqwest::Client, EngineError> {
             let mut builder = reqwest::Client::builder()
                 .use_native_tls()
@@ -249,6 +260,9 @@ impl Client {
             if let Some(one) = ntlm {
                 builder = builder.http1_only().connector_layer(one);
             }
+            // Bound to the chosen adapter, each connection checking it first,
+            // and with the chosen resolver.
+            builder = route.client(builder)?;
             let _guard = runtime()?.enter();
             builder.build().map_err(|e| EngineError::Tls(error_text(&e)))
         };
@@ -268,8 +282,16 @@ impl Client {
                     .as_ref()
                     .filter(|_| ftp && (net.ftp_proxy.is_none() || super::ftp::is_ftps(url)))
                     .and_then(|rules| rules.socks_for_ftp(url)),
+                route: net.route.clone(),
             },
+            proxied,
         })
+    }
+
+    /// The address of the server that sent `resp`, unless it came through
+    /// a proxy.
+    fn server(&self, resp: &Response) -> Option<std::net::IpAddr> {
+        resp.remote.filter(|_| !self.proxied).map(|a| a.ip())
     }
 
     /// Send a request and follow its redirects. Each hop drops `Cookie` and
@@ -382,13 +404,14 @@ fn execute(req: reqwest::RequestBuilder) -> Result<Response, Failed> {
     // as soon as it is made.
     let inner = match block_on(async move { req.send().await }) {
         Ok(Ok(resp)) => resp,
-        Ok(Err(e)) => return Err(Failed::Transport(EngineError::Http(error_text(&e)))),
+        Ok(Err(e)) => return Err(Failed::Transport(transport(&e))),
         Err(e) => return Err(Failed::Transport(e)),
     };
     let resp = Response {
         status: inner.status().as_u16(),
         url: inner.url().to_string(),
         headers: inner.headers().clone(),
+        remote: inner.remote_addr(),
         inner: Some(inner),
     };
     if resp.status >= 400 {
@@ -409,9 +432,18 @@ fn header_map(headers: &[(String, String)]) -> HeaderMap {
     map
 }
 
+/// A request that got no answer, as the engine's error: the network
+/// adapter being down when that is why, so the download stops for good.
+fn transport(e: &reqwest::Error) -> EngineError {
+    match crate::route::refusal_in(e) {
+        Some(refusal) => refusal.into(),
+        None => EngineError::Http(error_text(e)),
+    }
+}
+
 /// A reqwest error in words, with its causes: "error sending request"
 /// alone says nothing about the refused connection under it.
-fn error_text(e: &dyn std::error::Error) -> String {
+pub(crate) fn error_text(e: &dyn std::error::Error) -> String {
     let mut text = e.to_string();
     let mut source = e.source();
     while let Some(cause) = source {
@@ -579,15 +611,16 @@ pub fn probe(client: &Client, url: &str, headers: &[(String, String)]) -> Result
     let suggested_filename = resp.header("content-disposition").and_then(parse_content_disposition_filename);
     let content_type = resp.header("content-type").map(str::to_string);
     let status = resp.status();
+    let server = client.server(&resp);
 
     if status == 206 {
         let total = resp.header("content-range").and_then(parse_content_range_total);
-        Ok(Probe { final_url, total, resumable: true, etag, last_modified, suggested_filename, content_type })
+        Ok(Probe { final_url, total, resumable: true, etag, last_modified, suggested_filename, content_type, server })
     } else {
         // 200 (or anything else 2xx): no partial content. Read the declared
         // length if present, then let `resp` drop without consuming the body.
         let total = resp.header("content-length").and_then(|s| s.trim().parse::<u64>().ok());
-        Ok(Probe { final_url, total, resumable: false, etag, last_modified, suggested_filename, content_type })
+        Ok(Probe { final_url, total, resumable: false, etag, last_modified, suggested_filename, content_type, server })
     }
 }
 
@@ -634,8 +667,38 @@ pub fn post(
         last_modified: None,
         suggested_filename: resp.header("content-disposition").and_then(parse_content_disposition_filename),
         content_type: resp.header("content-type").map(str::to_string),
+        server: client.server(&resp),
     };
     Ok((probe, Box::new(resp.into_reader())))
+}
+
+/// Send one request to a web service's API and read its answer, an error
+/// status's too (APIs explain an error in its body): the status and at most
+/// `limit` bytes of the body. Redirects are not followed and no site login
+/// answers a 401; `headers` carry the service's own credentials.
+pub fn call(
+    client: &Client,
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+    limit: u64,
+) -> Result<(u16, Vec<u8>), EngineError> {
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| EngineError::Http(format!("bad method {method}")))?;
+    let mut req = client.http.request(method, url).headers(header_map(headers));
+    if let Some(b) = body {
+        req = req.body(b.to_vec());
+    }
+    let resp = match execute(req) {
+        Ok(resp) => resp,
+        Err(Failed::Status(_, resp)) => *resp,
+        Err(Failed::Transport(e)) => return Err(e),
+    };
+    let status = resp.status();
+    let mut answer = Vec::new();
+    resp.into_reader().take(limit).read_to_end(&mut answer)?;
+    Ok((status, answer))
 }
 
 /// A GET's URL after redirects, content type, and a reader over the body.

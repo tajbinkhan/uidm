@@ -1,0 +1,341 @@
+{
+  "extDescription": {
+    "message": "Gửi các mục tải xuống của trình duyệt tới trình quản lý tải xuống UDM."
+  },
+  "downloadWithUdm": {
+    "message": "Tải xuống bằng UDM"
+  },
+  "downloadLaterWithUdm": {
+    "message": "Tải xuống sau bằng UDM"
+  },
+  "downloadGalleryWithUdm": {
+    "message": "Tải thư viện ảnh bằng UDM"
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "Tải xuống tất cả liên kết bằng UDM"
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "Tải xuống các liên kết được chọn bằng UDM"
+  },
+  "udmDisconnected": {
+    "message": "UDM đã ngắt kết nối"
+  },
+  "captureDownloads": {
+    "message": "Tiếp nhận tải xuống"
+  },
+  "captureDownloadsTitle": {
+    "message": "Gửi các mục tải xuống do trình duyệt bắt đầu tới UDM"
+  },
+  "captureInTab": {
+    "message": "Tiếp nhận trong tab này"
+  },
+  "captureInTabTitle": {
+    "message": "Tắt tiếp nhận để trình duyệt xử lý các mục tải xuống của tab này"
+  },
+  "captureOffInTab": {
+    "message": "Tắt trong tab này"
+  },
+  "statusConnected": {
+    "message": "Đã kết nối. Các mục tải xuống bạn bắt đầu trong trình duyệt sẽ được gửi tới UDM."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Đã kết nối. Tiếp nhận đang tắt, nên trình duyệt tự giữ các mục tải xuống của nó."
+  },
+  "statusNotConnected": {
+    "message": "Chưa kết nối với UDM. Các mục tải xuống vẫn ở trong trình duyệt."
+  },
+  "statusNotConnectedReason": {
+    "message": "Chưa kết nối với UDM: $REASON$. Các mục tải xuống vẫn ở trong trình duyệt.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Lần tải xuống tiếp theo của bạn sẽ cấp cho $NAME$ một liên kết mới.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Ngừng chờ"
+  },
+  "skipNextDownload": {
+    "message": "Bỏ qua lần tải xuống tiếp theo"
+  },
+  "skipNextDownloadTitle": {
+    "message": "Để lần tải xuống tiếp theo ở lại trong trình duyệt"
+  },
+  "dontSkip": {
+    "message": "Không bỏ qua"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "Lần tải xuống tiếp theo sẽ ở lại trong trình duyệt"
+  },
+  "allLinks": {
+    "message": "Tất cả liên kết trên trang này"
+  },
+  "allLinksTitle": {
+    "message": "Liệt kê các liên kết của trang này trong UDM để chọn những liên kết cần tải xuống"
+  },
+  "videoButton": {
+    "message": "Nút video"
+  },
+  "videoButtonTitle": {
+    "message": "Nút tải xuống trên video đang phát trong trình duyệt"
+  },
+  "videoButtonOnSite": {
+    "message": "trên $SITE$",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Dán URL tải xuống"
+  },
+  "download": {
+    "message": "Tải xuống"
+  },
+  "noDownloads": {
+    "message": "Chưa có mục tải xuống nào."
+  },
+  "stateQueued": {
+    "message": "Đang chờ"
+  },
+  "stateDownloading": {
+    "message": "Đang tải xuống"
+  },
+  "stateDone": {
+    "message": "Xong"
+  },
+  "stateFailed": {
+    "message": "Thất bại"
+  },
+  "stateCanceled": {
+    "message": "Đã hủy"
+  },
+  "stateInterrupted": {
+    "message": "Bị gián đoạn"
+  },
+  "stateConfirming": {
+    "message": "Đang chờ bạn trong UDM"
+  },
+  "stateWaiting": {
+    "message": "Đang chờ bắt đầu"
+  },
+  "threatFound": {
+    "message": "Phát hiện mối đe dọa"
+  },
+  "start": {
+    "message": "Bắt đầu"
+  },
+  "cancel": {
+    "message": "Hủy"
+  },
+  "retry": {
+    "message": "Thử lại"
+  },
+  "remove": {
+    "message": "Loại bỏ"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "Tải xuống video này"
+  },
+  "videoButtonHelp": {
+    "message": "Trợ giúp về nút video"
+  },
+  "videoButtonClose": {
+    "message": "Đóng nút cho video này"
+  },
+  "lookingForVideo": {
+    "message": "Đang tìm video..."
+  },
+  "subtitles": {
+    "message": "Phụ đề:"
+  },
+  "videoProtected": {
+    "message": "Video này được bảo vệ bằng DRM, nên UDM sẽ không tải xuống."
+  },
+  "streamProtected": {
+    "message": "Được bảo vệ bằng DRM; UDM sẽ không tải xuống."
+  },
+  "udmNotConnected": {
+    "message": "UDM không chạy hoặc chưa kết nối."
+  },
+  "noVideoFound": {
+    "message": "Chưa tìm thấy video nào. Hãy để video phát một lúc, rồi thử lại."
+  },
+  "sentToUdm": {
+    "message": "Đã gửi tới UDM."
+  },
+  "couldNotReachUdm": {
+    "message": "Không thể kết nối tới UDM."
+  },
+  "hlsStream": {
+    "message": "Luồng HLS"
+  },
+  "dashStream": {
+    "message": "Luồng DASH"
+  },
+  "hdsStream": {
+    "message": "Luồng HDS"
+  },
+  "youtubeVideo": {
+    "message": "Video YouTube"
+  },
+  "facebookVideo": {
+    "message": "Video Facebook"
+  },
+  "instagramVideo": {
+    "message": "Video Instagram"
+  },
+  "vimeoVideo": {
+    "message": "Video Vimeo"
+  },
+  "mediaNoAnswer": {
+    "message": "UDM không phản hồi."
+  },
+  "soundOnly": {
+    "message": "Chỉ âm thanh ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "Video $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "Âm thanh $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "Video"
+  },
+  "audioFile": {
+    "message": "Âm thanh"
+  },
+  "takeoverFailed": {
+    "message": "UDM không thể tiếp nhận mục tải xuống"
+  },
+  "takeoverNotConnected": {
+    "message": "UDM không chạy hoặc chưa kết nối, nên trình duyệt sẽ tải xuống $FILE$.",
+    "placeholders": {
+      "file": { "content": "$1" }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM không thể bắt đầu $FILE$ ($REASON$), nên trình duyệt sẽ tải xuống.",
+    "placeholders": {
+      "file": { "content": "$1" },
+      "reason": { "content": "$2" }
+    }
+  },
+  "dontShowAgain": {
+    "message": "Không hiển thị lại"
+  },
+  "takeoverClickToStop": {
+    "message": "Bấm vào thông báo này để ngừng hiển thị."
+  },
+  "downloadLastVideo": {
+    "message": "Tải xuống video gần nhất bằng UDM"
+  },
+  "recentVideos": {
+    "message": "Video gần đây (UDM)"
+  },
+  "downloadPageWithUdm": {
+    "message": "Tải trang xuống bằng UDM"
+  },
+  "noLinksFound": {
+    "message": "Không tìm thấy liên kết nào trên trang này."
+  },
+  "noSelectedLinksFound": {
+    "message": "Không tìm thấy liên kết nào trong vùng chọn."
+  },
+  "linksUnreadable": {
+    "message": "Trình duyệt không cho phép UDM đọc các liên kết của trang này."
+  },
+  "cannotReachUdm": {
+    "message": "Không thể kết nối tới UDM. UDM có đang chạy không?"
+  },
+  "cannotReachUdmReason": {
+    "message": "Không thể kết nối tới UDM ($REASON$).",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "Trình duyệt sẽ tự tải xuống thay vào đó."
+  },
+  "browserDownloadsHeading": {
+    "message": "Đang tải xuống trong trình duyệt"
+  },
+  "sendToUdm": {
+    "message": "Gửi tới UDM"
+  },
+  "pageVideo": {
+    "message": "Video trên trang này"
+  },
+  "playlistTitled": {
+    "message": "Danh sách phát: $TITLE$ ($COUNT$ video)",
+    "placeholders": {
+      "title": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  },
+  "playlistVideos": {
+    "message": "Danh sách phát ($COUNT$ video)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "chooseVideos": {
+    "message": "Chọn video trong UDM..."
+  }
+}

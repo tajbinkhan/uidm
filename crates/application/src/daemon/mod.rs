@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use udm_domain::address::Link;
 use udm_domain::bytes::ByteCount;
+use udm_domain::debrid::{DebridCheck, DebridKey, DebridService};
 use udm_domain::download::{
     Answer, CommandLine, Download, DownloadEntry, OnDone, PageLink, Properties, SegmentInfo, Validator, ZipEntry,
 };
@@ -31,6 +32,7 @@ use udm_domain::queue::{Queue, WhenDone};
 use udm_domain::quota::QuotaNotice;
 use udm_domain::settings::Settings;
 use udm_domain::tools::{Tool, ToolState};
+use udm_domain::torrent::{FileSelection, SeedLimits, TorrentInfo, TorrentStats};
 use udm_domain::update::Release;
 
 /// The version of the automation API: the messages `docs/command-line.md`
@@ -130,8 +132,39 @@ pub enum Command {
         request: u64,
         cookies: Option<String>,
     },
-    /// A download to hand off to the engine.
+    /// A download to hand off to the engine. A web address of a `.torrent`
+    /// file (by its type or name) is fetched and added as the torrent, when
+    /// the settings catch torrent files.
     Add(Download),
+    /// A `.torrent` file's contents a client read from disk, to add as a
+    /// download of its torrent; `download` says where to save it, its queue
+    /// and the rest, as for `Add`. Answered as `Add` is.
+    AddTorrentFile {
+        metainfo: Vec<u8>,
+        download: Download,
+    },
+    /// Choose which of torrent download `id`'s files to download: a running
+    /// torrent changes at once, a finished one given more files starts
+    /// again.
+    SelectTorrentFiles {
+        id: DownloadId,
+        files: FileSelection,
+    },
+    /// Give torrent download `id` its own seeding limits, or `None` to
+    /// follow the settings'.
+    SetSeedLimits {
+        id: DownloadId,
+        limits: Option<SeedLimits>,
+    },
+    /// Stop seeding finished torrent download `id`.
+    StopSeeding {
+        id: DownloadId,
+    },
+    /// Send torrent download `id`'s files: answered with `TorrentInfo`, to
+    /// this client only (rows carry no file list), or `Error`.
+    TorrentFiles {
+        id: DownloadId,
+    },
     /// Many downloads at once, each added to wait in `queue` (the main
     /// queue when `None`) without starting, and kept as packages as
     /// `packaging` says. Answered with `AddedMany`.
@@ -287,6 +320,22 @@ pub enum Command {
     RemoveDevice {
         id: DeviceId,
     },
+    /// Ask a debrid service about the account, with `key` or else the
+    /// stored key; answered with `Debrid`.
+    CheckDebrid {
+        service: DebridService,
+        key: Option<DebridKey>,
+    },
+    /// Store the debrid account's API key for `service`, in place of any
+    /// other; the settings then say which service a key is stored for.
+    /// Answered with `Settings` to every client, or `Error`.
+    SetDebridKey {
+        service: DebridService,
+        key: DebridKey,
+    },
+    /// Remove the stored debrid key. Answered with `Settings` to every
+    /// client, or `Error`.
+    RemoveDebridKey,
 }
 
 /// Why the connection to the daemon went.
@@ -357,6 +406,8 @@ pub enum Event {
         connections: usize,
         partial: Option<String>,
         validator: Option<Validator>,
+        /// The country of the server it connected to, when known.
+        country: Option<udm_domain::country::CountryCode>,
     },
     /// Progress of a running download.
     Progress {
@@ -386,6 +437,21 @@ pub enum Event {
     /// A download left the list.
     Removed {
         id: DownloadId,
+    },
+    /// A torrent download's metadata is known: its name and files. Sent to
+    /// every client when it becomes known, and to one that asks with
+    /// `TorrentFiles`.
+    TorrentInfo {
+        id: DownloadId,
+        url: Link,
+        info: TorrentInfo,
+    },
+    /// How a torrent download is doing: its phase, speeds, peers, trackers
+    /// and pieces. Every second or so while it downloads or seeds.
+    TorrentStats {
+        id: DownloadId,
+        url: Link,
+        stats: TorrentStats,
     },
     /// A download's whole entry, replacing what the client had.
     Updated {
@@ -549,6 +615,16 @@ pub enum Event {
     /// asked.
     Remote {
         state: RemoteState,
+    },
+    /// What a debrid service said of the account, to the client that asked
+    /// with `CheckDebrid`.
+    Debrid {
+        check: DebridCheck,
+    },
+    /// The debrid service refused the account when its hosts were read, so
+    /// downloads go on without it; to the windows, at most once an hour.
+    DebridRefused {
+        refused: udm_domain::debrid::Refused,
     },
 }
 

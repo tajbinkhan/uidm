@@ -10,7 +10,7 @@
 //! Progress is reported through a cloneable `Reporter`.
 
 mod ftp;
-mod http;
+pub(crate) mod http;
 mod limit;
 mod page;
 mod resume;
@@ -27,7 +27,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use udm_domain::address::Address;
 use udm_domain::bytes::ByteCount;
+use udm_domain::debrid::{Refused, Unrestricted};
 use udm_domain::filename::name_from_url;
 use udm_domain::filename::{numbered_name, proposed_name, sanitize_filename, FileName};
 use udm_domain::id::DownloadId;
@@ -120,6 +122,52 @@ pub struct DownloadRequest {
     /// written in a staging folder and the finished file moved into place by
     /// the elevated helper (see `crate::elevate`).
     pub elevate: bool,
+    /// Asked for the address to download from when the download starts,
+    /// such as a file host's link unlocked by a debrid account.
+    pub resolve: Option<Resolver>,
+    /// For a torrent (`url` is its magnet link): the files to download;
+    /// `None` downloads every file.
+    pub torrent_files: Option<udm_domain::torrent::FileSelection>,
+    /// For a torrent: what it uploaded in earlier runs, for its share ratio.
+    pub torrent_uploaded: ByteCount,
+}
+
+/// Turns a download's address into the one to download from, just before
+/// the engine connects: the debrid account's direct link for a file host's
+/// link (`ResolveLink`), `Ok(None)` to keep it, or why the download cannot
+/// go on. It may ask a web service, so it runs on the download's own
+/// thread.
+pub type Resolver = Arc<dyn Fn(&Address) -> Result<Option<Unrestricted>, Refused> + Send + Sync>;
+
+impl DownloadRequest {
+    /// Ask the request's resolver, once, for the address to download from.
+    /// A new address replaces `url`, and the headers meant for the old
+    /// address's site (its cookies, the referrer, what the browser sent)
+    /// are dropped, so they never reach the other server; the User-Agent
+    /// stays. Streams, video pages and form posts are left alone. Returns
+    /// whether the address changed.
+    pub fn resolve(&mut self) -> Result<bool, EngineError> {
+        let Some(resolve) = self.resolve.take() else {
+            return Ok(false);
+        };
+        if self.media.is_some() || self.post_body.is_some() {
+            return Ok(false);
+        }
+        let Ok(address) = Address::parse(&self.url) else {
+            return Ok(false);
+        };
+        match resolve(&address)? {
+            None => Ok(false),
+            Some(found) => {
+                self.url = found.address.into_string();
+                if self.filename.is_none() {
+                    self.filename = found.filename;
+                }
+                self.headers.retain(|(name, _)| name.eq_ignore_ascii_case("user-agent"));
+                Ok(true)
+            }
+        }
+    }
 }
 
 /// Progress events over the course of a download. `id` matches the `Ack`.
@@ -136,6 +184,8 @@ pub enum Progress {
         partial: Option<PathBuf>,
         /// What the server said identifies this version of the file.
         validator: Option<Validator>,
+        /// The country of the server it connected to, when known.
+        country: Option<udm_domain::country::CountryCode>,
     },
     Advanced {
         id: DownloadId,
@@ -171,6 +221,35 @@ pub enum Progress {
         path: PathBuf,
         total: Option<ByteCount>,
     },
+    /// A torrent's metadata is known: its name and files.
+    TorrentInfo {
+        id: DownloadId,
+        url: String,
+        info: udm_domain::torrent::TorrentInfo,
+    },
+    /// How a torrent is doing; while it downloads, and while it seeds.
+    TorrentStats {
+        id: DownloadId,
+        url: String,
+        stats: udm_domain::torrent::TorrentStats,
+    },
+}
+
+impl Progress {
+    /// The same event, naming the download by `url`.
+    fn naming(mut self, url: &str) -> Self {
+        match &mut self {
+            Progress::Started { url: u, .. }
+            | Progress::Advanced { url: u, .. }
+            | Progress::Finished { url: u, .. }
+            | Progress::Failed { url: u, .. }
+            | Progress::Canceled { url: u, .. }
+            | Progress::NameTaken { url: u, .. }
+            | Progress::TorrentInfo { url: u, .. }
+            | Progress::TorrentStats { url: u, .. } => *u = url.to_string(),
+        }
+        self
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -204,11 +283,34 @@ pub enum EngineError {
     /// administrator rights.
     #[error("{NEEDS_ADMIN}{}", .0.display())]
     NeedsAdmin(PathBuf),
+    /// The download's resolver would not give an address to download from:
+    /// the debrid service refused the link.
+    #[error(transparent)]
+    Unresolved(#[from] Refused),
     /// The finished file could not be moved into the folder with
     /// administrator rights; it waits at `file`. `refused` is a No to the
     /// UAC prompt, else the helper failed and `why` says how.
     #[error("{}", not_moved_text(file, dir, why.as_deref()))]
     NotMoved { file: PathBuf, dir: PathBuf, why: Option<String> },
+    /// The network adapter downloads are bound to is down: nothing is sent
+    /// another way, and trying again cannot help until it is back.
+    #[error(transparent)]
+    AdapterDown(#[from] udm_domain::network::AdapterDown),
+    /// The system would not bind a connection to the adapter.
+    #[error(transparent)]
+    BindRefused(#[from] udm_domain::network::BindRefused),
+    /// The torrent could not be read, found or downloaded, and why.
+    #[error("{0}")]
+    Torrent(String),
+}
+
+impl From<crate::route::RouteRefusal> for EngineError {
+    fn from(refusal: crate::route::RouteRefusal) -> Self {
+        match refusal {
+            crate::route::RouteRefusal::Down(down) => EngineError::AdapterDown(down),
+            crate::route::RouteRefusal::Refused(refused) => EngineError::BindRefused(refused),
+        }
+    }
 }
 
 /// What [`EngineError::NotMoved`] says.
@@ -233,13 +335,19 @@ impl EngineError {
                 | EngineError::NameTaken { .. }
                 | EngineError::NeedsAdmin(_)
                 | EngineError::NotMoved { .. }
+                | EngineError::Unresolved(_)
+                | EngineError::AdapterDown(_)
+                | EngineError::BindRefused(_)
         )
     }
 }
 
 impl From<std::io::Error> for EngineError {
     fn from(e: std::io::Error) -> Self {
-        EngineError::Io(e.to_string())
+        match crate::route::refusal_in(&e) {
+            Some(refusal) => refusal.into(),
+            None => EngineError::Io(e.to_string()),
+        }
     }
 }
 
@@ -257,9 +365,27 @@ impl Reporter {
 /// One queued unit of work.
 struct Job {
     id: DownloadId,
-    token: CancelToken,
+    flags: Arc<RunFlags>,
     req: DownloadRequest,
 }
+
+/// What stops a queued or running download, and why.
+#[derive(Default)]
+struct RunFlags {
+    /// Stops its connections at their next read.
+    token: CancelToken,
+    /// The user canceled (or paused) it.
+    canceled: AtomicBool,
+    /// It is to start again from where it is: the network settings changed,
+    /// or its adapter got a new address.
+    restart: Arc<AtomicBool>,
+    /// It is running, not waiting in the queue.
+    running: AtomicBool,
+}
+
+/// Where a download's connections go out, asked as each one starts (and
+/// starts again), so a change of the settings reaches queued downloads.
+pub type RouteSource = Arc<dyn Fn() -> crate::route::Route + Send + Sync>;
 
 /// Which jobs wait and how many run.
 struct Sched {
@@ -288,6 +414,12 @@ struct Shared {
     resplit: AtomicBool,
     /// Output files in use, so two downloads never pick the same file.
     claimed: Mutex<HashSet<PathBuf>>,
+    /// Where downloads' connections go out now; `None` keeps each
+    /// request's own.
+    route_source: std::sync::OnceLock<RouteSource>,
+    /// The BitTorrent client magnet links download through; none, and they
+    /// fail.
+    torrents: std::sync::OnceLock<Arc<crate::torrent::TorrentClient>>,
 }
 
 /// How often a connection waiting for its host to have room looks again.
@@ -370,7 +502,7 @@ impl Shared {
 
 struct Inner {
     sched: Mutex<Sched>,
-    registry: Mutex<HashMap<DownloadId, CancelToken>>,
+    registry: Mutex<HashMap<DownloadId, Arc<RunFlags>>>,
     shared: Arc<Shared>,
     reporter: Reporter,
 }
@@ -397,6 +529,8 @@ impl Engine {
                     host_slots: HostSlots::default(),
                     resplit: AtomicBool::new(true),
                     claimed: Mutex::new(HashSet::new()),
+                    route_source: std::sync::OnceLock::new(),
+                    torrents: std::sync::OnceLock::new(),
                 }),
                 reporter: Reporter(cb),
             }),
@@ -419,10 +553,33 @@ impl Engine {
 
     /// Queue `req` under an id from `reserve_id`.
     pub fn enqueue_as(&self, id: DownloadId, req: DownloadRequest) {
-        let token: CancelToken = Arc::new(AtomicBool::new(false));
-        self.inner.registry.lock_or_recover().insert(id, Arc::clone(&token));
-        self.inner.sched.lock_or_recover().queue.push_back(Job { id, token, req });
+        let flags = Arc::new(RunFlags::default());
+        self.inner.registry.lock_or_recover().insert(id, Arc::clone(&flags));
+        self.inner.sched.lock_or_recover().queue.push_back(Job { id, flags, req });
         pump(&self.inner);
+    }
+
+    /// Take each download's route from `source` as it starts, instead of
+    /// the one its request was made with. Only the first call counts.
+    pub fn route_from(&self, source: RouteSource) {
+        let _ = self.inner.shared.route_source.set(source);
+    }
+
+    /// Download magnet links through `client`. Only the first call counts.
+    pub fn torrents_with(&self, client: Arc<crate::torrent::TorrentClient>) {
+        let _ = self.inner.shared.torrents.set(client);
+    }
+
+    /// Start every running download again from where it is, so its new
+    /// connections go out the way `route_from`'s source says now. Waiting
+    /// downloads take the new way when they start.
+    pub fn restart_running(&self) {
+        for flags in self.inner.registry.lock_or_recover().values() {
+            if flags.running.load(Ordering::SeqCst) {
+                flags.restart.store(true, Ordering::SeqCst);
+                flags.token.store(true, Ordering::SeqCst);
+            }
+        }
     }
 
     /// Make the next id at least `next`, so ids keep increasing across
@@ -502,10 +659,11 @@ impl Engine {
     /// canceled at once; a running one stops at its next read. Unknown ids are
     /// ignored.
     pub fn cancel(&self, id: DownloadId) {
-        let Some(token) = self.inner.registry.lock_or_recover().get(&id).cloned() else {
+        let Some(flags) = self.inner.registry.lock_or_recover().get(&id).cloned() else {
             return;
         };
-        token.store(true, Ordering::Relaxed);
+        flags.canceled.store(true, Ordering::SeqCst);
+        flags.token.store(true, Ordering::SeqCst);
         let queued = {
             let mut sched = self.inner.sched.lock_or_recover();
             let pos = sched.queue.iter().position(|j| j.id == id);
@@ -537,12 +695,12 @@ fn pump(inner: &Arc<Inner>) {
         let inner = Arc::clone(inner);
         thread::spawn(move || {
             let id = job.id;
-            let token = Arc::clone(&job.token);
-            run(job.id, job.token, job.req, inner.reporter.clone(), &inner.shared);
+            let flags = Arc::clone(&job.flags);
+            run(job.id, &job.flags, job.req, inner.reporter.clone(), &inner.shared);
             // The same id may already be queued again (a paused download put
-            // back in its queue); leave that run's token alone.
+            // back in its queue); leave that run's flags alone.
             let mut registry = inner.registry.lock_or_recover();
-            if registry.get(&id).is_some_and(|t| Arc::ptr_eq(t, &token)) {
+            if registry.get(&id).is_some_and(|f| Arc::ptr_eq(f, &flags)) {
                 registry.remove(&id);
             }
             drop(registry);
@@ -561,8 +719,10 @@ pub fn run_blocking(req: DownloadRequest, cb: Arc<dyn Fn(Progress) + Send + Sync
         host_slots: HostSlots::default(),
         resplit: AtomicBool::new(true),
         claimed: Mutex::new(HashSet::new()),
+        route_source: std::sync::OnceLock::new(),
+        torrents: std::sync::OnceLock::new(),
     };
-    run(DownloadId::NONE, Arc::new(AtomicBool::new(false)), req, Reporter(cb), &shared);
+    run(DownloadId::NONE, &RunFlags::default(), req, Reporter(cb), &shared);
 }
 
 /// Statuses that, on a retried or resumed download, usually mean the link or
@@ -570,13 +730,32 @@ pub fn run_blocking(req: DownloadRequest, cb: Arc<dyn Fn(Progress) + Send + Sync
 const EXPIRED_STATUSES: [u16; 4] = [401, 403, 404, 410];
 
 /// Run one download to completion (blocking), reporting a terminal event.
-fn run(id: DownloadId, token: CancelToken, req: DownloadRequest, reporter: Reporter, shared: &Shared) {
+/// A download bound to a network adapter does not start while it is down,
+/// and stops as soon as it goes (the kill switch, `route::Watch`). Asked to
+/// start again (`Engine::restart_running`, or its adapter's new address), it
+/// goes on from where it is, its connections going out the way they go now.
+fn run(id: DownloadId, flags: &RunFlags, req: DownloadRequest, reporter: Reporter, shared: &Shared) {
     let url = req.url.clone();
+    let token = &flags.token;
     if token.load(Ordering::Relaxed) {
         reporter.send(Progress::Canceled { id, url });
         return;
     }
+    flags.running.store(true, Ordering::SeqCst);
     let mut req = req;
+    // A download unlocked into another address is still named by its own
+    // in the events, as the list and the browser know it.
+    let reporter = match req.resolve() {
+        Ok(false) => reporter,
+        Ok(true) => {
+            let (inner, named) = (reporter, url.clone());
+            Reporter(Arc::new(move |p: Progress| inner.send(p.naming(&named))))
+        }
+        Err(e) => {
+            reporter.send(Progress::Failed { id, url, error: e.to_string() });
+            return;
+        }
+    };
     let own_rate = req.speed_limit;
     let own = {
         // Read the limit per file under the same lock that a change to it
@@ -589,43 +768,129 @@ fn run(id: DownloadId, token: CancelToken, req: DownloadRequest, reporter: Repor
         own_limits.insert(id, (Arc::clone(&own), own_rate));
         own
     };
-    let result = if req.elevate {
-        run_elevated(id, &token, &mut req, &reporter, shared)
-    } else {
-        run_inner(id, &token, &req, &reporter, shared)
+    // However the download ends, its own limiter goes.
+    let _own = OwnLimitGuard { shared, id, own };
+    // Where the file is being written, to go on there when it starts again.
+    let written: Arc<Mutex<Option<Written>>> = Arc::default();
+    let reporter = {
+        let (inner, written) = (reporter, Arc::clone(&written));
+        Reporter(Arc::new(move |p: Progress| {
+            if let Progress::Started { path, partial, .. } = &p {
+                *written.lock_or_recover() = Some((path.clone(), partial.clone()));
+            }
+            inner.send(p)
+        }))
     };
-    {
-        let mut own_limits = shared.own_limits.lock_or_recover();
-        if own_limits.get(&id).is_some_and(|(o, _)| Arc::ptr_eq(o, &own)) {
-            own_limits.remove(&id);
+    loop {
+        if let Some(source) = shared.route_source.get() {
+            req.net = Arc::new(req.net.with_route(source()));
         }
-    }
-    if token.load(Ordering::Relaxed) {
-        reporter.send(Progress::Canceled { id, url });
+        if let Err(refusal) = req.net.route.ready() {
+            reporter.send(Progress::Failed { id, url, error: refusal.to_string() });
+            return;
+        }
+        let watch = match req.net.route.binding.as_ref().map(|b| crate::route::Watch::start(b, token, &flags.restart)) {
+            Some(Err(down)) => {
+                reporter.send(Progress::Failed { id, url, error: down.to_string() });
+                return;
+            }
+            Some(Ok(watch)) => Some(watch),
+            None => None,
+        };
+        let result = if req.elevate {
+            run_elevated(id, token, &mut req, &reporter, shared)
+        } else {
+            run_inner(id, token, &req, &reporter, shared)
+        };
+        // A download whose network part ran to its end is done, whatever
+        // stopped it after (the adapter going or a restart while the UAC
+        // prompt waits): finished, or why the file could not be moved.
+        let done =
+            matches!(&result, Ok(saved) if saved.complete) || matches!(&result, Err(EngineError::NotMoved { .. }));
+        let stopped = token.load(Ordering::SeqCst);
+        let down = watch.and_then(crate::route::Watch::finish);
+        if stopped && !done {
+            // The user's cancel or pause is theirs, whatever the adapter did.
+            if flags.canceled.load(Ordering::SeqCst) {
+                reporter.send(Progress::Canceled { id, url });
+                return;
+            }
+            if flags.restart.swap(false, Ordering::SeqCst) {
+                // A form's answer is not asked for again on its own: the
+                // form would be sent twice.
+                if req.post_body.is_some() {
+                    let error = udm_domain::network::RestartNeeded.to_string();
+                    reporter.send(Progress::Failed { id, url, error });
+                    return;
+                }
+                if let Some((path, partial)) = written.lock_or_recover().take() {
+                    req.reuse_path = Some(path);
+                    req.reuse_partial = partial;
+                }
+                token.store(false, Ordering::SeqCst);
+                // A cancel that came between the look above and this is
+                // the user's, and is kept.
+                if flags.canceled.load(Ordering::SeqCst) {
+                    reporter.send(Progress::Canceled { id, url });
+                    return;
+                }
+                tracing::info!(download_id = id.get(), "starting again: the network changed");
+                continue;
+            }
+            match down {
+                Some(down) => {
+                    tracing::debug!(download_id = id.get(), adapter = %down.adapter, "stopped: the network adapter is down");
+                    reporter.send(Progress::Failed { id, url, error: down.to_string() });
+                }
+                None => reporter.send(Progress::Canceled { id, url }),
+            }
+            return;
+        }
+        match result {
+            Ok(Saved { path, note, .. }) => reporter.send(Progress::Finished { id, url, path, note }),
+            Err(EngineError::NameTaken { path, total }) => {
+                reporter.send(Progress::NameTaken { id, url, path, total: total.map(ByteCount::new) })
+            }
+            Err(e) => {
+                let mut error = e.to_string();
+                if let EngineError::Status(code) = e {
+                    if req.reuse_path.is_some() && EXPIRED_STATUSES.contains(&code) {
+                        error.push_str(
+                            ". The link or its sign-in may have expired; start the download again from its web page.",
+                        );
+                    }
+                }
+                reporter.send(Progress::Failed { id, url, error })
+            }
+        }
         return;
     }
-    match result {
-        Ok(Saved { path, note }) => reporter.send(Progress::Finished { id, url, path, note }),
-        Err(EngineError::NameTaken { path, total }) => {
-            reporter.send(Progress::NameTaken { id, url, path, total: total.map(ByteCount::new) })
-        }
-        Err(e) => {
-            let mut error = e.to_string();
-            if let EngineError::Status(code) = e {
-                if req.reuse_path.is_some() && EXPIRED_STATUSES.contains(&code) {
-                    error.push_str(
-                        ". The link or its sign-in may have expired; start the download again from its web page.",
-                    );
-                }
-            }
-            reporter.send(Progress::Failed { id, url, error })
+}
+
+/// The file a download is writing, and its partial file when that is
+/// elsewhere.
+type Written = (PathBuf, Option<PathBuf>);
+
+/// Removes a download's own limiter when the download ends, however it
+/// ends, unless the same id already runs again with another.
+struct OwnLimitGuard<'a> {
+    shared: &'a Shared,
+    id: DownloadId,
+    own: Arc<RateLimiter>,
+}
+
+impl Drop for OwnLimitGuard<'_> {
+    fn drop(&mut self) {
+        let mut own_limits = self.shared.own_limits.lock_or_recover();
+        if own_limits.get(&self.id).is_some_and(|(o, _)| Arc::ptr_eq(o, &self.own)) {
+            own_limits.remove(&self.id);
         }
     }
 }
 
 /// Make `dir` if it is missing, and fail with `NeedsAdmin` before anything
 /// is downloaded if UDM may not create files in it.
-fn writable(dir: &Path) -> Result<(), EngineError> {
+pub(crate) fn writable(dir: &Path) -> Result<(), EngineError> {
     if !crate::elevate::can_write(dir) {
         return Err(EngineError::NeedsAdmin(dir.to_path_buf()));
     }
@@ -683,7 +948,7 @@ fn run_elevated(
             let result = run_inner(id, token, req, reporter, shared);
             req.folders = folders;
             let saved = result?;
-            if token.load(Ordering::Relaxed) {
+            if !saved.complete {
                 return Ok(saved);
             }
             if let Some(name) = saved.path.file_name() {
@@ -703,7 +968,7 @@ fn run_elevated(
         Ok(()) if target.is_file() => {
             let _ = fs::remove_file(&marker);
             let _ = fs::remove_dir(&staging);
-            Ok(Saved { path: target, note: saved.note })
+            Ok(Saved { path: target, note: saved.note, complete: true })
         }
         Ok(()) => Err(not_moved(Some("the file did not arrive".into()))),
         Err(crate::elevate::MoveError::Refused) => Err(not_moved(None)),
@@ -711,15 +976,27 @@ fn run_elevated(
     }
 }
 
-/// Where a finished download was saved, and anything to say about it.
+/// Where a download was saved, and anything to say about it. A stopped
+/// download returns its file too: `complete` says whether it got all of it,
+/// decided when its network part ended, so nothing that stops it later (a
+/// change of network, the adapter going while the UAC prompt waits) undoes
+/// that.
 pub(crate) struct Saved {
     pub path: PathBuf,
     pub note: Option<String>,
+    pub complete: bool,
 }
 
 impl From<PathBuf> for Saved {
     fn from(path: PathBuf) -> Self {
-        Saved { path, note: None }
+        Saved { path, note: None, complete: true }
+    }
+}
+
+impl Saved {
+    /// The same, complete unless it was stopped.
+    fn stopped_if(self, stopped: bool) -> Saved {
+        Saved { complete: !stopped, ..self }
     }
 }
 
@@ -730,15 +1007,21 @@ fn run_inner(
     reporter: &Reporter,
     shared: &Shared,
 ) -> Result<Saved, EngineError> {
+    if udm_domain::torrent::starts_like_magnet(&req.url) {
+        let client = shared.torrents.get().ok_or_else(|| EngineError::Torrent("Torrents are not available.".into()))?;
+        return client.run(id, token, req, &|p| reporter.send(p));
+    }
     let agent = http::Client::new(&req.net, &req.url)?;
     if let Some(choice) = req.media.as_ref().filter(|c| c.kind == Some(udm_domain::media::MediaKind::Page)) {
-        return page::run(id, token, req, choice, reporter, shared);
+        return page::run(id, token, req, choice, reporter, shared).map(|s| s.stopped_if(token.load(Ordering::SeqCst)));
     }
     if let Some(choice) = &req.media {
-        return stream::run(id, token, &agent, req, choice, reporter, shared);
+        return stream::run(id, token, &agent, req, choice, reporter, shared)
+            .map(|s| s.stopped_if(token.load(Ordering::SeqCst)));
     }
     if let Some(body) = &req.post_body {
-        return run_post(id, token, &agent, req, body, reporter, shared).map(Saved::from);
+        return run_post(id, token, &agent, req, body, reporter, shared)
+            .map(|path| Saved::from(path).stopped_if(token.load(Ordering::SeqCst)));
     }
     let probe = http::probe(&agent, &req.url, &req.headers)?;
     let filename = pick_filename(req.filename.as_deref(), &probe).into_string();
@@ -766,6 +1049,7 @@ fn run_inner(
         connections,
         partial: (work != output).then(|| work.clone()),
         validator: Some(probe.validator()),
+        country: probe.server.and_then(crate::country::of),
     });
 
     let own = shared.own_limiter(id);
@@ -778,24 +1062,24 @@ fn run_inner(
     } else {
         run_single(id, token, &agent, req, work.clone(), &probe, reporter, limiter, &gate)
     };
+    // Whether it got the whole file, decided once, as the transfer ends.
+    let complete = result.is_ok() && !token.load(Ordering::SeqCst);
     // A finished file written in the temporary folder moves into place.
     let result = match result {
-        Ok(_) if work != output && !token.load(Ordering::Relaxed) => {
-            move_into_place(&work, &output).map(|()| output.clone())
-        }
+        Ok(_) if work != output && complete => move_into_place(&work, &output).map(|()| output.clone()),
         other => other,
     };
     drop(claim);
     // A canceled download also returns its path; only a finished one gets
     // the server's date.
     if let Ok(path) = &result {
-        if (req.server_date || req.server_date_created) && !token.load(Ordering::Relaxed) {
+        if (req.server_date || req.server_date_created) && complete {
             if let Some(date) = probe.last_modified.as_deref().and_then(http_date) {
                 let _ = set_file_date(path, date, req.server_date, req.server_date_created);
             }
         }
     }
-    result.map(Saved::from)
+    result.map(|path| Saved::from(path).stopped_if(!complete))
 }
 
 /// Give the file at `path` the time `date` as its modified time, its
@@ -892,6 +1176,7 @@ fn run_post(
         connections: 1,
         partial: None,
         validator: None,
+        country: probe.server.and_then(crate::country::of),
     });
     let mut file = File::create(&output)?;
     let mut buf = vec![0u8; BUF_SIZE];
@@ -987,6 +1272,21 @@ pub fn fetch_to_file(
     written
 }
 
+/// Send one request to a web service's API at `url` through `net`'s proxy
+/// and read the status and at most `limit` bytes of the answer, an error's
+/// too. See `http::call`.
+pub fn call_api(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+    net: &NetConfig,
+    limit: ByteCount,
+) -> Result<(u16, Vec<u8>), EngineError> {
+    let agent = http::Client::new(net, url)?;
+    http::call(&agent, method, url, headers, body, limit.get())
+}
+
 /// The bytes `start` through `end` (inclusive) of `url`, for a preview.
 /// Fails when the server does not send ranges.
 pub fn fetch_range_bytes(
@@ -1032,11 +1332,18 @@ pub fn probe_media(
     if !ytdlp::supports(url) && !(page && web) {
         return stream::probe(url, headers, net);
     }
+    // yt-dlp connects from the chosen network adapter's address, and is not
+    // run while it is down.
+    let source = match net.route.source_address() {
+        Ok(source) => source,
+        Err(down) => return MediaInfo::failed(Some(MediaKind::Page), down.to_string()),
+    };
     match ytdlp::find(ffmpeg) {
         Some(yt_dlp) => ytdlp::probe(
             &yt_dlp,
             url,
             net.proxy.as_ref().and_then(|p| p.proxy_for(url)).as_deref(),
+            source,
             ytdlp::PROBE_TIMEOUT,
         ),
         None => MediaInfo::failed(Some(MediaKind::Page), ytdlp::MISSING.into()),
@@ -1962,6 +2269,9 @@ mod tests {
                 reuse_partial: None,
                 host_limit: None,
                 elevate: false,
+                resolve: None,
+                torrent_files: None,
+                torrent_uploaded: ByteCount::ZERO,
             }
         }
 
@@ -2479,6 +2789,8 @@ mod tests {
                 host_slots: HostSlots::default(),
                 resplit: AtomicBool::new(true),
                 claimed: Mutex::new(HashSet::new()),
+                route_source: std::sync::OnceLock::new(),
+                torrents: std::sync::OnceLock::new(),
             };
             let mut req = request("https://Files.Example.com/a", Path::new("."), FileExists::Rename);
             req.host_limit = Some(2);
@@ -2686,6 +2998,330 @@ mod tests {
         }
 
         #[test]
+        fn a_download_bound_to_the_loopback_adapter_completes() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("bound");
+            let (route, _stand_in) = crate::route::tests::bound_to_loopback();
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig { route, ..NetConfig::default() });
+            let path = download(|_| {}, req);
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_download_stops_when_its_adapter_goes_and_connects_no_more() {
+            // Four connections at 256 KiB/s each: about two seconds for the
+            // file, if nothing stops it.
+            let behavior = Behavior { bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("adapter_gone");
+            let (route, stand_in) = crate::route::tests::bound_to_loopback();
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig { route, ..NetConfig::default() });
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(Arc::new(move |p: Progress| drop(tx.lock().unwrap().send(p))), 1);
+            engine.enqueue(req);
+            let mut gone_at = None;
+            let error = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("download timed out") {
+                    Progress::Advanced { done, .. } if gone_at.is_none() && done.get() > 64 * 1024 => {
+                        stand_in.gone.store(true, Ordering::SeqCst);
+                        gone_at = Some((Instant::now(), server.connections.load(Ordering::SeqCst)));
+                    }
+                    Progress::Failed { error, .. } => break error,
+                    Progress::Finished { .. } => panic!("the download should have stopped"),
+                    Progress::Canceled { .. } => panic!("stopped as canceled, not as failed"),
+                    _ => {}
+                }
+            };
+            let (when, connections) = gone_at.expect("it was receiving");
+            assert_eq!(error, "The network adapter Test adapter is down");
+            assert!(when.elapsed() < Duration::from_secs(2), "stopped promptly");
+            std::thread::sleep(Duration::from_millis(500));
+            assert_eq!(server.connections.load(Ordering::SeqCst), connections, "no connection after it went");
+            assert!(server.served.load(Ordering::SeqCst) < LEN as u64, "not finished another way");
+
+            // A download bound to an adapter that is down does not start.
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig { route: crate::route::tests::bound_to_loopback().0, ..NetConfig::default() });
+            let mut route = req.net.route.clone();
+            route.binding = route.binding.map(|b| crate::route::Binding {
+                choice: udm_domain::network::AdapterChoice {
+                    id: udm_domain::network::AdapterId::parse("udmmissing0").unwrap(),
+                    name: "Gone VPN".into(),
+                    subnets: Vec::new(),
+                },
+                ..b
+            });
+            req.net = Arc::new(NetConfig { route, ..NetConfig::default() });
+            let before = server.connections.load(Ordering::SeqCst);
+            assert_eq!(download_err(req), "The network adapter Gone VPN is down");
+            assert_eq!(server.connections.load(Ordering::SeqCst), before);
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        /// An engine whose downloads take their route from `source` as they
+        /// start, and a channel of its events.
+        fn routed_engine(
+            source: Arc<Mutex<crate::route::Route>>,
+            concurrency: usize,
+        ) -> (Engine, mpsc::Receiver<Progress>) {
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(Arc::new(move |p: Progress| drop(tx.lock().unwrap().send(p))), concurrency);
+            engine.route_from(Arc::new(move || source.lock().unwrap().clone()));
+            (engine, rx)
+        }
+
+        #[test]
+        fn a_queued_download_goes_out_the_way_the_settings_say_when_it_starts() {
+            let behavior = Behavior { bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("route_at_start");
+            let source = Arc::new(Mutex::new(crate::route::Route::default()));
+            let (engine, rx) = routed_engine(Arc::clone(&source), 1);
+            let first = engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let second = engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            // Queued unbound; the adapter chosen since is down.
+            let (bound, stand_in) = crate::route::tests::bound_to_loopback();
+            stand_in.gone.store(true, Ordering::SeqCst);
+            *source.lock().unwrap() = bound;
+            engine.cancel(first);
+            let error = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Failed { id, error, .. } if id == second => break error,
+                    Progress::Finished { id, .. } if id == second => panic!("it went out unbound"),
+                    _ => {}
+                }
+            };
+            assert_eq!(error, "The network adapter Test adapter is down");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_running_download_starts_again_bound_when_the_settings_change() {
+            let behavior = Behavior { bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("route_restart");
+            let source = Arc::new(Mutex::new(crate::route::Route::default()));
+            let (engine, rx) = routed_engine(Arc::clone(&source), 1);
+            engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let (bound, stand_in) = crate::route::tests::bound_to_loopback();
+            let (mut bound_now, mut starts, mut paths) = (Some(bound), 0, Vec::new());
+            let error = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Started { path, .. } => {
+                        starts += 1;
+                        paths.push(path);
+                        if starts == 2 {
+                            // Started again: now bound, so it stops when
+                            // the adapter goes.
+                            stand_in.gone.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    Progress::Advanced { done, .. } if done.get() > 64 * 1024 => {
+                        if let Some(bound) = bound_now.take() {
+                            *source.lock().unwrap() = bound;
+                            engine.restart_running();
+                        }
+                    }
+                    Progress::Failed { error, .. } => break error,
+                    Progress::Finished { .. } => panic!("it went on unbound"),
+                    Progress::Canceled { .. } => panic!("a restart is not a cancel"),
+                    _ => {}
+                }
+            };
+            assert_eq!(starts, 2);
+            assert_eq!(paths[0], paths[1], "it went on in the same file");
+            assert_eq!(error, "The network adapter Test adapter is down");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_download_started_again_goes_on_from_where_it_was() {
+            // Slow enough that the restart comes well before the end, even
+            // on a busy machine.
+            let behavior = Behavior { bytes_per_sec: Some(128 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("route_resume");
+            let source = Arc::new(Mutex::new(crate::route::Route::default()));
+            let (engine, rx) = routed_engine(Arc::clone(&source), 1);
+            engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let mut restarted = false;
+            let path = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Advanced { done, .. } if !restarted && done.get() > LEN as u64 / 4 => {
+                        *source.lock().unwrap() = crate::route::tests::bound_to_loopback().0;
+                        engine.restart_running();
+                        restarted = true;
+                    }
+                    Progress::Finished { path, .. } => break path,
+                    Progress::Failed { error, .. } => panic!("{error}"),
+                    _ => {}
+                }
+            };
+            assert!(restarted);
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            let served = server.served.load(Ordering::SeqCst);
+            assert!(served < LEN as u64 * 3 / 2, "resumed, not downloaded twice: {served} bytes");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_form_download_is_not_sent_again_when_the_network_changes() {
+            let form = b"session=abc&file=report".to_vec();
+            let behavior =
+                Behavior { post_only_body: Some(form.clone()), bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("post_restart");
+            let source = Arc::new(Mutex::new(crate::route::Route::default()));
+            let (engine, rx) = routed_engine(Arc::clone(&source), 1);
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.post_body = Some(form);
+            engine.enqueue(req);
+            // The form's answer comes at 256 KB/s (the test server once sent
+            // it at once, which a slow wakeup on Windows let finish before
+            // the restart), and the restart comes with its first progress, at
+            // 1 MB of 2: a second still to go.
+            let mut restarted = false;
+            let error = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Advanced { .. } if !restarted => {
+                        *source.lock().unwrap() = crate::route::tests::bound_to_loopback().0;
+                        engine.restart_running();
+                        restarted = true;
+                    }
+                    Progress::Failed { error, .. } => break error,
+                    Progress::Finished { .. } => panic!("it went on on the old route"),
+                    Progress::Canceled { .. } => panic!("not a cancel"),
+                    _ => {}
+                }
+            };
+            assert_eq!(error, udm_domain::network::RestartNeeded.to_string());
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(server.connections.load(Ordering::SeqCst), 1, "the form was sent once");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_cancel_is_a_cancel_even_when_the_adapter_goes_too() {
+            let behavior = Behavior { bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("cancel_and_down");
+            let (route, stand_in) = crate::route::tests::bound_to_loopback();
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig { route, ..NetConfig::default() });
+            req.speed_limit = Some(1 << 30);
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(Arc::new(move |p: Progress| drop(tx.lock().unwrap().send(p))), 1);
+            let id = engine.enqueue(req);
+            let ended = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Advanced { done, .. } if done.get() > 64 * 1024 => {
+                        engine.cancel(id);
+                        stand_in.gone.store(true, Ordering::SeqCst);
+                    }
+                    p @ (Progress::Canceled { .. } | Progress::Failed { .. } | Progress::Finished { .. }) => break p,
+                    _ => {}
+                }
+            };
+            assert!(matches!(ended, Progress::Canceled { .. }), "the user's cancel wins");
+            assert!(engine.inner.shared.own_limits.lock().unwrap().is_empty(), "its limiter is gone");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn names_are_looked_up_with_dns_over_https() {
+            let server = TestServer::start(body(LEN));
+            let lookups = crate::doh::tests::stand_in(|name, kind, q| {
+                let known = name == "files.udm.test" && kind == 1;
+                let records = if known { vec![(vec![0xc0, 12], 1, 60, vec![127, 0, 0, 1])] } else { Vec::new() };
+                crate::doh::tests::response(q, if name == "files.udm.test" { 0 } else { 3 }, &records)
+            });
+            let doh = Arc::new(crate::doh::tests::doh_at(&lookups));
+            let dir = temp_dir("doh");
+            let url = server.url.replace("127.0.0.1", "files.udm.test");
+            let mut req = request(&url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig {
+                route: crate::route::Route { binding: None, dns: Some(Arc::clone(&doh)) },
+                ..NetConfig::default()
+            });
+            let path = download(|_| {}, req);
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            assert!(lookups.queries.load(Ordering::SeqCst) >= 1);
+            // A name the resolver does not know is not asked of the system.
+            let mut req = request(&server.url.replace("127.0.0.1", "localhost.udm.test"), &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig {
+                route: crate::route::Route { binding: None, dns: Some(doh) },
+                ..NetConfig::default()
+            });
+            assert!(download_err(req).contains("was not found by the DNS over HTTPS resolver"));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_resolved_address_is_downloaded_without_the_old_sites_headers() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("resolved");
+            let direct = format!("{}/direct/a.zip", server.url);
+            let mut req = request("https://files.example/abc.html", &dir, FileExists::Rename);
+            req.filename = None;
+            req.headers = vec![
+                ("Cookie".into(), "host_session=1".into()),
+                ("Referer".into(), "https://files.example/".into()),
+                ("User-Agent".into(), "UDM test".into()),
+            ];
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let (seen, to) = (Arc::clone(&asked), direct.clone());
+            req.resolve = Some(Arc::new(move |url: &Address| {
+                seen.lock().unwrap().push(url.as_str().to_string());
+                Ok(Some(Unrestricted {
+                    address: Address::parse(&to).unwrap(),
+                    filename: Some("unlocked.zip".into()),
+                    size: None,
+                }))
+            }));
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(Arc::new(move |p: Progress| drop(tx.lock().unwrap().send(p))), 1);
+            engine.enqueue(req);
+            let path = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("download timed out") {
+                    Progress::Started { url, .. } => assert_eq!(url, "https://files.example/abc.html"),
+                    Progress::Finished { path, url, .. } => {
+                        assert_eq!(url, "https://files.example/abc.html", "named by its own address");
+                        break path;
+                    }
+                    Progress::Failed { error, .. } => panic!("download failed: {error}"),
+                    _ => {}
+                }
+            };
+            assert_eq!(path, dir.join("unlocked.zip"));
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            assert_eq!(*asked.lock().unwrap(), ["https://files.example/abc.html"]);
+            assert!(server.cookies_seen.lock().unwrap().is_empty(), "the host's cookies stay with the host");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_resolver_that_refuses_fails_the_download_with_its_words() {
+            use udm_domain::debrid::{DebridError, DebridService};
+            let dir = temp_dir("refused");
+            let mut req = request("https://files.example/abc.html", &dir, FileExists::Rename);
+            req.resolve = Some(Arc::new(|_: &Address| {
+                Err(Refused { service: DebridService::RealDebrid, error: DebridError::LinkDead })
+            }));
+            assert_eq!(
+                download_err(req),
+                "Real-Debrid could not unlock this link: the file is not available on the host."
+            );
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
         fn a_site_login_answers_a_401() {
             let data = body(LEN);
             let behavior = Behavior { basic_auth: Some("ann:pa ss".into()), ..Behavior::default() };
@@ -2710,6 +3346,7 @@ mod tests {
                 ftp_proxy_login: Default::default(),
                 proxy: None,
                 logins: vec![login("127.0.0.1", "ann", "wrong")],
+                route: Default::default(),
             });
             let err = download_err(req);
             assert_eq!(err, "The login for 127.0.0.1 was refused (realm: files)");
@@ -2725,6 +3362,7 @@ mod tests {
                 ftp_proxy_login: Default::default(),
                 proxy: None,
                 logins: vec![login("example.com", "x", "y"), login("127.0.0.1", "ann", "pa ss")],
+                route: Default::default(),
             });
             let path = download(|_| {}, req);
             assert_eq!(fs::read(&path).unwrap(), data);
@@ -2744,6 +3382,7 @@ mod tests {
                     ftp_proxy_login: Default::default(),
                     proxy: None,
                     logins: vec![login("127.0.0.1", "CORP\\ann", password)],
+                    route: Default::default(),
                 })
             };
 
@@ -2787,6 +3426,7 @@ mod tests {
                 ftp_proxy_login: Default::default(),
                 proxy: None,
                 logins: vec![login("127.0.0.1", "ann", "pw")],
+                route: Default::default(),
             });
             let path = download(|_| {}, req);
             assert_eq!(fs::read(&path).unwrap(), data);
@@ -2848,6 +3488,7 @@ mod tests {
                     ..Default::default()
                 }),
                 logins: Vec::new(),
+                route: Default::default(),
             });
 
             let path = download(|_| {}, req);

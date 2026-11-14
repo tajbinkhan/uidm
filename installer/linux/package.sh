@@ -51,7 +51,7 @@ node "$root/installer/make-firefox.js" --check >/dev/null
 mkdir -p "$stage/extension" "$stage/firefox"
 cp -R "$root/extension/chromium/." "$stage/extension/"
 cp -R "$root/extension/firefox/." "$stage/firefox/"
-install -m644 "$root/README.md" "$stage/"
+install -m644 "$root/README.md" "$root/THIRD-PARTY-NOTICES.txt" "$stage/"
 icon="$root/extension/chromium/icons/128.png"
 
 # A system-wide tree: programs in /usr/lib/udm, `udm` (the window) and
@@ -106,7 +106,7 @@ Name: udm
 Version: $version
 Release: 1
 Summary: Download manager with a browser extension
-License: MIT
+License: MIT AND CC-BY-4.0
 URL: https://github.com/tajbinkhan/UDM
 Requires: gtk3, webkit2gtk4.1, openssl-libs >= 3
 Recommends: libayatana-appindicator-gtk3, libnotify, ffmpeg, yt-dlp
@@ -143,7 +143,7 @@ make_appimage() {
   local app="$work/UDM.AppDir"
   mkdir -p "$app/usr/bin" "$app/usr/share/udm"
   install -m755 "$stage/udm-gui" "$stage/udm-daemon" "$stage/udm-host" "$stage/udm-cli" "$stage/udm-mcp" "$app/usr/bin/"
-  cp -a "$stage/extension" "$stage/firefox" "$stage/README.md" "$app/usr/share/udm/"
+  cp -a "$stage/extension" "$stage/firefox" "$stage/README.md" "$stage/THIRD-PARTY-NOTICES.txt" "$app/usr/share/udm/"
   install -m755 "$here/AppRun" "$app/AppRun"
   install -m644 "$here/udm.desktop" "$app/udm.desktop"
   install -m644 "$icon" "$app/udm.png"

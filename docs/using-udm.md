@@ -202,6 +202,10 @@
   buttons themselves, and choose the tab the window opens on and whether it
   opens with its details shown. The window closes when the download
   finishes.
+- **A torrent's** save-as dialog lists its files to tick, its row says when it
+  seeds and with what share ratio, and its download window has tabs for its
+  files, peers, trackers, pieces and seeding limits
+  ([Torrents and magnet links](torrents.md#in-the-window)).
 - **When a download ends**, UDM shows a Windows notification: **Open** and
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still
@@ -250,6 +254,15 @@
   own login, or with **Save this password** become the site's login in
   Options (always, when the file is on another site than its link). Other
   downloads from the same site waiting for a login go with the same answer.
+- **Network adapter and DNS** (**Options > Network**): bind every download
+  to one network adapter, such as a VPN's, so that downloads stop instead of
+  going out another way when it is down, and look host names up with DNS
+  over HTTPS at Cloudflare, Google, Quad9 or a server you name. See
+  [Network adapter, encrypted DNS and the server's country](network.md).
+- **Debrid account** (experimental; **Options > Debrid**): links to file
+  hosts such as Rapidgator and 1fichier go through a Real-Debrid, AllDebrid
+  or Premiumize account and download from the fast direct link it gives.
+  See [Debrid accounts](debrid.md).
 - **FTP and FTPS**: `ftp://` and `ftps://` addresses download like web ones,
   over several connections and resuming where they stopped. `ftps://` is
   FTP over TLS from the first byte (port 990 unless the address names
@@ -515,7 +528,8 @@
   after a header sets the column's width. **More > Columns...** shows,
   hides, orders and sizes them (**Fit** sizes a column to what it holds;
   the list follows each change at once, and **Cancel** puts it back);
-  the columns include **Parent web page**, the page a download came from
+  the columns include **Country**, the server's country with its flag
+  ([Network adapter and DNS](network.md#the-servers-country)), **Parent web page**, the page a download came from
   (the browser tab's address), and **Referrer**, the address sent to the
   server as its Referer, which can be a frame inside that page. Both sort
   like the rest, and **View > Arrange files** has **By Referrer** and **By

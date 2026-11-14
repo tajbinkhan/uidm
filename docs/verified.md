@@ -1,5 +1,48 @@
 # Verified
 
+- Screenshots and step-by-step guides (#269). `node tools/screenshots/shoot.js`
+  ran here (Ubuntu 24.04, Playwright's Chromium) and wrote every picture in
+  `docs/images/` except the Linux ones, each under 200 KB at twice the
+  window's size; each was looked at in both looks. The richer sample list
+  (`crates/ui/src/fixtures.rs`) was written with `UDM_WRITE_FIXTURES=1`, and
+  the frontend's tests pass on it (their expectations follow the sample's
+  new file names and category). The download window's labels were drawn in
+  English, Spanish, Brazilian Portuguese, Ukrainian and German on the preview
+  page: the labels' column grows for the longest label and none runs into
+  its value, on the status and the Speed Limiter tabs. The video button is the extension's content
+  scripts on a page the script serves to the browser itself, with the
+  worker's menu built by `media.js`; the browser reached no network. The
+  Linux pictures are the debug `udm-gui` and `udm-daemon` under Xvfb and
+  openbox with a scratch home, fed by `tools/bench/faultserver.py` and
+  `udm-cli get` ([how](../tools/screenshots/README.md#the-linux-shot)). The
+  project page was put together as `pages.yml` does and drawn at 1200 and 390
+  pixels wide in both looks, without sideways scrolling. Every menu, button
+  and setting the guides name was checked against the frontend's components
+  and `crates/ui/src/lang/en.json`. Not tried: the script on Windows or
+  macOS, where the windows get those systems' fonts, and the Pages workflow
+  itself.
+
+- The extension made ready for the browser stores (#248). The extension's
+  tests build both store zips into a temporary folder and read them back with
+  a zip reader of their own (each entry's local header, size and CRC): every
+  file of `extension/chromium` and `extension/firefox` at the root, sorted,
+  with one fixed time, byte for byte as in git; the Chromium manifest without
+  its `key` and otherwise unchanged; the Firefox one with `udm@udm.local`; the
+  same bytes on a second run; no zip from a stale Firefox copy; no hidden
+  files. Python's `zipfile` and `unzip -l` read the zips too. A Rust test
+  checks that the host manifests, Setup, `install-host.ps1`, `AppRun` and
+  `extension/firefox.json` name the same extension IDs as `browsers.rs`, and
+  that the unpacked ID is the one the manifest's key gives; it failed with a
+  made-up ID added to one file only. It reads Setup's `ChromiumIds` define
+  and `install-host.ps1`'s `$ExtensionId` default themselves, not every
+  word that looks like an ID. A manifest that lacks an ID UDM lets in is
+  written again, and one that lets in more is kept. A Node test checks the
+  extension's version is the workspace's. Not tried: Inno Setup and
+  PowerShell (no Windows here), including Setup rewriting the data folder's
+  manifests; the Release workflow's new jobs, `web-ext sign` and the Chrome
+  Web Store API v2, which need the stores' accounts; and the listings
+  themselves.
+
 - More interface languages (#251). Thirteen tables were added to the window and
   the extension: Indonesian, Italian, Dutch, Polish, Brazilian Portuguese,
   Vietnamese, Turkish, Russian, Ukrainian, Japanese, Korean and Simplified and

@@ -230,7 +230,8 @@ status.",
     Tool {
         name: "add_download",
         title: "Add a download",
-        description: "Add a link (an http, https, ftp or ftps address) to UDM. Without a queue it starts now; \
+        description: "Add a link (an http, https, ftp or ftps address, or a torrent's magnet link) to UDM. Without a \
+queue it starts now; \
 with a queue it waits there until the queue starts. No dialog is shown. If the address is in the list already, it \
 is downloaded again under a numbered name. Returns the new download's id; the download goes on in UDM, so \
 call list_downloads to follow it.",
@@ -324,7 +325,7 @@ fn list_schema() -> Value {
 fn add_schema() -> Value {
     json!({
         "properties": {
-            "url": { "type": "string", "description": "The address to download: http, https, ftp or ftps." },
+            "url": { "type": "string", "description": "The address to download: http, https, ftp or ftps, or a magnet link." },
             "folder": {
                 "type": "string",
                 "description": "The folder to save in, a full path. Without it, UDM's settings pick the \
@@ -434,7 +435,8 @@ fn request(name: &str, args: &Value) -> Result<Request, String> {
 fn add_request(args: &Value) -> Result<AddRequest, String> {
     let url = text(args, "url")?.ok_or("give the url to download")?;
     let url = url.trim();
-    let url = Address::parse(url).map_err(|_| format!("{url} is not an http, https, ftp or ftps address"))?;
+    let url = Address::parse(url)
+        .map_err(|_| format!("{url} is not an http, https, ftp or ftps address or a magnet link"))?;
     let folder = match text(args, "folder")?.map(str::trim).filter(|f| !f.is_empty()) {
         Some(f) if Path::new(f).is_absolute() => Some(PathBuf::from(f).display().to_string()),
         Some(f) => return Err(format!("the folder {f} is not a full path")),

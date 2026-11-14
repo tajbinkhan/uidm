@@ -12,7 +12,7 @@ use udm_application::daemon::Command;
 
 use super::{lang, post};
 use crate::actor::{BrowserAction, CurrentLanguage, Inbox, Outbox};
-use crate::contract::{Id, InvokeError, OptionsDraft, PickKind, SystemProxyView, ToolKey};
+use crate::contract::{DebridChoice, Id, InvokeError, OptionsDraft, PickKind, SystemProxyView, ToolKey};
 use crate::errors;
 use crate::state::UiMessage;
 
@@ -83,6 +83,22 @@ pub async fn install_tool(
     let tool = crate::services::tool_of(tool);
     post(&outbox, &current, Inbox::Send { command: Box::new(Command::InstallTool { tool }), reply: None })?;
     post(&outbox, &current, Inbox::Ui(UiMessage::ToolInstalling(tool)))
+}
+
+/// Check account: ask the debrid service about the account, with the key
+/// typed in the field, or else the stored one. The answer shows on the page.
+#[tauri::command]
+#[specta::specta]
+pub async fn check_debrid(
+    outbox: State<'_, Outbox>,
+    current: State<'_, CurrentLanguage>,
+    service: DebridChoice,
+    key: String,
+) -> Result<(), InvokeError> {
+    let service = crate::options::debrid_service(service);
+    let command = Command::CheckDebrid { service, key: udm_domain::debrid::DebridKey::new(&key) };
+    post(&outbox, &current, Inbox::Send { command: Box::new(command), reply: None })?;
+    post(&outbox, &current, Inbox::Ui(UiMessage::DebridChecking(service)))
 }
 
 /// Ask how remote control stands, as Options' Remote page does while it

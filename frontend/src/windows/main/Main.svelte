@@ -20,6 +20,7 @@
     openClipboardLinks,
     openDownload,
     openWindow,
+    openTorrentFile,
     queueSelection,
     saveCategory,
     setLimiter,
@@ -140,6 +141,7 @@
         item('&Add new download', () => void openWindow('addUrl')),
         item('Add &batch download', () => void openWindow('batch')),
         item('Add batch download from &clipboard', when(can?.connected, () => void fromClipboard())),
+        item('Open &torrent file...', when(can?.connected, () => void tell(openTorrentFile()))),
         sep,
         item('Run site &grabber', when(can?.connected, () => void openWindow('grabber'))),
         item('Show &drop target', () => view && void showDropTarget(!view.chrome.dropTarget), { checked: !!view?.chrome.dropTarget }),
@@ -304,6 +306,12 @@
     sep,
     item('Resume Download', when(can?.resume, act({ action: 'resume' }))),
     item('Stop Download', when(can?.stop, act({ action: 'stop' }))),
+    ...(can?.torrent || can?.stopSeeding
+      ? [
+          item('Torrent details', when(can?.torrent && !!one, () => one && void showDownload(one.id))),
+          item('Stop seeding', when(can?.stopSeeding, act({ action: 'stopSeeding' }))),
+        ]
+      : []),
     sep,
     item('Refresh download address', when(can?.refresh && !!one, () => one && void tell(showRefresh(one.id)))),
     sep,

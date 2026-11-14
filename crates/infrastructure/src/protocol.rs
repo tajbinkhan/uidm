@@ -42,6 +42,26 @@ impl std::fmt::Debug for Secret {
     }
 }
 
+/// A debrid key as a message carries it: never blank, and hidden from
+/// `Debug` like `Secret`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct WireKey(pub udm_domain::debrid::DebridKey);
+
+impl TryFrom<String> for WireKey {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        udm_domain::debrid::DebridKey::new(&text).map(WireKey).ok_or("a debrid key cannot be blank")
+    }
+}
+
+impl From<WireKey> for String {
+    fn from(key: WireKey) -> Self {
+        key.0.expose().to_string()
+    }
+}
+
 /// A request from a client (the browser via the host, or the desktop window)
 /// to the daemon.
 ///
@@ -324,6 +344,45 @@ pub enum Incoming {
     RemoveDevice {
         id: DeviceId,
     },
+    /// Ask a debrid service about the account, with `key` or else the
+    /// stored key; answered with `debrid`. The window's.
+    CheckDebrid {
+        service: udm_domain::debrid::DebridService,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Secret>,
+    },
+    /// Store the debrid account's API key for `service`, in place of any
+    /// other; answered with `settings` to every client, or `error`. A blank
+    /// key is not a message the daemon reads. The window's.
+    SetDebridKey {
+        service: udm_domain::debrid::DebridService,
+        key: WireKey,
+    },
+    /// Remove the stored debrid key; answered with `settings` to every
+    /// client, or `error`. The window's.
+    RemoveDebridKey,
+    /// Choose which files of torrent download `id` to download, by their
+    /// numbers in the torrent; `error` when it cannot take them.
+    SelectTorrentFiles {
+        id: DownloadId,
+        files: udm_domain::torrent::FileSelection,
+    },
+    /// Give torrent download `id` its own seeding limits, or follow the
+    /// settings' again with none.
+    SetSeedLimits {
+        id: DownloadId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limits: Option<udm_domain::torrent::SeedLimits>,
+    },
+    /// Stop seeding finished torrent download `id`.
+    StopSeeding {
+        id: DownloadId,
+    },
+    /// Send torrent download `id`'s files, as `torrent_info` to this client
+    /// only (rows carry no file list); `error` when none are known.
+    TorrentFiles {
+        id: DownloadId,
+    },
 }
 
 /// A message from the daemon to a client.
@@ -371,6 +430,10 @@ pub enum Outgoing {
         /// The server's size, ETag and date for the file, when it said.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         validator: Option<Validator>,
+        /// The ISO 3166 code of the server's country (`US`), from the
+        /// address table UDM ships, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        country: Option<udm_domain::country::CountryCode>,
     },
     /// Periodic progress for a running download.
     Progress {
@@ -407,6 +470,20 @@ pub enum Outgoing {
     /// A download was removed from the list (removed or retried).
     Removed {
         id: DownloadId,
+    },
+    /// A torrent download's metadata is known: its name, files and pieces.
+    /// Sent to every client.
+    TorrentInfo {
+        id: DownloadId,
+        url: Link,
+        info: udm_domain::torrent::TorrentInfo,
+    },
+    /// How a torrent download is doing: its phase, speeds, peers, trackers
+    /// and pieces. About every second while it downloads or seeds.
+    TorrentStats {
+        id: DownloadId,
+        url: Link,
+        stats: udm_domain::torrent::TorrentStats,
     },
     /// A download's whole entry, replacing what clients had: used for the
     /// changes no other event covers (`confirming`, `waiting`, and back to
@@ -687,6 +764,16 @@ pub enum Outgoing {
     /// secrets), and the pairing code shown.
     Remote {
         state: RemoteState,
+    },
+    /// Reply to `check_debrid`, to the client that asked only: the account
+    /// the service sees, or why not.
+    Debrid {
+        check: udm_domain::debrid::DebridCheck,
+    },
+    /// To the windows: the debrid service refused the account when its
+    /// hosts were read, so downloads go on without it. At most once an hour.
+    DebridRefused {
+        refused: udm_domain::debrid::Refused,
     },
 }
 

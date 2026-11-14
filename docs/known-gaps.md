@@ -15,6 +15,61 @@
   choose a scanner program such as `clamscan`. These builds were tested on
   Linux; the macOS build is checked by the compiler and CI only.
 
+- Torrents (#249, [Torrents and magnet links](torrents.md)): no sequential download, RSS feeds,
+  IP blocklists, web seeds, protocol encryption or BitTorrent v2-only torrents; incoming
+  connections are TCP only. On Windows torrents do not run while a network adapter is chosen,
+  because librqbit cannot bind its sockets there. A torrent's own speed limit takes effect when it
+  starts, not while it runs. Torrents ignore the proxy settings, but librqbit's HTTP tracker client
+  may take one from `HTTP_PROXY`-style environment variables. A torrent of one file cannot be saved
+  under another name. UDM's installers do not register it for `magnet:` links or `.torrent` files,
+  so the system does not open them with UDM by itself (`udm-gui` takes either on its command line). File names that differ only in Unicode normalization are not told apart
+  (that needs a normalization library UDM does not carry). They were tested against a local swarm
+  (a second BitTorrent client on `127.0.0.1`), not public trackers or the DHT.
+
+- Debrid accounts (#259, [Debrid accounts](debrid.md)) are experimental:
+  they were tested against stand-ins for Real-Debrid's, AllDebrid's and
+  Premiumize's APIs, not the services themselves. A link AllDebrid has to
+  prepare first ("delayed") fails with the service's note instead of
+  waiting; retry it a few minutes later. Premiumize says why it refused a
+  link in words only, so UDM reads the words.
+
+- Safari (#268, [install](install.md#safari)): the extension was built for
+  Safari but never run in it here; the Swift handler, the entitlements and
+  the Xcode build are checked by CI's macOS runner only (and do not fail a
+  run until that build has passed once), and the extension's side against a
+  stand-in for Safari's API in its tests. What Safari does not offer, the
+  Safari extension does not do:
+  - No downloads API: a download the browser starts (a form's, a script's,
+    a link that names no file) stays in Safari. UDM takes only a link whose
+    address or `download` attribute names a file of a type in the captured
+    types list, as it is clicked, and none while that list is empty; a type
+    that shows only in the server's answer, the minimum size and the popup's
+    list of the browser's own downloads do not apply. A link UDM declines at
+    once is followed by Safari as usual; one UDM refuses later, or that was
+    lost when the connection to UDM dropped, opens in a background tab for
+    Safari to download.
+  - No proxy settings: **Use the browser's proxy** gets nothing from
+    Safari, and UDM uses its own proxy settings.
+  - No notifications: the notices that UDM could not take a download or a
+    page has no links do not show; the popup shows why UDM is not reached.
+  - No live port: the extension keeps a request out to UDM's app extension,
+    which answers it as soon as UDM has news (or after 20 seconds without),
+    then asks again. Safari may stop the worker or the app extension when
+    they are idle; the connection then starts again, with a fresh
+    `udm-host`, the next time the worker runs, and the popup may show UDM as
+    not connected for a moment. A crawl that asks the browser for cookies
+    or a rendered page while the worker is stopped gets none.
+  - The app extension runs `udm-host` in Safari's sandbox, where it cannot
+    start the daemon: open UDM (or let it start at sign-in) before using
+    Safari. It reaches the daemon only in the usual data folder, not a
+    named copy's (`UDM_INSTANCE`), a portable copy's or a server's.
+  - UDM is signed ad hoc, so Safari shows the extension only once unsigned
+    extensions are allowed (**Develop > Allow Unsigned Extensions**, or in
+    Safari 17 and later also **Settings > Developer > Allow unsigned
+    extensions**), which Safari turns off each time it quits.
+  - Safari may give a Manifest V3 worker no web requests to watch: then
+    the video button lists only what its player's own addresses show, the
+    recent videos menus stay empty, and form downloads are not rebuilt.
 - FTPS data connections do not resume the control connection's TLS
   session (the operating system's TLS, through `native-tls`, offers no way
   to), so a server that requires it, such as vsftpd with

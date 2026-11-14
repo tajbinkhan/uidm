@@ -44,7 +44,7 @@ udm-gui /s
 
 | Switch | Long form | What it does |
 |---|---|---|
-| `/d URL` | `--download` | Add URL (http, https, ftp or ftps) to the list and show the usual download dialog |
+| `/d URL` | `--download` | Add URL (http, https, ftp or ftps, or a torrent's magnet link) to the list and show the usual download dialog |
 | `/p folder` | `--path` | Save in this folder (relative to the current one) |
 | `/f file_name` | `--file` | Save under this name |
 | `/c checksum` | `--checksum` | Compare the finished file with this checksum (`sha256:...` and the like, or a bare hex digest); a mismatch fails it. UDM's own, not IDM's |
@@ -53,6 +53,10 @@ udm-gui /s
 | `/q` | `--quit` | Exit UDM once that download finishes, but only when the call started UDM, as in IDM |
 | `/h` | `--hang-up` | Hang up a dial-up connection; accepted and does nothing |
 | `/s` | `--start-queue` | Start the main queue |
+
+A magnet link or a `.torrent` file given alone (`udm-gui "magnet:?xt=urn:btih:..."`,
+`udm-gui album.torrent`) is downloaded as `/d` would; `udm-gui` reads the `.torrent` file (at most
+2.75 MB) and hands it to UDM ([Torrents](torrents.md)).
 
 `/p`, `/f`, `/c`, `/a`, `/n`, `/q` and `/h` need `/d`; without it they are ignored, as in IDM. Each
 switch also works as `-d` and the like, and the slash forms take either case. With UDM already
@@ -83,7 +87,10 @@ udm-cli help | version
 
 ### get
 
-`udm-cli get URL` downloads URL now and follows it until it ends. It shows no dialog,
+`udm-cli get URL` downloads URL now and follows it until it ends. URL may also be a torrent's
+magnet link, or a `.torrent` file (`udm-cli get ~/Downloads/album.torrent`), which `udm-cli` reads
+and hands to UDM; a torrent ends when it has downloaded, and then seeds in UDM
+([Torrents](torrents.md)). It shows no dialog,
 whatever **Options** says about asking where to save, and an address already in the list is
 downloaded again under a numbered name. The download is added to the list like any other, so the
 window shows it too.
@@ -268,6 +275,8 @@ queues change.
 
 The schema lists each message's fields and what they mean. The rules around them:
 
+- `add` takes an http, https, ftp or ftps address, or a torrent's magnet link; a `.torrent` file
+  goes in `torrent_file`, base64-encoded, with its magnet link as `url`.
 - `add` is answered with `ack`, naming the new download's `id`, or `rejected`. Events about the
   download (`added`, even `started` and `done` for a small file) may come before the `ack`, so a
   program keeps what it hears until it has the id. With `"ask": false` no save-as dialog opens,

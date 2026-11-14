@@ -1,7 +1,7 @@
 # Themes and interface size
 
-**Options > General** has a **Theme** and an **Interface size**. Both change
-the window as soon as you save.
+**Options > General** has a **Theme**, and **Options > Behavior** an
+**Interface size**. Both change the window as soon as you save.
 
 ## The built-in themes
 

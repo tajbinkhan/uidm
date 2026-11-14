@@ -264,8 +264,34 @@ pub fn set_zoom(percent: u32) {
     ZOOM.store(percent, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A torrent's download window, with its tabs of files, peers, trackers,
+/// pieces and seeding, and its Download File Info, with its file list.
+const TORRENT_DOWNLOAD: (f64, f64) = (700.0, 400.0);
+const TORRENT_SAVE_AS: (f64, f64) = (576.0, 432.0);
+
+/// The size window `label` opens at: a torrent's windows are larger.
+pub fn size(state: &AppState, label: Label) -> (f64, f64) {
+    let torrent = |id: DownloadId| state.table.get(id).is_some_and(|e| e.torrent.is_some());
+    match label {
+        Label::Download(id) if torrent(id) => TORRENT_DOWNLOAD,
+        Label::SaveAs(id) if torrent(id) => TORRENT_SAVE_AS,
+        _ => label.size(),
+    }
+}
+
 /// Open the window `label`, or bring it forward when it is open.
 pub fn open(app: &AppHandle, label: Label, lang: &'static Language) -> Result<WebviewWindow, tauri::Error> {
+    open_sized(app, label, lang, label.size())
+}
+
+/// Open the window `label` at `size` (before the interface size), or bring
+/// it forward when it is open.
+pub fn open_sized(
+    app: &AppHandle,
+    label: Label,
+    lang: &'static Language,
+    size: (f64, f64),
+) -> Result<WebviewWindow, tauri::Error> {
     if let Some(w) = app.get_webview_window(&label.to_string()) {
         let _ = w.unminimize();
         let _ = w.show();
@@ -273,8 +299,7 @@ pub fn open(app: &AppHandle, label: Label, lang: &'static Language) -> Result<We
         return Ok(w);
     }
     let zoom = f64::from(ZOOM.load(std::sync::atomic::Ordering::Relaxed).clamp(50, 400)) / 100.0;
-    let (width, height) = label.size();
-    let (width, height) = (width * zoom, height * zoom);
+    let (width, height) = (size.0 * zoom, size.1 * zoom);
     let main = matches!(
         label,
         Label::Main | Label::Grabber | Label::Links | Label::PickLinks | Label::PickVideos | Label::Gallery

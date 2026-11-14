@@ -45,7 +45,7 @@ use udm_domain::ports::{ReleaseFile, ToolFolder, ToolRelease, ToolReleases};
 use udm_domain::sync::LockExt;
 use udm_domain::tools::{Cpu, Forge, InstalledTool, Packing, Platform, System, Tool, ToolError};
 
-use crate::connect::{config_for, ProxyRetries};
+use crate::connect::{config_for, NetState};
 use crate::engine;
 use crate::live_settings::LiveSettings;
 
@@ -92,7 +92,7 @@ struct Site {
 /// proxy.
 pub struct ForgeTools {
     settings: Arc<LiveSettings>,
-    retries: Arc<ProxyRetries>,
+    retries: Arc<NetState>,
     github: Site,
     codeberg: Site,
     /// Where downloads wait to be checked.
@@ -100,7 +100,7 @@ pub struct ForgeTools {
 }
 
 impl ForgeTools {
-    pub fn new(settings: Arc<LiveSettings>, retries: Arc<ProxyRetries>) -> Self {
+    pub fn new(settings: Arc<LiveSettings>, retries: Arc<NetState>) -> Self {
         let folder = crate::paths::tools_dir().map(|d| d.join(".downloads"));
         ForgeTools {
             settings,

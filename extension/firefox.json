@@ -1,5 +1,5 @@
 {
-    "background": { "scripts": [ "rules.js", "links.js", "post.js", "media.js", "request.js", "background.js" ] },
+    "background": { "scripts": [ "rules.js", "links.js", "post.js", "media.js", "request.js", "native.js", "background.js" ] },
     "permissions": [ "nativeMessaging", "downloads", "cookies", "contextMenus", "storage", "webRequest", "webRequestBlocking", "webNavigation", "proxy", "scripting", "notifications" ],
     "browser_specific_settings": {
         "gecko": {

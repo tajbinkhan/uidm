@@ -94,7 +94,7 @@ pub fn ffmpeg(settings: &Settings) -> Option<PathBuf> {
     if !set.is_empty() {
         return Some(PathBuf::from(set)).filter(|p| p.is_file());
     }
-    // The one UDM installed (Options > General), then the PATH's.
+    // The one UDM installed (Options > Tools), then the PATH's.
     let own = crate::paths::tools_dir().map(|d| d.join(crate::platform::exe_name("ffmpeg")));
     let path = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
     own.into_iter()
@@ -398,6 +398,32 @@ mod tests {
             remote_enabled: true,
             remote_port: 20443,
             remote_addresses: vec!["192.168.1.20".into()],
+            debrid: udm_domain::debrid::DebridSettings {
+                enabled: true,
+                service: Some(udm_domain::debrid::DebridService::Premiumize),
+                key_service: Some(udm_domain::debrid::DebridService::Premiumize),
+            },
+            network_adapter: Some(udm_domain::network::AdapterChoice {
+                id: udm_domain::network::AdapterId::parse("wg0").unwrap(),
+                name: "Work VPN".into(),
+                subnets: Vec::new(),
+            }),
+            dns: udm_domain::network::DnsChoice::Custom(
+                udm_domain::network::DohUrl::parse("https://doh.example/dns-query").unwrap(),
+            ),
+            torrents: udm_domain::settings::TorrentSettings {
+                port: Some(51413),
+                dht: false,
+                upnp: false,
+                local_peers: false,
+                max_peers: Some(80),
+                upload_limit_kbps: Some(300),
+                seed_limits: udm_domain::torrent::SeedLimits {
+                    ratio: Some(udm_domain::torrent::Ratio::new(2.5).unwrap()),
+                    minutes: None,
+                },
+                catch_torrent_files: false,
+            },
         };
         save(&s, &path).unwrap();
         assert_eq!(load(&path).unwrap(), s);
@@ -433,6 +459,19 @@ mod tests {
         let cleared = Settings { capture_excluded_urls: vec!["https://dl.net/keep/*".into()], ..s };
         save(&cleared, &path).unwrap();
         assert_eq!(load(&path).unwrap().capture_excluded_urls, ["https://dl.net/keep/*"]);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn an_adapter_no_system_has_keeps_the_file_and_the_binding() {
+        let path = temp_path("bad_adapter.json");
+        fs::write(&path, br#"{"max_concurrent":3,"network_adapter":{"id":"wg\u00000","name":"Work VPN"}}"#).unwrap();
+        let s = load(&path).expect("the rest of the settings still load");
+        assert_eq!(s.max_concurrent, 3);
+        let choice = s.network_adapter.expect("still bound: downloads stop rather than go out unbound");
+        assert_eq!(choice.label(), "Work VPN");
+        let all = udm_domain::ports::NetworkAdapters::list(&crate::adapters::SystemAdapters).unwrap();
+        assert!(udm_domain::network::bound_adapter(&choice, &all).is_err());
         fs::remove_file(&path).ok();
     }
 

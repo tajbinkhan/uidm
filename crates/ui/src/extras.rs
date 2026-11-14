@@ -729,6 +729,7 @@ mod tests {
             now: Instant::now(),
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
+            flags: true,
         }
     }
 

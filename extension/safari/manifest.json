@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "UDM",
+  "version": "0.5.0",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "rules.js",
+        "links.js",
+        "content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "action": {
+    "default_title": "UDM",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "cookies",
+    "contextMenus",
+    "storage",
+    "webRequest",
+    "webNavigation",
+    "scripting"
+  ],
+  "browser_specific_settings": {
+    "safari": {
+      "strict_min_version": "16.4"
+    }
+  }
+}

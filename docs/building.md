@@ -39,10 +39,13 @@ differs.
 | `extension/chromium/post.js` | Matching downloads to the form POSTs that started them |
 | `extension/chromium/request.js` | The request behind a download: headers, redirects, response, proxy setting |
 | `extension/chromium/media.js` | Which responses are videos and streams, per tab, and the video menu |
-| `extension/chromium/content.js` | The video button over playing videos |
+| `extension/chromium/content.js` | The video button over playing videos, and in Safari the download links taken as they are clicked |
+| `extension/chromium/native.js` | Safari's polling stand-in for a native port ([Safari](install.md#safari)) |
 | `extension/firefox/` | The Firefox copy of `extension/chromium`, made by `node installer/make-firefox.js` and kept in git; do not edit it by hand |
 | `extension/firefox.json` | What the Firefox copy changes in `manifest.json` |
-| `extension/test/` | Node tests for the rules, the service worker and the Firefox copy |
+| `extension/safari/` | The Safari copy of `extension/chromium`, made by `node installer/make-safari.js` and kept in git; do not edit it by hand |
+| `extension/safari.json` | What the Safari copy changes in `manifest.json` |
+| `extension/test/` | Node tests for the rules, the service worker and the Firefox and Safari copies |
 | `assets/icon-1024.png` | The app icon's source, 1024 pixels square with a transparent background; `installer/render-icons.js` renders every other icon file from it, and the macOS disk image uses it as is |
 | `host/com.udm.host.json` | Template of the native-messaging manifest |
 | `install-host.ps1` | Builds, registers with Chrome, Edge and Firefox, adds the Start menu entry |
@@ -50,10 +53,14 @@ differs.
 | `installer/windows/build.ps1` | Builds the programs and the installer into `dist\` |
 | `installer/linux/` | `package.sh` (the `.deb`, `.rpm`, AppImage and `.tar.gz`), the tarball's `install.sh`, the AppImage's `AppRun` and the desktop entry |
 | `installer/macos/package.sh` | Builds the universal `.dmg` |
+| `installer/macos/safari/` | `build.sh`, which builds the Safari extension into `UDM.app` with Xcode, its native-messaging handler (`SafariWebExtensionHandler.swift`) and the sandbox entitlements |
 | `installer/make-firefox.js` | Makes `extension/firefox`, or with `--check` tells whether it is out of date |
+| `installer/make-safari.js` | The same for `extension/safari` (both use `installer/browser-copy.js`) |
+| `installer/make-store-zips.js` | Makes the zips the Chrome Web Store and Firefox Add-ons take ([Publishing the extension](extension-stores.md)) |
 | `installer/windows/make-firefox.ps1` | The same in PowerShell, which Setup's build uses to check the copy |
 | `installer/render-icons.js` | Renders `assets/icon-1024.png` to the extension's PNGs and `assets/icon-256.png` with headless Chrome |
 | `installer/windows/udm.ico` | Setup and shortcut icon, packed from `extension/chromium/icons` by `make-icon.js` |
+| `tools/screenshots/` | `shoot.js`, which takes the screenshots in `docs/images/` again from the preview page and the extension's video button ([how](../tools/screenshots/README.md)) |
 | `docs/adr/` | Architecture decisions |
 | `GLOSSARY.md` | The names of the windows and dialogs |
 
@@ -95,6 +102,15 @@ the fixtures again (the tests fail until they match):
 UDM_WRITE_BINDINGS=1 UDM_WRITE_FIXTURES=1 cargo test -p udm-ui
 ```
 
+The screenshots in `docs/images/` are drawn the same way, from the fixtures'
+sample list. After a window changes, take them again, light and dark, as
+WebP (it needs Playwright and its Chromium where Node finds them; see
+[tools/screenshots](../tools/screenshots/README.md)):
+
+```bash
+node tools/screenshots/shoot.js
+```
+
 The server image (`Dockerfile`) builds `udm-app` with
 `--no-default-features`, which leaves the window out.
 
@@ -103,6 +119,13 @@ The server image (`Dockerfile`) builds `udm-app` with
 downloads `appimagetool` unless `$APPIMAGETOOL` names one);
 `installer/macos/package.sh` makes the universal `.dmg` on a Mac. Name
 formats to make only those: `installer/linux/package.sh --skip-build deb`.
+With Xcode installed (not only its Command Line Tools), `package.sh` also
+builds the Safari extension into `UDM.app` (`installer/macos/safari/build.sh`,
+through Xcode's `safari-web-extension-converter`); without Xcode it warns and
+leaves it out, as it does when that build fails, unless `UDM_SAFARI=require`.
+CI sets `UDM_SAFARI=require` on the build workflow's **Build the Safari
+extension** step and on the release's **Build the disk image** step, so a
+broken Safari build fails the run and stops a release.
 
 Rust on Windows needs a linker. This project builds with the
 `stable-x86_64-pc-windows-gnu` toolchain plus MinGW-w64 (WinLibs) on `PATH`.
@@ -149,8 +172,12 @@ shows up on that runner. With the target added through `rustup`,
 `cargo clippy --target x86_64-pc-windows-gnu` or
 `--target x86_64-apple-darwin` lints that code from Linux too.
 
-The installers come from `.github/workflows/release.yml`. Set the version in
-`Cargo.toml`, commit, and push a tag that matches it:
+### Making a release
+
+The installers come from `.github/workflows/release.yml`. Before a release,
+make the server-country table again from the newest data (below). Set the version in
+`Cargo.toml` and `extension/chromium/manifest.json`, remake the Firefox and
+Safari copies (`node installer/make-firefox.js`, `node installer/make-safari.js`), commit, and push a tag that matches it:
 
 ```bash
 git tag v0.4.0
@@ -158,13 +185,35 @@ git push origin v0.4.0
 ```
 
 It builds every file in the table under [Install](install.md) on Windows,
-macOS and Linux runners and attaches them to a new GitHub Release for that
-tag. Release files don't count against the repository's storage (each may be
+macOS and Linux runners, and the extension's store zips
+([Publishing the extension](extension-stores.md)), and attaches them to a new
+GitHub Release for that tag. Release files don't count against the repository's storage (each may be
 up to 2 GB), and UDM's update check reads the latest release. The build
 files are kept as artifacts for one day only, to hand them from the
 builders to the release. Starting the workflow by hand
 (**Actions > Release > Run workflow**) builds the same files without a
 release, as artifacts for a day.
+
+**The server-country table.** `crates/infrastructure/data/ip-country.bin`
+must be made again from the CSV files of the latest
+[ip-location-db GitHub release](https://github.com/sapics/ip-location-db/releases)
+before each release: the copy in the repository was made from the project's
+npm package, whose data has known wrong rows and which no longer gets
+updates. With the [GitHub CLI](https://cli.github.com/), from the
+repository's root:
+
+```bash
+gh release download --repo sapics/ip-location-db --dir ipdb --pattern 'geo-whois-asn-country-ipv4.csv' --pattern 'geo-whois-asn-country-ipv6.csv' && python3 tools/ip-country/make_table.py ipdb crates/infrastructure/data/ip-country.bin && rm -r ipdb
+```
+
+If `gh` finds no file of those names, look at the release's file list for the
+`geo-whois-asn-country` IPv4 and IPv6 CSVs (`start,end,country` rows) and
+download those two under these names. Then write the release's tag and date in
+`crates/infrastructure/data/README.md`, run
+`cargo test -p udm-infrastructure country` (it looks up a few well-known
+servers in the new table), and commit the table with the README. The data is
+CC BY 4.0: `THIRD-PARTY-NOTICES.txt`, which every package ships, carries its
+notice.
 
 To build the installer, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 (`winget install JRSoftware.InnoSetup`), then run:

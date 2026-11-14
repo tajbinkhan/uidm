@@ -2,19 +2,25 @@
 //! settings when the window is saved. Settings the window does not show
 //! keep their values. Plain functions, tested without Tauri.
 
+use udm_application::daemon::Command;
+use udm_domain::debrid::{DebridKey, DebridService};
 use udm_domain::id::QueueId;
+use udm_domain::network::{AdapterChoice, AdapterId, DnsChoice, DohUrl};
 use udm_domain::settings::{
     default_capture_types, parse_extensions, CaptureKey, Category, Duplicate, InvalidSettings, Notify, PanelView,
     ProxyMode, Scanner, ServerLimit, Settings, SiteLogin, SocksVersion, Theme, BROWSER_MENU_ITEMS, CONNECTIONS_RANGE,
     GENERAL, SERVER_CONNECTIONS_RANGE,
 };
+use udm_domain::settings::{TorrentSettings, MAX_TORRENT_PEERS};
 use udm_domain::theme::ThemeName;
+use udm_domain::torrent::{Ratio, SeedLimits, DEFAULT_SEED_MINUTES, DEFAULT_SEED_RATIO};
 
 use crate::contract::SystemProxyView;
+use crate::contract::{AdapterDraft, DnsDraft, DnsRow, NetworkView};
 use crate::contract::{
-    CategoryDraft, Choice, DuplicateChoice, ExtrasDraft, FileExistsChoice, KeysDraft, LoginDraft, NotifyChoice,
-    OptionsDraft, OptionsView, ProxyChoice, ProxyDraft, SelectionChoice, ServerLimitDraft, SoundDraft, StartTabChoice,
-    UnpackChoice, VideoTypeDraft,
+    CategoryDraft, Choice, DebridChoice, DebridServiceRow, DebridView, DuplicateChoice, ExtrasDraft, FileExistsChoice,
+    KeysDraft, LoginDraft, NotifyChoice, OptionsDraft, OptionsView, ProxyChoice, ProxyDraft, SelectionChoice,
+    ServerLimitDraft, SoundDraft, StartTabChoice, UnpackChoice, VideoTypeDraft,
 };
 use crate::i18n::{Language, LANGUAGES};
 use udm_domain::settings::{FileExists, ProgressTab, SelectionButton, UnpackTo};
@@ -32,6 +38,67 @@ pub enum OptionsError {
     Theme(String),
     #[error("Type a port from 1 to 65535.")]
     Port,
+    #[error("Choose the debrid service the account is with.")]
+    DebridService,
+    /// The custom DNS over HTTPS address, or the adapter, is not one.
+    #[error(transparent)]
+    Network(#[from] udm_domain::network::NetworkError),
+    #[error("Type a number of peers from 1 to 1000.")]
+    TorrentPeers,
+    #[error("Type an upload limit from 1 KB/s up.")]
+    UploadLimit,
+    /// The seeding ratio is not one.
+    #[error(transparent)]
+    Torrent(#[from] udm_domain::torrent::TorrentError),
+    #[error("Type a number of minutes from 1 up.")]
+    SeedMinutes,
+}
+
+/// The debrid service a choice names.
+pub fn debrid_service(c: DebridChoice) -> DebridService {
+    match c {
+        DebridChoice::RealDebrid => DebridService::RealDebrid,
+        DebridChoice::AllDebrid => DebridService::AllDebrid,
+        DebridChoice::Premiumize => DebridService::Premiumize,
+    }
+}
+
+fn debrid_choice(s: DebridService) -> DebridChoice {
+    match s {
+        DebridService::RealDebrid => DebridChoice::RealDebrid,
+        DebridService::AllDebrid => DebridChoice::AllDebrid,
+        DebridService::Premiumize => DebridChoice::Premiumize,
+    }
+}
+
+/// What OK sends the daemon for the debrid key, after the settings: a key
+/// typed is stored for the chosen service (`settings` refuses one without
+/// a service), the remove box removes the stored key, and otherwise the
+/// key is left alone.
+pub fn debrid_key(d: &OptionsDraft) -> Option<Command> {
+    let e = &d.extras;
+    match (DebridKey::new(&e.debrid_key), e.debrid_service) {
+        (Some(key), Some(service)) => Some(Command::SetDebridKey { service: debrid_service(service), key }),
+        _ if e.debrid_forget => Some(Command::RemoveDebridKey),
+        _ => None,
+    }
+}
+
+/// The debrid services Options lists.
+fn debrid_view(s: &Settings) -> DebridView {
+    DebridView {
+        services: DebridService::ALL
+            .into_iter()
+            .map(|service| DebridServiceRow {
+                service: debrid_choice(service),
+                name: service.name().to_string(),
+                key_page: service.key_page().to_string(),
+            })
+            .collect(),
+        key_service: s.debrid.key_service.map(debrid_choice),
+        checking: false,
+        check: None,
+    }
 }
 
 fn keys(k: CaptureKey) -> KeysDraft {
@@ -268,6 +335,7 @@ fn kb(n: u64) -> u32 {
 }
 
 fn extras(s: &Settings) -> ExtrasDraft {
+    let t = &s.torrents;
     ExtrasDraft {
         max_concurrent: s.max_concurrent as u32,
         limit_on: s.speed_limit_enabled,
@@ -328,7 +396,91 @@ fn extras(s: &Settings) -> ExtrasDraft {
         remote_port: u32::from(s.remote_port),
         remote_all: s.remote_addresses.is_empty(),
         remote_addresses: s.remote_addresses.join(", "),
+        debrid_on: s.debrid.enabled,
+        debrid_service: s.debrid.service.map(debrid_choice),
+        debrid_key: String::new(),
+        debrid_forget: false,
+        adapter: s.network_adapter.as_ref().map(|a| AdapterDraft {
+            id: a.id.to_string(),
+            name: a.name.clone(),
+            renew: false,
+        }),
+        dns: dns_draft(&s.dns),
+        dns_url: match &s.dns {
+            DnsChoice::Custom(url) => url.as_str().to_string(),
+            _ => String::new(),
+        },
+        torrent_port_fixed: t.listen_port().is_some(),
+        torrent_port: u32::from(t.listen_port().unwrap_or(DEFAULT_TORRENT_PORT)),
+        torrent_dht: t.dht,
+        torrent_upnp: t.upnp,
+        torrent_local_peers: t.local_peers,
+        torrent_peers_on: t.max_peers.is_some(),
+        torrent_peers: t.peers().unwrap_or(DEFAULT_TORRENT_PEERS),
+        torrent_upload_on: t.upload_limit().is_some(),
+        torrent_upload_kb: t.upload_limit_kbps.filter(|k| *k > 0).map_or(100, |k| u32::try_from(k).unwrap_or(u32::MAX)),
+        seed_ratio_on: t.seed_limits.ratio.is_some(),
+        seed_ratio: t.seed_limits.ratio.unwrap_or(DEFAULT_SEED_RATIO).get(),
+        seed_minutes_on: t.seed_limits.minutes.is_some(),
+        seed_minutes: t.seed_limits.minutes.unwrap_or(DEFAULT_SEED_MINUTES),
+        catch_torrent_files: t.catch_torrent_files,
     }
+}
+
+/// The port Options offers when the torrents' port is first fixed: the
+/// one BitTorrent clients have long used.
+const DEFAULT_TORRENT_PORT: u16 = 6881;
+/// The peers per torrent Options offers when the limit is first set:
+/// librqbit's own.
+const DEFAULT_TORRENT_PEERS: u32 = 128;
+
+/// The torrent settings the extras give, checked.
+fn torrent_settings(e: &ExtrasDraft) -> Result<TorrentSettings, OptionsError> {
+    let port = if e.torrent_port_fixed {
+        Some(u16::try_from(e.torrent_port).ok().filter(|p| *p > 0).ok_or(OptionsError::Port)?)
+    } else {
+        None
+    };
+    if e.torrent_peers_on && !(1..=MAX_TORRENT_PEERS).contains(&e.torrent_peers) {
+        return Err(OptionsError::TorrentPeers);
+    }
+    if e.torrent_upload_on && e.torrent_upload_kb == 0 {
+        return Err(OptionsError::UploadLimit);
+    }
+    let ratio = if e.seed_ratio_on { Some(Ratio::new(e.seed_ratio)?) } else { None };
+    if e.seed_minutes_on && e.seed_minutes == 0 {
+        return Err(OptionsError::SeedMinutes);
+    }
+    Ok(TorrentSettings {
+        port,
+        dht: e.torrent_dht,
+        upnp: e.torrent_upnp,
+        local_peers: e.torrent_local_peers,
+        max_peers: e.torrent_peers_on.then_some(e.torrent_peers),
+        upload_limit_kbps: e.torrent_upload_on.then_some(u64::from(e.torrent_upload_kb)),
+        seed_limits: SeedLimits { ratio, minutes: e.seed_minutes_on.then_some(e.seed_minutes) },
+        catch_torrent_files: e.catch_torrent_files,
+    })
+}
+
+fn dns_draft(d: &DnsChoice) -> DnsDraft {
+    match d {
+        DnsChoice::System => DnsDraft::System,
+        DnsChoice::Cloudflare => DnsDraft::Cloudflare,
+        DnsChoice::Google => DnsDraft::Google,
+        DnsChoice::Quad9 => DnsDraft::Quad9,
+        DnsChoice::Custom(_) => DnsDraft::Custom,
+    }
+}
+
+/// The resolvers Options offers: the system's, the presets by their own
+/// names, and one the user names.
+fn network_view(lang: &'static Language) -> NetworkView {
+    let mut resolvers =
+        vec![DnsRow { value: DnsDraft::System, label: lang.tr("The system's (not encrypted)").to_string() }];
+    resolvers.extend(DnsChoice::PRESETS.iter().map(|d| DnsRow { value: dns_draft(d), label: d.name().to_string() }));
+    resolvers.push(DnsRow { value: DnsDraft::Custom, label: lang.tr("Another DNS over HTTPS server").to_string() });
+    NetworkView { adapters: None, adapters_error: None, resolvers }
 }
 
 /// The extras' values on `s`.
@@ -410,7 +562,44 @@ fn apply_extras(e: &ExtrasDraft, done_dialog: bool, current: &Settings, s: &mut 
             .map(str::to_string)
             .collect()
     };
+    // Whether a key is stored stays the daemon's to say.
+    s.debrid.enabled = e.debrid_on;
+    s.debrid.service = e.debrid_service.map(debrid_service);
+    let typed = DebridKey::new(&e.debrid_key).is_some();
+    if (s.debrid.enabled || typed) && s.debrid.service.is_none() {
+        return Err(OptionsError::DebridService);
+    }
+    s.network_adapter = match &e.adapter {
+        None => None,
+        // The daemon keeps the networks a numbered adapter was on.
+        Some(a) => {
+            Some(AdapterChoice { id: AdapterId::parse(&a.id)?, name: a.name.trim().to_string(), subnets: Vec::new() })
+        }
+    };
+    s.dns = match e.dns {
+        DnsDraft::System => DnsChoice::System,
+        DnsDraft::Cloudflare => DnsChoice::Cloudflare,
+        DnsDraft::Google => DnsChoice::Google,
+        DnsDraft::Quad9 => DnsChoice::Quad9,
+        DnsDraft::Custom => DnsChoice::Custom(DohUrl::parse(&e.dns_url)?),
+    };
+    s.torrents = torrent_settings(e)?;
     Ok(())
+}
+
+/// `s` with the adapter the user chose again (`AdapterDraft::renew`) taken
+/// as it is connected now, among `adapters`: the networks it is on are the
+/// ones to keep from now on.
+pub fn renew_adapter(d: &OptionsDraft, s: &mut Settings, adapters: &[udm_domain::network::NetworkAdapter]) {
+    let Some(drafted) = d.extras.adapter.as_ref().filter(|a| a.renew) else {
+        return;
+    };
+    let Some(choice) = s.network_adapter.as_mut().filter(|c| c.id.as_str() == drafted.id.trim()) else {
+        return;
+    };
+    if let Some(adapter) = adapters.iter().find(|a| a.id == choice.id) {
+        choice.subnets = AdapterChoice::of(adapter).subnets;
+    }
 }
 
 /// The Options window's view.
@@ -448,6 +637,8 @@ pub fn view(lang: &'static Language, s: &Settings) -> OptionsView {
         theme_notes: Vec::new(),
         creation_time: false,
         portable: false,
+        debrid: debrid_view(s),
+        network: network_view(lang),
     }
 }
 
@@ -682,6 +873,141 @@ mod tests {
         assert_eq!(out.remote_addresses, ["192.168.1.5", "10.0.0.2"]);
         d.extras.remote_port = 70_000;
         assert_eq!(settings(&d, &s), Err(OptionsError::Port));
+    }
+
+    #[test]
+    fn the_torrent_settings_reach_the_settings_and_come_back() {
+        let s = Settings::default();
+        let mut d = draft(&s);
+        let e = &d.extras;
+        assert!(!e.torrent_port_fixed && e.torrent_dht && e.torrent_upnp && e.catch_torrent_files);
+        assert_eq!((e.seed_ratio, e.seed_minutes), (1.0, 60));
+        assert_eq!(settings(&d, &s).unwrap(), s, "nothing changed");
+        d.extras.torrent_port_fixed = true;
+        d.extras.torrent_port = 51413;
+        d.extras.torrent_dht = false;
+        d.extras.torrent_peers_on = true;
+        d.extras.torrent_peers = 50;
+        d.extras.torrent_upload_on = true;
+        d.extras.torrent_upload_kb = 300;
+        d.extras.seed_ratio = 2.5;
+        d.extras.seed_minutes_on = false;
+        d.extras.catch_torrent_files = false;
+        let out = settings(&d, &s).unwrap();
+        let t = &out.torrents;
+        assert_eq!((t.port, t.dht, t.max_peers, t.upload_limit_kbps), (Some(51413), false, Some(50), Some(300)));
+        assert_eq!(t.seed_limits, udm_domain::torrent::SeedLimits { ratio: Ratio::new(2.5).ok(), minutes: None });
+        assert!(!t.catch_torrent_files);
+        assert_eq!(settings(&draft(&out), &out).unwrap(), out, "what was saved comes back as it was");
+        for (change, error) in [
+            ((|d: &mut OptionsDraft| d.extras.torrent_port = 70_000) as fn(&mut OptionsDraft), OptionsError::Port),
+            (|d| d.extras.torrent_peers = 1001, OptionsError::TorrentPeers),
+            (|d| d.extras.torrent_upload_kb = 0, OptionsError::UploadLimit),
+            (
+                |d| {
+                    d.extras.seed_minutes_on = true;
+                    d.extras.seed_minutes = 0;
+                },
+                OptionsError::SeedMinutes,
+            ),
+        ] {
+            let mut bad = d.clone();
+            change(&mut bad);
+            assert_eq!(settings(&bad, &s), Err(error));
+        }
+        d.extras.seed_ratio = 101.0;
+        assert!(matches!(settings(&d, &s), Err(OptionsError::Torrent(udm_domain::torrent::TorrentError::BadRatio(_)))));
+    }
+
+    #[test]
+    fn the_network_adapter_and_dns_reach_the_settings() {
+        let s = Settings::default();
+        let mut d = draft(&s);
+        assert_eq!((d.extras.adapter.clone(), d.extras.dns), (None, DnsDraft::System));
+        d.extras.adapter = Some(AdapterDraft { id: " wg0 ".into(), name: "Work VPN".into(), renew: false });
+        d.extras.dns = DnsDraft::Custom;
+        d.extras.dns_url = "http://doh.example/q".into();
+        assert_eq!(settings(&d, &s), Err(OptionsError::Network(udm_domain::network::NetworkError::DohAddress)));
+        d.extras.dns_url = "https://doh.example/q".into();
+        let out = settings(&d, &s).unwrap();
+        assert_eq!(out.network_adapter.as_ref().map(|a| (a.id.as_str(), a.name.as_str())), Some(("wg0", "Work VPN")));
+        assert_eq!(out.dns, DnsChoice::Custom(DohUrl::parse("https://doh.example/q").unwrap()));
+        // What was saved comes back as it was.
+        let back = draft(&out);
+        assert_eq!(back.extras.dns, DnsDraft::Custom);
+        assert_eq!(back.extras.dns_url, "https://doh.example/q");
+        assert_eq!(settings(&back, &out).unwrap(), out);
+        d.extras.adapter = Some(AdapterDraft { id: "  ".into(), name: String::new(), renew: false });
+        assert!(settings(&d, &s).is_err(), "no adapter without an id");
+        d.extras.adapter = None;
+        d.extras.dns = DnsDraft::Quad9;
+        let out = settings(&d, &s).unwrap();
+        assert_eq!((out.network_adapter, out.dns), (None, DnsChoice::Quad9));
+        let view = view(resolve("en", &[]), &s);
+        let labels: Vec<&str> = view.network.resolvers.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels[0], "The system's (not encrypted)");
+        assert_eq!(labels.len(), 5);
+    }
+
+    #[test]
+    fn an_adapter_chosen_again_takes_its_networks_now() {
+        use udm_domain::network::{NetworkAdapter, Subnet};
+        let ip = |a: &str| a.parse().unwrap();
+        let old = AdapterChoice {
+            id: AdapterId::parse("utun3").unwrap(),
+            name: "utun3".into(),
+            subnets: vec![Subnet::new(ip("10.8.0.0"), 24).unwrap()],
+        };
+        let current = Settings { network_adapter: Some(old), ..Settings::default() };
+        let now = NetworkAdapter {
+            id: AdapterId::parse("utun3").unwrap(),
+            name: "utun3".into(),
+            addresses: vec![ip("172.20.1.2")],
+            subnets: vec![Subnet::new(ip("172.20.1.2"), 24).unwrap()],
+            up: true,
+        };
+        let mut d = draft(&current);
+        let mut s = settings(&d, &current).unwrap();
+        renew_adapter(&d, &mut s, std::slice::from_ref(&now));
+        assert!(s.network_adapter.as_ref().unwrap().subnets.is_empty(), "the daemon keeps the old ones");
+        d.extras.adapter.as_mut().unwrap().renew = true;
+        let mut s = settings(&d, &current).unwrap();
+        renew_adapter(&d, &mut s, &[now]);
+        assert_eq!(s.network_adapter.unwrap().subnets, vec![Subnet::new(ip("172.20.1.0"), 24).unwrap()]);
+    }
+
+    #[test]
+    fn the_debrid_account_reaches_the_settings_but_its_key_goes_apart() {
+        let s = Settings::default();
+        let mut d = draft(&s);
+        assert!(debrid_key(&d).is_none(), "an empty key keeps the stored one");
+        d.extras.debrid_key = "  KEY  ".into();
+        assert_eq!(settings(&d, &s), Err(OptionsError::DebridService), "a key needs its service");
+        d.extras.debrid_key.clear();
+        d.extras.debrid_on = true;
+        assert_eq!(settings(&d, &s), Err(OptionsError::DebridService));
+        d.extras.debrid_service = Some(DebridChoice::AllDebrid);
+        d.extras.debrid_key = "  KEY  ".into();
+        let out = settings(&d, &s).unwrap();
+        assert!(out.debrid.enabled && out.debrid.key_service.is_none(), "only the daemon says a key is stored");
+        assert_eq!(out.debrid.service, Some(DebridService::AllDebrid));
+        assert!(matches!(
+            debrid_key(&d),
+            Some(Command::SetDebridKey { service: DebridService::AllDebrid, key }) if key.expose() == "KEY"
+        ));
+        assert!(!serde_json::to_string(&out).unwrap().contains("KEY"));
+        d.extras.debrid_key.clear();
+        d.extras.debrid_forget = true;
+        assert!(matches!(debrid_key(&d), Some(Command::RemoveDebridKey)), "removing is its own command");
+        // A stored key shows the service it is for, never its text.
+        let mut stored = Settings::default();
+        stored.debrid.service = Some(DebridService::RealDebrid);
+        stored.debrid.key_service = Some(DebridService::RealDebrid);
+        let v = view(resolve("en", &[]), &stored);
+        assert_eq!(v.debrid.key_service, Some(DebridChoice::RealDebrid));
+        assert!(v.draft.extras.debrid_key.is_empty());
+        assert_eq!(v.debrid.services.len(), 3);
+        assert_eq!(settings(&draft(&stored), &stored).unwrap(), stored);
     }
 
     #[test]

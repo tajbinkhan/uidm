@@ -1,0 +1,341 @@
+{
+  "extDescription": {
+    "message": "브라우저 다운로드를 UDM 다운로드 관리자로 보냅니다."
+  },
+  "downloadWithUdm": {
+    "message": "UDM로 다운로드"
+  },
+  "downloadLaterWithUdm": {
+    "message": "UDM로 나중에 다운로드"
+  },
+  "downloadGalleryWithUdm": {
+    "message": "UDM로 갤러리 다운로드"
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "UDM로 모든 링크 다운로드"
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "UDM로 선택한 링크 다운로드"
+  },
+  "udmDisconnected": {
+    "message": "UDM 연결이 끊어졌습니다"
+  },
+  "captureDownloads": {
+    "message": "다운로드 가로채기"
+  },
+  "captureDownloadsTitle": {
+    "message": "브라우저에서 시작한 다운로드를 UDM로 보내기"
+  },
+  "captureInTab": {
+    "message": "이 탭에서 가로채기"
+  },
+  "captureInTabTitle": {
+    "message": "가로채기를 끄면 이 탭의 다운로드를 브라우저에 맡깁니다"
+  },
+  "captureOffInTab": {
+    "message": "이 탭에서 꺼짐"
+  },
+  "statusConnected": {
+    "message": "연결되었습니다. 브라우저에서 시작한 다운로드는 UDM로 보내집니다."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "연결되었습니다. 가로채기가 꺼져 있으므로 브라우저가 직접 다운로드합니다."
+  },
+  "statusNotConnected": {
+    "message": "UDM에 연결되어 있지 않습니다. 다운로드는 브라우저에 남습니다."
+  },
+  "statusNotConnectedReason": {
+    "message": "UDM에 연결되어 있지 않습니다($REASON$). 다운로드는 브라우저에 남습니다.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "다음 다운로드가 $NAME$의 새 링크가 됩니다.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "기다리기 중지"
+  },
+  "skipNextDownload": {
+    "message": "다음 다운로드 건너뛰기"
+  },
+  "skipNextDownloadTitle": {
+    "message": "다음 다운로드를 브라우저에 남기기"
+  },
+  "dontSkip": {
+    "message": "건너뛰지 않기"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "다음 다운로드는 브라우저에 남습니다"
+  },
+  "allLinks": {
+    "message": "이 페이지의 모든 링크"
+  },
+  "allLinksTitle": {
+    "message": "이 페이지의 링크를 UDM에 나열하여 다운로드할 링크 선택"
+  },
+  "videoButton": {
+    "message": "동영상 단추"
+  },
+  "videoButtonTitle": {
+    "message": "브라우저에서 재생 중인 동영상 위에 표시되는 다운로드 단추"
+  },
+  "videoButtonOnSite": {
+    "message": "$SITE$에서",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "다운로드 URL 붙여넣기"
+  },
+  "download": {
+    "message": "다운로드"
+  },
+  "noDownloads": {
+    "message": "아직 다운로드가 없습니다."
+  },
+  "stateQueued": {
+    "message": "대기 중"
+  },
+  "stateDownloading": {
+    "message": "다운로드 중"
+  },
+  "stateDone": {
+    "message": "완료"
+  },
+  "stateFailed": {
+    "message": "실패"
+  },
+  "stateCanceled": {
+    "message": "취소됨"
+  },
+  "stateInterrupted": {
+    "message": "중단됨"
+  },
+  "stateConfirming": {
+    "message": "UDM에서 응답 대기 중"
+  },
+  "stateWaiting": {
+    "message": "시작 대기 중"
+  },
+  "threatFound": {
+    "message": "위협 발견"
+  },
+  "start": {
+    "message": "시작"
+  },
+  "cancel": {
+    "message": "취소"
+  },
+  "retry": {
+    "message": "다시 시도"
+  },
+  "remove": {
+    "message": "제거"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "이 동영상 다운로드"
+  },
+  "videoButtonHelp": {
+    "message": "동영상 단추 도움말"
+  },
+  "videoButtonClose": {
+    "message": "이 동영상에서 닫기"
+  },
+  "lookingForVideo": {
+    "message": "동영상을 찾는 중..."
+  },
+  "subtitles": {
+    "message": "자막:"
+  },
+  "videoProtected": {
+    "message": "이 동영상은 DRM으로 보호되어 있으므로 UDM에서 다운로드하지 않습니다."
+  },
+  "streamProtected": {
+    "message": "DRM으로 보호되어 있으므로 UDM에서 다운로드하지 않습니다."
+  },
+  "udmNotConnected": {
+    "message": "UDM가 실행 중이 아니거나 연결되어 있지 않습니다."
+  },
+  "noVideoFound": {
+    "message": "아직 동영상을 찾지 못했습니다. 잠시 재생한 후 다시 시도하십시오."
+  },
+  "sentToUdm": {
+    "message": "UDM로 보냈습니다."
+  },
+  "couldNotReachUdm": {
+    "message": "UDM에 연결할 수 없습니다."
+  },
+  "hlsStream": {
+    "message": "HLS 스트림"
+  },
+  "dashStream": {
+    "message": "DASH 스트림"
+  },
+  "hdsStream": {
+    "message": "HDS 스트림"
+  },
+  "youtubeVideo": {
+    "message": "YouTube 동영상"
+  },
+  "facebookVideo": {
+    "message": "Facebook 동영상"
+  },
+  "instagramVideo": {
+    "message": "Instagram 동영상"
+  },
+  "vimeoVideo": {
+    "message": "Vimeo 동영상"
+  },
+  "mediaNoAnswer": {
+    "message": "UDM에서 응답하지 않았습니다."
+  },
+  "soundOnly": {
+    "message": "소리만($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "$TYPE$ 동영상",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "$TYPE$ 오디오",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "동영상"
+  },
+  "audioFile": {
+    "message": "오디오"
+  },
+  "takeoverFailed": {
+    "message": "UDM가 다운로드를 가져오지 못했습니다"
+  },
+  "takeoverNotConnected": {
+    "message": "UDM가 실행 중이 아니거나 연결되어 있지 않으므로 브라우저에서 다운로드합니다: $FILE$",
+    "placeholders": {
+      "file": { "content": "$1" }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM에서 시작할 수 없으므로($REASON$) 브라우저에서 다운로드합니다: $FILE$",
+    "placeholders": {
+      "file": { "content": "$1" },
+      "reason": { "content": "$2" }
+    }
+  },
+  "dontShowAgain": {
+    "message": "다시 표시 안 함"
+  },
+  "takeoverClickToStop": {
+    "message": "이 알림을 클릭하면 더 이상 표시되지 않습니다."
+  },
+  "downloadLastVideo": {
+    "message": "UDM로 마지막 동영상 다운로드"
+  },
+  "recentVideos": {
+    "message": "최근 동영상(UDM)"
+  },
+  "downloadPageWithUdm": {
+    "message": "UDM로 페이지 다운로드"
+  },
+  "noLinksFound": {
+    "message": "이 페이지에서 링크를 찾을 수 없습니다."
+  },
+  "noSelectedLinksFound": {
+    "message": "선택 영역에서 링크를 찾을 수 없습니다."
+  },
+  "linksUnreadable": {
+    "message": "브라우저에서 UDM가 이 페이지의 링크를 읽을 수 없도록 합니다."
+  },
+  "cannotReachUdm": {
+    "message": "UDM에 연결할 수 없습니다. 실행 중입니까?"
+  },
+  "cannotReachUdmReason": {
+    "message": "UDM에 연결할 수 없습니다($REASON$).",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "대신 브라우저에서 다운로드합니다."
+  },
+  "browserDownloadsHeading": {
+    "message": "브라우저에서 다운로드 중"
+  },
+  "sendToUdm": {
+    "message": "UDM로 보내기"
+  },
+  "pageVideo": {
+    "message": "이 페이지의 동영상"
+  },
+  "playlistTitled": {
+    "message": "재생 목록: $TITLE$(동영상 $COUNT$개)",
+    "placeholders": {
+      "title": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  },
+  "playlistVideos": {
+    "message": "재생 목록(동영상 $COUNT$개)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "chooseVideos": {
+    "message": "UDM에서 동영상 선택..."
+  }
+}

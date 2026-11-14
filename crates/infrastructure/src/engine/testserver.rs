@@ -24,8 +24,9 @@ pub struct Behavior {
     /// `slow_bytes_per_sec`: one slow connection.
     pub slow_range_start: Option<u64>,
     pub slow_bytes_per_sec: u64,
-    /// Serve the file only to a POST with exactly this body; a GET gets an
-    /// HTML error page with status 200, as many real sites send.
+    /// Serve the file only to a POST with exactly this body (at
+    /// `bytes_per_sec`, when set); a GET gets an HTML error page with status
+    /// 200, as many real sites send.
     pub post_only_body: Option<Vec<u8>>,
     /// Require HTTP Basic with this `user:password`: 401 without it.
     pub basic_auth: Option<String>,
@@ -77,6 +78,8 @@ pub struct TestServer {
     pub refused: Arc<AtomicU64>,
     /// The most connections from one client answered at once.
     pub peak_per_client: Arc<AtomicUsize>,
+    /// Connections accepted so far.
+    pub connections: Arc<AtomicU64>,
 }
 
 /// What every connection's thread shares.
@@ -186,9 +189,12 @@ impl TestServer {
             cookies_seen: Arc::clone(&seen.cookies_seen),
             refused: Arc::clone(&seen.refused),
             peak_per_client: Arc::clone(&seen.peak_per_client),
+            connections: Arc::new(AtomicU64::new(0)),
         };
+        let connections = Arc::clone(&server.connections);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                connections.fetch_add(1, Ordering::SeqCst);
                 let body = Arc::clone(&body);
                 let seen = seen.clone();
                 let behavior = behavior.clone();
@@ -324,8 +330,15 @@ fn serve(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Disposition: attachment; filename=\"report.pdf\"\r\nConnection: close\r\n\r\n",
             body.len()
         )?;
-        served.fetch_add(body.len() as u64, Ordering::Relaxed);
-        return stream.write_all(body);
+        // At `bytes_per_sec` too, so a test can act while the answer comes.
+        for chunk in body.chunks(16 * 1024) {
+            served.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            stream.write_all(chunk)?;
+            if let Some(rate) = behavior.bytes_per_sec {
+                thread::sleep(Duration::from_secs_f64(chunk.len() as f64 / rate.max(1) as f64));
+            }
+        }
+        return stream.flush();
     }
 
     let total = body.len() as u64;

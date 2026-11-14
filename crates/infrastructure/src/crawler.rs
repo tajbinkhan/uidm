@@ -1,7 +1,9 @@
 //! `Crawler`, the `SiteCrawler` adapter: one crawl with the engine, the
 //! settings' proxy and logins (and the project's own login for its start
 //! site), the browser's cookies and rendered pages when the request asks,
-//! and short waits so a stop is noticed quickly.
+//! and short waits so a stop is noticed quickly. Each request goes out the
+//! way the settings say when it is made (the network adapter and resolver),
+//! so a change reaches a crawl that is running.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -104,6 +106,7 @@ impl SiteCrawler for Crawler {
                 mirror(req, &page);
                 return Some(page);
             }
+            let net = net.with_route(self.transfers.live_route());
             let page = engine::fetch(url, &page_headers(url), &net, udm_domain::grab::MAX_PAGE_BYTES)
                 .map(|f| Page { url: f.url, content_type: f.content_type, body: f.body })
                 .ok()?;
@@ -118,7 +121,72 @@ impl SiteCrawler for Crawler {
             }
         };
         // A file's size, for the size filters and duplicates.
-        let size = |url: &str| engine::inspect(url, None, &page_headers(url), &net).ok().and_then(|i| i.total);
+        let size = |url: &str| {
+            let net = net.with_route(self.transfers.live_route());
+            engine::inspect(url, None, &page_headers(url), &net).ok().and_then(|i| i.total)
+        };
         grab::crawl(req, fetch, size, wait, stop, progress)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::testserver::TestServer;
+    use crate::store::{DownloadStore, Ended, StoreEvents, StoreFiles};
+    use udm_domain::grab::RenderedPage;
+    use udm_domain::network::{AdapterChoice, AdapterId};
+    use udm_domain::settings::Settings;
+
+    struct Quiet;
+
+    impl StoreEvents for Quiet {
+        fn announce(&self, _: &crate::protocol::Outgoing) {}
+        fn ended(&self, _: Ended) {}
+        fn wake(&self) {}
+    }
+
+    struct NoBrowser;
+
+    impl Browser for NoBrowser {
+        fn connected(&self) -> bool {
+            false
+        }
+        fn cookies(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn render(&self, _: &str) -> Option<RenderedPage> {
+            None
+        }
+        fn answered_cookies(&self, _: u64, _: Option<String>) {}
+        fn answered_render(&self, _: u64, _: Option<RenderedPage>) {}
+    }
+
+    #[test]
+    fn a_running_crawl_follows_a_change_of_the_network_adapter() {
+        let page = b"<a href=\"/1.html\">1</a> <a href=\"/2.html\">2</a> <a href=\"/3.html\">3</a>".to_vec();
+        let server = TestServer::start(page);
+        let events: Arc<dyn StoreEvents> = Arc::new(Quiet);
+        let (store, _, next_id) = DownloadStore::open(StoreFiles::default(), Arc::clone(&events));
+        let live = Arc::new(LiveSettings::new(Settings::default(), None));
+        let transfers = Arc::new(Transfers::new(Arc::new(store), events, Arc::clone(&live), Arc::default(), next_id));
+        let crawler = Crawler::new(transfers, Arc::clone(&live), Arc::new(NoBrowser));
+        let req = GrabRequest { start: format!("{}/", server.url), depth: 1, ..GrabRequest::default() };
+        let mut changed_at = None;
+        let out = crawler.crawl(&req, None, &AtomicBool::new(false), &mut |o: &Outcome| {
+            if o.pages >= 1 && changed_at.is_none() {
+                // Bound now to an adapter that is not there: nothing more
+                // may be fetched.
+                live.lock().network_adapter = Some(AdapterChoice {
+                    id: AdapterId::parse("udmnone0").unwrap(),
+                    name: "Gone VPN".into(),
+                    subnets: Vec::new(),
+                });
+                changed_at = Some(server.connections.load(Ordering::SeqCst));
+            }
+        });
+        let changed_at = changed_at.expect("the first page was read");
+        assert_eq!(out.pages, 1, "no page after the change: {out:?}");
+        assert_eq!(server.connections.load(Ordering::SeqCst), changed_at, "no connection after the change");
     }
 }

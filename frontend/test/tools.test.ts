@@ -30,9 +30,9 @@ describe('the smaller tools', () => {
     const calls = shell('main', 'main');
     render(Main);
     await fireEvent.keyDown(window, { key: 'f', ctrlKey: true });
-    await fireEvent.input(screen.getByLabelText('Find:'), { target: { value: 'rufus' } });
+    await fireEvent.input(screen.getByLabelText('Find:'), { target: { value: 'usb-writer' } });
     await fireEvent.submit(screen.getByRole('dialog').querySelector('form') as HTMLFormElement);
-    expect(sent(calls, 'find_download').at(-1)?.args).toMatchObject({ input: { text: 'rufus', name: true } });
+    expect(sent(calls, 'find_download').at(-1)?.args).toMatchObject({ input: { text: 'usb-writer', name: true } });
   });
 
   it('the list menu moves downloads to a queue', async () => {

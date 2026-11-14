@@ -94,6 +94,25 @@ pub struct AppState {
     pub queues: Vec<Queue>,
     pub speeds: HashMap<DownloadId, Speed>,
     pub segments: HashMap<DownloadId, Vec<SegmentInfo>>,
+    /// Each torrent download's latest stats (`Event::TorrentStats`): its
+    /// speeds, peers, trackers and pieces, for its download window. Its row
+    /// keeps the rest (`DownloadEntry::torrent`).
+    pub torrents: HashMap<DownloadId, udm_domain::torrent::TorrentStats>,
+    /// Each torrent download's files, once the daemon sent them
+    /// (`Event::TorrentInfo`): rows carry no file list, and an `Updated`
+    /// row would drop one kept on it.
+    pub torrent_info: HashMap<DownloadId, crate::torrents::KnownFiles>,
+    /// The files a torrent's download window last asked the daemon to
+    /// download, until its row shows them: the next tick starts from these,
+    /// so quick ticks do not undo each other.
+    pub torrent_chosen: HashMap<DownloadId, udm_domain::torrent::FileSelection>,
+    /// Torrents whose file list was asked for (`Command::TorrentFiles`),
+    /// and those for which the daemon had none to send.
+    pub files_asked: BTreeSet<DownloadId>,
+    pub files_missing: BTreeSet<DownloadId>,
+    /// The files ticked in a torrent's Download File Info, until it is
+    /// answered; a torrent missing here has every file ticked.
+    pub torrent_picks: HashMap<DownloadId, BTreeSet<usize>>,
     pub daemon_version: Option<String>,
     /// The rows selected in the main window, in the order picked.
     pub selected: Vec<DownloadId>,
@@ -176,6 +195,12 @@ impl Default for AppState {
             queues: Vec::new(),
             speeds: HashMap::new(),
             segments: HashMap::new(),
+            torrents: HashMap::new(),
+            torrent_info: HashMap::new(),
+            torrent_chosen: HashMap::new(),
+            files_asked: BTreeSet::new(),
+            files_missing: BTreeSet::new(),
+            torrent_picks: HashMap::new(),
             daemon_version: None,
             selected: Vec::new(),
             node: Node::default(),
@@ -287,10 +312,16 @@ pub enum UiMessage {
     Installing,
     /// Installing a tool began.
     ToolInstalling(udm_domain::tools::Tool),
+    /// Check account asked this debrid service about the account.
+    DebridChecking(udm_domain::debrid::DebridService),
+    /// Options opened: what an earlier Check account said is forgotten.
+    OptionsOpened,
     /// The browsers a worker read; `None` while they are read again.
     BrowsersRead(Option<Box<crate::services::BrowsersRead>>),
     /// What a browser change said.
     BrowserNote(Option<crate::contract::Banner>),
+    /// The network adapters a worker read, or why they could not be.
+    AdaptersRead(Result<Vec<udm_domain::network::NetworkAdapter>, udm_domain::network::NetworkError>),
     /// The theme files and the system's contrast colors.
     ThemesRead(Box<udm_application::themes::ThemesRead>),
     /// Reports a crash or an earlier stall left, newest first.
@@ -330,6 +361,20 @@ pub enum UiMessage {
         ext: String,
         name: Option<String>,
     },
+    /// Tick (`chosen`) or untick torrent download `id`'s files `indexes` in
+    /// its Download File Info.
+    PickTorrentFiles {
+        id: DownloadId,
+        indexes: Vec<usize>,
+        chosen: bool,
+    },
+    /// A torrent download's window sent the daemon these files to download.
+    TorrentChosen {
+        id: DownloadId,
+        files: udm_domain::torrent::FileSelection,
+    },
+    /// A torrent's file list was asked of the daemon.
+    FilesAsked(DownloadId),
 }
 
 impl AppState {
@@ -406,7 +451,8 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
         }
         UiMessage::RemoveClosed => state.to_remove.clear(),
         UiMessage::ShowProgress(id) => {
-            if state.table.get(id).is_some_and(|e| e.status != Status::Done) {
+            // A finished torrent's window shows its seeding.
+            if state.table.get(id).is_some_and(|e| e.status != Status::Done || e.torrent.is_some()) {
                 state.progress.insert(id);
             }
         }
@@ -488,8 +534,15 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
             }
             state.services.tool_done = None;
         }
+        UiMessage::DebridChecking(service) => state.services.debrid = crate::services::DebridState::Checking(service),
+        UiMessage::OptionsOpened => {
+            if !matches!(state.services.debrid, crate::services::DebridState::Checking(_)) {
+                state.services.debrid = crate::services::DebridState::Idle;
+            }
+        }
         UiMessage::BrowsersRead(read) => state.services.browsers = read.map(|r| *r),
         UiMessage::BrowserNote(note) => state.services.browser_note = note,
+        UiMessage::AdaptersRead(read) => state.services.adapters = Some(read),
         UiMessage::ThemesRead(read) => state.services.themes = *read,
         UiMessage::ReportsFound(found) => state.reports.found(found),
         UiMessage::Froze { lasted_ms, draft } => state.reports.froze(lasted_ms, draft),
@@ -518,6 +571,20 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
         UiMessage::TypeNameRead { ext, name } => {
             state.type_names.insert(ext, name);
         }
+        UiMessage::PickTorrentFiles { id, indexes, chosen } => {
+            let waiting = state.table.get(id).is_some_and(|e| e.status == Status::Confirming);
+            if let Some(known) = state.torrent_info.get(&id).filter(|_| waiting) {
+                let start = crate::torrents::picks_of(state, id);
+                let picked = crate::torrents::pick(&known.info, start.as_ref(), &indexes, chosen);
+                state.torrent_picks.insert(id, picked);
+            }
+        }
+        UiMessage::TorrentChosen { id, files } => {
+            state.torrent_chosen.insert(id, files);
+        }
+        UiMessage::FilesAsked(id) => {
+            state.files_asked.insert(id);
+        }
         UiMessage::Columns(columns) => {
             if !columns.is_empty() {
                 state.columns = columns;
@@ -527,6 +594,12 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
 }
 
 fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
+    // A download that starts again while running (a change of network)
+    // says `Started` again; its window is not opened again for it.
+    let running_before = match &event {
+        Event::Started { id, .. } => state.table.get(*id).is_some_and(|e| e.status == Status::Downloading),
+        _ => false,
+    };
     daemon::apply(&mut state.table, &event, unix);
     crate::extras::take(state, &event, at);
     crate::services::take(state, &event);
@@ -554,7 +627,7 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
         Event::Started { id, .. } => {
             state.speeds.remove(&id);
             state.done.remove(&id);
-            if state.settings.as_ref().is_some_and(|s| s.progress_on_start) {
+            if !running_before && state.settings.as_ref().is_some_and(|s| s.progress_on_start) {
                 state.progress.insert(id);
             }
         }
@@ -575,12 +648,52 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
         Event::ShowDone { id } => {
             state.done.insert(id);
         }
-        Event::Failed { id, .. } | Event::Canceled { id, .. } => {
+        // A download stopped because the network adapter downloads are
+        // bound to went down: the banner says so, in the user's language.
+        Event::Failed { id, error, .. } => {
             state.speeds.remove(&id);
+            let lang = crate::projection::language(state);
+            let banner = if let Some(down) = udm_domain::network::AdapterDown::read(&error) {
+                Some(crate::i18n::fill(
+                    lang.tr(
+                        "The network adapter {adapter} is down, so downloads stopped instead of using another network.",
+                    ),
+                    &[("adapter", &down.adapter)],
+                ))
+            } else if udm_domain::network::RestartNeeded::read(&error).is_some() {
+                Some(lang.tr("The network setting changed while this form's answer was downloading. Start it again to use the new setting.").to_string())
+            } else {
+                udm_domain::network::BindRefused::read(&error).map(|refused| {
+                    crate::i18n::fill(
+                        lang.tr("The system would not bind downloads to the network adapter {adapter}. On Linux, this needs version 5.7 or later."),
+                        &[("adapter", &refused.adapter)],
+                    )
+                })
+            };
+            if let Some(text) = banner {
+                state.notice = Some(Notice { text, error: true });
+            }
+        }
+        Event::Canceled { id, .. } => {
+            state.speeds.remove(&id);
+        }
+        Event::TorrentStats { id, stats, .. } => {
+            state.torrents.insert(id, stats);
+        }
+        Event::TorrentInfo { id, info, .. } => {
+            state.files_asked.remove(&id);
+            state.files_missing.remove(&id);
+            state.torrent_info.insert(id, crate::torrents::KnownFiles::new(info));
         }
         Event::Removed { id } => {
             state.speeds.remove(&id);
             state.segments.remove(&id);
+            state.torrents.remove(&id);
+            state.torrent_info.remove(&id);
+            state.torrent_picks.remove(&id);
+            state.torrent_chosen.remove(&id);
+            state.files_asked.remove(&id);
+            state.files_missing.remove(&id);
             state.selected.retain(|s| *s != id);
             state.to_remove.retain(|s| *s != id);
             state.progress.remove(&id);
@@ -598,7 +711,25 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
         Event::GrabDone { files, pages, explored, stopped, login_cookies } => {
             state.grab.done(files, pages, explored, stopped, login_cookies)
         }
+        // The main window's banner says the account was refused and that
+        // downloads go on without it.
+        Event::DebridRefused { refused } => {
+            let lang = crate::projection::language(state);
+            let text = crate::i18n::fill(
+                lang.tr("{service} refused the debrid account: {error} Downloads go on without it."),
+                &[("service", refused.service.name()), ("error", &crate::errors::text::debrid(lang, &refused.error))],
+            );
+            state.notice = Some(Notice { text, error: true });
+        }
+        // The daemon had no file list for a torrent a window asked about:
+        // that window says so, not the main window's banner.
+        Event::Error { error } if !state.files_asked.is_empty() && crate::torrents::no_file_list(&error) => {
+            let asked = std::mem::take(&mut state.files_asked);
+            state.files_missing.extend(asked);
+        }
         Event::Error { error } | Event::Rejected { error, .. } => {
+            // A refused file choice leaves the rows as they were.
+            state.torrent_chosen.clear();
             state.notice =
                 Some(Notice { text: crate::errors::failure(crate::projection::language(state), &error), error: true });
         }
@@ -608,6 +739,14 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
     // dialog, so a later dialog for it can open again.
     let table = &state.table;
     state.answered.retain(|id| table.get(*id).is_some_and(|e| e.status == Status::Confirming));
+    state.torrent_picks.retain(|id, _| table.get(*id).is_some_and(|e| e.status == Status::Confirming));
+    // A list replaced whole forgets the torrents it no longer holds.
+    state.torrent_info.retain(|id, _| table.get(*id).is_some());
+    state.torrents.retain(|id, _| table.get(*id).is_some());
+    // A choice the row shows now is the row's.
+    state.torrent_chosen.retain(|id, files| {
+        table.get(*id).and_then(|e| e.torrent.as_ref()).is_some_and(|t| t.selection.as_ref() != Some(files))
+    });
 }
 
 #[cfg(test)]
@@ -621,6 +760,64 @@ mod tests {
 
     fn event(state: &mut AppState, event: Event) {
         apply(state, UiMessage::Daemon { event: Box::new(event), at: Instant::now(), unix: 0 });
+    }
+
+    #[test]
+    fn a_download_stopped_by_a_down_adapter_says_so() {
+        let mut s = AppState::default();
+        added(&mut s, 1);
+        let url: udm_domain::address::Link = "https://e.com/1.zip".into();
+        event(
+            &mut s,
+            Event::Failed { id: DownloadId::new(1), url: url.clone(), error: "server returned HTTP 404".into() },
+        );
+        assert!(s.notice.is_none(), "other failures show no banner");
+        let down = udm_domain::network::AdapterDown { adapter: "wg0".into() };
+        event(&mut s, Event::Failed { id: DownloadId::new(1), url, error: down.to_string() });
+        let notice = s.notice.expect("a banner");
+        assert!(notice.error);
+        assert_eq!(
+            notice.text,
+            "The network adapter wg0 is down, so downloads stopped instead of using another network."
+        );
+    }
+
+    #[test]
+    fn a_download_started_again_does_not_open_its_window_again() {
+        let mut s = AppState::default();
+        event(&mut s, Event::Settings { settings: Settings { progress_on_start: true, ..Settings::default() } });
+        added(&mut s, 1);
+        let started = || Event::Started {
+            id: DownloadId::new(1),
+            url: "https://e.com/1.zip".into(),
+            path: "/d/1.zip".into(),
+            total: None,
+            resumable: true,
+            connections: 4,
+            partial: None,
+            validator: None,
+            country: None,
+        };
+        event(&mut s, started());
+        assert!(s.progress.contains(&DownloadId::new(1)), "opened as it starts");
+        // The user closes it; the network setting changes and the download
+        // starts again from where it was.
+        s.progress.remove(&DownloadId::new(1));
+        event(&mut s, started());
+        assert!(!s.progress.contains(&DownloadId::new(1)), "not opened again");
+    }
+
+    #[test]
+    fn a_download_the_system_would_not_bind_says_so() {
+        let mut s = AppState::default();
+        added(&mut s, 1);
+        let refused = udm_domain::network::BindRefused { adapter: "wg0".into() };
+        let url: udm_domain::address::Link = "https://e.com/1.zip".into();
+        event(&mut s, Event::Failed { id: DownloadId::new(1), url, error: refused.to_string() });
+        assert_eq!(
+            s.notice.expect("a banner").text,
+            "The system would not bind downloads to the network adapter wg0. On Linux, this needs version 5.7 or later."
+        );
     }
 
     #[test]

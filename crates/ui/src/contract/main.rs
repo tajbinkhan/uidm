@@ -119,6 +119,9 @@ pub struct Row {
     pub save_to: String,
     pub page: String,
     pub referrer: String,
+    /// The server's country: its flag and ISO code, such as "🇺🇸 US"; empty
+    /// when unknown.
+    pub country: String,
 }
 
 /// The kind of file a row holds, for its icon.
@@ -159,6 +162,7 @@ pub enum ColumnKey {
     Page,
     Referrer,
     Description,
+    Country,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -230,6 +234,11 @@ pub struct Can {
     pub open_with: bool,
     /// A finished row's file can be dragged out of the window (Windows).
     pub drag_out: bool,
+    /// One torrent is selected, whose download window shows its files,
+    /// peers and seeding.
+    pub torrent: bool,
+    /// A seeding torrent is selected.
+    pub stop_seeding: bool,
     pub connected: bool,
 }
 
@@ -312,6 +321,8 @@ pub enum ListAction {
     },
     /// Select every row shown.
     SelectAll,
+    /// Stop the selected torrents' seeding.
+    StopSeeding,
 }
 
 /// How to open a finished download.

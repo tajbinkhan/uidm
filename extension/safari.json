@@ -1,0 +1,9 @@
+{
+    "permissions": [ "nativeMessaging", "cookies", "contextMenus", "storage", "webRequest", "webNavigation", "scripting" ],
+    "browser_specific_settings": {
+        "safari": {
+            "strict_min_version": "16.4"
+        }
+    },
+    "key": null
+}

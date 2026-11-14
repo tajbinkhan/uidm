@@ -96,6 +96,7 @@ where
             remember_duplicate,
             remember_queue,
             elevate,
+            files,
         } = answer;
         let mut warnings = Vec::new();
         let category = category.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
@@ -152,6 +153,16 @@ where
             file_exists = file_exists.or(download.file_exists);
         }
 
+        // A torrent's files are chosen first, so a choice it cannot take
+        // leaves the download waiting in its dialog.
+        if let Some(files) = &files {
+            let mut picked = Ok(());
+            self.downloads.update(id, |e| {
+                picked = e.select_torrent_files(files.clone());
+                picked.is_ok()
+            });
+            picked.map_err(DownloadError::Torrent)?;
+        }
         let mut applied = Ok(());
         let updated = self.downloads.update(id, |e| {
             applied =
@@ -172,7 +183,7 @@ where
             }
         }
 
-        if file_exists.is_some() || category.is_some() || description.is_some() || elevate {
+        if file_exists.is_some() || category.is_some() || description.is_some() || elevate || files.is_some() {
             let mut request =
                 self.downloads.request(id).unwrap_or_else(|| Download { url: item.url.clone(), ..Download::default() });
             let elevate_into = path.and_then(Path::parent).filter(|_| elevate);
@@ -180,6 +191,9 @@ where
             request.apply_answer(file_exists, category.as_deref(), new_description, elevate_into);
             if elevate && elevate_into.is_none() {
                 request.elevate = true;
+            }
+            if files.is_some() {
+                request.torrent_files = item.torrent.as_ref().and_then(|t| t.selection.clone());
             }
             self.downloads.keep_request(id, request);
         }

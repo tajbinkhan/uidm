@@ -11,8 +11,10 @@ use std::collections::BTreeMap;
 
 use crate::address::Link;
 use crate::bytes::ByteCount;
+use crate::country::CountryCode;
 use crate::download::{DownloadEntry, Status, Validator};
 use crate::id::DownloadId;
+use crate::torrent::{TorrentEntry, TorrentInfo, TorrentPhase, TorrentStats};
 
 /// One change to the list, borrowed from whatever message carried it, so
 /// applying one copies only what the table keeps.
@@ -31,6 +33,7 @@ pub enum Change<'a> {
         connections: usize,
         partial: Option<&'a str>,
         validator: Option<&'a Validator>,
+        country: Option<CountryCode>,
     },
     Progress {
         id: DownloadId,
@@ -63,6 +66,18 @@ pub enum Change<'a> {
     Removed {
         id: DownloadId,
     },
+    /// A torrent's metadata is known: its files.
+    TorrentInfo {
+        id: DownloadId,
+        url: &'a str,
+        info: &'a TorrentInfo,
+    },
+    /// How a torrent is doing: its phase, and what it uploaded.
+    TorrentStats {
+        id: DownloadId,
+        url: &'a str,
+        stats: &'a TorrentStats,
+    },
     Updated(&'a DownloadEntry),
     Downloads(&'a [DownloadEntry]),
 }
@@ -84,7 +99,7 @@ impl DownloadTable {
             Change::Added { id, url } => {
                 self.entries.entry(id).or_insert_with(|| blank(id, url, Status::Queued));
             }
-            Change::Started { id, url, path, total, resumable, connections, partial, validator } => {
+            Change::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
                 let e = self.entry(id, url);
                 e.status = Status::Downloading;
                 e.path = Some(path.to_string());
@@ -97,6 +112,7 @@ impl DownloadTable {
                 if let Some(v) = validator {
                     e.validator = Some(v.clone());
                 }
+                e.country = country;
                 e.error = None;
                 e.scan = None;
                 e.note = None;
@@ -134,9 +150,12 @@ impl DownloadTable {
                 let e = self.entry(id, url);
                 e.status = Status::Failed;
                 e.error = Some(error.to_string());
+                stop_seeding_phase(e);
             }
             Change::Canceled { id, url } => {
-                self.entry(id, url).status = Status::Canceled;
+                let e = self.entry(id, url);
+                e.status = Status::Canceled;
+                stop_seeding_phase(e);
             }
             Change::NameTaken { id, url, path, total } => {
                 let e = self.entry(id, url);
@@ -147,6 +166,18 @@ impl DownloadTable {
             }
             Change::Removed { id } => {
                 self.entries.remove(&id);
+            }
+            Change::TorrentInfo { id, url, info } => {
+                self.entry(id, url).set_torrent_info(info);
+            }
+            Change::TorrentStats { id, url, stats } => {
+                let e = self.entry(id, url);
+                if e.torrent.is_none() {
+                    e.torrent = TorrentEntry::for_link(url);
+                }
+                if let Some(torrent) = e.torrent.as_mut() {
+                    torrent.observe(stats, now);
+                }
             }
             Change::Updated(item) => {
                 self.entries.insert(item.id, item.clone());
@@ -189,6 +220,13 @@ impl DownloadTable {
     }
 }
 
+/// A torrent that stopped while it seeded no longer seeds.
+fn stop_seeding_phase(e: &mut DownloadEntry) {
+    if let Some(t) = e.torrent.as_mut().filter(|t| t.phase == TorrentPhase::Seeding) {
+        t.phase = TorrentPhase::Complete;
+    }
+}
+
 fn blank(id: DownloadId, url: &str, status: Status) -> DownloadEntry {
     DownloadEntry {
         id,
@@ -217,6 +255,8 @@ fn blank(id: DownloadId, url: &str, status: Status) -> DownloadEntry {
         from_browser: false,
         on_done: None,
         validator: None,
+        country: None,
+        torrent: TorrentEntry::for_link(url),
     }
 }
 
@@ -238,6 +278,7 @@ mod tests {
                 connections: 4,
                 partial: None,
                 validator: None,
+                country: CountryCode::parse("NL"),
             },
             NOW,
         );
@@ -263,6 +304,7 @@ mod tests {
         assert_eq!(e.status, Status::Downloading);
         assert_eq!(e.connections, 4);
         assert_eq!(e.last_try, Some(NOW));
+        assert_eq!(e.country.map(|c| c.to_string()).as_deref(), Some("NL"), "the server's country");
         t.change(progress(1, 400), NOW);
         assert_eq!(t.get(DownloadId::new(1)).unwrap().done, ByteCount::new(400));
         t.change(Change::Done { id: DownloadId::new(1), url: URL, path: "/dl/f.zip", note: None }, NOW);

@@ -26,12 +26,12 @@ describe('the dialogs', () => {
   it('Download File Info answers with the category and the file', async () => {
     const calls = shell('save-as-17', 'save-as');
     render(SaveAs);
-    expect((screen.getByLabelText('Save As') as HTMLInputElement).value).toBe('/home/u/Downloads/udm-idm-test-40MB.bin');
+    expect((screen.getByLabelText('Save As') as HTMLInputElement).value).toBe('/home/u/Downloads/summer-photos.zip');
     await fireEvent.click(screen.getByRole('button', { name: 'Download Later' }));
     expect(sent(calls, 'answer_download').at(-1)?.args).toEqual({
       answer: {
-        category: 'General',
-        saveAs: '/home/u/Downloads/udm-idm-test-40MB.bin',
+        category: 'Compressed',
+        saveAs: '/home/u/Downloads/summer-photos.zip',
         rememberFolder: false,
         description: '',
         start: false,
@@ -50,7 +50,7 @@ describe('the dialogs', () => {
     });
     render(SaveAs);
     expect(await screen.findByText('UDM may not save files in this folder. Saving there needs administrator rights.')).toBeTruthy();
-    expect(sent(calls, 'check_save_folder').at(-1)?.args).toEqual({ saveAs: '/home/u/Downloads/udm-idm-test-40MB.bin' });
+    expect(sent(calls, 'check_save_folder').at(-1)?.args).toEqual({ saveAs: '/home/u/Downloads/summer-photos.zip' });
     const start = screen.getByRole('button', { name: 'Start Download' }) as HTMLButtonElement;
     expect(start.disabled).toBe(true);
     await fireEvent.click(screen.getByLabelText('Save there with administrator rights'));
@@ -63,6 +63,8 @@ describe('the dialogs', () => {
     const calls = shell('download-12', 'download');
     render(Download);
     expect(screen.getByText('633.453 MB ( 16.28 % )')).toBeTruthy();
+    // The server's country, its flag made by the shell.
+    expect(screen.getByTitle('Server country').textContent).toBe('\u{1F1FA}\u{1F1F8} US');
     await fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
     expect(sent(calls, 'control_download').at(-1)?.args).toEqual({ action: 'pause' });
     await fireEvent.click(screen.getByRole('tab', { name: 'Speed Limiter' }));

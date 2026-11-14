@@ -4,3 +4,4 @@
 *.png binary
 *.rgba binary
 *.gif binary
+*.bin binary

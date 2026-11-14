@@ -12,8 +12,15 @@
   #define AppVersion "0.3.0"
 #endif
 #define HostName "com.udm.host"
-; Fixed by the public key in extension\chromium\manifest.json.
+; The unpacked extension's ID, fixed by the public key in
+; extension\chromium\manifest.json.
 #define ExtensionId "epmjakacaejhdhldkpbjnakhfmjjbhfm"
+; Every Chromium extension ID the host lets in, separated by spaces: the
+; unpacked one, then the ones the stores give their copies. To add the
+; Chrome Web Store's, write: #define ChromiumIds ExtensionId + " <its ID>"
+; It must match CHROMIUM_EXTENSION_IDS in crates\infrastructure\src\browsers.rs,
+; which a test there checks (docs\extension-stores.md).
+#define ChromiumIds ExtensionId
 ; From extension\firefox.json.
 #define FirefoxId "udm@udm.local"
 #define Root "..\.."
@@ -78,6 +85,7 @@ Source: "{#Root}\extension\chromium\*"; DestDir: "{app}\extension"; Flags: ignor
 Source: "{#Root}\extension\firefox\*"; DestDir: "{app}\firefox"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "udm.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Root}\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Microsoft's WebView2 bootstrapper, which build.ps1 downloads: the window
 ; draws with the WebView2 runtime, installed here only when it is missing.
 Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: NeedsWebView2
@@ -100,7 +108,7 @@ Name: "{autodesktop}\UDM"; Filename: "{app}\udm-gui.exe"; WorkingDir: "{app}"; I
 [Run]
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing the Microsoft Edge WebView2 runtime..."; Flags: waituntilterminated; Check: NeedsWebView2
 Filename: "{app}\udm-gui.exe"; Description: "{cm:LaunchProgram,UDM}"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\extension"; Description: "Open the extension folder, to load it in the browser"; Flags: shellexec nowait postinstall skipifsilent unchecked
+Filename: "{app}\extension"; Description: "Open the extension folder, to load it in the browser"; Flags: shellexec nowait postinstall skipifsilent unchecked; Check: LoadsByHand
 
 [InstallDelete]
 ; The shortcuts of UDM's earlier names, Pullbay (0.4) and UIDM (up to 0.3.3).
@@ -120,6 +128,11 @@ const
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
   { Written by the daemon so Windows shows UDM's notifications. }
   NotificationKey = 'Software\Classes\AppUserModelId\UDM.DownloadManager';
+  { The extension's pages in the Chrome Web Store and on Firefox Add-ons,
+    once it is listed there (docs\extension-stores.md). While one is empty,
+    the last page says how to load that copy by hand. }
+  ChromeStorePage = '';
+  FirefoxStorePage = '';
 
 var
   { The folder Pullbay or UIDM, as UDM was called in 0.4 and up to 0.3.3,
@@ -171,10 +184,54 @@ begin
   Result := Result + '"';
 end;
 
-{ A native-messaging manifest: where udm-host.exe is, and the only
-  extension allowed to start it. Allowed is the last line, such as
+{ The Chromium host manifest's allowed origins: one chrome-extension://
+  origin for each ID in ChromiumIds. }
+function ChromiumOrigins(): String;
+var
+  Ids: String;
+  Space: Integer;
+begin
+  Result := '';
+  Ids := Trim('{#ChromiumIds}');
+  while Ids <> '' do
+  begin
+    Space := Pos(' ', Ids);
+    if Space = 0 then
+      Space := Length(Ids) + 1;
+    if Result <> '' then
+      Result := Result + ', ';
+    Result := Result + '"chrome-extension://' + Copy(Ids, 1, Space - 1) + '/"';
+    Ids := Trim(Copy(Ids, Space + 1, Length(Ids)));
+  end;
+end;
+
+{ Whether the Chromium extension is still loaded by hand: it has no page in
+  the Chrome Web Store yet. }
+function LoadsByHand(): Boolean;
+begin
+  Result := ChromeStorePage = '';
+end;
+
+{ Whether the manifest at Path names this install's udm-host.exe, as the
+  ones UDM writes in its data folder when Options registers Brave or
+  Chromium do. A folder name outside ASCII, which UDM writes as is, does not
+  match, and such a manifest is left as it is. }
+function NamesThisHost(Path: String): Boolean;
+var
+  Raw: AnsiString;
+  Json: String;
+begin
+  Result := False;
+  if not LoadStringFromFile(Path, Raw) then
+    exit;
+  Json := Raw;
+  Result := Pos(Lowercase(JsonString(ExpandConstant('{app}\udm-host.exe'))), Lowercase(Json)) > 0;
+end;
+
+{ A native-messaging manifest in Dir: where udm-host.exe is, and the
+  extensions allowed to start it. Allowed is the last line, such as
   "allowed_origins": [...]. }
-procedure WriteHostManifest(FileName, Allowed: String);
+procedure WriteHostManifest(Dir, FileName, Allowed: String);
 var
   Json, Path: String;
 begin
@@ -186,7 +243,7 @@ begin
     '  "path": ' + JsonString(ExpandConstant('{app}\udm-host.exe')) + ',' + #13#10 +
     '  ' + Allowed + #13#10 +
     '}' + #13#10;
-  Path := ExpandConstant('{app}\') + FileName;
+  Path := AddBackslash(Dir) + FileName;
   if not SaveStringToFile(Path, Json, False) then
     RaiseException('Could not write ' + Path);
 end;
@@ -345,7 +402,7 @@ begin
   if not (Ok and YtDlpFound()) then
     SuppressibleMsgBox('winget could not install the video tools (exit code ' + IntToStr(Code) + ').' + #13#10#13#10 +
       'UDM still downloads ordinary files. For YouTube and other video sites, use Install yt-dlp ' +
-      'and Install ffmpeg in UDM''s Options > General, or run this later:' + #13#10 +
+      'and Install ffmpeg in UDM''s Options > Tools, or run this later:' + #13#10 +
       '    winget install yt-dlp.yt-dlp',
       mbError, MB_OK, IDOK);
 end;
@@ -358,11 +415,22 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Data: String;
 begin
   if CurStep = ssPostInstall then
   begin
-    WriteHostManifest('{#HostName}.json', '"allowed_origins": ["chrome-extension://{#ExtensionId}/"]');
-    WriteHostManifest('{#HostName}.firefox.json', '"allowed_extensions": ["{#FirefoxId}"]');
+    WriteHostManifest(ExpandConstant('{app}'), '{#HostName}.json', '"allowed_origins": [' + ChromiumOrigins() + ']');
+    WriteHostManifest(ExpandConstant('{app}'), '{#HostName}.firefox.json', '"allowed_extensions": ["{#FirefoxId}"]');
+    { Browsers registered from Options (Brave, Chromium) read the manifests
+      in UDM's data folder, which UDM itself does not write again on
+      Windows: bring the ones for this install up to date, so they let in
+      the extensions this version does. }
+    Data := ExpandConstant('{localappdata}\UDM');
+    if NamesThisHost(Data + '\{#HostName}.json') then
+      WriteHostManifest(Data, '{#HostName}.json', '"allowed_origins": [' + ChromiumOrigins() + ']');
+    if NamesThisHost(Data + '\{#HostName}.firefox.json') then
+      WriteHostManifest(Data, '{#HostName}.firefox.json', '"allowed_extensions": ["{#FirefoxId}"]');
     { The old name's programs are closed by now. Its settings, list,
       browser registrations and sign-in entry move when UDM first starts. }
     if (OldDir <> '') and DirExists(OldDir) then
@@ -374,7 +442,7 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 var
-  Video: String;
+  Video, Chromium, Firefox: String;
 begin
   if CurPageID <> wpFinished then
     exit;
@@ -383,19 +451,30 @@ begin
   else
     Video := #13#10#13#10 +
       'For YouTube and other video sites, use Install yt-dlp and Install ffmpeg in UDM''s ' +
-      'Options > General, or run: winget install yt-dlp.yt-dlp';
+      'Options > Tools, or run: winget install yt-dlp.yt-dlp';
   if OldDir <> '' then
     Video := #13#10#13#10 +
       OldName + ' is now called UDM. Remove the ' + OldName + ' extension from the browser first: ' +
       'it went with ' + OldName + '''s folder, and UDM''s takes its place.' + Video;
-  WizardForm.FinishedLabel.Caption :=
+  if ChromeStorePage <> '' then
+    Chromium :=
+      'UDM is installed. To catch downloads in Chrome or Edge, add its extension from the Chrome Web Store ' +
+      '(Edge asks you to allow extensions from other stores first):' + #13#10 +
+      '    ' + ChromeStorePage
+  else
+    Chromium :=
       'UDM is installed. To catch downloads in Chrome or Edge, load its extension once:' + #13#10#13#10 +
       '1. Open chrome://extensions (or edge://extensions) and turn on Developer mode.' + #13#10 +
       '2. Click Load unpacked and choose this folder:' + #13#10 +
       '    ' + ExpandConstant('{app}\extension') + #13#10 +
-      '3. Check that its ID reads {#ExtensionId}.' + #13#10#13#10 +
+      '3. Check that its ID reads {#ExtensionId}.';
+  if FirefoxStorePage <> '' then
+    Firefox := 'In Firefox, add it from Firefox Add-ons: ' + FirefoxStorePage
+  else
+    Firefox :=
       'In Firefox, open about:debugging, choose This Firefox, then Load Temporary Add-on, ' +
-      'and pick manifest.json in ' + ExpandConstant('{app}\firefox') + '.' + Video;
+      'and pick manifest.json in ' + ExpandConstant('{app}\firefox') + '.';
+  WizardForm.FinishedLabel.Caption := Chromium + #13#10#13#10 + Firefox + Video;
 end;
 
 function InitializeUninstall(): Boolean;

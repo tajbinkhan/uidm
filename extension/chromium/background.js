@@ -16,11 +16,16 @@
 // It also notes the videos each tab loads (see media.js) for the video
 // button that content.js shows over playing videos, and collects a page's
 // links for the window's link picker.
+//
+// Safari has no downloads API, no proxy settings and no notifications, and
+// reaches udm-host through UDM.app's app extension (see native.js). There
+// the worker takes download links as they are clicked instead (see
+// shareLinkCapture), and leaves out what needs the rest.
 
 // Chrome runs this as a service worker and it loads its helpers itself;
 // Firefox runs it as a background script after the helpers the manifest
 // lists, and has no importScripts.
-if (typeof importScripts === "function") importScripts("rules.js", "links.js", "post.js", "media.js", "request.js");
+if (typeof importScripts === "function") importScripts("rules.js", "links.js", "post.js", "media.js", "request.js", "native.js");
 
 const HOST = "com.udm.host";
 const RECONNECT_MIN_MS = 1000;
@@ -524,6 +529,26 @@ function onContentMessage(msg, sender, sendResponse) {
       noteHeldKeys(tabId, msg.action);
       sendResponse({ ok: true });
       return false;
+    case "link:capture":
+      // A click on a link to a file, where the browser has no downloads API
+      // (see shareLinkCapture).
+      if (chrome.downloads) {
+        sendResponse({ ok: false });
+        return false;
+      }
+      captureClickedLink(msg.url, linkFileName(msg.download), sender).then((ok) => sendResponse({ ok: !!ok }));
+      return true;
+    case "link:magnet":
+      // A magnet link clicked (see content.js): UDM downloads its torrent,
+      // unless capture is off, everywhere or in this tab.
+      // The page's site may be one UDM's settings leave to the browser.
+      const excluded = rules && (rules.capture_excluded_sites || []).some((site) => siteMatches(site, hostOf(sender.tab.url)));
+      if (!connected || !captureEnabled || !tabCaptures(tabId) || !isMagnet(msg.url) || excluded) {
+        sendResponse({ ok: false });
+        return false;
+      }
+      sendResponse({ ok: send(isWeb(sender.tab.url) ? { op: "add", url: msg.url, page: sender.tab.url } : { op: "add", url: msg.url }) });
+      return false;
     case "link:force":
       // The force key was held: the link goes to UDM whatever it is,
       // unless capture is off, everywhere or in this tab.
@@ -558,11 +583,106 @@ let refreshWaiting = null;
 const settingsReady = chrome.storage.local.get({ capture: true, takeoverNotice: true }).then((s) => {
   captureEnabled = s.capture;
   takeoverNotice = s.takeoverNotice;
+  shareLinkCapture();
 });
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.capture) captureEnabled = changes.capture.newValue;
   if (changes.takeoverNotice) takeoverNotice = changes.takeoverNotice.newValue;
+  if (changes.capture) shareLinkCapture();
 });
+
+// --- Links taken as they are clicked (Safari) ----------------------------------
+
+// Safari tells extensions nothing of its downloads, so there content.js
+// takes a link to a file as it is clicked (clickTaken, in rules.js) and asks
+// the worker to hand it over ("link:capture"). It must decide at once,
+// before the browser follows the link, so it reads whether to and the
+// capture rules from storage, as it reads the skip and force keys: this
+// keeps them there, as `linkCapture`. Browsers with the downloads API never
+// get it, so their content scripts take no click.
+// Nothing is taken until UDM is connected and its rules are here: before
+// them a link's type cannot be checked.
+let sharedLinkCapture = null;
+let sharedMagnetCapture = null;
+function shareLinkCapture() {
+  if (!chrome.storage || !chrome.storage.local) return;
+  // Every browser: whether magnet links go to UDM as they are clicked.
+  const magnets = connected && !!captureEnabled;
+  if (magnets !== sharedMagnetCapture) {
+    sharedMagnetCapture = magnets;
+    Promise.resolve(chrome.storage.local.set({ magnetCapture: magnets })).catch(() => {});
+  }
+  if (chrome.downloads) return;
+  const value = {
+    on: connected && !!captureEnabled && !!rules,
+    rules: rules
+      ? {
+          capture_types: rules.capture_types || [],
+          capture_excluded_sites: rules.capture_excluded_sites || [],
+          capture_excluded_urls: rules.capture_excluded_urls || [],
+          torrents: { catch_torrent_files: catchesTorrents(rules) },
+        }
+      : null,
+  };
+  const json = JSON.stringify(value);
+  if (json === sharedLinkCapture) return;
+  sharedLinkCapture = json;
+  Promise.resolve(chrome.storage.local.set({ linkCapture: value })).catch(() => {});
+}
+// A worker that starts again (Safari stops an idle one) is not connected
+// yet: what the last one shared goes at once.
+shareLinkCapture();
+
+// How long a click that woke the worker waits for UDM's hello and rules.
+const CLICK_CONNECT_WAIT_MS = 3000;
+
+// Resolves once UDM is connected and its rules are here, or after `ms`.
+function connectedWithRules(ms) {
+  return new Promise((resolve) => {
+    const until = Date.now() + ms;
+    const check = () => {
+      if ((connected && rules) || Date.now() >= until) resolve();
+      else setTimeout(check, 100);
+    };
+    check();
+  });
+}
+
+// Hand the link a page's click asked for (`url`, named by its `download`
+// attribute `filename`) to UDM, when the capture rules and the popup's
+// switches take it now. Says whether UDM has it; content.js lets the browser
+// follow the link when not.
+async function captureClickedLink(url, filename, sender) {
+  const tabId = sender.tab.id;
+  const pageUrl = sender.url || sender.tab.url || "";
+  if (!isWeb(url)) return false;
+  // The click may have woken the worker, which has to connect again.
+  await Promise.all([settingsReady, tabsOffReady, connectedWithRules(CLICK_CONNECT_WAIT_MS)]);
+  if (!rules || !clickTaken(rules, url, filename, pageUrl)) return false;
+  // "Skip next download" keeps this one in the browser.
+  if (skipNext) {
+    skipNext = false;
+    return false;
+  }
+  // The clicked link's document (maybe a frame) is the referrer, or the
+  // nearest one with an address when it has none (about:blank), as for a
+  // forced link.
+  const parent = isWeb(pageUrl) ? undefined : await framesReferrer(tabId, sender.frameId);
+  const referrer = webReferrer(pageUrl, parent, sender.tab.url) || "";
+  const described = { url, referrer, filename: filename || "", mime: "", size: 0, key: heldKey(tabId) };
+  const verdict = takesNow(described, tabId);
+  if (!verdict) return false;
+  if (verdict.refreshId !== null) {
+    refreshWaiting = null;
+    return handOff(url, referrer, filename, false, null, verdict.refreshId, sender.tab.url, null, {}, tabContext(sender.tab));
+  }
+  // `clicked`: should the connection drop before UDM has it, it goes back
+  // to the browser (see onDisconnect).
+  awaitingAck.set(url, { post: null, filename, clicked: true });
+  const sent = await handOff(url, referrer, filename, false, null, null, sender.tab.url, null, {}, tabContext(sender.tab));
+  if (!sent) awaitingAck.delete(url);
+  return sent;
+}
 
 // --- Capture off in one tab ----------------------------------------------------
 
@@ -691,18 +811,33 @@ async function downloadTabId(record) {
 
 // --- Connection to the host -------------------------------------------------
 
+// Safari's extension pages are safari-web-extension:// ones. Its native
+// messages go to UDM.app's app extension, which cannot keep a port open, so
+// the worker polls it (pollingPort, in native.js). Safari has connectNative
+// too, so only the address tells it apart.
+const IS_SAFARI = String(chrome.runtime.getURL("")).startsWith("safari-web-extension:");
+
+// A new port to the host: connectNative's, or in Safari a polling one.
+// Safari's `browser` namespace is the one sure to answer with a promise.
+function openPort() {
+  if (!IS_SAFARI) return chrome.runtime.connectNative(HOST);
+  const own = globalThis.browser && globalThis.browser.runtime && globalThis.browser.runtime.sendNativeMessage ? globalThis.browser : chrome;
+  return pollingPort((request) => own.runtime.sendNativeMessage(HOST, request));
+}
+
 function connect() {
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
   try {
-    port = chrome.runtime.connectNative(HOST);
+    port = openPort();
   } catch (e) {
     onDisconnect(e.message);
     return;
   }
   port.onMessage.addListener(onHostMessage);
-  port.onDisconnect.addListener(() => {
-    onDisconnect(chrome.runtime.lastError?.message || chrome.i18n.getMessage("udmDisconnected"));
+  // A polling port says why it closed itself (udmReason).
+  port.onDisconnect.addListener((closed) => {
+    onDisconnect(chrome.runtime.lastError?.message || (closed && closed.udmReason) || chrome.i18n.getMessage("udmDisconnected"));
   });
   port.postMessage({ op: "hello", version: chrome.runtime.getManifest().version });
   port.postMessage({ op: "list" });
@@ -714,6 +849,14 @@ function onDisconnect(reason) {
   connected = false;
   lastError = reason;
   updateBadge();
+  shareLinkCapture();
+  // Links taken as they were clicked (Safari) that UDM never acknowledged
+  // may never have reached it: the browser gets them back.
+  for (const [url, taken] of awaitingAck) {
+    if (!taken.clicked) continue;
+    awaitingAck.delete(url);
+    giveBack(url, null);
+  }
   if (!reconnectTimer) {
     reconnectTimer = setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
@@ -866,6 +1009,7 @@ function onHostMessage(msg) {
     }
   }
   updateBadge();
+  shareLinkCapture();
 }
 
 // A download UDM took but could not even start (the server refused it, say)
@@ -948,14 +1092,21 @@ function noticeCannotReach(fallback = false) {
   notice(message);
 }
 
+// Let the browser download `url` after all. Without the downloads API
+// (Safari) it opens in a background tab, which downloads it.
+function browserGets(url) {
+  if (chrome.downloads) chrome.downloads.download({ url }).catch(() => {});
+  else if (chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url, active: false }).catch(() => {});
+}
+
 // Let the browser download it after all, the way it was first requested.
 function giveBack(url, post) {
   if (!post) {
-    chrome.downloads.download({ url }).catch(() => {});
+    browserGets(url);
     return;
   }
-  // The browser can only resend a text body.
-  if (post.text === undefined) return;
+  // The browser can only resend a text body, and only with the downloads API.
+  if (post.text === undefined || !chrome.downloads) return;
   const options = { url, method: "POST", body: post.text };
   if (post.contentType) options.headers = [{ name: "Content-Type", value: post.contentType }];
   chrome.downloads.download(options).catch(() => {});
@@ -1019,6 +1170,8 @@ function baseName(path) {
 // and the bypass list), and its fixed proxy alone as `proxy`, which is all
 // older versions of UDM read.
 async function addBrowserProxy(msg) {
+  // Safari does not tell extensions its proxy.
+  if (!chrome.proxy) return;
   let value;
   try {
     ({ value } = await chrome.proxy.settings.get({}));
@@ -1113,7 +1266,7 @@ async function downloadPage(referrer, url) {
 // The browser's download bubble (Chrome's), hidden while a download is
 // taken from it. Firefox cannot hide its download panel.
 const bubble = bubbleGate((enabled) => {
-  if (!chrome.downloads.setUiOptions) return;
+  if (!chrome.downloads || !chrome.downloads.setUiOptions) return;
   try {
     const done = chrome.downloads.setUiOptions({ enabled });
     if (done && done.catch) done.catch(() => {});
@@ -1196,6 +1349,9 @@ function atHeaders(d, record) {
   const verdict = takesNow(described, d.tabId);
   if (!verdict) return undefined;
   if (!BLOCKING) {
+    // Without the downloads API (Safari) the download is not seen again:
+    // the browser keeps it.
+    if (!chrome.downloads) return undefined;
     record.bubbleHeld = true;
     bubble.hold();
     return undefined;
@@ -1228,17 +1384,20 @@ async function takeAtHeaders(d, record, post, requestUrl, refreshId) {
 
 // A download the browser created. Chrome's bubble may have been hidden for
 // it when its headers came (atHeaders); it shows again once it is decided.
-chrome.downloads.onCreated.addListener(async (item) => {
-  const record = findRequest(requestLog, item.finalUrl || item.url, Date.now()) || findRequest(requestLog, item.url, Date.now());
-  try {
-    await browserDownload(item, record);
-  } finally {
-    if (record && record.bubbleHeld) {
-      record.bubbleHeld = false;
-      bubble.release();
+// Safari tells extensions of none.
+if (chrome.downloads) {
+  chrome.downloads.onCreated.addListener(async (item) => {
+    const record = findRequest(requestLog, item.finalUrl || item.url, Date.now()) || findRequest(requestLog, item.url, Date.now());
+    try {
+      await browserDownload(item, record);
+    } finally {
+      if (record && record.bubbleHeld) {
+        record.bubbleHeld = false;
+        bubble.release();
+      }
     }
-  }
-});
+  });
+}
 
 async function browserDownload(item, record) {
   await Promise.all([settingsReady, tabsOffReady]);
@@ -1329,7 +1488,11 @@ async function takeDownload(item, url, filename, refreshId = null, guessPage = t
   const referrer = from || (item.referrer ? webReferrer(parent, page) : undefined);
   if (refreshId !== null) refreshWaiting = null;
   const origin = { tabId: record ? record.tabId : undefined, incognito: !!item.incognito, cookieStoreId: item.cookieStoreId };
-  const sent = await deliver(requestUrl, referrer, filename, post, refreshId, page, requestDetails(record), origin);
+  // The download's own type, when no request told it (UDM tells a .torrent
+  // file by its type or name).
+  const details = requestDetails(record);
+  if (!details.content_type && item.mime) details.content_type = item.mime;
+  const sent = await deliver(requestUrl, referrer, filename, post, refreshId, page, details, origin);
   if (record && record.type === "main_frame") closeIfOpenedFor(record.tabId, [url, item.url, ...record.redirects]);
   return sent;
 }
@@ -1361,7 +1524,7 @@ async function deliver(requestUrl, referrer, filename, post, refreshId, page, de
 // download; Chrome has no menu on its downloads). Private windows' stay out
 // unless UDM's settings let them in.
 async function browserDownloads() {
-  if (!chrome.downloads.search) return [];
+  if (!chrome.downloads || !chrome.downloads.search) return [];
   let items;
   try {
     items = await chrome.downloads.search({ state: "in_progress" });
@@ -1387,6 +1550,7 @@ async function sendBrowserDownload(id) {
     noticeCannotReach();
     return false;
   }
+  if (!chrome.downloads) return false;
   let item;
   try {
     [item] = await chrome.downloads.search({ id });
@@ -1783,7 +1947,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (connected && (await handOff(url, referrer, filename, later, null, null, info.pageUrl, description, {}, tabContext(tab)))) return;
   // UDM is not available; the click should still download something.
   noticeCannotReach(true);
-  chrome.downloads.download({ url }).catch(() => {});
+  browserGets(url);
 });
 
 // --- Popup ------------------------------------------------------------------
@@ -1832,6 +1996,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "setCapture":
       captureEnabled = !!msg.value;
       chrome.storage.local.set({ capture: captureEnabled });
+      shareLinkCapture();
       break;
     case "cancelRefresh":
       refreshWaiting = null;

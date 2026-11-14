@@ -54,7 +54,18 @@ percent-encoding.workspace = true
 # engine keeps its plain threads and blocks on each step. No gzip: a range
 # request must come back as the bytes asked for.
 reqwest = { version = "0.12", default-features = false, features = ["native-tls-alpn", "http2", "socks"] }
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
+# Binding the FTP engine's sockets, and its active-mode listener, to the
+# network adapter Options picks (`route`): `bind_device` on Linux, the
+# interface index on macOS, the adapter's address on Windows. reqwest and
+# tokio already depend on this exact version; `all` only unlocks those
+# calls, so no new crate enters the lock file.
+socket2 = { version = "0.6", features = ["all"] }
+# The computer's network adapters and their addresses, for Options' list
+# and the kill switch (`adapters`): getifaddrs on macOS and Linux,
+# GetAdaptersAddresses on Windows. Small, with only libc and windows-sys
+# (both already in the lock file) under it.
+if-addrs = "=0.15.0"
 # FTPS: TLS on the FTP engine's blocking control and data connections, through
 # the same OS TLS as reqwest (SChannel on Windows, Security.framework on macOS,
 # OpenSSL elsewhere). reqwest already pulls in this exact crate for
@@ -109,6 +120,18 @@ zip = { version = "9.5", default-features = false, features = ["deflate-flate2",
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+
+# Torrents and magnet links (`torrent`): librqbit's session, on the
+# engine's shared tokio runtime (it starts no runtime of its own). Without
+# its default features: no HTTP API, web UI, tracing subscriber or
+# Postgres, and no rustls. Apache-2.0. Its SHA-1 comes from the system's
+# crypto library (crypto-hash: OpenSSL here, CommonCrypto on macOS,
+# CryptoAPI on Windows), which librqbit-core's feature turns on; its HTTP
+# trackers use reqwest 0.13 (already in Cargo.lock through tauri) with the
+# same OS TLS as the engine (native-tls), which the line after turns on.
+librqbit = { version = "=9.1.0", default-features = false }
+librqbit-core = { version = "=9.1.0", default-features = false, features = ["sha1-crypto-hash"] }
+reqwest-torrent = { package = "reqwest", version = "0.13", default-features = false, features = ["native-tls"] }
 
 # The window's file and folder pickers (IFileOpenDialog on Windows, through
 # windows-sys, so it builds on windows-gnu; panels on macOS).

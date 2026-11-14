@@ -44,8 +44,24 @@ pub fn options(lang: &'static Language, e: &crate::options::OptionsError) -> Inv
         E::CategoryTwice(name) => fill(lang.tr("There are two categories named \"{name}\"."), &[("name", name)]),
         E::Theme(name) => fill(lang.tr("\"{name}\" is not a theme."), &[("name", name)]),
         E::Port => lang.tr("Type a port from 1 to 65535.").to_string(),
+        E::DebridService => lang.tr("Choose the debrid service the account is with.").to_string(),
+        E::Network(n) => text::network(lang, n),
+        E::TorrentPeers => lang.tr("Type a number of peers from 1 to 1000.").to_string(),
+        E::UploadLimit => lang.tr("Type an upload limit from 1 KB/s up.").to_string(),
+        E::Torrent(t) => text::torrent(lang, t),
+        E::SeedMinutes => lang.tr("Type a number of minutes from 1 up.").to_string(),
     };
     error(ErrorKind::Invalid, message)
+}
+
+/// Why a torrent's own seeding limits cannot be set.
+pub fn limits(lang: &'static Language, e: &crate::torrents::LimitsError) -> InvokeError {
+    use crate::torrents::LimitsError as E;
+    let message = match e {
+        E::Ratio => lang.tr("Type a share ratio from 0 to 100."),
+        E::Minutes => lang.tr("Type a number of minutes from 1 up."),
+    };
+    error(ErrorKind::Invalid, message.to_string())
 }
 
 /// Why a queue cannot be saved.
@@ -465,7 +481,7 @@ pub mod text {
         match e {
         GalleryError::NotWebPage(url) => trf!(lang, "{url} is not an http or https page.", url = url),
         GalleryError::Missing => {
-            lang.tr("Image galleries need gallery-dl. Install it in UDM's Options > General, or put gallery-dl next to UDM.")
+            lang.tr("Image galleries need gallery-dl. Install it in UDM's Options > Tools, or put gallery-dl next to UDM.")
                 .to_string()
         }
         GalleryError::Unsupported => lang.tr("gallery-dl does not know this site.").to_string(),
@@ -557,6 +573,43 @@ pub mod text {
             E::Save { path, reason } => trf!(lang, "Could not save {path}: {reason}", path = path, reason = reason),
             E::UpToDate(tool) => trf!(lang, "{tool} is up to date.", tool = tool),
             E::Busy(tool) => trf!(lang, "{tool} is being installed already.", tool = tool),
+        }
+    }
+
+    /// Why a network setting is not usable, or the adapters' list could not
+    /// be read.
+    pub fn network(lang: &'static Language, e: &udm_domain::network::NetworkError) -> String {
+        use udm_domain::network::NetworkError as E;
+        match e {
+            E::NoAdapter => lang.tr("Choose a network adapter.").to_string(),
+            E::BadAdapter => lang.tr("That is not the name of a network adapter.").to_string(),
+            E::DohAddress => {
+                lang.tr("The DNS over HTTPS address must start with https:// and name a server.").to_string()
+            }
+            E::Adapters(why) => {
+                crate::i18n::fill(lang.tr("The network adapters could not be read: {error}"), &[("error", why)])
+            }
+        }
+    }
+
+    /// Why a debrid service would not unlock a link or show the account.
+    pub fn debrid(lang: &'static Language, e: &udm_domain::debrid::DebridError) -> String {
+        use udm_domain::debrid::DebridError as E;
+        match e {
+            E::BadKey => lang.tr("The service refused the API key, or no key is stored.").to_string(),
+            E::NotPremium => lang.tr("The account is not premium.").to_string(),
+            E::HostNotSupported => lang.tr("The service does not support this host.").to_string(),
+            E::LinkDead => lang.tr("The file is not available on the host.").to_string(),
+            E::Limit => lang.tr("A limit of the account or the host was reached. Try again later.").to_string(),
+            E::IpNotAllowed => lang
+                .tr("The service does not allow this computer's IP address. A VPN or a proxy is often the reason.")
+                .to_string(),
+            E::HostUnavailable => lang.tr("The file host is unavailable for now. Try again later.").to_string(),
+            E::KeyForOther(other) => {
+                trf!(lang, "The stored key is for {service}. Type a key for this service.", service = other.name())
+            }
+            E::Service(said) => trf!(lang, "The service said: {message}", message = said),
+            E::Network(why) => trf!(lang, "Could not reach the service: {why}", why = why),
         }
     }
 
@@ -652,9 +705,7 @@ pub mod text {
             E::NotConvertible => {
                 lang.tr("Only a finished download whose file is still there can be converted.").to_string()
             }
-            E::NoFfmpeg => {
-                lang.tr("Converting needs ffmpeg. Install it, or choose it in Options > General.").to_string()
-            }
+            E::NoFfmpeg => lang.tr("Converting needs ffmpeg. Install it, or choose it in Options > Tools.").to_string(),
             E::NotWaiting(id) => trf!(lang, "download {id} is not waiting to be started", id = id),
             E::AnswerNoFileName => lang.tr("the download has no file name").to_string(),
             E::AnswerNoFolder => lang.tr("the download has no folder").to_string(),
@@ -665,6 +716,39 @@ pub mod text {
             E::Files(why) => why.clone(),
             E::FilesStay { url, reason } => {
                 trf!(lang, "Removed {url} from the list, but its files stay: {reason}", url = url, reason = reason)
+            }
+            E::Torrent(e) => torrent(lang, e),
+        }
+    }
+
+    /// Why a torrent or magnet link cannot be used.
+    pub fn torrent(lang: &'static Language, e: &udm_domain::torrent::TorrentError) -> String {
+        use udm_domain::torrent::TorrentError as T;
+        match e {
+            T::NotMagnet(link) => trf!(lang, "{link} is not a magnet link", link = link),
+            T::NoInfoHash => lang.tr("The magnet link names no BitTorrent info hash (xt=urn:btih:...).").to_string(),
+            T::BadInfoHash(hash) => trf!(lang, "{hash} is not a BitTorrent info hash", hash = hash),
+            T::NoFiles => lang.tr("The torrent holds no files.").to_string(),
+            T::TooManyFiles { count, max } => {
+                trf!(lang, "The torrent holds {count} files; UDM takes at most {max}.", count = count, max = max)
+            }
+            T::UnsafePath(path) => trf!(lang, "The torrent names a file UDM cannot save safely: {path}", path = path),
+            T::TooBig { max } => trf!(
+                lang,
+                "The torrent file is larger than {size} and was not read.",
+                size = udm_domain::bytes::ByteCount::new(*max as u64).megabytes()
+            ),
+            T::BadTorrent(why) => trf!(lang, "This is not a torrent file: {why}", why = why),
+            T::NothingSelected => lang.tr("Choose at least one of the torrent's files.").to_string(),
+            T::NoSuchFile(n) => trf!(lang, "The torrent has no file number {number}.", number = n),
+            T::BadRatio(value) => trf!(lang, "{value} is not a share ratio between 0 and 100.", value = value),
+            T::FileListTooBig { max } => trf!(
+                lang,
+                "The torrent's file names take more than {size}; UDM takes shorter lists.",
+                size = udm_domain::bytes::ByteCount::new(*max as u64).megabytes()
+            ),
+            T::NameFixed(name) => {
+                trf!(lang, "A torrent of one file keeps its file's name, {name}; choose only its folder.", name = name)
             }
         }
     }

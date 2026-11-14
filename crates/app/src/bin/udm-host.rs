@@ -19,6 +19,12 @@
 //! which reads one link, or a list of links for the link picker, as JSON
 //! (see `udm_infrastructure::cli::parse_sent`) and hands it to the daemon, starting it if
 //! needed. It goes through the same authenticated connection as the relay.
+//!
+//! Safari's app extension (`installer/macos/safari`) runs
+//!   udm-host safari
+//! a relay that does not start the daemon: it runs inside Safari's sandbox,
+//! and a daemon it started would be sandboxed too. Without a running daemon
+//! it exits with the reason on stderr, which the app extension passes on.
 
 // Tests may use todo!, unimplemented! and unreachable!, which clippy.toml's
 // test exemptions do not cover (AGENTS.md section 9).
@@ -94,21 +100,83 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     // The test and `send` modes print to stdout and stderr on purpose: that
     // is their output, for the person or program that ran them.
-    match args.get(1).map(String::as_str) {
-        Some("download") => std::process::exit(run_cli(&args)),
-        Some("send") => std::process::exit(run_send(&args)),
-        _ => {}
-    }
-    if let Err(e) = run_relay() {
+    let spawn = match mode(&args) {
+        Mode::Download => std::process::exit(run_cli(&args)),
+        Mode::Send => std::process::exit(run_send(&args)),
+        Mode::Relay { spawn } => spawn,
+    };
+    if let Err(e) = run_relay(spawn) {
         tracing::error!(error = format!("{e:#}"), "fatal");
         std::process::exit(1);
     }
 }
 
-/// Relay frames between the browser (stdio) and the daemon (loopback TCP).
-fn run_relay() -> anyhow::Result<()> {
+/// What the host was started to do.
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    /// Relay a browser's frames, starting the daemon when `spawn` and it is
+    /// not running.
+    Relay { spawn: bool },
+    /// `udm-host download <url> [output_dir]`.
+    Download,
+    /// `udm-host send <file | ->`.
+    Send,
+}
+
+/// The mode the command line `args` (the program first) asks for. Chrome
+/// and Edge pass the extension's origin and Firefox the host manifest's
+/// path: anything but a mode's name is a browser's relay.
+fn mode(args: &[String]) -> Mode {
+    match args.get(1).map(String::as_str) {
+        Some("download") => Mode::Download,
+        Some("send") => Mode::Send,
+        Some("safari") => Mode::Relay { spawn: false },
+        _ => Mode::Relay { spawn: true },
+    }
+}
+
+/// Relay frames between the browser (stdio) and the daemon (loopback TCP),
+/// starting the daemon first when `spawn` and it is not running.
+/// The most a message to the browser may be: Chrome closes the native host
+/// that sends a larger one.
+const MAX_TO_BROWSER: usize = 1024 * 1024;
+
+/// A frame from the daemon as it may go to the browser, or `None` to drop
+/// it. The extension has no use for torrents' stats, files or rows'
+/// torrent part, which can be large, and Chrome takes no message over
+/// [`MAX_TO_BROWSER`].
+fn to_browser(frame: Vec<u8>) -> Option<Vec<u8>> {
+    let frame = if frame.windows(8).any(|w| w == b"\"torrent") {
+        let mut msg: serde_json::Value = serde_json::from_slice(&frame).ok()?;
+        let op = msg.get("op").and_then(|o| o.as_str()).unwrap_or("");
+        if op.starts_with("torrent_") {
+            return None;
+        }
+        let strip = |entry: &mut serde_json::Value| {
+            if let Some(entry) = entry.as_object_mut() {
+                entry.remove("torrent");
+            }
+        };
+        match op {
+            "downloads" => msg.get_mut("items").and_then(|i| i.as_array_mut()).into_iter().flatten().for_each(strip),
+            "updated" => msg.get_mut("item").into_iter().for_each(strip),
+            _ => {}
+        }
+        serde_json::to_vec(&msg).ok()?
+    } else {
+        frame
+    };
+    if frame.len() > MAX_TO_BROWSER {
+        tracing::warn!(bytes = frame.len(), "dropped a message too large for the browser");
+        return None;
+    }
+    Some(frame)
+}
+
+fn run_relay(spawn: bool) -> anyhow::Result<()> {
     use anyhow::Context as _;
-    let daemon = ipc::connect_or_spawn().context("could not reach the daemon")?;
+    let daemon =
+        if spawn { ipc::connect_or_spawn() } else { ipc::connect_running() }.context("could not reach the daemon")?;
     tracing::info!(addr = %ipc::daemon_addr(), "connected to the daemon");
     let mut to_daemon = daemon.try_clone().context("could not share the daemon connection")?;
     let mut from_daemon = daemon;
@@ -118,6 +186,7 @@ fn run_relay() -> anyhow::Result<()> {
         let stdout = io::stdout();
         let mut out = stdout.lock();
         while let Ok(Some(frame)) = read_message(&mut from_daemon, MAX_MESSAGE_BYTES) {
+            let Some(frame) = to_browser(frame) else { continue };
             if write_frame(&mut out, &frame).is_err() || out.flush().is_err() {
                 break;
             }
@@ -270,6 +339,17 @@ fn run_cli(args: &[String]) -> i32 {
     let output_dir = args.get(3).map(PathBuf::from).unwrap_or_else(default_downloads_dir);
     eprintln!("[udm-host] downloading {url} -> {}", output_dir.display());
 
+    // No proxy or login, as ever in this test mode, but the network adapter
+    // and DNS the settings choose, so it never goes out another way.
+    let settings =
+        match udm_infrastructure::settings::settings_path().and_then(|p| udm_infrastructure::settings::load(&p)) {
+            Ok(settings) => settings,
+            Err(e) => {
+                eprintln!("[udm-host] the settings could not be read: {e}");
+                return 1;
+            }
+        };
+    let route = udm_infrastructure::connect::Network::default().route(&settings);
     let ok = Arc::new(AtomicBool::new(false));
     let ok_cb = Arc::clone(&ok);
     engine::run_blocking(
@@ -282,7 +362,7 @@ fn run_cli(args: &[String]) -> i32 {
             reuse_path: None,
             file_exists: FileExists::Rename,
             post_body: None,
-            net: Default::default(),
+            net: Arc::new(udm_infrastructure::net::NetConfig { route, ..Default::default() }),
             media: None,
             ffmpeg: None,
             speed_limit: None,
@@ -293,6 +373,9 @@ fn run_cli(args: &[String]) -> i32 {
             reuse_partial: None,
             host_limit: None,
             elevate: false,
+            resolve: None,
+            torrent_files: None,
+            torrent_uploaded: udm_domain::bytes::ByteCount::ZERO,
         },
         Arc::new(move |p: Progress| print_progress(p, &ok_cb)),
     );
@@ -326,12 +409,31 @@ fn print_progress(p: Progress, ok: &AtomicBool) {
         Progress::Failed { error, .. } => eprintln!("\n[failed] {error}"),
         Progress::Canceled { .. } => eprintln!("\n[canceled]"),
         Progress::NameTaken { path, .. } => eprintln!("\n[failed] {} already exists", path.display()),
+        Progress::TorrentInfo { .. } | Progress::TorrentStats { .. } => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::from_browser;
+    use super::{from_browser, mode, to_browser, Mode, MAX_TO_BROWSER};
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn each_browser_gets_a_relay_and_only_safari_one_that_starts_no_daemon() {
+        // Chrome and Edge pass the extension's origin (and on Windows a
+        // parent window), Firefox the manifest's path and the extension's ID.
+        let chrome = args(&["udm-host", "chrome-extension://abc/", "--parent-window=0"]);
+        assert_eq!(mode(&chrome), Mode::Relay { spawn: true });
+        let firefox = args(&["udm-host", "/x/com.udm.host.json", "udm@udm.local"]);
+        assert_eq!(mode(&firefox), Mode::Relay { spawn: true });
+        assert_eq!(mode(&args(&["udm-host"])), Mode::Relay { spawn: true });
+        assert_eq!(mode(&args(&["udm-host", "safari"])), Mode::Relay { spawn: false });
+        assert_eq!(mode(&args(&["udm-host", "download", "https://a/b"])), Mode::Download);
+        assert_eq!(mode(&args(&["udm-host", "send", "-"])), Mode::Send);
+    }
 
     fn op(frame: &[u8]) -> Option<serde_json::Value> {
         from_browser(frame).map(|f| serde_json::from_slice(&f).unwrap())
@@ -349,6 +451,22 @@ mod tests {
         assert!(op(br#"{"op":"convert","id":1}"#).is_none());
         assert!(op(br#"not json"#).is_none());
         assert!(op(br#"{"url":"no op"}"#).is_none());
+    }
+
+    #[test]
+    fn the_browser_hears_nothing_of_torrents_and_nothing_too_large() {
+        assert_eq!(to_browser(br#"{"op":"torrent_stats","id":1}"#.to_vec()), None);
+        assert_eq!(to_browser(br#"{"op":"torrent_info","id":1}"#.to_vec()), None);
+        let rows = br#"{"op":"downloads","items":[{"id":1,"url":"magnet:?x","torrent":{"info_hash":"ab"}},{"id":2}]}"#;
+        let rows: serde_json::Value = serde_json::from_slice(&to_browser(rows.to_vec()).unwrap()).unwrap();
+        assert_eq!(rows["items"][0].get("torrent"), None);
+        assert_eq!(rows["items"][1]["id"], 2);
+        let updated = to_browser(br#"{"op":"updated","item":{"id":1,"torrent":{}}}"#.to_vec()).unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&updated).unwrap()["item"].get("torrent"), None);
+        let plain = br#"{"op":"progress","id":1}"#.to_vec();
+        assert_eq!(to_browser(plain.clone()), Some(plain), "passed on as it is");
+        let big = format!(r#"{{"op":"pick_links","page":"{}"}}"#, "x".repeat(MAX_TO_BROWSER));
+        assert_eq!(to_browser(big.into_bytes()), None);
     }
 
     #[test]

@@ -1,0 +1,217 @@
+# Torrents and magnet links
+
+UDM downloads torrents as well as web and FTP addresses: a `magnet:` link, or a `.torrent` file.
+A torrent is a download in the list like any other. It waits in queues, starts and stops with the
+scheduler, counts toward **Downloads that run at once**, follows the speed limit and the download
+quota, pauses, resumes, and carries on after UDM starts again. Once it has finished, it shares
+(*seeds*) what it downloaded with other people for a while, then stops by itself.
+
+## Adding a torrent
+
+- **Add URL**: paste a magnet link (`magnet:?xt=urn:btih:...`) as you would an address.
+- **The clipboard**: with **Monitor the clipboard** on, a copied magnet link is offered like a
+  copied address, and so is a copied address of a `.torrent` file while **Take .torrent files as
+  torrents** is on (with it off, such an address is a file like any other, offered only when its
+  type is one the monitor watches).
+- **The browser**: the extension hands UDM the magnet links you click, and the `.torrent` files
+  the browser downloads (by their type, `application/x-bittorrent`, or their name). UDM fetches a
+  `.torrent` file itself, with the page's cookies, as it does any download the browser hands over.
+  Holding the skip key while you click leaves a magnet link to the browser, which opens it with
+  whatever program it gives magnet links to, and so does a page on a site in **Excluded sites**. In
+  Safari, which tells extensions nothing about its
+  downloads, a link to a `.torrent` file is taken as it is clicked. A torrent file is taken
+  whatever its size and the captured file types, unless its site or address is excluded; with
+  **Take .torrent files as torrents** off, it is a file like any other.
+- **Open torrent file**: **Tasks > Open torrent file...** in the main window picks a `.torrent`
+  file on your computer and adds its torrent.
+- **The command line**: `udm-cli get "magnet:?xt=urn:btih:..."`, or `udm-cli get file.torrent`
+  ([Command line](command-line.md#get)); `udm-gui` takes a magnet link or a `.torrent` file alone
+  (`udm-gui album.torrent`), or a magnet link after `/d` ([IDM's switches](command-line.md#idms-switches)).
+  A `.torrent` file opened in the window or sent this way may be at most 2.75 MB, since it travels
+  in one message to UDM; add a larger one from its web address. UDM's installers do not make it
+  the system's program for magnet links or `.torrent` files.
+- **AI assistants**: `udm-mcp`'s `add_download` takes magnet links ([AI assistants](ai-assistants.md)).
+
+UDM needs the torrent's *metadata*, the list of its files, before it can save anything. A
+`.torrent` file has it; for a magnet link UDM asks the torrent's peers for it, which can take from
+a second to a few minutes. The save-as dialog waits for it, for at most three minutes, and then
+lists the torrent's files: tick the ones you want, and choose the folder and category as for any
+download. With **Ask where to save** off, the torrent downloads every file. A torrent of several
+files gets a folder of its own, named after the torrent (or as you name it in the dialog); a
+torrent of one file is saved under that file's name, which the torrent fixes: the dialog lets you
+choose only its folder. UDM keeps a copy of each torrent's `.torrent` file, so it never asks for
+the metadata twice.
+
+When the folder (or the one file) is there already, **If the file exists** in **Options** decides,
+as for any download: a numbered name (`Album (1)`; a torrent of one file keeps its name and goes in
+a numbered folder of its own, `a (1)/a.iso`), asking in the save-as dialog, or overwriting, which
+checks what is there, keeps what matches the torrent and writes the rest. A torrent is one
+download: adding one that is in the list already shows the one there, or replaces it, as
+**If the address is in the list** says, but never adds a second copy. **Download again** checks a
+finished torrent's files against it from the start, under the same rule.
+
+You can change which files a torrent downloads later. A running torrent takes the new choice at
+once; a finished one given more files starts again for them; a stopped one takes it when it
+starts.
+
+## In the window
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/torrent-dark.webp">
+  <img src="images/torrent-light.webp" alt="A torrent's download window on its Files tab: each file ticked, with its size and a progress bar, beside tabs for its peers, trackers, pieces and seeding" width="700">
+</picture>
+
+- **The save-as dialog** lists a torrent's files under the usual folder and category, sorted by
+  path, with a box to tick each (starting from the files it was added with, or every file), **Select all** and **Select none**, and what the ticked files add
+  up to. Start is greyed out while nothing is ticked. For a torrent of one file the dialog asks
+  only for the folder and shows the file's name, which the torrent fixes. If the file list has not
+  come yet, the dialog says it is getting it from the peers, and starting then downloads every
+  file.
+- **The list** shows a torrent's progress as any download's, says **Getting file list** while a
+  magnet link's metadata comes and **Checking** (with how far) while it checks its data, and
+  **Seeding (ratio 0.42)** while it seeds. A seeding torrent counts as finished in the categories.
+  Its menu has **Torrent details**, which opens its download window even once it has finished, and
+  **Stop seeding**.
+- **The download window** of a torrent is larger, with tabs of its own besides the status,
+  **Speed Limiter** and **Options on completion**:
+  - **Download status**: its size, how much is in, its download and upload speeds, the time left,
+    what it uploaded, its share ratio and its peers (connected and known).
+  - **Files**: each file with its size and progress; ticking or unticking one changes what the
+    torrent downloads at once (at least one stays ticked). Torrents of more than 1,000 files show
+    no progress for each file.
+  - **Peers**: the busiest 200 peers, with their address, program, speeds, what they sent and
+    got, and how they are connected.
+  - **Trackers**: each tracker, used or skipped (as DNS over HTTPS skips HTTP trackers).
+  - **Pieces**: a map of the pieces that are here.
+  - **Seeding**: the limits from Options, or the torrent's own (a share ratio from 0 to 100, a
+    number of minutes from 1 up, or both, whichever comes first), with **Apply**, how long it has
+    seeded, and **Stop seeding**.
+- **Options > Torrents** holds the settings below: the port (a free one each start, or a fixed
+  one), the DHT, UPnP, finding peers on the local network, the most peers per torrent, the upload
+  limit, the default seeding limits, and whether `.torrent` files from the browser are taken as
+  torrents. With a network adapter chosen in **Options > Network**, the page says that torrents go
+  through it too, without UPnP or the local network search.
+
+## Downloading
+
+A torrent finds its peers through its trackers, the DHT (the peer network that needs no tracker)
+and, on your local network, Local Service Discovery. Its row in the list shows its size, its
+progress, its speed and how long it has left, as any download's does. Its download window shows
+its files, its peers, its trackers and a map of its pieces.
+
+- **Speed limits.** The speed limit in **Options** applies to torrents together, as it applies to
+  the other downloads together. A torrent's own speed limit applies from when it starts. A limit
+  under 16 KB/s is taken as 16 KB/s, the least a torrent can be held to.
+- **The quota** counts what torrents download, and pauses them with everything else when it is
+  reached. What they upload does not count.
+- **Progress** counts the chosen files only. While a torrent checks the data already on disk (when
+  it starts again, or overwrites a folder), the list says it is checking and counts nothing, so the
+  quota never takes checked data for downloaded data.
+- **Pausing** stops a torrent where it is. Starting it again, or starting UDM again, goes on from
+  there: UDM keeps which pieces it has (its *resume data*) beside its copy of the `.torrent` file,
+  in UDM's data folder, so it does not read all the data again.
+- Files you did not choose may still get a few bytes: a piece at the edge of a chosen file can
+  overlap the next file, and the torrent writes the whole piece.
+
+## Seeding
+
+A torrent that has finished seeds: other people download its pieces from you. Seeding takes no
+place among the downloads that run at once. It stops by itself at the first of two limits:
+
+- **Share ratio**: what it uploaded, divided by what it downloaded. The default is **1.0**: it gives
+  back as much as it took.
+- **Seeding time**: the default is **60 minutes**, so a torrent nobody asks for does not keep the
+  computer uploading. It counts from when the torrent finished.
+
+Either limit can be turned off; with both off, a torrent seeds until you stop it or remove it. A
+ratio of 0, or 0 minutes, means no seeding at all. A torrent can have limits of its own, in place
+of these. When UDM starts again, the torrents that were seeding go on seeding once their files are
+checked: each is added paused, and uploads only when its data is complete. One whose files are
+gone, have another size or do not match stops instead; nothing is written to its files or
+downloaded for it. One whose network adapter is not up yet (a VPN that connects after UDM starts)
+waits, and seeds once the adapter is up. Seeding counts as work: on a desktop, UDM's background
+service does not exit when the window is closed while a torrent seeds. Removing a torrent from the
+list stops its seeding and forgets its resume data.
+
+The BitTorrent session (its listener and the DHT) runs only while a torrent downloads, seeds or is
+being read; a minute after the last one stops, it closes.
+
+## Settings
+
+In `settings.json`, the `torrents` section (**Options > Torrents** in the window):
+
+| Setting | What it does | Default |
+|---|---|---|
+| `port` | The port peers connect to, for TCP and the DHT's UDP. Missing (or 0) takes a free one each time UDM starts. | free port |
+| `dht` | Find peers through the DHT. | on |
+| `upnp` | Ask the router to forward the port to this computer (UPnP). | on |
+| `local_peers` | Find peers on the local network (Local Service Discovery). | on |
+| `max_peers` | The most peers each torrent connects to, 1 to 1000. | librqbit's (128) |
+| `upload_limit_kbps` | The most all torrents upload together, in KB/s. | no limit |
+| `seed_limits` | `ratio` and `minutes`, as above; leave one out to turn it off. | 1.0 and 60 |
+| `catch_torrent_files` | Take `.torrent` files the browser downloads as torrents. | on |
+
+## Security and privacy
+
+- **Your address is public to the swarm.** Everyone downloading the same torrent, and the
+  trackers, see your IP address and what you download and share. The DHT announces it too. To keep
+  it hidden, use a VPN and bind UDM to its adapter (below).
+- **No encryption.** UDM's BitTorrent connections are not encrypted (the protocol's MSE/PE
+  obfuscation is not offered), so your network and internet provider can see that you use
+  BitTorrent and what you exchange.
+- **An open port.** To seed and to be reached by peers, UDM listens on its port on every network
+  interface (`[::]` or `0.0.0.0`), and with UPnP on asks the router to forward that port from the
+  internet. Turn UPnP off to keep the router closed; peers can still be reached from your side.
+  With a network adapter chosen, it listens on that adapter only.
+- **Torrents do not use the proxy settings.** A proxy in **Options** applies to web and FTP
+  downloads; torrent connections go straight out (or through the chosen adapter). Use a VPN rather
+  than a proxy to hide them.
+- **Untrusted file names.** A torrent's file names come from whoever made it. UDM refuses a
+  torrent with a name it could not save safely inside its folder: `..`, a path separator, NUL, a
+  character Windows does not allow (`< > : " | ? *`), a device name such as `CON`, a name ending in
+  a dot or a space, or two names that differ only in case. It also refuses torrents of more than
+  10,000 files, whose file names take more than 1.5 MB in all, or whose `.torrent` file (or
+  metadata from peers) is larger than 16 MB. Names that differ only in their Unicode
+  normalization (é written as one character or two) are not told apart. On Windows, each file a
+  torrent writes is marked as coming from the internet (`Zone.Identifier`), so SmartScreen checks
+  a program before it runs and Office opens a document in Protected View.
+- **Peers a magnet link names** (`x.pe`) are tried only when given by their address; a name would
+  have to be looked up.
+- **What it never does**: run anything from a torrent, open a web interface or API, or listen on
+  any port but the one above.
+
+### With a network adapter or encrypted DNS
+
+With an adapter chosen in **Options > Network** ([Network adapter](network.md)), every socket the
+torrents use is bound to it: the listener, the connections to peers, the DHT's and the UDP
+trackers' sockets, and the HTTP trackers' connections. UPnP and Local Service Discovery are off
+while an adapter is chosen. When the adapter goes down, running torrents stop with the other
+downloads, and seeding stops; nothing goes out another way. Changing the adapter, the name lookups
+or the torrent settings moves running and seeding torrents to the new setting at once.
+
+- **On Windows** librqbit cannot bind its sockets to an adapter, so torrents do not run while one is
+  chosen: they stop with "Torrents cannot be bound to a network adapter on Windows". Choose **Any
+  network** to download torrents there.
+- **With DNS over HTTPS**, no tracker or DHT name goes to the system's resolver: the DHT's starting
+  nodes and the UDP trackers are looked up through UDM's resolver and handed to librqbit as
+  addresses, and HTTP and HTTPS trackers are left out, even one given by its address, because
+  librqbit's client would follow a redirect to a name and look that up with the system (the
+  download window shows them as skipped). A torrent whose only trackers are HTTP ones then finds
+  its peers through the DHT, the magnet link's peers and peer exchange.
+- **librqbit's HTTP client** (for HTTP trackers) may take a proxy from the `HTTP_PROXY`,
+  `HTTPS_PROXY` and `ALL_PROXY` environment variables UDM was started with; with an adapter chosen,
+  its connections are bound to the adapter all the same.
+
+## What is not there
+
+Sequential downloading (playing a video while it downloads), RSS feeds, IP blocklists, web seeds
+(the `ws=` part of a magnet link), protocol encryption and torrents that are BitTorrent v2 only
+(magnet links with `xt=urn:btmh:` and no v1 hash) are not supported. Incoming connections are TCP
+only. Trackers are shown as used or skipped, not with what they last answered.
+
+UDM's BitTorrent client is [librqbit](https://github.com/ikatson/rqbit) (Apache-2.0). UDM carries
+one small fix of its own to it, for systems without IPv6 (`vendor/librqbit-tracker-comms`).
+
+---
+
+[← Back to the help pages](README.md)

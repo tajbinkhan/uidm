@@ -33,10 +33,12 @@ import type {
   PickInput,
   LinkFilter,
   ToolKey,
+  DebridChoice,
   ReportAction,
   ConvertTarget,
   ExceptionChoice,
   Update,
+  SeedLimitsInput,
 } from './types';
 import { receive } from '../stores/projection.svelte';
 import { zoom } from '../theme';
@@ -184,6 +186,7 @@ export const checkUpdate = () => commands.checkUpdate();
 export const installUpdate = () => commands.installUpdate();
 export const dismissRelease = () => commands.dismissRelease();
 export const installTool = (tool: ToolKey) => commands.installTool(tool);
+export const checkDebrid = (service: DebridChoice, key: string) => commands.checkDebrid(service, key);
 export const remoteStatus = () => commands.remoteStatus();
 export const pairPhone = (on: boolean) => commands.pairPhone(on);
 export const removeDevice = (id: Id) => commands.removeDevice(id);
@@ -202,3 +205,7 @@ export const verifyChecksum = (id: Id, checksum: string) => commands.verifyCheck
 export const openWith = (id: Id) => commands.openWith(id);
 export const dragFile = (id: Id) => commands.dragFile(id);
 export const answerException = (choice: ExceptionChoice, dontShow: boolean) => commands.answerException(choice, dontShow);
+export const pickTorrentFiles = (indexes: number[], chosen: boolean) => commands.pickTorrentFiles(indexes, chosen);
+export const setSeedLimits = (limits: SeedLimitsInput) => commands.setSeedLimits(limits);
+export const stopSeeding = () => commands.stopSeeding();
+export const openTorrentFile = () => commands.openTorrentFile();

@@ -140,15 +140,8 @@ pub enum Handshake {
 /// A daemon that has bound but not yet written its token file looks the same
 /// as one that is not up yet, so both are retried during the startup wait.
 pub fn connect_or_spawn() -> io::Result<TcpStream> {
-    match connect_authenticated() {
-        Ok(stream) => return Ok(stream),
-        // Something holds the port but cannot prove it is the daemon.
-        // Starting another daemon cannot help, as it could not bind.
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-            drop_package_token();
-            return retry_proof(e);
-        }
-        Err(_) => {}
+    if let Existing::Answered(connected) = connect_existing(connect_authenticated) {
+        return connected;
     }
     spawn_daemon()?;
     // Give the new process time to bind and write its token. The limit is on
@@ -166,6 +159,46 @@ pub fn connect_or_spawn() -> io::Result<TcpStream> {
     }
     let detail = last_err.map(|e| e.to_string()).unwrap_or_default();
     Err(io::Error::new(io::ErrorKind::TimedOut, format!("could not connect to daemon on {}: {detail}", daemon_addr())))
+}
+
+/// Connect to the running daemon and authenticate, without starting one:
+/// for a host that runs inside Safari's sandbox, where a daemon it started
+/// would be sandboxed too. Fails with `NotConnected` when nothing usable
+/// answers, saying why (nothing listens, the token cannot be read, ...).
+pub fn connect_running() -> io::Result<TcpStream> {
+    match connect_existing(connect_authenticated) {
+        Existing::Answered(connected) => connected,
+        Existing::Absent(why) => Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            format!("UDM is not running: no daemon answers on {} ({why})", daemon_addr()),
+        )),
+    }
+}
+
+/// What a connection to a daemon already running came to.
+enum Existing {
+    /// A daemon answered: its stream, or the failure of a listener that
+    /// cannot prove it is the daemon.
+    Answered(io::Result<TcpStream>),
+    /// Nothing usable answered, for this reason, so a daemon may be started.
+    Absent(io::Error),
+}
+
+/// What a daemon already running makes of a connection through `connect`
+/// (`connect_authenticated`, or a stand-in in tests). A listener that fails
+/// the proof is given `PROOF_WAIT`, as a daemon that just bound may not
+/// have written its token yet.
+fn connect_existing(connect: impl Fn() -> io::Result<TcpStream>) -> Existing {
+    match connect() {
+        Ok(stream) => Existing::Answered(Ok(stream)),
+        // Something holds the port but cannot prove it is the daemon.
+        // Starting another daemon cannot help, as it could not bind.
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            drop_package_token();
+            Existing::Answered(retry_proof(e, connect))
+        }
+        Err(e) => Existing::Absent(e),
+    }
 }
 
 /// Stop the running daemon, if any, then start a new one and connect to
@@ -222,12 +255,12 @@ fn drop_package_token() {
 
 /// Try the handshake again for `PROOF_WAIT`, for a daemon that has bound
 /// but not yet written its token; else fail with `first`.
-fn retry_proof(first: io::Error) -> io::Result<TcpStream> {
+fn retry_proof(first: io::Error, connect: impl Fn() -> io::Result<TcpStream>) -> io::Result<TcpStream> {
     let deadline = Instant::now() + PROOF_WAIT;
     let mut last = first;
     while Instant::now() < deadline {
         thread::sleep(STARTUP_POLL);
-        match connect_authenticated() {
+        match connect() {
             Ok(stream) => return Ok(stream),
             Err(e) => last = e,
         }
@@ -443,6 +476,31 @@ mod tests {
     fn a_listening_port_connects() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         assert!(dial_port(listener.local_addr().unwrap().port()).is_ok());
+    }
+
+    #[test]
+    fn only_a_daemon_already_running_is_connected_to() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // A daemon that answers: its stream.
+        let Existing::Answered(Ok(found)) = connect_existing(|| dial_port(port)) else { panic!("no stream") };
+        assert_eq!(found.peer_addr().unwrap().port(), port);
+        // Nothing answers: absent, with the reason, so connect_running fails
+        // saying why and connect_or_spawn starts one.
+        let refused = || Err(io::Error::new(io::ErrorKind::ConnectionRefused, "refused here"));
+        let Existing::Absent(why) = connect_existing(refused) else { panic!("an answer") };
+        assert_eq!(why.to_string(), "refused here");
+        // A listener that never proves itself is tried for PROOF_WAIT, then
+        // refused, and no daemon is started beside it.
+        let start = Instant::now();
+        let tries = std::cell::Cell::new(0);
+        let impostor = || {
+            tries.set(tries.get() + 1);
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        };
+        let Existing::Answered(Err(failed)) = connect_existing(impostor) else { panic!("no refusal") };
+        assert_eq!(failed.kind(), io::ErrorKind::PermissionDenied);
+        assert!(tries.get() > 1 && start.elapsed() >= PROOF_WAIT, "{} tries in {:?}", tries.get(), start.elapsed());
     }
 
     #[test]

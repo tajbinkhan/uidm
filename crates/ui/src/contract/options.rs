@@ -49,6 +49,8 @@ pub struct OptionsView {
     pub creation_time: bool,
     /// A portable copy, which does not start when the user signs in.
     pub portable: bool,
+    pub debrid: DebridView,
+    pub network: NetworkView,
 }
 
 /// Keys held while clicking a link.
@@ -318,6 +320,133 @@ pub struct ExtrasDraft {
     pub remote_all: bool,
     /// The addresses to listen on otherwise, separated by spaces or commas.
     pub remote_addresses: String,
+    // Debrid account (experimental).
+    pub debrid_on: bool,
+    pub debrid_service: Option<DebridChoice>,
+    /// A new API key to store; empty keeps the stored one. It comes empty:
+    /// the stored key never crosses to the webview.
+    pub debrid_key: String,
+    /// Remove the stored key.
+    pub debrid_forget: bool,
+    // Network.
+    /// The network adapter every connection is bound to; `None` lets the
+    /// system choose.
+    pub adapter: Option<AdapterDraft>,
+    pub dns: DnsDraft,
+    /// The custom DNS over HTTPS resolver's address.
+    pub dns_url: String,
+    // Torrents.
+    /// Listen on `torrent_port`, rather than a free port each start.
+    pub torrent_port_fixed: bool,
+    pub torrent_port: u32,
+    pub torrent_dht: bool,
+    pub torrent_upnp: bool,
+    pub torrent_local_peers: bool,
+    pub torrent_peers_on: bool,
+    pub torrent_peers: u32,
+    pub torrent_upload_on: bool,
+    pub torrent_upload_kb: u32,
+    pub seed_ratio_on: bool,
+    #[specta(type = specta_typescript::Number)]
+    pub seed_ratio: f64,
+    pub seed_minutes_on: bool,
+    pub seed_minutes: u32,
+    pub catch_torrent_files: bool,
+}
+
+/// A network adapter as Options keeps it: its id, and the name to say
+/// which one is down once it is gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterDraft {
+    pub id: String,
+    pub name: String,
+    /// The user chose it again, now that another connection has its name
+    /// (`AdapterRow::renewable`): it is the connection to go through from
+    /// now on.
+    #[serde(default)]
+    pub renew: bool,
+}
+
+/// Where host names are looked up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DnsDraft {
+    System,
+    Cloudflare,
+    Google,
+    Quad9,
+    Custom,
+}
+
+/// A network adapter as Options lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterRow {
+    pub id: String,
+    pub name: String,
+    /// What the list shows: its name and addresses, or that it is not
+    /// connected.
+    pub label: String,
+    /// Connections can go through it now.
+    pub up: bool,
+    /// The chosen adapter's numbered name (`utun3`) is another connection
+    /// now: it can be chosen again, to go through that one.
+    pub renewable: bool,
+}
+
+/// A resolver Options offers.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsRow {
+    pub value: DnsDraft,
+    pub label: String,
+}
+
+/// Options' Network page beyond the settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkView {
+    /// The adapters, the chosen one first when it is not there now; `None`
+    /// while they are read.
+    pub adapters: Option<Vec<AdapterRow>>,
+    /// Why they could not be read.
+    pub adapters_error: Option<String>,
+    pub resolvers: Vec<DnsRow>,
+}
+
+/// A debrid service Options offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DebridChoice {
+    RealDebrid,
+    AllDebrid,
+    Premiumize,
+}
+
+/// A debrid service as Options lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebridServiceRow {
+    pub service: DebridChoice,
+    /// Its own name, untranslated.
+    pub name: String,
+    /// Where its users find their API key.
+    pub key_page: String,
+}
+
+/// Options' Debrid page beyond the settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebridView {
+    pub services: Vec<DebridServiceRow>,
+    /// The service a key is stored for; the key itself is never sent. A key
+    /// is stored for one service and goes to no other.
+    pub key_service: Option<DebridChoice>,
+    /// Check account is waiting for the service.
+    pub checking: bool,
+    /// What the last check said.
+    pub check: Option<super::Banner>,
 }
 
 /// A tool UDM can install.

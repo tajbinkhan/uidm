@@ -14,6 +14,10 @@ use udm_domain::download::{SegmentInfo, SegmentState, Status};
 use udm_domain::id::{DownloadId, QueueId};
 use udm_domain::queue::Queue;
 use udm_domain::settings::{Notify, Settings, Theme};
+use udm_domain::torrent::{
+    InfoHash, PeerInfo, PieceMap, TorrentEntry, TorrentFiles, TorrentInfo, TorrentPhase, TorrentStats, TrackerInfo,
+    TrackerState,
+};
 
 use crate::i18n::resolve;
 use crate::projection::{self, Ctx};
@@ -22,6 +26,8 @@ use crate::testing::entry;
 use crate::windows::Label;
 
 const DAY: u64 = 86_400;
+/// Where the sample downloads come from.
+const SITE: &str = "https://downloads.example.com/files";
 /// 2026-10-21, the first download's day.
 const START: u64 = 1_792_540_800;
 
@@ -33,33 +39,52 @@ fn sample() -> AppState {
     };
     let files: [(&str, u64, Status); 17] = [
         ("interview-notes.pdf", 70_686, Status::Done),
-        ("HandBrake-1.11.2-x86_64-Win_GUI.exe", 25_323_520, Status::Done),
-        ("Screen-Capture (3).mp3", 88_749_000, Status::Done),
+        ("video-converter-1.11.2-setup.exe", 25_323_520, Status::Done),
+        ("lecture-recording-2026-10-22.mp3", 88_749_000, Status::Done),
         ("udm-windows.zip", 4_445_962, Status::Done),
-        ("sf-pro-display.zip", 904_396, Status::Done),
+        ("display-fonts.zip", 904_396, Status::Done),
         ("Open.Movie.2026.1080p.mkv", 8_740_000_000, Status::Done),
         ("UDM-Setup-0.1.0.exe", 5_725_224, Status::Done),
-        ("UltraViewer_setup_6.6.exe", 3_638_558, Status::Done),
+        ("remote-desktop-6.6-setup.exe", 3_638_558, Status::Done),
         ("launcher-0.6.0.exe", 44_774_195, Status::Done),
-        ("project-files-v2.zip", 353_802_000, Status::Done),
-        ("DTLite1260-2472i.exe", 46_153_400, Status::Done),
-        ("office-suite-2016-x64.iso", 4_080_000_000, Status::Downloading),
-        ("office-suite-2016-x86.iso", 4_080_000_000, Status::Done),
-        ("kubuntu-26.04.1-desktop-amd64.iso", 5_068_000_000, Status::Done),
-        ("rufus-4.15.exe", 1_981_808, Status::Done),
-        ("UDM-Setup-0.3.3.exe", 7_927_000, Status::Done),
-        ("udm-idm-test-40MB.bin", 41_943_040, Status::Confirming),
+        ("project-files-v2.zip", 353_802_000, Status::Interrupted),
+        ("disc-image-tool-12.6.exe", 46_153_400, Status::Done),
+        ("office-suite-24.8-x64.iso", 4_080_000_000, Status::Downloading),
+        ("office-suite-24.8-x86.iso", 4_080_000_000, Status::Done),
+        ("linux-desktop-26.04-amd64.iso", 5_068_000_000, Status::Downloading),
+        ("usb-writer-4.15.exe", 1_981_808, Status::Done),
+        ("UDM-Setup-0.3.3.exe", 7_927_000, Status::Queued),
+        ("summer-photos.zip", 41_943_040, Status::Confirming),
     ];
     let items = files
         .iter()
         .enumerate()
         .map(|(i, (name, total, status))| {
-            let done = if *status == Status::Downloading { total * 1628 / 10_000 } else { *total };
+            // Part of the file for the ones under way or stopped.
+            let done = match (i + 1, status) {
+                (14, _) => total * 4712 / 10_000,
+                (_, Status::Downloading) => total * 1628 / 10_000,
+                (_, Status::Interrupted) => total * 3807 / 10_000,
+                (_, Status::Queued) => 0,
+                _ => *total,
+            };
             let mut e = entry(i as u64 + 1, name, *status, *total, done);
+            e.url = format!("{SITE}/{name}").into();
             e.last_try = Some(START + DAY * (i as u64 / 2) + 3600 * 14 + 60 * i as u64);
-            if i == 2 {
-                e.description = Some("MP3: 64kbs, 44100Hz, Length: 3:05:42".into());
-            }
+            // The servers' countries, for the Country column and the
+            // download window.
+            e.country = match i + 1 {
+                2 | 12 => udm_domain::country::CountryCode::parse("US"),
+                4 => udm_domain::country::CountryCode::parse("DE"),
+                6 | 14 => udm_domain::country::CountryCode::parse("NL"),
+                _ => None,
+            };
+            e.description = match i + 1 {
+                3 => Some("MP3, 64 kbps, 3:05:42".into()),
+                6 => Some("Video: 1920x1080, 2:11:05".into()),
+                14 => Some("Desktop installer, 26.04".into()),
+                _ => None,
+            };
             e
         })
         .collect();
@@ -70,38 +95,55 @@ fn sample() -> AppState {
         Settings { notify: Notify::Dialog, theme: Theme::Dark, tips_on_startup: false, ..Settings::default() };
     send(&mut s, Event::Settings { settings }, at);
     let queue: Queue = serde_json::from_value(json!({
-        "id": 1, "name": "Main queue", "max_concurrent": 1, "running": true, "order": [12]
+        "id": 1, "name": "Main queue", "max_concurrent": 2, "running": true, "order": [12, 14, 16]
     }))
     .unwrap();
     let sync: Queue =
         serde_json::from_value(json!({"id": 2, "name": "Synchronization queue", "max_concurrent": 1})).unwrap();
     send(&mut s, Event::Queues { items: vec![queue, sync] }, at);
-    // A running download, 16.28% done at about 15 MB/s, on eight
-    // connections.
+    // Two running downloads: one 16.28% done at about 2.9 MB/s, the other
+    // 47.12% done at about 5.6 MB/s, each on eight connections.
     let id = DownloadId::new(12);
-    let total = 4_080_000_000u64;
-    for (k, done) in [(0u64, total * 1600 / 10_000), (1, total * 1628 / 10_000)] {
-        let part = total / 8;
-        let segments = (0..8)
-            .map(|n| SegmentInfo {
-                start: ByteCount::new(n * part),
-                end: ByteCount::new((n + 1) * part - 1),
-                done: ByteCount::new(part * (130 + n * 7) / 1000),
-                state: SegmentState::Receiving,
-            })
-            .collect();
-        let event = Event::Progress {
-            id,
-            url: "http://127.0.0.1:8765/office-suite-2016-x64.iso".into(),
-            done: ByteCount::new(done),
-            total: Some(ByteCount::new(total)),
-            parts: None,
-            segments: Some(segments),
-        };
-        send(&mut s, event, at + Duration::from_secs(k * 4));
+    let running = [
+        (12u64, "office-suite-24.8-x64.iso", 4_080_000_000u64, [1600u64, 1628], 130u64, 7u64),
+        (14, "linux-desktop-26.04-amd64.iso", 5_068_000_000, [4668, 4712], 420, 12),
+    ];
+    for (n_id, name, total, steps, first, step) in running {
+        for (k, done) in steps.iter().map(|p| total * p / 10_000).enumerate() {
+            let part = total / 8;
+            let segments = (0..8)
+                .map(|n| SegmentInfo {
+                    start: ByteCount::new(n * part),
+                    end: ByteCount::new((n + 1) * part - 1),
+                    done: ByteCount::new(part * (first + n * step) / 1000),
+                    state: SegmentState::Receiving,
+                })
+                .collect();
+            let event = Event::Progress {
+                id: DownloadId::new(n_id),
+                url: format!("{SITE}/{name}").into(),
+                done: ByteCount::new(done),
+                total: Some(ByteCount::new(total)),
+                parts: None,
+                segments: Some(segments),
+            };
+            send(&mut s, event, at + Duration::from_secs(k as u64 * 4));
+        }
     }
+    torrents(&mut s, at);
     apply(&mut s, UiMessage::Select(vec![DownloadId::new(2)]));
     apply(&mut s, UiMessage::Sort(crate::contract::ColumnKey::LastTry));
+    // Columns wide enough for the names, as a user leaves them.
+    for (column, width) in [
+        (crate::contract::ColumnKey::Name, 260.0),
+        (crate::contract::ColumnKey::Size, 80.0),
+        (crate::contract::ColumnKey::Status, 84.0),
+        (crate::contract::ColumnKey::LastTry, 124.0),
+        (crate::contract::ColumnKey::Description, 230.0),
+    ] {
+        apply(&mut s, UiMessage::Resize(column, width));
+    }
+    apply(&mut s, UiMessage::PanelWidth(160.0));
     apply(&mut s, UiMessage::ShowProgress(id));
     s.done.insert(DownloadId::new(17));
     let _ = QueueId::MAIN;
@@ -109,6 +151,141 @@ fn sample() -> AppState {
     let windows = crate::state::SystemFacts { can_elevate: true, creation_time: true, portable: false };
     apply(&mut s, UiMessage::SystemRead(windows));
     s
+}
+
+/// A torrent's files, as `(path, size)`; a size of 0 is a padding file.
+fn torrent_info(byte: u8, name: &str, files: &[(&str, u64)], piece_size: u64) -> TorrentInfo {
+    let raw = files
+        .iter()
+        .map(|(path, size)| match size {
+            0 => (vec![".pad".to_string(), "12345".to_string()], 12_345, true),
+            _ => (path.split('/').map(str::to_string).collect(), *size, false),
+        })
+        .collect();
+    let files = TorrentFiles::parse(raw).unwrap();
+    let total = files.selected_size(None).get();
+    TorrentInfo {
+        info_hash: InfoHash::from_bytes([byte; 20]),
+        name: name.into(),
+        files,
+        piece_size: ByteCount::new(piece_size),
+        pieces: u32::try_from(total.div_ceil(piece_size)).unwrap(),
+        private: false,
+    }
+}
+
+/// Three torrents: one downloading, with its peers and pieces; one seeding;
+/// and one waiting for Download File Info, with a file unticked.
+fn torrents(s: &mut AppState, at: Instant) {
+    let send = |s: &mut AppState, event: Event| apply(s, UiMessage::Daemon { event: Box::new(event), at, unix: 0 });
+    let movies = torrent_info(
+        0xa1,
+        "Open Movies Collection",
+        &[
+            ("Big Buck Bunny (2008)/big-buck-bunny-1080p.mkv", 928_670_754),
+            ("", 0),
+            ("Sintel (2010)/sintel-1080p.mkv", 1_241_513_984),
+            ("Tears of Steel (2012)/tears-of-steel-1080p.mkv", 1_502_412_345),
+            ("README.txt", 4_096),
+        ],
+        4 * 1024 * 1024,
+    );
+    let distro = torrent_info(
+        0xb2,
+        "linux-distro-26.04-desktop-amd64.iso",
+        &[("linux-distro-26.04-desktop-amd64.iso", 5_368_709_120)],
+        8 * 1024 * 1024,
+    );
+    let album = torrent_info(
+        0xc3,
+        "Free Music Album",
+        &[
+            ("01 - Opening.flac", 31_457_280),
+            ("02 - Morning Light.flac", 28_311_552),
+            ("03 - Long Road.flac", 40_894_464),
+            ("04 - Closing.flac", 25_165_824),
+            ("cover.jpg", 1_048_576),
+        ],
+        1024 * 1024,
+    );
+    let row = |id: u64, info: &TorrentInfo, status: Status, done: u64, phase: TorrentPhase, uploaded: u64| {
+        let total = info.files.selected_size(None).get();
+        let mut e = entry(id, &info.name, status, total, done);
+        let mut link = udm_domain::torrent::MagnetLink::new(info.info_hash);
+        link.name = Some(info.name.clone());
+        e.url = link.to_uri().as_str().into();
+        e.last_try = Some(START + DAY * 9 + 3600 * 20 + 60 * id);
+        let mut t = TorrentEntry::new(info.info_hash);
+        t.phase = phase;
+        t.uploaded = ByteCount::new(uploaded);
+        // Seeding for the last 25 minutes of the fixtures' clock.
+        t.seeding_since = (phase == TorrentPhase::Seeding).then_some(1_700_000_000 - 1_500);
+        e.torrent = Some(t);
+        e
+    };
+    let total = movies.files.selected_size(None).get();
+    let done = total * 41 / 100;
+    let mut downloading = row(18, &movies, Status::Downloading, done, TorrentPhase::Downloading, 157_286_400);
+    downloading.connections = 0;
+    let distro_size = distro.files.selected_size(None).get();
+    let seeding = row(19, &distro, Status::Done, distro_size, TorrentPhase::Seeding, 2_254_857_830);
+    let mut waiting = row(20, &album, Status::Confirming, 0, TorrentPhase::Checking, 0);
+    waiting.last_try = None;
+    for item in [downloading.clone(), seeding.clone(), waiting.clone()] {
+        send(s, Event::Updated { item });
+    }
+    for (e, info) in [(&downloading, &movies), (&seeding, &distro), (&waiting, &album)] {
+        send(s, Event::TorrentInfo { id: e.id, url: e.url.clone(), info: info.clone() });
+    }
+    let peer = |address: &str, client: &str, down: u64, up: u64, got: u64, sent: u64, transport: &str| PeerInfo {
+        address: address.into(),
+        client: Some(client.into()),
+        down_speed: down,
+        up_speed: up,
+        downloaded: ByteCount::new(got),
+        uploaded: ByteCount::new(sent),
+        transport: Some(transport.into()),
+    };
+    let tracker = |url: &str, state| TrackerInfo { url: url.into(), state };
+    let file_done = [928_670_754, 12_345, 744_908_390, 0, 4_096].map(ByteCount::new).to_vec();
+    let stats = TorrentStats {
+        phase: TorrentPhase::Downloading,
+        done: ByteCount::new(done),
+        total: ByteCount::new(total),
+        down_speed: 4_718_592,
+        up_speed: 524_288,
+        uploaded: ByteCount::new(157_286_400),
+        eta_seconds: Some((total - done) / 4_718_592),
+        peers_connected: 3,
+        peers_known: 87,
+        peers: vec![
+            peer("203.0.113.24:51413", "Transmission 4.0.6", 2_621_440, 131_072, 412_090_368, 20_971_520, "tcp"),
+            peer("198.51.100.7:6881", "qBittorrent 5.0.2", 1_572_864, 262_144, 301_989_888, 62_914_560, "utp"),
+            peer("[2001:db8::42]:6889", "rqbit 9.1.0", 524_288, 131_072, 88_080_384, 73_400_320, "tcp"),
+        ],
+        trackers: vec![
+            tracker("udp://tracker.example.org:6969/announce", TrackerState::Used),
+            tracker("https://tracker.example.net/announce", TrackerState::Skipped),
+        ],
+        pieces: PieceMap::of(movies.pieces, |i| i < 222 || (300..420).contains(&i) || i % 7 == 0),
+        file_done,
+    };
+    send(s, Event::TorrentStats { id: downloading.id, url: downloading.url.clone(), stats });
+    let stats = TorrentStats {
+        phase: TorrentPhase::Seeding,
+        done: ByteCount::new(distro_size),
+        total: ByteCount::new(distro_size),
+        up_speed: 1_258_291,
+        uploaded: ByteCount::new(2_254_857_830),
+        peers_connected: 5,
+        peers_known: 40,
+        peers: vec![peer("192.0.2.80:51413", "Deluge 2.1.1", 0, 1_258_291, 0, 734_003_200, "tcp")],
+        trackers: vec![tracker("udp://tracker.example.org:6969/announce", TrackerState::Used)],
+        pieces: PieceMap::of(distro.pieces, |_| true),
+        ..TorrentStats::default()
+    };
+    send(s, Event::TorrentStats { id: seeding.id, url: seeding.url.clone(), stats });
+    apply(s, UiMessage::PickTorrentFiles { id: waiting.id, indexes: vec![4], chosen: false });
 }
 
 fn fixtures() -> serde_json::Value {
@@ -120,19 +297,49 @@ fn fixtures() -> serde_json::Value {
         now: std::time::Instant::now(),
         unix: 1_700_000_000,
         downloads: std::path::PathBuf::from("/home/u/Downloads"),
+        flags: true,
     };
     let dark = projection::look(&s);
     if let Some(settings) = s.settings.as_mut() {
         settings.theme = Theme::Light;
     }
     let light = projection::look(&s);
+    // Options then shows the theme that follows the system's, which suits
+    // both looks.
+    if let Some(settings) = s.settings.as_mut() {
+        settings.theme = Theme::System;
+    }
     apply(&mut s, UiMessage::Select(vec![DownloadId::new(2), DownloadId::new(4)]));
     apply(&mut s, UiMessage::AskRemove);
+    // The main window then shows one download picked, as it was.
+    apply(&mut s, UiMessage::Select(vec![DownloadId::new(2)]));
     // What Options shows beyond the settings: the tools, a paired phone
-    // and a pairing code, and the browsers.
+    // and a pairing code, the browsers, and a debrid account just checked.
     if let Some(settings) = s.settings.as_mut() {
         settings.remote_enabled = true;
+        settings.debrid = udm_domain::debrid::DebridSettings {
+            enabled: true,
+            service: Some(udm_domain::debrid::DebridService::RealDebrid),
+            key_service: Some(udm_domain::debrid::DebridService::RealDebrid),
+        };
+        // Downloads go through a VPN's adapter, with names looked up at
+        // Quad9.
+        settings.network_adapter = Some(udm_domain::network::AdapterChoice {
+            id: udm_domain::network::AdapterId::parse("wg0").unwrap(),
+            name: "wg0".into(),
+            subnets: Vec::new(),
+        });
+        settings.dns = udm_domain::network::DnsChoice::Quad9;
     }
+    let adapter = |id: &str, addresses: &[&str]| udm_domain::network::NetworkAdapter {
+        id: udm_domain::network::AdapterId::parse(id).unwrap(),
+        name: id.into(),
+        addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+        subnets: Vec::new(),
+        up: true,
+    };
+    let adapters = vec![adapter("eth0", &["192.168.1.5", "fe80::5"]), adapter("wg0", &["10.2.0.2"])];
+    apply(&mut s, UiMessage::AdaptersRead(Ok(adapters)));
     let tool = |tool, path: Option<&str>, installed: Option<&str>| udm_domain::tools::ToolState {
         tool,
         path: path.map(Into::into),
@@ -169,6 +376,15 @@ fn fixtures() -> serde_json::Value {
         }),
     };
     apply(&mut s, UiMessage::Daemon { event: Box::new(Event::Remote { state: remote }), at, unix: 0 });
+    let check = udm_domain::debrid::DebridCheck {
+        service: udm_domain::debrid::DebridService::RealDebrid,
+        outcome: Ok(udm_domain::debrid::DebridAccount {
+            username: Some("ann".into()),
+            premium: true,
+            premium_until: Some(1_702_592_000),
+        }),
+    };
+    apply(&mut s, UiMessage::Daemon { event: Box::new(Event::Debrid { check }), at, unix: 0 });
     let slot =
         |name: &str, place: &str| udm_application::window::BrowserSlot { name: name.into(), place: place.into() };
     let row = |name: &str, registered: bool, added: Option<&str>| crate::services::BrowserRow {
@@ -333,6 +549,8 @@ fn fixtures() -> serde_json::Value {
             "add-url": view(Label::AddUrl),
             "save-as": view(Label::SaveAs(DownloadId::new(17))),
             "download": view(Label::Download(DownloadId::new(12))),
+            "download-torrent": view(Label::Download(DownloadId::new(18))),
+            "save-as-torrent": view(Label::SaveAs(DownloadId::new(20))),
             "done": done,
             "remove": view(Label::Remove),
             "about": view(Label::About),

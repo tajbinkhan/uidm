@@ -124,7 +124,7 @@ which asks the batch questions like the link picker's; two pictures with
 the same name are numbered apart (`a.jpg`, `a (1).jpg`). When gallery-dl is
 missing, the dialog offers **Install gallery-dl** and **Retry**.
 
-**yt-dlp, ffmpeg and gallery-dl.** Options > General has **Install yt-dlp**,
+**yt-dlp, ffmpeg and gallery-dl.** Options > Tools has **Install yt-dlp**,
 **Install ffmpeg** and **Install gallery-dl** (or **Update**) buttons, which the daemon carries out
 (`install_tool`, answered with `tools`). Nothing is downloaded without a
 click, except that **Keep yt-dlp up to date** (off unless turned on) looks

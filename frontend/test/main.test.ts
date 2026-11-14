@@ -9,8 +9,11 @@ describe('the main window', () => {
   it('draws the rows, the tree and the toolbar the snapshot holds', () => {
     shell('main', 'main');
     render(Main);
+    // The table draws the rows in view, and says how many there are.
     const rows = screen.getAllByRole('row').filter((r) => r.getAttribute('aria-rowindex'));
-    expect(rows.length).toBe(fixtures.views.main.view.rows.length);
+    const all = fixtures.views.main.view.rows;
+    expect(rows.length).toBe(Math.min(all.length, 17));
+    expect(screen.getByRole('grid').getAttribute('aria-rowcount')).toBe(String(all.length));
     expect(screen.getByText('interview-notes.pdf')).toBeTruthy();
     expect(screen.getByRole('treeitem', { name: /All Downloads/ }).getAttribute('aria-selected')).toBe('true');
     expect((screen.getByRole('button', { name: /Stop All/ }) as HTMLButtonElement).disabled).toBe(false);
@@ -24,7 +27,7 @@ describe('the main window', () => {
     expect(sent(calls, 'run_list_action').at(-1)?.args).toEqual({ action: { action: 'stopAll' } });
     await fireEvent.click(screen.getByRole('button', { name: /Add URL/ }));
     expect(sent(calls, 'open_window').at(-1)?.args).toEqual({ window: 'addUrl' });
-    await fireEvent.mouseDown(screen.getByText('rufus-4.15.exe'), { button: 0 });
+    await fireEvent.mouseDown(screen.getByText('usb-writer-4.15.exe'), { button: 0 });
     expect(sent(calls, 'select_rows').at(-1)?.args).toEqual({ ids: [15] });
     await fireEvent.click(screen.getByRole('button', { name: 'Size' }));
     expect(sent(calls, 'sort_list').at(-1)?.args).toEqual({ column: 'size' });

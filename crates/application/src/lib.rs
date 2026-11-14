@@ -6,6 +6,7 @@
 #![cfg_attr(test, allow(clippy::todo, clippy::unimplemented, clippy::unreachable))]
 
 pub mod daemon;
+pub mod debrid;
 pub mod downloads;
 pub mod gallery;
 pub mod grab;
@@ -17,6 +18,7 @@ pub mod remote;
 pub mod report;
 pub mod themes;
 pub mod tools;
+pub mod torrents;
 pub mod update;
 pub mod window;
 

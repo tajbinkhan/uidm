@@ -19,7 +19,7 @@ use crate::projection::{format, main, Ctx};
 use crate::state::AppState;
 
 /// Every column, in the order the chooser lists the hidden ones.
-pub const ALL_COLUMNS: [ColumnKey; 12] = [
+pub const ALL_COLUMNS: [ColumnKey; 13] = [
     ColumnKey::Name,
     ColumnKey::Queue,
     ColumnKey::Size,
@@ -32,6 +32,7 @@ pub const ALL_COLUMNS: [ColumnKey; 12] = [
     ColumnKey::SaveTo,
     ColumnKey::Page,
     ColumnKey::Referrer,
+    ColumnKey::Country,
 ];
 
 fn addresses(input: &BatchInput) -> Result<Vec<udm_domain::address::Address>, BatchError> {
@@ -267,6 +268,7 @@ fn column_title(key: ColumnKey) -> &'static str {
         ColumnKey::Page => "Parent web page",
         ColumnKey::Referrer => "Referrer",
         ColumnKey::Description => "Description",
+        ColumnKey::Country => "Country",
     }
 }
 
@@ -464,6 +466,7 @@ mod tests {
             now: Instant::now(),
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
+            flags: true,
         };
         let mut s = with(vec![entry(1, "Report.PDF", Status::Done, 1, 1), entry(2, "README", Status::Done, 1, 1)]);
         let id = DownloadId::new(1);
@@ -502,6 +505,7 @@ mod tests {
             now: std::time::Instant::now(),
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
+            flags: true,
         };
         let mut choices = column_choices(&ctx, &s);
         assert_eq!(choices.len(), ALL_COLUMNS.len());

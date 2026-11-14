@@ -7,14 +7,15 @@ use serde::{Deserialize, Serialize};
 use udm_application::daemon::service::ServiceError;
 use udm_application::daemon::{Command, Event, Failure};
 use udm_application::downloads::{ConfirmError, StartOrWaitError};
-use udm_domain::download::{DownloadError, Mismatch};
+use udm_domain::debrid::DebridKey;
+use udm_domain::download::{Download, DownloadError, Mismatch};
 use udm_domain::grab::InvalidGrab;
 use udm_domain::pairing::PairingError;
 use udm_domain::ports::{ControlError, SettingsError};
 use udm_domain::queue::QueueError;
 use udm_domain::update::UpdateError;
 
-use crate::protocol::{Incoming, NewPackage, Outgoing, Secret};
+use crate::protocol::{Incoming, NewPackage, Outgoing, Secret, WireKey};
 use udm_domain::id::PackageId;
 use udm_domain::package::{Packaging, Password};
 
@@ -23,7 +24,15 @@ pub fn incoming(command: Command) -> Incoming {
     match command {
         Command::Hello { version, client } => Incoming::Hello { version, client },
         Command::Ping => Incoming::Ping,
-        Command::CommandLine(c) => Incoming::CommandLine(c),
+        Command::CommandLine(mut c) => {
+            // A `.torrent` file given on the command line travels base64-encoded
+            // as its download's `torrent_file`, as `udm-cli` sends one.
+            if let (Some(metainfo), Some(d)) = (c.metainfo.take(), c.download.as_mut()) {
+                use base64::Engine as _;
+                d.torrent_file = Some(base64::engine::general_purpose::STANDARD.encode(metainfo));
+            }
+            Incoming::CommandLine(c)
+        }
         Command::ProbeMedia { request, download } => Incoming::ProbeMedia { request, download },
         Command::PickLinks { page, links, user_agent } => Incoming::PickLinks { page, links, user_agent },
         Command::PickVideos { page, playlist, user_agent } => Incoming::PickVideos { page, playlist, user_agent },
@@ -34,6 +43,15 @@ pub fn incoming(command: Command) -> Incoming {
         Command::Rendered { request, html, url, popups } => Incoming::Rendered { request, html, url, popups },
         Command::Cookies { request, cookies } => Incoming::Cookies { request, cookies },
         Command::Add(d) => Incoming::Add(d),
+        Command::AddTorrentFile { metainfo, download } => {
+            use base64::Engine as _;
+            let file = base64::engine::general_purpose::STANDARD.encode(metainfo);
+            Incoming::Add(Download { torrent_file: Some(file), ..download })
+        }
+        Command::SelectTorrentFiles { id, files } => Incoming::SelectTorrentFiles { id, files },
+        Command::SetSeedLimits { id, limits } => Incoming::SetSeedLimits { id, limits },
+        Command::StopSeeding { id } => Incoming::StopSeeding { id },
+        Command::TorrentFiles { id } => Incoming::TorrentFiles { id },
         Command::AddMany { items, queue, packaging } => {
             let (package, group_archives) = match packaging {
                 Packaging::None => (None, false),
@@ -84,6 +102,11 @@ pub fn incoming(command: Command) -> Incoming {
         Command::StartPairing => Incoming::StartPairing,
         Command::CancelPairing => Incoming::CancelPairing,
         Command::RemoveDevice { id } => Incoming::RemoveDevice { id },
+        Command::CheckDebrid { service, key } => {
+            Incoming::CheckDebrid { service, key: key.map(|k| Secret(k.expose().to_string())) }
+        }
+        Command::SetDebridKey { service, key } => Incoming::SetDebridKey { service, key: WireKey(key) },
+        Command::RemoveDebridKey => Incoming::RemoveDebridKey,
     }
 }
 
@@ -92,7 +115,14 @@ pub fn command(msg: Incoming) -> Command {
     match msg {
         Incoming::Hello { version, client } => Command::Hello { version, client },
         Incoming::Ping => Command::Ping,
-        Incoming::CommandLine(c) => Command::CommandLine(c),
+        Incoming::CommandLine(mut c) => {
+            if let Some(file) = c.download.as_mut().and_then(|d| d.torrent_file.take()) {
+                use base64::Engine as _;
+                // A file that is not base64 is no torrent: adding it says so.
+                c.metainfo = Some(base64::engine::general_purpose::STANDARD.decode(file.trim()).unwrap_or_default());
+            }
+            Command::CommandLine(c)
+        }
         Incoming::ProbeMedia { request, download } => Command::ProbeMedia { request, download },
         Incoming::PickLinks { page, links, user_agent } => Command::PickLinks { page, links, user_agent },
         Incoming::PickVideos { page, playlist, user_agent } => Command::PickVideos { page, playlist, user_agent },
@@ -102,7 +132,19 @@ pub fn command(msg: Incoming) -> Command {
         Incoming::ListTools => Command::ListTools,
         Incoming::Rendered { request, html, url, popups } => Command::Rendered { request, html, url, popups },
         Incoming::Cookies { request, cookies } => Command::Cookies { request, cookies },
-        Incoming::Add(d) => Command::Add(d),
+        Incoming::Add(mut d) => match d.torrent_file.take() {
+            Some(file) => {
+                use base64::Engine as _;
+                // A file that is not base64 is no torrent: adding it says so.
+                let metainfo = base64::engine::general_purpose::STANDARD.decode(file.trim()).unwrap_or_default();
+                Command::AddTorrentFile { metainfo, download: d }
+            }
+            None => Command::Add(d),
+        },
+        Incoming::SelectTorrentFiles { id, files } => Command::SelectTorrentFiles { id, files },
+        Incoming::SetSeedLimits { id, limits } => Command::SetSeedLimits { id, limits },
+        Incoming::StopSeeding { id } => Command::StopSeeding { id },
+        Incoming::TorrentFiles { id } => Command::TorrentFiles { id },
         Incoming::AddMany { items, queue, package, group_archives } => {
             let packaging = match package {
                 Some(NewPackage { name, folder }) => Packaging::One { name, folder },
@@ -153,6 +195,11 @@ pub fn command(msg: Incoming) -> Command {
         Incoming::StartPairing => Command::StartPairing,
         Incoming::CancelPairing => Command::CancelPairing,
         Incoming::RemoveDevice { id } => Command::RemoveDevice { id },
+        Incoming::CheckDebrid { service, key } => {
+            Command::CheckDebrid { service, key: key.and_then(|Secret(k)| DebridKey::new(&k)) }
+        }
+        Incoming::SetDebridKey { service, key: WireKey(key) } => Command::SetDebridKey { service, key },
+        Incoming::RemoveDebridKey => Command::RemoveDebridKey,
     }
 }
 
@@ -167,8 +214,8 @@ pub fn event(msg: Outgoing) -> Event {
         Outgoing::RenderPage { request, url } => Event::RenderPage { request, url },
         Outgoing::CommandLine { window_open } => Event::CommandLine { window_open },
         Outgoing::Added { id, url } => Event::Added { id, url },
-        Outgoing::Started { id, url, path, total, resumable, connections, partial, validator } => {
-            Event::Started { id, url, path, total, resumable, connections, partial, validator }
+        Outgoing::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
+            Event::Started { id, url, path, total, resumable, connections, partial, validator, country }
         }
         Outgoing::Progress { id, url, done, total, parts, segments } => {
             Event::Progress { id, url, done, total, parts, segments }
@@ -177,6 +224,8 @@ pub fn event(msg: Outgoing) -> Event {
         Outgoing::Failed { id, url, error } => Event::Failed { id, url, error },
         Outgoing::Canceled { id, url } => Event::Canceled { id, url },
         Outgoing::Removed { id } => Event::Removed { id },
+        Outgoing::TorrentInfo { id, url, info } => Event::TorrentInfo { id, url, info },
+        Outgoing::TorrentStats { id, url, stats } => Event::TorrentStats { id, url, stats },
         Outgoing::Updated { item } => Event::Updated { item },
         Outgoing::Downloads { items } => Event::Downloads { items },
         Outgoing::Settings { settings } => Event::Settings { settings },
@@ -224,6 +273,8 @@ pub fn event(msg: Outgoing) -> Event {
         Outgoing::Error { message, error_kind } => Event::Error { error: failure(message, error_kind) },
         Outgoing::Rejected { url, message, error_kind } => Event::Rejected { url, error: failure(message, error_kind) },
         Outgoing::Remote { state } => Event::Remote { state },
+        Outgoing::Debrid { check } => Event::Debrid { check },
+        Outgoing::DebridRefused { refused } => Event::DebridRefused { refused },
     }
 }
 
@@ -240,8 +291,8 @@ pub fn outgoing(event: Event) -> Option<Outgoing> {
         Event::RenderPage { request, url } => Outgoing::RenderPage { request, url },
         Event::CommandLine { window_open } => Outgoing::CommandLine { window_open },
         Event::Added { id, url } => Outgoing::Added { id, url },
-        Event::Started { id, url, path, total, resumable, connections, partial, validator } => {
-            Outgoing::Started { id, url, path, total, resumable, connections, partial, validator }
+        Event::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
+            Outgoing::Started { id, url, path, total, resumable, connections, partial, validator, country }
         }
         Event::Progress { id, url, done, total, parts, segments } => {
             Outgoing::Progress { id, url, done, total, parts, segments }
@@ -250,6 +301,8 @@ pub fn outgoing(event: Event) -> Option<Outgoing> {
         Event::Failed { id, url, error } => Outgoing::Failed { id, url, error },
         Event::Canceled { id, url } => Outgoing::Canceled { id, url },
         Event::Removed { id } => Outgoing::Removed { id },
+        Event::TorrentInfo { id, url, info } => Outgoing::TorrentInfo { id, url, info },
+        Event::TorrentStats { id, url, stats } => Outgoing::TorrentStats { id, url, stats },
         Event::Updated { item } => Outgoing::Updated { item },
         Event::Downloads { items } => Outgoing::Downloads { items },
         Event::Settings { settings } => Outgoing::Settings { settings },
@@ -312,6 +365,8 @@ pub fn outgoing(event: Event) -> Option<Outgoing> {
             Outgoing::Rejected { url, message, error_kind }
         }
         Event::Remote { state } => Outgoing::Remote { state },
+        Event::Debrid { check } => Outgoing::Debrid { check },
+        Event::DebridRefused { refused } => Outgoing::DebridRefused { refused },
     })
 }
 
@@ -566,6 +621,134 @@ mod tests {
         let value = json(&outgoing(event).unwrap());
         let back: Outgoing = serde_json::from_value(value.clone()).unwrap();
         (value, super::event(back))
+    }
+
+    #[test]
+    fn a_large_torrent_fits_in_a_message() {
+        use udm_domain::torrent::{TorrentFiles, TorrentInfo, TorrentStats, MAX_FILE_NAME_BYTES, MAX_TORRENT_FILES};
+        // The most files, with names as long as the list allows, each named
+        // with characters JSON escapes.
+        let per = MAX_FILE_NAME_BYTES / MAX_TORRENT_FILES - 1;
+        let raw = (0..MAX_TORRENT_FILES)
+            .map(|i| (vec![format!("{i:05}{}", "\u{00e9}".repeat((per - 5) / 2))], u64::MAX / 2, false))
+            .collect();
+        let files = TorrentFiles::parse(raw).unwrap();
+        let hash = udm_domain::torrent::InfoHash::from_bytes([1; 20]);
+        let info = TorrentInfo {
+            info_hash: hash,
+            name: "Big".into(),
+            files: files.clone(),
+            piece_size: udm_domain::bytes::ByteCount::new(1 << 24),
+            pieces: u32::MAX,
+            private: false,
+        };
+        let id = DownloadId::new(1);
+        let url: udm_domain::address::Link = format!("magnet:?xt=urn:btih:{hash}").into();
+        let frame = serde_json::to_vec(&outgoing(Event::TorrentInfo { id, url: url.clone(), info }).unwrap()).unwrap();
+        assert!(frame.len() < crate::app::MAX_MESSAGE_BYTES as usize, "{} bytes", frame.len());
+        // Its row carries no file list, and its stats no file progress at
+        // this size.
+        let mut row: udm_domain::download::DownloadEntry = serde_json::from_value(serde_json::json!({
+            "id": 1, "url": url, "status": "downloading", "connections": 1, "done": 0, "resumable": true,
+        }))
+        .unwrap();
+        let mut torrent = udm_domain::torrent::TorrentEntry::new(hash);
+        torrent.files = files;
+        row.torrent = Some(torrent);
+        let frame = serde_json::to_vec(&outgoing(Event::Updated { item: row }).unwrap()).unwrap();
+        assert!(frame.len() < 1024, "{} bytes", frame.len());
+        let stats = TorrentStats::default();
+        let frame = serde_json::to_vec(&outgoing(Event::TorrentStats { id, url, stats }).unwrap()).unwrap();
+        assert!(frame.len() < 1024);
+    }
+
+    #[test]
+    fn torrent_messages_have_their_wire_shapes() {
+        use udm_domain::torrent::{FileSelection, Ratio, SeedLimits, TorrentPhase, TorrentStats};
+        // A `.torrent` file read from disk travels base64-encoded in `add`.
+        let download = Download {
+            url: "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a".into(),
+            ..Download::default()
+        };
+        let add = incoming(Command::AddTorrentFile { metainfo: b"d4:infoe".to_vec(), download: download.clone() });
+        let value = json(&add);
+        assert_eq!((value["op"].as_str(), value["torrent_file"].as_str()), (Some("add"), Some("ZDQ6aW5mb2U=")));
+        let Command::AddTorrentFile { metainfo, download: back } = command(add) else { panic!("a torrent file") };
+        assert_eq!((metainfo.as_slice(), back.url, back.torrent_file), (&b"d4:infoe"[..], download.url.clone(), None));
+        let garbled: Incoming =
+            serde_json::from_value(serde_json::json!({"op": "add", "url": "x", "torrent_file": "!"})).unwrap();
+        assert!(matches!(command(garbled), Command::AddTorrentFile { metainfo, .. } if metainfo.is_empty()));
+        assert!(matches!(command(incoming(Command::Add(download.clone()))), Command::Add(_)), "a plain add stays one");
+        // So does one given on udm-gui's command line, inside `command_line`.
+        let cmd = udm_domain::download::CommandLine {
+            download: Some(download.clone()),
+            metainfo: Some(b"d4:infoe".to_vec()),
+            ..Default::default()
+        };
+        let sent = incoming(Command::CommandLine(cmd));
+        assert_eq!(json(&sent)["download"]["torrent_file"].as_str(), Some("ZDQ6aW5mb2U="));
+        let Command::CommandLine(back) = command(sent) else { panic!("a command line") };
+        assert_eq!(back.metainfo.as_deref(), Some(&b"d4:infoe"[..]));
+        assert_eq!(back.download.and_then(|d| d.torrent_file), None);
+
+        let id = DownloadId::new(4);
+        let select = incoming(Command::SelectTorrentFiles { id, files: FileSelection::parse(&[2, 0], 3).unwrap() });
+        assert_eq!(json(&select), serde_json::json!({"op": "select_torrent_files", "id": 4, "files": [0, 2]}));
+        let limits = SeedLimits { ratio: Some(Ratio::new(1.5).unwrap()), minutes: None };
+        let seed = incoming(Command::SetSeedLimits { id, limits: Some(limits) });
+        assert_eq!(json(&seed), serde_json::json!({"op": "set_seed_limits", "id": 4, "limits": {"ratio": 1.5}}));
+        assert!(matches!(command(seed), Command::SetSeedLimits { limits: Some(l), .. } if l == limits));
+        assert_eq!(json(&incoming(Command::StopSeeding { id })), serde_json::json!({"op": "stop_seeding", "id": 4}));
+        assert_eq!(json(&incoming(Command::TorrentFiles { id })), serde_json::json!({"op": "torrent_files", "id": 4}));
+        let empty = serde_json::json!({"op": "select_torrent_files", "id": 4, "files": []});
+        assert!(serde_json::from_value::<Incoming>(empty).is_err(), "no file chosen is no message");
+
+        let stats = TorrentStats { phase: TorrentPhase::Seeding, down_speed: 5, ..TorrentStats::default() };
+        let (value, back) = round_trip(Event::TorrentStats { id, url: "magnet:?x".into(), stats: stats.clone() });
+        assert_eq!((value["op"].as_str(), value["stats"]["phase"].as_str()), (Some("torrent_stats"), Some("seeding")));
+        assert_eq!(back, Event::TorrentStats { id, url: "magnet:?x".into(), stats });
+    }
+
+    #[test]
+    fn debrid_messages_carry_the_key_only_to_the_daemon() {
+        use udm_domain::debrid::{DebridAccount, DebridCheck, DebridError, DebridService};
+        let key = DebridKey::new("KEY123");
+        let check = incoming(Command::CheckDebrid { service: DebridService::RealDebrid, key: key.clone() });
+        assert_eq!(json(&check), serde_json::json!({"op": "check_debrid", "service": "real_debrid", "key": "KEY123"}));
+        assert!(!format!("{check:?}").contains("KEY123"), "{check:?}");
+        assert!(matches!(command(check), Command::CheckDebrid { key: Some(k), .. } if k.expose() == "KEY123"));
+        let stored = incoming(Command::CheckDebrid { service: DebridService::Premiumize, key: None });
+        assert_eq!(json(&stored), serde_json::json!({"op": "check_debrid", "service": "premiumize"}));
+        let set = incoming(Command::SetDebridKey { service: DebridService::AllDebrid, key: key.unwrap() });
+        assert_eq!(json(&set), serde_json::json!({"op": "set_debrid_key", "service": "all_debrid", "key": "KEY123"}));
+        assert!(!format!("{set:?}").contains("KEY123"), "{set:?}");
+        assert!(
+            matches!(command(set), Command::SetDebridKey { service: DebridService::AllDebrid, key } if key.expose() == "KEY123")
+        );
+        let remove = incoming(Command::RemoveDebridKey);
+        assert_eq!(json(&remove), serde_json::json!({"op": "remove_debrid_key"}));
+        assert!(matches!(command(remove), Command::RemoveDebridKey));
+        let blank = r#"{"op":"set_debrid_key","service":"real_debrid","key":"  "}"#;
+        assert!(serde_json::from_str::<Incoming>(blank).is_err(), "a blank key never means remove");
+        let missing = r#"{"op":"set_debrid_key","service":"real_debrid"}"#;
+        assert!(serde_json::from_str::<Incoming>(missing).is_err());
+
+        for outcome in [
+            Ok(DebridAccount { username: Some("ann".into()), premium: true, premium_until: Some(9) }),
+            Err(DebridError::Service("Hoster in maintenance".into())),
+        ] {
+            let check = DebridCheck { service: DebridService::AllDebrid, outcome };
+            let (value, back) = round_trip(Event::Debrid { check: check.clone() });
+            assert_eq!(value["op"], "debrid");
+            assert_eq!(back, Event::Debrid { check });
+        }
+        let refused = udm_domain::debrid::Refused { service: DebridService::Premiumize, error: DebridError::BadKey };
+        let (value, back) = round_trip(Event::DebridRefused { refused: refused.clone() });
+        assert_eq!(
+            value,
+            serde_json::json!({"op": "debrid_refused", "refused": {"service": "premiumize", "error": {"kind": "bad_key"}}})
+        );
+        assert_eq!(back, Event::DebridRefused { refused });
     }
 
     #[test]

@@ -1,0 +1,341 @@
+{
+  "extDescription": {
+    "message": "Отправляет загрузки из браузера в диспетчер загрузок UDM."
+  },
+  "downloadWithUdm": {
+    "message": "Загрузить с помощью UDM"
+  },
+  "downloadLaterWithUdm": {
+    "message": "Загрузить позже с помощью UDM"
+  },
+  "downloadGalleryWithUdm": {
+    "message": "Скачать галерею с помощью UDM"
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "Загрузить все ссылки с помощью UDM"
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "Загрузить выделенные ссылки с помощью UDM"
+  },
+  "udmDisconnected": {
+    "message": "UDM отключён"
+  },
+  "captureDownloads": {
+    "message": "Перехватывать загрузки"
+  },
+  "captureDownloadsTitle": {
+    "message": "Отправлять в UDM загрузки, начатые в браузере"
+  },
+  "captureInTab": {
+    "message": "Перехват на этой вкладке"
+  },
+  "captureInTabTitle": {
+    "message": "Отключите перехват, чтобы оставить загрузки этой вкладки браузеру"
+  },
+  "captureOffInTab": {
+    "message": "Выключен на этой вкладке"
+  },
+  "statusConnected": {
+    "message": "Подключено. Загрузки, начатые в браузере, передаются в UDM."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Подключено. Перехват выключен, поэтому браузер загружает сам."
+  },
+  "statusNotConnected": {
+    "message": "Нет подключения к UDM. Загрузки остаются в браузере."
+  },
+  "statusNotConnectedReason": {
+    "message": "Нет подключения к UDM: $REASON$. Загрузки остаются в браузере.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Ваша следующая загрузка даст $NAME$ новую ссылку.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Не ждать"
+  },
+  "skipNextDownload": {
+    "message": "Пропустить следующую загрузку"
+  },
+  "skipNextDownloadTitle": {
+    "message": "Оставить следующую загрузку в браузере"
+  },
+  "dontSkip": {
+    "message": "Не пропускать"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "Следующая загрузка останется в браузере"
+  },
+  "allLinks": {
+    "message": "Все ссылки на этой странице"
+  },
+  "allLinksTitle": {
+    "message": "Показать ссылки этой страницы в UDM, чтобы выбрать, какие загрузить"
+  },
+  "videoButton": {
+    "message": "Кнопка видео"
+  },
+  "videoButtonTitle": {
+    "message": "Кнопка загрузки поверх видео, воспроизводимых в браузере"
+  },
+  "videoButtonOnSite": {
+    "message": "на $SITE$",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Вставьте URL загрузки"
+  },
+  "download": {
+    "message": "Загрузить"
+  },
+  "noDownloads": {
+    "message": "Загрузок пока нет."
+  },
+  "stateQueued": {
+    "message": "В очереди"
+  },
+  "stateDownloading": {
+    "message": "Загрузка"
+  },
+  "stateDone": {
+    "message": "Завершено"
+  },
+  "stateFailed": {
+    "message": "Ошибка"
+  },
+  "stateCanceled": {
+    "message": "Отменено"
+  },
+  "stateInterrupted": {
+    "message": "Прервано"
+  },
+  "stateConfirming": {
+    "message": "Ожидает вашего ответа в UDM"
+  },
+  "stateWaiting": {
+    "message": "Ожидает запуска"
+  },
+  "threatFound": {
+    "message": "Обнаружена угроза"
+  },
+  "start": {
+    "message": "Запустить"
+  },
+  "cancel": {
+    "message": "Отмена"
+  },
+  "retry": {
+    "message": "Повторить"
+  },
+  "remove": {
+    "message": "Удалить"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ Б",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ КБ",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ МБ",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ ГБ",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ ТБ",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "Загрузить это видео"
+  },
+  "videoButtonHelp": {
+    "message": "Справка о кнопке видео"
+  },
+  "videoButtonClose": {
+    "message": "Закрыть для этого видео"
+  },
+  "lookingForVideo": {
+    "message": "Поиск видео..."
+  },
+  "subtitles": {
+    "message": "Субтитры:"
+  },
+  "videoProtected": {
+    "message": "Это видео защищено DRM, поэтому UDM не будет его загружать."
+  },
+  "streamProtected": {
+    "message": "Защищено DRM; UDM не будет это загружать."
+  },
+  "udmNotConnected": {
+    "message": "UDM не запущен или не подключён."
+  },
+  "noVideoFound": {
+    "message": "Видео пока не найдено. Дайте ему немного воспроизвестись и повторите попытку."
+  },
+  "sentToUdm": {
+    "message": "Отправлено в UDM."
+  },
+  "couldNotReachUdm": {
+    "message": "Не удалось связаться с UDM."
+  },
+  "hlsStream": {
+    "message": "Поток HLS"
+  },
+  "dashStream": {
+    "message": "Поток DASH"
+  },
+  "hdsStream": {
+    "message": "Поток HDS"
+  },
+  "youtubeVideo": {
+    "message": "Видео YouTube"
+  },
+  "facebookVideo": {
+    "message": "Видео Facebook"
+  },
+  "instagramVideo": {
+    "message": "Видео Instagram"
+  },
+  "vimeoVideo": {
+    "message": "Видео Vimeo"
+  },
+  "mediaNoAnswer": {
+    "message": "UDM не ответил."
+  },
+  "soundOnly": {
+    "message": "Только звук ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "Видео $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "Аудио $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "Видео"
+  },
+  "audioFile": {
+    "message": "Аудио"
+  },
+  "takeoverFailed": {
+    "message": "UDM не удалось перехватить загрузку"
+  },
+  "takeoverNotConnected": {
+    "message": "UDM не запущен или не подключён, поэтому $FILE$ загружает браузер.",
+    "placeholders": {
+      "file": { "content": "$1" }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM не удалось запустить $FILE$ ($REASON$), поэтому файл загружает браузер.",
+    "placeholders": {
+      "file": { "content": "$1" },
+      "reason": { "content": "$2" }
+    }
+  },
+  "dontShowAgain": {
+    "message": "Больше не показывать"
+  },
+  "takeoverClickToStop": {
+    "message": "Щёлкните это уведомление, чтобы больше не показывать такие уведомления."
+  },
+  "downloadLastVideo": {
+    "message": "Загрузить последнее видео с помощью UDM"
+  },
+  "recentVideos": {
+    "message": "Недавние видео (UDM)"
+  },
+  "downloadPageWithUdm": {
+    "message": "Загрузить страницу с помощью UDM"
+  },
+  "noLinksFound": {
+    "message": "На этой странице не найдено ссылок."
+  },
+  "noSelectedLinksFound": {
+    "message": "В выделенном фрагменте не найдено ссылок."
+  },
+  "linksUnreadable": {
+    "message": "Браузер не позволяет UDM прочитать ссылки этой страницы."
+  },
+  "cannotReachUdm": {
+    "message": "Не удаётся связаться с UDM. Он запущен?"
+  },
+  "cannotReachUdmReason": {
+    "message": "Не удаётся связаться с UDM ($REASON$).",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "Вместо этого файл загрузит браузер."
+  },
+  "browserDownloadsHeading": {
+    "message": "Загружается в браузере"
+  },
+  "sendToUdm": {
+    "message": "Отправить в UDM"
+  },
+  "pageVideo": {
+    "message": "Видео на этой странице"
+  },
+  "playlistTitled": {
+    "message": "Список воспроизведения: $TITLE$ (видео: $COUNT$)",
+    "placeholders": {
+      "title": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  },
+  "playlistVideos": {
+    "message": "Список воспроизведения (видео: $COUNT$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "chooseVideos": {
+    "message": "Выбрать видео в UDM..."
+  }
+}

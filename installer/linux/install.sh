@@ -24,7 +24,7 @@ for old in pullbay uidm; do
   rm -rf "$HOME/.local/lib/$old" "$HOME/.local/bin/$old" "$DATA/applications/$old.desktop" "$DATA/icons/hicolor/128x128/apps/$old.png"
 done
 mkdir -p "$LIB" "$HOME/.local/bin" "$DATA/applications" "$DATA/icons/hicolor/128x128/apps"
-for f in udm-gui udm-daemon udm-host udm-cli udm-mcp README.md; do
+for f in udm-gui udm-daemon udm-host udm-cli udm-mcp README.md THIRD-PARTY-NOTICES.txt; do
   cp -f "$HERE/$f" "$LIB/"
 done
 rm -rf "$LIB/extension" "$LIB/firefox"

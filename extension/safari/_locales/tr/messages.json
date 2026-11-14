@@ -1,0 +1,341 @@
+{
+  "extDescription": {
+    "message": "Tarayıcı indirmelerini UDM indirme yöneticisine gönderin."
+  },
+  "downloadWithUdm": {
+    "message": "UDM ile indir"
+  },
+  "downloadLaterWithUdm": {
+    "message": "UDM ile daha sonra indir"
+  },
+  "downloadGalleryWithUdm": {
+    "message": "Galeriyi UDM ile indir"
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "Tüm bağlantıları UDM ile indir"
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "Seçili bağlantıları UDM ile indir"
+  },
+  "udmDisconnected": {
+    "message": "UDM bağlantısı kesildi"
+  },
+  "captureDownloads": {
+    "message": "İndirmeleri yakala"
+  },
+  "captureDownloadsTitle": {
+    "message": "Tarayıcının başlattığı indirmeleri UDM'a gönder"
+  },
+  "captureInTab": {
+    "message": "Bu sekmede yakala"
+  },
+  "captureInTabTitle": {
+    "message": "Bu sekmenin indirmelerini tarayıcıya bırakmak için yakalamayı kapatın"
+  },
+  "captureOffInTab": {
+    "message": "Bu sekmede kapalı"
+  },
+  "statusConnected": {
+    "message": "Bağlı. Tarayıcıda başlattığınız indirmeler UDM'a gider."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Bağlı. Yakalama kapalı, bu yüzden tarayıcı kendi indirmelerini tutar."
+  },
+  "statusNotConnected": {
+    "message": "UDM'a bağlı değil. İndirmeler tarayıcıda kalır."
+  },
+  "statusNotConnectedReason": {
+    "message": "UDM'a bağlı değil: $REASON$. İndirmeler tarayıcıda kalır.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Bir sonraki indirmeniz $NAME$ için yeni bir bağlantı sağlayacak.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Beklemeyi bırak"
+  },
+  "skipNextDownload": {
+    "message": "Sonraki indirmeyi atla"
+  },
+  "skipNextDownloadTitle": {
+    "message": "Sonraki indirme tarayıcıda kalsın"
+  },
+  "dontSkip": {
+    "message": "Atlama"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "Sonraki indirme tarayıcıda kalacak"
+  },
+  "allLinks": {
+    "message": "Bu sayfadaki tüm bağlantılar"
+  },
+  "allLinksTitle": {
+    "message": "İndirilecekleri seçmek için bu sayfanın bağlantılarını UDM'da listele"
+  },
+  "videoButton": {
+    "message": "Video düğmesi"
+  },
+  "videoButtonTitle": {
+    "message": "Tarayıcıda oynatılan videoların üzerinde bir indirme düğmesi"
+  },
+  "videoButtonOnSite": {
+    "message": "$SITE$ sitesinde",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Bir indirme URL'si yapıştırın"
+  },
+  "download": {
+    "message": "İndir"
+  },
+  "noDownloads": {
+    "message": "Henüz indirme yok."
+  },
+  "stateQueued": {
+    "message": "Kuyrukta"
+  },
+  "stateDownloading": {
+    "message": "İndiriliyor"
+  },
+  "stateDone": {
+    "message": "Bitti"
+  },
+  "stateFailed": {
+    "message": "Başarısız"
+  },
+  "stateCanceled": {
+    "message": "İptal edildi"
+  },
+  "stateInterrupted": {
+    "message": "Kesildi"
+  },
+  "stateConfirming": {
+    "message": "UDM'da sizi bekliyor"
+  },
+  "stateWaiting": {
+    "message": "Başlamayı bekliyor"
+  },
+  "threatFound": {
+    "message": "Tehdit bulundu"
+  },
+  "start": {
+    "message": "Başlat"
+  },
+  "cancel": {
+    "message": "İptal"
+  },
+  "retry": {
+    "message": "Yeniden dene"
+  },
+  "remove": {
+    "message": "Kaldır"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ B",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ KB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ MB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ GB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ TB",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "Bu videoyu indir"
+  },
+  "videoButtonHelp": {
+    "message": "Video düğmesi hakkında yardım"
+  },
+  "videoButtonClose": {
+    "message": "Bu video için kapat"
+  },
+  "lookingForVideo": {
+    "message": "Video aranıyor..."
+  },
+  "subtitles": {
+    "message": "Altyazılar:"
+  },
+  "videoProtected": {
+    "message": "Bu video DRM ile korunuyor, bu yüzden UDM onu indirmeyecek."
+  },
+  "streamProtected": {
+    "message": "DRM ile korunuyor; UDM bunu indirmeyecek."
+  },
+  "udmNotConnected": {
+    "message": "UDM çalışmıyor veya bağlı değil."
+  },
+  "noVideoFound": {
+    "message": "Henüz video bulunamadı. Bir süre oynatın, sonra yeniden deneyin."
+  },
+  "sentToUdm": {
+    "message": "UDM'a gönderildi."
+  },
+  "couldNotReachUdm": {
+    "message": "UDM'a ulaşılamadı."
+  },
+  "hlsStream": {
+    "message": "HLS akışı"
+  },
+  "dashStream": {
+    "message": "DASH akışı"
+  },
+  "hdsStream": {
+    "message": "HDS akışı"
+  },
+  "youtubeVideo": {
+    "message": "YouTube videosu"
+  },
+  "facebookVideo": {
+    "message": "Facebook videosu"
+  },
+  "instagramVideo": {
+    "message": "Instagram videosu"
+  },
+  "vimeoVideo": {
+    "message": "Vimeo videosu"
+  },
+  "mediaNoAnswer": {
+    "message": "UDM yanıt vermedi."
+  },
+  "soundOnly": {
+    "message": "Yalnızca ses ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "$TYPE$ video",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "$TYPE$ ses",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "Video"
+  },
+  "audioFile": {
+    "message": "Ses"
+  },
+  "takeoverFailed": {
+    "message": "UDM indirmeyi devralamadı"
+  },
+  "takeoverNotConnected": {
+    "message": "UDM çalışmıyor veya bağlı değil; bu yüzden tarayıcı şunu indiriyor: $FILE$",
+    "placeholders": {
+      "file": { "content": "$1" }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM şunu başlatamadı: $FILE$ ($REASON$). Bu yüzden tarayıcı indiriyor.",
+    "placeholders": {
+      "file": { "content": "$1" },
+      "reason": { "content": "$2" }
+    }
+  },
+  "dontShowAgain": {
+    "message": "Bir daha gösterme"
+  },
+  "takeoverClickToStop": {
+    "message": "Bu bildirimlerin artık gösterilmemesi için bu bildirime tıklayın."
+  },
+  "downloadLastVideo": {
+    "message": "Son videoyu UDM ile indir"
+  },
+  "recentVideos": {
+    "message": "Son videolar (UDM)"
+  },
+  "downloadPageWithUdm": {
+    "message": "Sayfayı UDM ile indir"
+  },
+  "noLinksFound": {
+    "message": "Bu sayfada bağlantı bulunamadı."
+  },
+  "noSelectedLinksFound": {
+    "message": "Seçimde bağlantı bulunamadı."
+  },
+  "linksUnreadable": {
+    "message": "Tarayıcı, UDM'ın bu sayfanın bağlantılarını okumasına izin vermiyor."
+  },
+  "cannotReachUdm": {
+    "message": "UDM'a ulaşılamıyor. Çalışıyor mu?"
+  },
+  "cannotReachUdmReason": {
+    "message": "UDM'a ulaşılamıyor ($REASON$).",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "Bunun yerine tarayıcı indiriyor."
+  },
+  "browserDownloadsHeading": {
+    "message": "Tarayıcıda indiriliyor"
+  },
+  "sendToUdm": {
+    "message": "UDM'a gönder"
+  },
+  "pageVideo": {
+    "message": "Bu sayfadaki video"
+  },
+  "playlistTitled": {
+    "message": "Çalma listesi: $TITLE$ ($COUNT$ video)",
+    "placeholders": {
+      "title": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  },
+  "playlistVideos": {
+    "message": "Çalma listesi ($COUNT$ video)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "chooseVideos": {
+    "message": "UDM'de video seç..."
+  }
+}

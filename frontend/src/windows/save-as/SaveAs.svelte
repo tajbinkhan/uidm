@@ -1,8 +1,8 @@
 <!-- Download File Info: the category and the file a download is saved as,
-     before it starts now or waits in a queue. Closing it cancels the
-     download, as Cancel does. -->
+     before it starts now or waits in a queue, and for a torrent the files
+     to download. Closing it cancels the download, as Cancel does. -->
 <script lang="ts">
-  import { answerDownload, checkSaveFolder, closeWindow, fitHeight, messageOf, pickSaveFolder, previewZip } from '../../ipc';
+  import { answerDownload, checkSaveFolder, closeWindow, fitHeight, messageOf, pickSaveFolder, pickTorrentFiles, previewZip } from '../../ipc';
   import type { DuplicateChoice, SaveAsView } from '../../ipc/types';
   import { projection } from '../../stores/projection.svelte';
   import { t } from '../../i18n';
@@ -27,11 +27,15 @@
   let denied = $state(false);
   let elevate = $state(false);
   const blocked = $derived(denied && !elevate);
-  /** The window's size (the shell's `windows.rs`), and how much the
-   * warning for such a folder adds. */
+  /** The window's size (the shell's `windows.rs`, larger for a torrent's
+   * file list), and how much the warning for such a folder adds. */
   const WIDTH = 576;
-  const HEIGHT = 206;
+  const HEIGHT = $derived(view?.torrent ? 432 : 206);
   const WARNING = 40;
+  /** A torrent of one file keeps its name: Save As then holds its folder,
+   * which the shell knows to take as one. */
+  let folderOnly = $state(false);
+  const torrent = $derived(view?.torrent ?? null);
 
   // Check the folder a moment after the Save As box stops changing.
   $effect(() => {
@@ -70,8 +74,25 @@
     }
   });
 
+  // Once a torrent's files are known, one of a single file shows its folder.
+  $effect(() => {
+    if (loaded && !folderOnly && torrent?.fixedName) {
+      folderOnly = true;
+      draft.saveAs = torrent.folder;
+    }
+  });
+
+  async function pick(indexes: number[], chosen: boolean) {
+    error = '';
+    try {
+      await pickTorrentFiles(indexes, chosen);
+    } catch (e) {
+      error = messageOf(e);
+    }
+  }
+
   async function answer(start: boolean) {
-    if (busy || blocked) return;
+    if (busy || blocked || torrent?.noneChosen) return;
     busy = true;
     error = '';
     try {
@@ -126,9 +147,9 @@
           {/if}
         </div>
 
-        <label for="save-as">{t('Save As')}</label>
+        <label for="save-as">{folderOnly ? t('Save to') : t('Save As')}</label>
         <div class="row">
-          <input id="save-as" class="text grow" bind:value={draft.saveAs} list="folders" spellcheck="false" />
+          <input id="save-as" class="text grow" bind:value={draft.saveAs} list={folderOnly ? undefined : 'folders'} spellcheck="false" />
           <datalist id="folders">
             {#each view.folders as f (f)}<option value={f}></option>{/each}
           </datalist>
@@ -145,9 +166,48 @@
           <input class="text wide" value={view.remembered} readonly aria-label={t('Remembered folder')} />
         </fieldset>
 
+        {#if folderOnly && torrent?.fixedName}
+          <span class="label">{t('File name')}</span>
+          <span class="fixed" title={t("A torrent of one file keeps its file's name; choose only its folder.")}>{torrent.fixedName}</span>
+        {/if}
+
         <label for="description">{t('Description')}</label>
         <input id="description" class="text" bind:value={draft.description} />
       </div>
+      {#if torrent}
+        <section class="torrent" aria-label={t('Files in the torrent')}>
+          {#if torrent.waiting}
+            <p class="waiting" role="status">{torrent.chosen}</p>
+          {:else}
+            <div class="row">
+              <span class="grow">{t('Files in the torrent')}</span>
+              <button class="btn" type="button" onclick={() => void pick(torrent.files.map((f) => f.index), true)}>{t('Select all')}</button>
+              <button class="btn" type="button" onclick={() => void pick(torrent.files.map((f) => f.index), false)}>{t('Select none')}</button>
+            </div>
+            <div class="files">
+              <table>
+                <thead>
+                  <tr><th scope="col">{t('File')}</th><th scope="col" class="size">{t('Size')}</th></tr>
+                </thead>
+                <tbody>
+                  {#each torrent.files as f (f.index)}
+                    <tr>
+                      <td class="path">
+                        <label class="check" title={f.path}
+                          ><input type="checkbox" checked={f.chosen} onchange={(e) => void pick([f.index], e.currentTarget.checked)} />{f.path}</label
+                        >
+                      </td>
+                      <td class="size">{f.size}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+            <p class="chosen" class:error-text={torrent.noneChosen} role="status">{torrent.chosen}</p>
+            {#if torrent.private}<p class="note">{t('A private torrent finds peers through its trackers only.')}</p>{/if}
+          {/if}
+        </section>
+      {/if}
       {#if denied}
         <div class="denied">
           <p class="error-text" role="status">{t('UDM may not save files in this folder. Saving there needs administrator rights.')}</p>
@@ -160,8 +220,8 @@
       {/if}
       {#if error}<p class="error-text" role="alert">{error}</p>{/if}
       <div class="buttons">
-        <button class="btn" type="button" disabled={busy || blocked} onclick={() => void answer(false)}>{t('Download Later')}</button>
-        <button class="btn default" type="submit" disabled={busy || blocked}>{t('Start Download')}</button>
+        <button class="btn" type="button" disabled={busy || blocked || torrent?.noneChosen} onclick={() => void answer(false)}>{t('Download Later')}</button>
+        <button class="btn default" type="submit" disabled={busy || blocked || torrent?.noneChosen}>{t('Start Download')}</button>
         <button class="btn" type="button" onclick={() => void closeWindow()}>{t('Cancel')}</button>
       </div>
     </form>
@@ -258,6 +318,79 @@
 
   p {
     margin: 0;
+  }
+
+  .grid > .label {
+    grid-column: 1;
+    text-align: right;
+  }
+
+  .fixed {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .torrent {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 86px;
+  }
+
+  .files {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    background: var(--list);
+    border: 1px solid var(--frame);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  th {
+    position: sticky;
+    top: 0;
+    background: var(--header);
+    font-weight: normal;
+    text-align: left;
+    padding: 0 5px;
+    border-right: 1px solid var(--grid);
+  }
+
+  td {
+    padding: 0 5px;
+    line-height: 18px;
+  }
+
+  .path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .path label {
+    display: inline;
+  }
+
+  .size {
+    width: 84px;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .waiting {
+    padding: 12px 0;
+  }
+
+  .note {
+    font-size: 11px;
   }
 
   input[type='radio'] {

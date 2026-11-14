@@ -1,0 +1,341 @@
+{
+  "extDescription": {
+    "message": "Надсилає завантаження з браузера до менеджера завантажень UDM."
+  },
+  "downloadWithUdm": {
+    "message": "Завантажити за допомогою UDM"
+  },
+  "downloadLaterWithUdm": {
+    "message": "Завантажити пізніше за допомогою UDM"
+  },
+  "downloadGalleryWithUdm": {
+    "message": "Завантажити галерею за допомогою UDM"
+  },
+  "downloadAllLinksWithUdm": {
+    "message": "Завантажити всі посилання за допомогою UDM"
+  },
+  "downloadSelectedLinksWithUdm": {
+    "message": "Завантажити виділені посилання за допомогою UDM"
+  },
+  "udmDisconnected": {
+    "message": "З'єднання з UDM розірвано"
+  },
+  "captureDownloads": {
+    "message": "Перехоплювати завантаження"
+  },
+  "captureDownloadsTitle": {
+    "message": "Надсилати до UDM завантаження, розпочаті в браузері"
+  },
+  "captureInTab": {
+    "message": "Перехоплювати в цій вкладці"
+  },
+  "captureInTabTitle": {
+    "message": "Вимкніть перехоплення, щоб залишити завантаження цієї вкладки браузеру"
+  },
+  "captureOffInTab": {
+    "message": "Вимкнено в цій вкладці"
+  },
+  "statusConnected": {
+    "message": "Підключено. Завантаження, розпочаті в браузері, надсилаються до UDM."
+  },
+  "statusConnectedCaptureOff": {
+    "message": "Підключено. Перехоплення вимкнено, тому браузер сам виконує свої завантаження."
+  },
+  "statusNotConnected": {
+    "message": "Немає з'єднання з UDM. Завантаження залишаються в браузері."
+  },
+  "statusNotConnectedReason": {
+    "message": "Немає з'єднання з UDM: $REASON$. Завантаження залишаються в браузері.",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "refreshWaiting": {
+    "message": "Ваше наступне завантаження надасть $NAME$ нове посилання.",
+    "placeholders": {
+      "name": { "content": "$1" }
+    }
+  },
+  "stopWaiting": {
+    "message": "Не чекати"
+  },
+  "skipNextDownload": {
+    "message": "Пропустити наступне завантаження"
+  },
+  "skipNextDownloadTitle": {
+    "message": "Залишити наступне завантаження в браузері"
+  },
+  "dontSkip": {
+    "message": "Не пропускати"
+  },
+  "skippingNextDownloadTitle": {
+    "message": "Наступне завантаження залишиться в браузері"
+  },
+  "allLinks": {
+    "message": "Усі посилання на цій сторінці"
+  },
+  "allLinksTitle": {
+    "message": "Показати посилання цієї сторінки в UDM, щоб вибрати, які завантажити"
+  },
+  "videoButton": {
+    "message": "Кнопка відео"
+  },
+  "videoButtonTitle": {
+    "message": "Кнопка завантаження над відео, яке відтворюється в браузері"
+  },
+  "videoButtonOnSite": {
+    "message": "на $SITE$",
+    "placeholders": {
+      "site": { "content": "$1" }
+    }
+  },
+  "urlPlaceholder": {
+    "message": "Вставте URL-адресу завантаження"
+  },
+  "download": {
+    "message": "Завантажити"
+  },
+  "noDownloads": {
+    "message": "Завантажень ще немає."
+  },
+  "stateQueued": {
+    "message": "У черзі"
+  },
+  "stateDownloading": {
+    "message": "Завантажується"
+  },
+  "stateDone": {
+    "message": "Готово"
+  },
+  "stateFailed": {
+    "message": "Помилка"
+  },
+  "stateCanceled": {
+    "message": "Скасовано"
+  },
+  "stateInterrupted": {
+    "message": "Перервано"
+  },
+  "stateConfirming": {
+    "message": "Очікує вашої відповіді в UDM"
+  },
+  "stateWaiting": {
+    "message": "Очікує запуску"
+  },
+  "threatFound": {
+    "message": "Виявлено загрозу"
+  },
+  "start": {
+    "message": "Почати"
+  },
+  "cancel": {
+    "message": "Скасувати"
+  },
+  "retry": {
+    "message": "Повторити"
+  },
+  "remove": {
+    "message": "Видалити"
+  },
+  "sizeProgress": {
+    "message": "$DONE$ / $TOTAL$",
+    "placeholders": {
+      "done": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "sizeBytes": {
+    "message": "$SIZE$ Б",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeKB": {
+    "message": "$SIZE$ КБ",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeMB": {
+    "message": "$SIZE$ МБ",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeGB": {
+    "message": "$SIZE$ ГБ",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "sizeTB": {
+    "message": "$SIZE$ ТБ",
+    "placeholders": {
+      "size": { "content": "$1" }
+    }
+  },
+  "downloadVideo": {
+    "message": "Завантажити це відео"
+  },
+  "videoButtonHelp": {
+    "message": "Довідка про кнопку відео"
+  },
+  "videoButtonClose": {
+    "message": "Закрити для цього відео"
+  },
+  "lookingForVideo": {
+    "message": "Пошук відео..."
+  },
+  "subtitles": {
+    "message": "Субтитри:"
+  },
+  "videoProtected": {
+    "message": "Це відео захищене DRM, тому UDM не завантажуватиме його."
+  },
+  "streamProtected": {
+    "message": "Захищено DRM; UDM не завантажуватиме його."
+  },
+  "udmNotConnected": {
+    "message": "UDM не запущено або немає з'єднання."
+  },
+  "noVideoFound": {
+    "message": "Відео ще не знайдено. Дайте йому трохи відтворитися, а потім спробуйте ще раз."
+  },
+  "sentToUdm": {
+    "message": "Надіслано до UDM."
+  },
+  "couldNotReachUdm": {
+    "message": "Не вдалося зв'язатися з UDM."
+  },
+  "hlsStream": {
+    "message": "Потік HLS"
+  },
+  "dashStream": {
+    "message": "Потік DASH"
+  },
+  "hdsStream": {
+    "message": "Потік HDS"
+  },
+  "youtubeVideo": {
+    "message": "Відео YouTube"
+  },
+  "facebookVideo": {
+    "message": "Відео Facebook"
+  },
+  "instagramVideo": {
+    "message": "Відео Instagram"
+  },
+  "vimeoVideo": {
+    "message": "Відео Vimeo"
+  },
+  "mediaNoAnswer": {
+    "message": "UDM не відповів."
+  },
+  "soundOnly": {
+    "message": "Лише звук ($FORMAT$)",
+    "placeholders": {
+      "format": { "content": "$1" }
+    }
+  },
+  "videoFileType": {
+    "message": "Відео $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "audioFileType": {
+    "message": "Аудіо $TYPE$",
+    "placeholders": {
+      "type": { "content": "$1" }
+    }
+  },
+  "videoFile": {
+    "message": "Відео"
+  },
+  "audioFile": {
+    "message": "Аудіо"
+  },
+  "takeoverFailed": {
+    "message": "UDM не вдалося перехопити завантаження"
+  },
+  "takeoverNotConnected": {
+    "message": "UDM не запущено або немає з'єднання, тому браузер завантажує $FILE$.",
+    "placeholders": {
+      "file": { "content": "$1" }
+    }
+  },
+  "takeoverError": {
+    "message": "UDM не вдалося почати $FILE$ ($REASON$), тому браузер завантажує його.",
+    "placeholders": {
+      "file": { "content": "$1" },
+      "reason": { "content": "$2" }
+    }
+  },
+  "dontShowAgain": {
+    "message": "Більше не показувати"
+  },
+  "takeoverClickToStop": {
+    "message": "Клацніть це сповіщення, щоб більше не показувати такі сповіщення."
+  },
+  "downloadLastVideo": {
+    "message": "Завантажити останнє відео за допомогою UDM"
+  },
+  "recentVideos": {
+    "message": "Останні відео (UDM)"
+  },
+  "downloadPageWithUdm": {
+    "message": "Завантажити сторінку за допомогою UDM"
+  },
+  "noLinksFound": {
+    "message": "На цій сторінці не знайдено посилань."
+  },
+  "noSelectedLinksFound": {
+    "message": "У виділеному фрагменті не знайдено посилань."
+  },
+  "linksUnreadable": {
+    "message": "Браузер не дозволяє UDM читати посилання цієї сторінки."
+  },
+  "cannotReachUdm": {
+    "message": "Не вдається зв'язатися з UDM. Чи запущено програму?"
+  },
+  "cannotReachUdmReason": {
+    "message": "Не вдається зв'язатися з UDM ($REASON$).",
+    "placeholders": {
+      "reason": { "content": "$1" }
+    }
+  },
+  "browserDownloadsInstead": {
+    "message": "Натомість браузер завантажить його сам."
+  },
+  "browserDownloadsHeading": {
+    "message": "Завантаження в браузері"
+  },
+  "sendToUdm": {
+    "message": "Надіслати до UDM"
+  },
+  "pageVideo": {
+    "message": "Відео на цій сторінці"
+  },
+  "playlistTitled": {
+    "message": "Список відтворення: $TITLE$ (відео: $COUNT$)",
+    "placeholders": {
+      "title": {
+        "content": "$1"
+      },
+      "count": {
+        "content": "$2"
+      }
+    }
+  },
+  "playlistVideos": {
+    "message": "Список відтворення (відео: $COUNT$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "chooseVideos": {
+    "message": "Вибрати відео в UDM..."
+  }
+}
