@@ -106,6 +106,7 @@ pub mod store;
 pub mod system;
 pub mod themes;
 pub mod tool;
+pub mod torrent;
 pub mod transfers;
 pub mod unpack;
 pub mod update;

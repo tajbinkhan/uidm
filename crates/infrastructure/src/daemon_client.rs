@@ -69,7 +69,7 @@ impl IpcDaemonClient {
     /// progress, which nobody follows there and which would pile up unread
     /// between requests.
     pub fn assistant(client: &str) -> Self {
-        Self::new(client).hearing(|e| !matches!(e, Event::Progress { .. }))
+        Self::new(client).hearing(|e| !matches!(e, Event::Progress { .. } | Event::TorrentStats { .. }))
     }
 
     /// This connection, hearing the events `hears` lets through.

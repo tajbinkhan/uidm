@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "系統會自行查詢主機名稱，可能經由其他介面卡。請選擇一個 DNS over HTTPS 伺服器，讓查詢保持在這個介面卡上。",
   "The system's (not encrypted)": "系統的（未加密）",
   "This adapter is not connected now: downloads will not start until it is.": "此介面卡目前未連線：連線之前下載不會開始。",
-  "{adapter} (not connected)": "{adapter}（未連線）"
+  "{adapter} (not connected)": "{adapter}（未連線）",
+  "{link} is not a magnet link": "{link} 不是磁力連結",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "磁力連結中沒有 BitTorrent 資訊雜湊（xt=urn:btih:...）。",
+  "{hash} is not a BitTorrent info hash": "{hash} 不是 BitTorrent 資訊雜湊",
+  "The torrent holds no files.": "該種子不含任何檔案。",
+  "The torrent holds {count} files; UDM takes at most {max}.": "該種子含有 {count} 個檔案；UDM 最多接受 {max} 個。",
+  "The torrent names a file UDM cannot save safely: {path}": "該種子含有 UDM 無法安全儲存的檔案：{path}",
+  "The torrent file is larger than {size} and was not read.": "種子檔案大於 {size}，未讀取。",
+  "This is not a torrent file: {why}": "這不是種子檔案：{why}",
+  "Choose at least one of the torrent's files.": "請至少選擇種子中的一個檔案。",
+  "The torrent has no file number {number}.": "該種子沒有編號 {number} 的檔案。",
+  "{value} is not a share ratio between 0 and 100.": "{value} 不是 0 到 100 之間的分享率。"
 }

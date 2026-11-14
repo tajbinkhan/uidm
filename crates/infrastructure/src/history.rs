@@ -206,6 +206,7 @@ mod tests {
             on_done: None,
             validator: None,
             country: None,
+            torrent: None,
         }
     }
 

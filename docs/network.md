@@ -19,7 +19,10 @@ With an adapter chosen:
 - **Every connection is bound to it**: downloads, their probes and save-as dialog checks, stream
   segments, FTP control connections and both passive and active FTP data connections, the
   connection to a proxy, the DNS over HTTPS queries below, the update check, installing yt-dlp,
-  ffmpeg and gallery-dl, the pages the site grabber fetches itself, and debrid accounts.
+  ffmpeg and gallery-dl, the pages the site grabber fetches itself, debrid accounts, and
+  torrents: their listener, their connections to peers, the DHT's socket, and UDP and HTTP
+  trackers (on Linux and macOS; below). UPnP and Local Service Discovery, which torrents use to
+  open the router's port and find peers nearby, are off while an adapter is chosen.
 - **The kill switch.** Before every connection, UDM looks the adapter up again (the system's list,
   read at most once a second). When it is missing, not running, has no address or is another
   connection that took its name (below), the connection is not made, and the download stops with
@@ -76,6 +79,18 @@ yourself (`wg0`) and Windows' adapters, which keep their id, are not checked thi
 A settings file whose adapter is not one any system could name (edited by hand, say) still loads,
 with downloads bound to an adapter that is never there: they do not start until you choose an
 adapter in Options.
+
+### Torrents
+
+The BitTorrent client ([Torrents and magnet links](torrents.md)) binds its own sockets to the
+adapter by name (`SO_BINDTODEVICE` on Linux, `IP_BOUND_IF` on macOS), the listener and the DHT's
+included, so seeding is bound too. When the adapter goes down, running torrents stop with the other
+downloads and seeding stops; a change of the adapter, of the name lookups or of the torrent
+settings moves them to a session for the new setting at once. On Windows the client cannot bind to
+an adapter, so torrents do not run while one is chosen there: they stop with "Torrents cannot be
+bound to a network adapter on Windows", rather than going out unbound. With DNS over HTTPS, no
+tracker or DHT name is looked up by the system: the DHT's starting nodes and UDP trackers are looked
+up through UDM's resolver, and HTTP trackers named by a host name are left out.
 
 ### Programs UDM runs
 

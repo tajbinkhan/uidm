@@ -83,6 +83,11 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "check_debrid", "service": "real_debrid", "key": "..." }
 { "op": "set_debrid_key", "service": "real_debrid", "key": "..." }
 { "op": "remove_debrid_key" }
+{ "op": "add", "url": "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=Album" }
+{ "op": "add", "url": "magnet:?xt=urn:btih:...", "torrent_file": "ZDg6YW5ub3VuY2U...", "ask": false }
+{ "op": "select_torrent_files", "id": 4, "files": [0, 2] }
+{ "op": "set_seed_limits", "id": 4, "limits": { "ratio": 2.0, "minutes": 120 } }
+{ "op": "stop_seeding", "id": 4 }
 ```
 
 Daemon to clients:
@@ -138,8 +143,35 @@ Daemon to clients:
 { "op": "debrid_refused", "refused": { "service": "all_debrid", "error": { "kind": "bad_key" } } }
 { "op": "debrid", "check": { "service": "real_debrid", "outcome": { "Ok": { "username": "ann",
   "premium": true, "premium_until": 1765000000 } } } }
+{ "op": "torrent_info", "id": 4, "url": "magnet:?...", "info": { "info_hash": "c12f...a88a", "name": "Album",
+  "files": [ { "path": ["CD1", "01.flac"], "size": 31457280 } ], "piece_size": 262144, "pieces": 120 } }
+{ "op": "torrent_stats", "id": 4, "url": "magnet:?...", "stats": { "phase": "downloading", "done": 1048576,
+  "total": 31457280, "down_speed": 524288, "up_speed": 1024, "uploaded": 65536, "eta_seconds": 58,
+  "peers_connected": 6, "peers_known": 40, "peers": [ { "address": "198.51.100.7:51413",
+  "client": "qBittorrent 4.6.2", "down_speed": 131072, "up_speed": 0, "downloaded": 262144,
+  "uploaded": 0, "transport": "tcp" } ], "trackers": [ { "url": "udp://tracker.example:6969/announce",
+  "state": "used" } ], "pieces": { "pieces": 120, "have": 4, "cells": [100, 0, 0] },
+  "file_done": [1048576] } }
 { "op": "error", "message": "..." }
 ```
+
+Torrents ([Torrents and magnet links](torrents.md)): `add` takes a magnet link as its `url`;
+`torrent_file` carries a `.torrent` file's contents, base64-encoded (from `udm-cli get
+file.torrent`), and the daemon keeps the file and makes the magnet link the download's address.
+An `add` of an http or https address that is a `.torrent` file (by its `content_type` or its
+name) is fetched by the daemon, with the request's cookies and headers, and added as its torrent
+when **Options** takes torrent files. Once a torrent's metadata is known, every client hears
+`torrent_info` (its files, numbered from 0 in the torrent's order); a `confirming` torrent's
+entry carries them too (`torrent.files`), so the save-as dialog can list them, and the dialog's
+`confirm` takes `files`, the numbers chosen. `select_torrent_files` changes them later: a running
+torrent at once, a finished one given more files starts again. While a torrent downloads or seeds,
+`torrent_stats` comes about every second (every two while seeding): its `phase` (`metadata`,
+`checking`, `downloading`, `seeding` or `complete`), speeds in bytes per second, the busiest 200
+peers, its trackers (`used`, or `skipped` when DNS over HTTPS would have to send the name to the
+system), and `pieces`, a map of at most 512 cells, each the percentage of its share of the pieces
+that is here. An entry's `torrent` keeps its `info_hash`, `phase`, `files`, `selection`,
+`uploaded`, `seeding_since` and its own `seed_limits`, which `set_seed_limits` sets (none follows
+the settings').
 
 `api` in the daemon's `hello` is the automation API's version; daemons
 older than the API leave it out. `connections` on an `add` is how many connections

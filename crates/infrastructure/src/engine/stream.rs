@@ -830,6 +830,8 @@ mod tests {
                 host_limit: None,
                 elevate: false,
                 resolve: None,
+                torrent_files: None,
+                torrent_uploaded: ByteCount::ZERO,
             }
         }
 

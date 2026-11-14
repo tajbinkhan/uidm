@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Sistem ana bilgisayar adlarını kendisi arar, belki başka bir bağdaştırıcı üzerinden. Aramaları bu bağdaştırıcıda tutmak için bir HTTPS üzerinden DNS sunucusu seçin.",
   "The system's (not encrypted)": "Sistemin (şifresiz)",
   "This adapter is not connected now: downloads will not start until it is.": "Bu bağdaştırıcı şu anda bağlı değil: bağlanana kadar indirmeler başlamaz.",
-  "{adapter} (not connected)": "{adapter} (bağlı değil)"
+  "{adapter} (not connected)": "{adapter} (bağlı değil)",
+  "{link} is not a magnet link": "{link} bir magnet bağlantısı değil",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "Magnet bağlantısı bir BitTorrent bilgi özeti (xt=urn:btih:...) içermiyor.",
+  "{hash} is not a BitTorrent info hash": "{hash} bir BitTorrent bilgi özeti değil",
+  "The torrent holds no files.": "Torrent hiç dosya içermiyor.",
+  "The torrent holds {count} files; UDM takes at most {max}.": "Torrent {count} dosya içeriyor; UDM en fazla {max} dosya alır.",
+  "The torrent names a file UDM cannot save safely: {path}": "Torrent, UDM'nin güvenle kaydedemeyeceği bir dosya adı içeriyor: {path}",
+  "The torrent file is larger than {size} and was not read.": "Torrent dosyası {size} boyutundan büyük ve okunmadı.",
+  "This is not a torrent file: {why}": "Bu bir torrent dosyası değil: {why}",
+  "Choose at least one of the torrent's files.": "Torrent dosyalarından en az birini seçin.",
+  "The torrent has no file number {number}.": "Torrentte {number} numaralı dosya yok.",
+  "{value} is not a share ratio between 0 and 100.": "{value}, 0 ile 100 arasında bir paylaşım oranı değil."
 }

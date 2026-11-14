@@ -388,6 +388,13 @@ pub fn remote_dir() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("remote"))
 }
 
+/// Torrents' files in the data folder: the `.torrent` file of each torrent
+/// UDM knows (`<info hash>.torrent`), and in `session` the BitTorrent
+/// client's resume data and DHT nodes.
+pub fn torrents_dir() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("torrents"))
+}
+
 /// Where Update now saves and unpacks a checked update, in the data folder:
 /// only this user may write there, unlike a shared temporary folder.
 pub fn update_dir() -> io::Result<PathBuf> {

@@ -4,6 +4,9 @@ resolver = "2"
 # <- infrastructure and ui <- app. AGENTS.md section 16 tracks where the code
 # still differs from them.
 members = ["crates/domain", "crates/application", "crates/infrastructure", "crates/ui", "crates/app"]
+# A patched copy of a third-party crate (see [patch.crates-io] below), not
+# one of UDM's.
+exclude = ["vendor/librqbit-tracker-comms"]
 
 # The release scripts read the first `version = ` line of this file.
 [workspace.package]
@@ -48,6 +51,11 @@ windows = { version = "0.61", features = [
     # SHDoDragDrop and the file's data object, for the drag above.
     "Win32_UI_Shell",
 ] }
+
+# librqbit's tracker client, with a fix for systems without IPv6 (its
+# README.UDM.md says what and why). Torrents (`udm_infrastructure::torrent`).
+[patch.crates-io]
+librqbit-tracker-comms = { path = "vendor/librqbit-tracker-comms" }
 
 [profile.release]
 # Debug info goes, function names stay, so a crash report's backtrace names

@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { extensionOf, siteMatches, downloadType, captureDecision, keyAction, parseKeys, trackKey, forceLeavesLink, clickApplies, urlMatches, selectionButtonAllowed } = require("../chromium/rules.js");
+const { isMagnet, isTorrentFile, catchesTorrents, extensionOf, siteMatches, downloadType, captureDecision, keyAction, parseKeys, trackKey, forceLeavesLink, clickApplies, urlMatches, selectionButtonAllowed } = require("../chromium/rules.js");
 
 const RULES = {
   capture_types: ["zip", "pdf", "exe", "mp4"],
@@ -245,6 +245,48 @@ test("the worker keeps a skip-key download and sends a force-key link", async ()
   const add = w.sent.filter((m) => m.op === "add").at(-1);
   assert.equal(add.url, "https://dl.net/page.html");
   assert.equal(add.referrer, "https://dl.net/");
+});
+
+test("magnet links and torrent files", () => {
+  const hash = "c12fe1c06bba254a9dc9f519b335aa7c1367a88a";
+  assert.ok(isMagnet(`magnet:?xt=urn:btih:${hash}&dn=a`));
+  assert.ok(isMagnet(`MAGNET:?dn=a&xt=urn:btih:${hash.toUpperCase()}`));
+  assert.ok(isMagnet("magnet:?xt=urn:btih:YEX6DQDLXISUVHOJ6UM3GNNKPQJWPKEK"), "base32");
+  assert.ok(!isMagnet("magnet:?xt=urn:ed2k:31d6cfe0d16ae931b73c59d7e0c089c0"), "not BitTorrent");
+  assert.ok(!isMagnet(`magnet:?xt=urn:btih:${hash}0`));
+  assert.ok(!isMagnet(`https://x/?xt=urn:btih:${hash}`));
+  assert.ok(isTorrentFile({ url: "https://x/a.torrent" }));
+  assert.ok(isTorrentFile({ url: "https://x/get?id=1", mime: "application/x-bittorrent; charset=binary" }));
+  assert.ok(isTorrentFile({ url: "https://x/get?id=1", filename: "Album.TORRENT" }));
+  assert.ok(!isTorrentFile({ url: "https://x/a.zip" }));
+  assert.ok(catchesTorrents({ torrents: { catch_torrent_files: true } }));
+  assert.ok(!catchesTorrents({ torrents: { catch_torrent_files: false } }));
+  assert.ok(!catchesTorrents({}), "an older UDM takes no torrents");
+
+  // A torrent file goes to UDM whatever its size and the captured types,
+  // unless its site or address is excluded or the skip key is held.
+  const rules = { ...RULES, torrents: { catch_torrent_files: true } };
+  const torrent = { url: "https://dl.net/a.torrent", size: 2000 };
+  assert.equal(captureDecision(rules, torrent).capture, true);
+  assert.equal(captureDecision(rules, { ...torrent, key: "skip" }).capture, false);
+  assert.equal(captureDecision(rules, { ...torrent, url: "https://cdn.example.com/a.torrent" }).capture, false);
+  assert.equal(captureDecision(RULES, torrent).capture, false, "UDM's settings say no: small, and not a captured type");
+});
+
+test("the worker hands a clicked magnet link to UDM while capture is on", async () => {
+  const w = loadWorker();
+  const magnet = "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=Album";
+  assert.equal((await w.content({ type: "link:magnet", url: magnet }, 3, "https://site.net/")).ok, false, "not connected");
+  w.port.onMessage.fire({ op: "hello", name: "udm-daemon", version: "x" });
+  w.port.onMessage.fire({ op: "settings", settings: RULES });
+  assert.ok(w.chrome.storage.written.some((o) => o.magnetCapture === true), "content scripts hear magnet links go to UDM");
+  const answer = await w.content({ type: "link:magnet", url: magnet }, 3, "https://site.net/");
+  assert.equal(answer.ok, true);
+  const add = w.sent.filter((m) => m.op === "add").at(-1);
+  assert.equal(add.url, magnet);
+  const before = w.sent.length;
+  assert.equal((await w.content({ type: "link:magnet", url: "https://site.net/a.zip" }, 3)).ok, false);
+  assert.equal(w.sent.length, before);
 });
 
 test("address exceptions with wildcards", () => {

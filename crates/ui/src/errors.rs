@@ -703,6 +703,31 @@ pub mod text {
             E::FilesStay { url, reason } => {
                 trf!(lang, "Removed {url} from the list, but its files stay: {reason}", url = url, reason = reason)
             }
+            E::Torrent(e) => torrent(lang, e),
+        }
+    }
+
+    /// Why a torrent or magnet link cannot be used.
+    pub fn torrent(lang: &'static Language, e: &udm_domain::torrent::TorrentError) -> String {
+        use udm_domain::torrent::TorrentError as T;
+        match e {
+            T::NotMagnet(link) => trf!(lang, "{link} is not a magnet link", link = link),
+            T::NoInfoHash => lang.tr("The magnet link names no BitTorrent info hash (xt=urn:btih:...).").to_string(),
+            T::BadInfoHash(hash) => trf!(lang, "{hash} is not a BitTorrent info hash", hash = hash),
+            T::NoFiles => lang.tr("The torrent holds no files.").to_string(),
+            T::TooManyFiles { count, max } => {
+                trf!(lang, "The torrent holds {count} files; UDM takes at most {max}.", count = count, max = max)
+            }
+            T::UnsafePath(path) => trf!(lang, "The torrent names a file UDM cannot save safely: {path}", path = path),
+            T::TooBig { max } => trf!(
+                lang,
+                "The torrent file is larger than {size} and was not read.",
+                size = udm_domain::bytes::ByteCount::new(*max as u64).megabytes()
+            ),
+            T::BadTorrent(why) => trf!(lang, "This is not a torrent file: {why}", why = why),
+            T::NothingSelected => lang.tr("Choose at least one of the torrent's files.").to_string(),
+            T::NoSuchFile(n) => trf!(lang, "The torrent has no file number {number}.", number = n),
+            T::BadRatio(value) => trf!(lang, "{value} is not a share ratio between 0 and 100.", value = value),
         }
     }
 

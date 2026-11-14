@@ -105,7 +105,9 @@ impl EarlyRuns {
             | Progress::Finished { id, .. }
             | Progress::Failed { id, .. }
             | Progress::Canceled { id, .. }
-            | Progress::NameTaken { id, .. } => *id,
+            | Progress::NameTaken { id, .. }
+            | Progress::TorrentInfo { id, .. }
+            | Progress::TorrentStats { id, .. } => *id,
         };
         let mut early = self.runs();
         let Some(e) = early.get_mut(&id) else {
@@ -126,6 +128,8 @@ impl EarlyRuns {
             }
             Progress::Finished { path, .. } => e.end = Some(Some(path.clone())),
             Progress::Failed { .. } | Progress::Canceled { .. } | Progress::NameTaken { .. } => e.end = Some(None),
+            // A torrent never starts early.
+            Progress::TorrentInfo { .. } | Progress::TorrentStats { .. } => {}
         }
         if e.discard && e.end.is_some() {
             if let Some(gone) = early.remove(&id) {
@@ -169,6 +173,11 @@ pub struct Transfers {
     /// Asked for the address to download from as each download starts (the
     /// debrid account's direct links); set once at wiring.
     resolver: OnceLock<engine::Resolver>,
+    /// Where the engine's events go, for the torrent client's too.
+    sink: crate::torrent::Sink,
+    /// The BitTorrent client magnet links download through; set once at
+    /// wiring.
+    torrents: OnceLock<Arc<crate::torrent::TorrentClient>>,
 }
 
 impl Transfers {
@@ -185,14 +194,12 @@ impl Transfers {
         let early = Arc::new(EarlyRuns::default());
         let (to, shadows) = (Arc::clone(&store), Arc::clone(&early));
         let s = settings.get();
-        let engine = Engine::new(
-            Arc::new(move |p: Progress| {
-                if !shadows.event(&to, &p) {
-                    to.publish(&progress_to_outgoing(p));
-                }
-            }),
-            s.max_concurrent,
-        );
+        let sink: crate::torrent::Sink = Arc::new(move |p: Progress| {
+            if !shadows.event(&to, &p) {
+                to.publish(&progress_to_outgoing(p));
+            }
+        });
+        let engine = Engine::new(Arc::clone(&sink), s.max_concurrent);
         set_limits(&engine, s.engine_limits(false));
         engine.set_next_id(next_id);
         // Each download goes out the way the settings say as it starts, not
@@ -209,6 +216,36 @@ impl Transfers {
             refresh_waiting: Mutex::new(None),
             limit_lifted: AtomicBool::new(false),
             resolver: OnceLock::new(),
+            sink,
+            torrents: OnceLock::new(),
+        }
+    }
+
+    /// Download magnet links through `client`, which reports to the same
+    /// clients, goes out the way the settings say and follows the speed
+    /// limits. Only the first call counts.
+    pub fn torrents_with(&self, client: Arc<crate::torrent::TorrentClient>) {
+        if self.torrents.set(Arc::clone(&client)).is_err() {
+            return;
+        }
+        let (live, net) = (Arc::clone(&self.settings), Arc::clone(&self.retries));
+        let route: crate::torrent::RouteSource = Arc::new(move || net.network.route(&live.get()));
+        let live = Arc::clone(&self.settings);
+        client.connect(Arc::clone(&self.sink), route, Arc::new(move || live.get().torrents));
+        self.engine.torrents_with(client);
+        self.limits_to_torrents();
+    }
+
+    /// The BitTorrent client, once wired.
+    pub fn torrents(&self) -> Option<&Arc<crate::torrent::TorrentClient>> {
+        self.torrents.get()
+    }
+
+    /// Give the torrent client the engine's total limit and the torrent
+    /// settings' upload limit.
+    fn limits_to_torrents(&self) {
+        if let Some(client) = self.torrents.get() {
+            client.set_limits(self.engine.speed_limit(), self.settings.get().torrents.upload_limit());
         }
     }
 
@@ -292,6 +329,12 @@ impl Transfers {
         let mut req = self.request_for(download);
         req.speed_limit = item.speed_limit;
         req.reuse_partial = item.partial.as_deref().map(PathBuf::from);
+        if let Some(torrent) = &item.torrent {
+            req.torrent_uploaded = torrent.uploaded;
+            if req.torrent_files.is_none() {
+                req.torrent_files = torrent.selection.clone();
+            }
+        }
         match plan {
             (Some(path), true) => {
                 let path = PathBuf::from(path);
@@ -334,6 +377,10 @@ impl Transfers {
         let entry = self.entry(id).ok_or(TransferError::NoDownload(id))?;
         if entry.status != Status::Done {
             return Err(TransferError::NotFinished(id));
+        }
+        // A torrent's files are its pieces: they cannot change.
+        if entry.torrent.is_some() {
+            return Ok(false);
         }
         let found = self.probe_finished(&entry);
         let found = match found {
@@ -413,6 +460,10 @@ impl Transfers {
     /// its own. Answering the dialog keeps what it fetched: see
     /// `settle_early`.
     pub fn start_early(&self, id: DownloadId, download: Download, filename: &FileName) {
+        // A torrent's files are chosen in the dialog: it starts once answered.
+        if download.url.address().is_some_and(udm_domain::address::Address::is_torrent) {
+            return;
+        }
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
         let root = early_root();
@@ -646,6 +697,7 @@ impl Transfers {
             choice.remember(old.network_adapter.as_ref(), &adapters);
         }
         let network_changed = new.network_adapter != old.network_adapter || new.dns != old.dns;
+        let torrents_changed = new.torrents != old.torrents;
         let new = self.store_secrets(new)?;
         let old_autostart = self.settings.lock().start_with_windows;
         if new.start_with_windows != old_autostart {
@@ -667,6 +719,15 @@ impl Transfers {
         };
         if network_changed {
             self.engine.restart_running();
+        }
+        self.limits_to_torrents();
+        if network_changed || torrents_changed {
+            // The seeding torrents move to a session for the new settings
+            // now; running ones as they notice.
+            if let Some(client) = self.torrents.get() {
+                let client = Arc::clone(client);
+                thread::spawn(move || client.refresh());
+            }
         }
         self.events.announce(&Outgoing::Settings { settings: new });
         if let Some(lifted) = applied {
@@ -704,6 +765,7 @@ impl LimitLift for Transfers {
             }
             set_limits(&self.engine, s.engine_limits(lifted));
         }
+        self.limits_to_torrents();
         self.events.announce(&Outgoing::LimitLifted { lifted });
     }
 }

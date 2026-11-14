@@ -6,6 +6,24 @@ first. UDM was called Pullbay in version 0.4 and UIDM up to version 0.3.3.
 
 ## Unreleased
 
+UDM downloads torrents and magnet links (#249), through librqbit on the engine's own runtime. A
+`magnet:` link goes in like any address: Add URL, the clipboard monitor, `udm-cli get` (which also
+takes a `.torrent` file) and `udm-mcp`; the browser extension hands over the magnet links you
+click (in Safari too) and the `.torrent` files the browser downloads, which UDM fetches with the
+page's cookies. A torrent's metadata comes from its peers for a magnet link, and the save-as
+dialog's answer carries which of its files to download (changeable later); without the dialog it
+downloads every file. A torrent is a download like any other: it counts toward the downloads that
+run at once, waits in queues, follows the speed limit and the quota, pauses, and resumes after a
+restart from resume data in UDM's data folder. Once finished it seeds, outside the download slots,
+until a share ratio of 1.0 or an hour (the settings' `torrents.seed_limits`, or a torrent's own),
+and torrents that were seeding seed again when UDM starts. With a network adapter chosen, the
+torrents' listener, peer connections, DHT and trackers are bound to it on Linux and macOS (UPnP and
+local discovery are off), and on Windows, where that cannot be done, torrents do not run; with DNS
+over HTTPS no tracker or DHT name goes to the system's resolver. Torrents whose file names could
+not be saved safely, with more than 10,000 files or a `.torrent` file over 16 MB are refused. The
+window's dialog and the download window's torrent tabs come next; the daemon's `torrent_info` and
+`torrent_stats` messages carry what they show ([Torrents and magnet links](docs/torrents.md)).
+
 Downloads can go through one network adapter only, such as a VPN's (#261). **Options > Network**
 lists the adapters with their addresses; with one chosen, every connection is bound to it
 (downloads, probes, stream segments, FTP's control and data connections, proxies, the update

@@ -346,14 +346,24 @@ pub fn clipboard_link(text: &str, types: &[String]) -> Option<Address> {
     wanted.then_some(address)
 }
 
-/// Every http, https, ftp or ftps address in `text`, once each and in order:
-/// copied lines, a web page's text, or addresses in quotes or brackets.
-/// Punctuation that ends a sentence is not taken as part of an address.
+/// Every http, https, ftp or ftps address and every magnet link in `text`,
+/// once each and in order: copied lines, a web page's text, or addresses in
+/// quotes or brackets. Punctuation that ends a sentence is not taken as part
+/// of an address.
 pub fn links_in(text: &str) -> Vec<Address> {
     let mut seen = std::collections::HashSet::new();
     let mut urls = Vec::new();
     let separators = |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | '|');
     for word in text.split(separators) {
+        if let Some(start) = word.to_ascii_lowercase().find("magnet:?") {
+            let link = word[start..].trim_end_matches(['.', ',', ';', '!', ')', ']']);
+            if let Ok(address) = Address::parse(link) {
+                if seen.insert(link.to_string()) {
+                    urls.push(address);
+                }
+            }
+            continue;
+        }
         // An address may follow other text, as in `link:https://...`.
         let lower = word.to_ascii_lowercase();
         let Some(start) = ["https://", "http://", "ftp://", "ftps://"].iter().filter_map(|p| lower.find(p)).min()
@@ -392,10 +402,11 @@ pub fn links_in(text: &str) -> Vec<Address> {
     urls
 }
 
-/// Whether `s` starts like an address UDM can download: http, https,
-/// ftp or ftps.
+/// Whether `s` is an address UDM can download: one that starts like an
+/// http, https, ftp or ftps address, or a magnet link with a BitTorrent
+/// info hash (`torrent::is_magnet`).
 pub fn is_download_url(s: &str) -> bool {
-    is_web_url(s) || is_ftp_url(s)
+    is_web_url(s) || is_ftp_url(s) || crate::torrent::is_magnet(s)
 }
 
 /// Whether `s` starts like an FTP address: `ftp://`, or `ftps://` (FTP over

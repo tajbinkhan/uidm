@@ -32,6 +32,8 @@ pub fn change_of(event: &Event) -> Option<Change<'_>> {
             Change::NameTaken { id: *id, url: url.as_str(), path, total: *total }
         }
         Event::Removed { id } => Change::Removed { id: *id },
+        Event::TorrentInfo { id, url, info } => Change::TorrentInfo { id: *id, url: url.as_str(), info },
+        Event::TorrentStats { id, url, stats } => Change::TorrentStats { id: *id, url: url.as_str(), stats },
         Event::Updated { item } => Change::Updated(item),
         Event::Downloads { items } => Change::Downloads(items),
         _ => return None,

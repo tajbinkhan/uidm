@@ -32,7 +32,8 @@ use udm_domain::ports::{
     DownloadList, EarlyStarts, FileHashes, FileOpener, GrabDownloads, GrabProjects, GrabRuns, LimitLift, Notifications,
     PackageStore, PausedDownloads, PowerControl, Probes, ProxyFallback, QueueFinish, QueueRuns, QueueSounds,
     QueueStore, QuotaState, ReleaseSource, RemoteListener, SaveFolders, SettingsError, SettingsStore, SiteCrawler,
-    SyncChecks, Timestamps, ToolFolder, ToolReleases, TransferEngine, Unpacker, UpdateChecks, UserIdle, VirusScanner,
+    SyncChecks, Timestamps, ToolFolder, ToolReleases, Torrents, TransferEngine, Unpacker, UpdateChecks, UserIdle,
+    VirusScanner,
 };
 use udm_domain::queue::{
     self, PowerRequest, PowerStep, Queue, ScheduleStep, StopReason, WhenDone, COUNTDOWN_SECS, MAIN_QUEUE,
@@ -58,10 +59,12 @@ use crate::queues::{
 };
 use crate::quota::{CheckQuota, QuotaEvent, QuotaStatus};
 use crate::tools::{InstallTool, ListTools, UpdateYtDlp};
+use crate::torrents::{AddTorrent, ApplySeedLimits, ForgetTorrent, PickFiles, Picked, ResumeSeeding, TorrentSource};
 use crate::update::{CheckForUpdate, ClaimWeeklyCheck, InstallUpdate};
 use udm_domain::media::Playlist;
 use udm_domain::pairing::{PairingError, PairingOffer, RemoteState};
 use udm_domain::tools::{Platform, Tool, ToolError, ToolState};
+use udm_domain::torrent::{FileSelection, SeedLimits, TorrentPhase};
 
 /// Why the daemon refused a client's command. Clients hear it as a
 /// [`Failure`], kind and values, so the window can translate it.
@@ -259,6 +262,8 @@ pub struct Parts<W: Wiring> {
     pub debrid: Arc<dyn Debrid>,
     pub debrid_keys: Arc<dyn DebridKeys>,
     pub links: Arc<ResolveLink>,
+    /// The BitTorrent client, for what a torrent needs besides the engine.
+    pub torrents: Arc<dyn Torrents>,
 }
 
 /// The daemon's work. Its fields are the adapters it was wired with, and
@@ -313,6 +318,7 @@ pub struct DaemonService<W: Wiring> {
     pub debrid: Arc<dyn Debrid>,
     pub debrid_keys: Arc<dyn DebridKeys>,
     pub links: Arc<ResolveLink>,
+    pub torrents: Arc<dyn Torrents>,
     /// Keeps two scheduler passes from running at once.
     tick_lock: Mutex<()>,
     /// Each client's running site crawl, by its stop flag.
@@ -384,6 +390,7 @@ impl<W: Wiring> DaemonService<W> {
             debrid: p.debrid,
             debrid_keys: p.debrid_keys,
             links: p.links,
+            torrents: p.torrents,
             tick_lock: Mutex::new(()),
             grabs: Mutex::default(),
             link_probes: Mutex::default(),
@@ -446,6 +453,10 @@ impl<W: Wiring> DaemonService<W> {
         }
         if self.settings_now().resume_at_startup {
             self.resume_interrupted();
+        }
+        let seeding = ResumeSeeding::new(&*self.store, &*self.torrents).run();
+        if !seeding.is_empty() {
+            info!(count = seeding.len(), "torrents seed again");
         }
     }
 
@@ -545,6 +556,7 @@ impl<W: Wiring> DaemonService<W> {
         let _guard = lock(&self.tick_lock);
         self.check_quota();
         self.lift_limit_while_away();
+        ApplySeedLimits::new(&*self.store, &*self.torrents, &*self.transfers, &self.clock).run();
         let scheduled =
             RunSchedules::new(&*self.store, &*self.store, &self.run_book, &*self.transfers, &self.clock, &self.chimes)
                 .run();
@@ -903,6 +915,10 @@ impl<W: Wiring> DaemonService<W> {
     /// decides first, asking in the save-as dialog under `Ask` even when
     /// that dialog is off.
     pub fn add(self: &Arc<Self>, mut download: Download) -> (DownloadId, Link) {
+        // A magnet link names its torrent (`dn`) until its metadata does.
+        if download.filename.is_none() {
+            download.filename = download.url.address().and_then(|a| a.magnet()).and_then(|m| m.name);
+        }
         if let Some(old) = self.duplicate_of(&download) {
             let choice = download.duplicate.unwrap_or(self.settings_now().if_duplicate);
             info!(url = %download.url, download_id = old.id.get(), choice = ?choice, "already in the list");
@@ -1490,8 +1506,13 @@ impl<W: Wiring> DaemonService<W> {
                     return;
                 }
             };
-            let probed =
-                Probed { filename: found.filename, path: found.path, total: found.total, resumable: found.resumable };
+            let probed = Probed {
+                filename: found.filename,
+                path: found.path,
+                total: found.total,
+                resumable: found.resumable,
+                torrent: found.torrent,
+            };
             let hold = HoldForAnswer::new(
                 &*daemon.store,
                 &*daemon.transfers,
@@ -1639,9 +1660,95 @@ impl<W: Wiring> DaemonService<W> {
         if delete_files {
             info!(download_id = id.get(), "removing with its files");
         }
+        let entry = self.store.entry(id);
         RemoveDownload::new(&*self.store, &*self.store, &*self.transfers, &*self.files)
             .run(id, delete_files)
-            .map_err(ServiceError::from)
+            .map_err(ServiceError::from)?;
+        if let Some(entry) = entry {
+            ForgetTorrent::new(&*self.store, &*self.torrents).run(&entry);
+        }
+        Ok(())
+    }
+
+    /// Add a `.torrent` file's torrent: from `metainfo` a client read, or
+    /// fetched from `download`'s web address (on a thread of its own). The
+    /// client hears `Ack` once it is added, or `Rejected` with why not.
+    pub fn add_torrent(self: &Arc<Self>, metainfo: Option<Vec<u8>>, download: Download, reply: Reply) {
+        let daemon = Arc::clone(self);
+        let from_disk = metainfo.is_some();
+        let work = move || {
+            let url = download.url.clone();
+            let source = match &metainfo {
+                Some(bytes) => TorrentSource::File(bytes),
+                None => TorrentSource::Web,
+            };
+            match AddTorrent::new(&*daemon.torrents).run(source, download) {
+                Ok(torrent) => {
+                    let (id, url) = daemon.add(torrent);
+                    info!(download_id = id.get(), url = %url, "add a torrent");
+                    reply.send(Event::Ack { id, url, status: "accepted".to_string() });
+                }
+                Err(e) => {
+                    warn!(url = %url, error = %e, "refused a torrent");
+                    reply.send(Event::Rejected { url, error: Failure::Probe(e.to_string()) });
+                }
+            }
+        };
+        if from_disk {
+            work();
+        } else {
+            thread::spawn(work);
+        }
+    }
+
+    /// Whether `download` is a `.torrent` file the settings say to add as
+    /// its torrent.
+    pub fn is_torrent_file(&self, download: &Download) -> bool {
+        download.url.address().is_some_and(|a| a.is_web())
+            && !download.is_post()
+            && self.settings_now().torrents.catch_torrent_files
+            && udm_domain::torrent::is_torrent_file(download.url.as_str(), download.content_type.as_deref())
+    }
+
+    /// Choose torrent download `id`'s files (see `PickFiles`).
+    pub fn select_torrent_files(&self, id: DownloadId, files: FileSelection) -> Result<Picked, ServiceError> {
+        PickFiles::new(&*self.store, &*self.transfers, &*self.torrents).run(id, files).map_err(ServiceError::from)
+    }
+
+    /// Give torrent download `id` its own seeding limits, or follow the
+    /// settings' again.
+    pub fn set_seed_limits(&self, id: DownloadId, limits: Option<SeedLimits>) -> Result<(), ServiceError> {
+        let changed = self.store.update(id, |e| match e.torrent.as_mut() {
+            Some(t) => {
+                t.seed_limits = limits;
+                true
+            }
+            None => false,
+        });
+        match changed {
+            None => Err(udm_domain::download::DownloadError::NoDownload(id).into()),
+            Some(false) => {
+                Err(udm_domain::download::DownloadError::Torrent(udm_domain::torrent::TorrentError::NoFiles).into())
+            }
+            Some(true) => Ok(()),
+        }
+    }
+
+    /// Stop seeding finished torrent download `id`.
+    pub fn stop_seeding(&self, id: DownloadId) -> Result<(), ServiceError> {
+        let entry = self.store.entry(id).ok_or(udm_domain::download::DownloadError::NoDownload(id))?;
+        let Some(torrent) = entry.torrent.filter(|t| t.phase == TorrentPhase::Seeding) else {
+            return Ok(());
+        };
+        self.torrents.stop_seeding(torrent.info_hash);
+        self.store.update(id, |e| match e.torrent.as_mut() {
+            Some(t) => {
+                t.phase = TorrentPhase::Complete;
+                true
+            }
+            None => false,
+        });
+        Ok(())
     }
 
     /// Send the whole list to one client, under the table lock so no event can
@@ -1778,9 +1885,28 @@ pub fn dispatch<W: Wiring>(incoming: Command, daemon: &Arc<DaemonService<W>>, cl
                 send(Event::Rejected { url: download.url, error: message.into() });
                 return;
             }
+            if daemon.is_torrent_file(&download) {
+                daemon.add_torrent(None, download, reply.clone());
+                return;
+            }
             let (id, url) = daemon.add(download);
             info!(download_id = id.get(), url = %url, "add");
             send(Event::Ack { id, url, status: "accepted".to_string() });
+        }
+        Command::AddTorrentFile { metainfo, download } => daemon.add_torrent(Some(metainfo), download, reply.clone()),
+        Command::SelectTorrentFiles { id, files } => match daemon.select_torrent_files(id, files) {
+            Ok(picked) => info!(download_id = id.get(), picked = ?picked, "torrent files chosen"),
+            Err(e) => send(Event::Error { error: e.into() }),
+        },
+        Command::SetSeedLimits { id, limits } => {
+            if let Err(e) = daemon.set_seed_limits(id, limits) {
+                send(Event::Error { error: e.into() });
+            }
+        }
+        Command::StopSeeding { id } => {
+            if let Err(e) = daemon.stop_seeding(id) {
+                send(Event::Error { error: e.into() });
+            }
         }
         Command::AddMany { items, queue, packaging } => {
             let (ids, skipped) = daemon.add_packaged(items, queue, &packaging);

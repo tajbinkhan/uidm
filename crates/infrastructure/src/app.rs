@@ -60,6 +60,8 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         host_limit,
         elevate: d.elevate,
         resolve: None,
+        torrent_files: d.torrent_files,
+        torrent_uploaded: udm_domain::bytes::ByteCount::ZERO,
     }
 }
 
@@ -154,6 +156,8 @@ pub fn progress_to_outgoing(p: Progress) -> Outgoing {
         Progress::NameTaken { id, url, path, total } => {
             Outgoing::NameTaken { id, url: url.into(), path: path.display().to_string(), total }
         }
+        Progress::TorrentInfo { id, url, info } => Outgoing::TorrentInfo { id, url: url.into(), info },
+        Progress::TorrentStats { id, url, stats } => Outgoing::TorrentStats { id, url: url.into(), stats },
     }
 }
 

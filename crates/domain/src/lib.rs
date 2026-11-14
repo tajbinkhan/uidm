@@ -32,4 +32,5 @@ pub mod sync;
 pub mod table;
 pub mod theme;
 pub mod tools;
+pub mod torrent;
 pub mod update;

@@ -538,6 +538,15 @@ function onContentMessage(msg, sender, sendResponse) {
       }
       captureClickedLink(msg.url, linkFileName(msg.download), sender).then((ok) => sendResponse({ ok: !!ok }));
       return true;
+    case "link:magnet":
+      // A magnet link clicked (see content.js): UDM downloads its torrent,
+      // unless capture is off, everywhere or in this tab.
+      if (!connected || !captureEnabled || !tabCaptures(tabId) || !isMagnet(msg.url)) {
+        sendResponse({ ok: false });
+        return false;
+      }
+      sendResponse({ ok: send(isWeb(sender.tab.url) ? { op: "add", url: msg.url, page: sender.tab.url } : { op: "add", url: msg.url }) });
+      return false;
     case "link:force":
       // The force key was held: the link goes to UDM whatever it is,
       // unless capture is off, everywhere or in this tab.
@@ -592,8 +601,16 @@ chrome.storage.onChanged.addListener((changes) => {
 // Nothing is taken until UDM is connected and its rules are here: before
 // them a link's type cannot be checked.
 let sharedLinkCapture = null;
+let sharedMagnetCapture = null;
 function shareLinkCapture() {
-  if (chrome.downloads || !chrome.storage || !chrome.storage.local) return;
+  if (!chrome.storage || !chrome.storage.local) return;
+  // Every browser: whether magnet links go to UDM as they are clicked.
+  const magnets = connected && !!captureEnabled;
+  if (magnets !== sharedMagnetCapture) {
+    sharedMagnetCapture = magnets;
+    Promise.resolve(chrome.storage.local.set({ magnetCapture: magnets })).catch(() => {});
+  }
+  if (chrome.downloads) return;
   const value = {
     on: connected && !!captureEnabled && !!rules,
     rules: rules
@@ -601,6 +618,7 @@ function shareLinkCapture() {
           capture_types: rules.capture_types || [],
           capture_excluded_sites: rules.capture_excluded_sites || [],
           capture_excluded_urls: rules.capture_excluded_urls || [],
+          torrents: { catch_torrent_files: catchesTorrents(rules) },
         }
       : null,
   };

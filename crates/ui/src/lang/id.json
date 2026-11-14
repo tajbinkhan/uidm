@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Sistem mencari nama host sendiri, mungkin melalui adaptor lain. Pilih server DNS over HTTPS agar pencarian tetap di adaptor ini.",
   "The system's (not encrypted)": "Milik sistem (tidak terenkripsi)",
   "This adapter is not connected now: downloads will not start until it is.": "Adaptor ini sedang tidak terhubung: unduhan tidak akan dimulai sampai terhubung.",
-  "{adapter} (not connected)": "{adapter} (tidak terhubung)"
+  "{adapter} (not connected)": "{adapter} (tidak terhubung)",
+  "{link} is not a magnet link": "{link} bukan tautan magnet",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "Tautan magnet tidak menyebut hash info BitTorrent (xt=urn:btih:...).",
+  "{hash} is not a BitTorrent info hash": "{hash} bukan hash info BitTorrent",
+  "The torrent holds no files.": "Torrent tidak berisi berkas.",
+  "The torrent holds {count} files; UDM takes at most {max}.": "Torrent berisi {count} berkas; UDM menerima paling banyak {max}.",
+  "The torrent names a file UDM cannot save safely: {path}": "Torrent menyebut berkas yang tidak dapat disimpan UDM dengan aman: {path}",
+  "The torrent file is larger than {size} and was not read.": "Berkas torrent lebih besar dari {size} dan tidak dibaca.",
+  "This is not a torrent file: {why}": "Ini bukan berkas torrent: {why}",
+  "Choose at least one of the torrent's files.": "Pilih setidaknya satu berkas torrent.",
+  "The torrent has no file number {number}.": "Torrent tidak memiliki berkas nomor {number}.",
+  "{value} is not a share ratio between 0 and 100.": "{value} bukan rasio berbagi antara 0 dan 100."
 }

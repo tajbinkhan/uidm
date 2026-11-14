@@ -18,6 +18,9 @@ pub struct Probed {
     pub total: Option<ByteCount>,
     /// Whether it sends the file in ranges, so a download can resume.
     pub resumable: bool,
+    /// For a torrent: what its metadata says, so the dialog can list its
+    /// files.
+    pub torrent: Option<udm_domain::torrent::TorrentInfo>,
 }
 
 /// What [`HoldForAnswer`] did.
@@ -75,9 +78,13 @@ where
             duplicate_of.is_some(),
         );
         let start_now = step == AfterProbe::StartNow;
-        let held = self
-            .downloads
-            .update(id, |e| e.hold_for_answer(start_now, &probed.path, probed.total, probed.resumable, duplicate_of));
+        let held = self.downloads.update(id, |e| {
+            let held = e.hold_for_answer(start_now, &probed.path, probed.total, probed.resumable, duplicate_of);
+            if let (true, Some(info)) = (held, &probed.torrent) {
+                e.set_torrent_info(info);
+            }
+            held
+        });
         if held != Some(true) {
             return Held::Canceled;
         }
@@ -107,6 +114,7 @@ mod tests {
             path: PathBuf::from("/dl").join(name),
             total: Some(ByteCount::new(100)),
             resumable: true,
+            torrent: None,
         }
     }
 

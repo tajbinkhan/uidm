@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Het systeem zoekt hostnamen zelf op, mogelijk via een andere adapter. Kies een DNS-over-HTTPS-server om het opzoeken op deze te houden.",
   "The system's (not encrypted)": "Die van het systeem (niet versleuteld)",
   "This adapter is not connected now: downloads will not start until it is.": "Deze adapter is nu niet verbonden: downloads starten pas als hij dat is.",
-  "{adapter} (not connected)": "{adapter} (niet verbonden)"
+  "{adapter} (not connected)": "{adapter} (niet verbonden)",
+  "{link} is not a magnet link": "{link} is geen magnetlink",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "De magnetlink noemt geen BitTorrent-infohash (xt=urn:btih:...).",
+  "{hash} is not a BitTorrent info hash": "{hash} is geen BitTorrent-infohash",
+  "The torrent holds no files.": "De torrent bevat geen bestanden.",
+  "The torrent holds {count} files; UDM takes at most {max}.": "De torrent bevat {count} bestanden; UDM neemt er hooguit {max}.",
+  "The torrent names a file UDM cannot save safely: {path}": "De torrent noemt een bestand dat UDM niet veilig kan opslaan: {path}",
+  "The torrent file is larger than {size} and was not read.": "Het torrentbestand is groter dan {size} en is niet gelezen.",
+  "This is not a torrent file: {why}": "Dit is geen torrentbestand: {why}",
+  "Choose at least one of the torrent's files.": "Kies ten minste één bestand van de torrent.",
+  "The torrent has no file number {number}.": "De torrent heeft geen bestand nummer {number}.",
+  "{value} is not a share ratio between 0 and 100.": "{value} is geen deelverhouding tussen 0 en 100."
 }

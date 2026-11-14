@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Система сама определяет имена узлов, возможно через другой адаптер. Выберите сервер DNS через HTTPS, чтобы запросы шли через этот.",
   "The system's (not encrypted)": "Системный (без шифрования)",
   "This adapter is not connected now: downloads will not start until it is.": "Этот адаптер сейчас не подключён: загрузки не начнутся, пока он не подключится.",
-  "{adapter} (not connected)": "{adapter} (не подключён)"
+  "{adapter} (not connected)": "{adapter} (не подключён)",
+  "{link} is not a magnet link": "{link} не является magnet-ссылкой",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "В magnet-ссылке нет хеша BitTorrent (xt=urn:btih:...).",
+  "{hash} is not a BitTorrent info hash": "{hash} не является хешем BitTorrent",
+  "The torrent holds no files.": "В торренте нет файлов.",
+  "The torrent holds {count} files; UDM takes at most {max}.": "В торренте {count} файлов; UDM принимает не более {max}.",
+  "The torrent names a file UDM cannot save safely: {path}": "Торрент содержит файл, который UDM не может безопасно сохранить: {path}",
+  "The torrent file is larger than {size} and was not read.": "Торрент-файл больше {size} и не был прочитан.",
+  "This is not a torrent file: {why}": "Это не торрент-файл: {why}",
+  "Choose at least one of the torrent's files.": "Выберите хотя бы один файл торрента.",
+  "The torrent has no file number {number}.": "В торренте нет файла с номером {number}.",
+  "{value} is not a share ratio between 0 and 100.": "{value} не является коэффициентом раздачи от 0 до 100."
 }

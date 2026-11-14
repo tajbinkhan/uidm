@@ -125,6 +125,11 @@ pub struct DownloadRequest {
     /// Asked for the address to download from when the download starts,
     /// such as a file host's link unlocked by a debrid account.
     pub resolve: Option<Resolver>,
+    /// For a torrent (`url` is its magnet link): the files to download;
+    /// `None` downloads every file.
+    pub torrent_files: Option<udm_domain::torrent::FileSelection>,
+    /// For a torrent: what it uploaded in earlier runs, for its share ratio.
+    pub torrent_uploaded: ByteCount,
 }
 
 /// Turns a download's address into the one to download from, just before
@@ -216,6 +221,18 @@ pub enum Progress {
         path: PathBuf,
         total: Option<ByteCount>,
     },
+    /// A torrent's metadata is known: its name and files.
+    TorrentInfo {
+        id: DownloadId,
+        url: String,
+        info: udm_domain::torrent::TorrentInfo,
+    },
+    /// How a torrent is doing; while it downloads, and while it seeds.
+    TorrentStats {
+        id: DownloadId,
+        url: String,
+        stats: udm_domain::torrent::TorrentStats,
+    },
 }
 
 impl Progress {
@@ -227,7 +244,9 @@ impl Progress {
             | Progress::Finished { url: u, .. }
             | Progress::Failed { url: u, .. }
             | Progress::Canceled { url: u, .. }
-            | Progress::NameTaken { url: u, .. } => *u = url.to_string(),
+            | Progress::NameTaken { url: u, .. }
+            | Progress::TorrentInfo { url: u, .. }
+            | Progress::TorrentStats { url: u, .. } => *u = url.to_string(),
         }
         self
     }
@@ -280,6 +299,9 @@ pub enum EngineError {
     /// The system would not bind a connection to the adapter.
     #[error(transparent)]
     BindRefused(#[from] udm_domain::network::BindRefused),
+    /// The torrent could not be read, found or downloaded, and why.
+    #[error("{0}")]
+    Torrent(String),
 }
 
 impl From<crate::route::RouteRefusal> for EngineError {
@@ -395,6 +417,9 @@ struct Shared {
     /// Where downloads' connections go out now; `None` keeps each
     /// request's own.
     route_source: std::sync::OnceLock<RouteSource>,
+    /// The BitTorrent client magnet links download through; none, and they
+    /// fail.
+    torrents: std::sync::OnceLock<Arc<crate::torrent::TorrentClient>>,
 }
 
 /// How often a connection waiting for its host to have room looks again.
@@ -505,6 +530,7 @@ impl Engine {
                     resplit: AtomicBool::new(true),
                     claimed: Mutex::new(HashSet::new()),
                     route_source: std::sync::OnceLock::new(),
+                    torrents: std::sync::OnceLock::new(),
                 }),
                 reporter: Reporter(cb),
             }),
@@ -537,6 +563,11 @@ impl Engine {
     /// the one its request was made with. Only the first call counts.
     pub fn route_from(&self, source: RouteSource) {
         let _ = self.inner.shared.route_source.set(source);
+    }
+
+    /// Download magnet links through `client`. Only the first call counts.
+    pub fn torrents_with(&self, client: Arc<crate::torrent::TorrentClient>) {
+        let _ = self.inner.shared.torrents.set(client);
     }
 
     /// Start every running download again from where it is, so its new
@@ -689,6 +720,7 @@ pub fn run_blocking(req: DownloadRequest, cb: Arc<dyn Fn(Progress) + Send + Sync
         resplit: AtomicBool::new(true),
         claimed: Mutex::new(HashSet::new()),
         route_source: std::sync::OnceLock::new(),
+        torrents: std::sync::OnceLock::new(),
     };
     run(DownloadId::NONE, &RunFlags::default(), req, Reporter(cb), &shared);
 }
@@ -858,7 +890,7 @@ impl Drop for OwnLimitGuard<'_> {
 
 /// Make `dir` if it is missing, and fail with `NeedsAdmin` before anything
 /// is downloaded if UDM may not create files in it.
-fn writable(dir: &Path) -> Result<(), EngineError> {
+pub(crate) fn writable(dir: &Path) -> Result<(), EngineError> {
     if !crate::elevate::can_write(dir) {
         return Err(EngineError::NeedsAdmin(dir.to_path_buf()));
     }
@@ -975,6 +1007,10 @@ fn run_inner(
     reporter: &Reporter,
     shared: &Shared,
 ) -> Result<Saved, EngineError> {
+    if udm_domain::torrent::starts_like_magnet(&req.url) {
+        let client = shared.torrents.get().ok_or_else(|| EngineError::Torrent("Torrents are not available.".into()))?;
+        return client.run(id, token, req, &|p| reporter.send(p));
+    }
     let agent = http::Client::new(&req.net, &req.url)?;
     if let Some(choice) = req.media.as_ref().filter(|c| c.kind == Some(udm_domain::media::MediaKind::Page)) {
         return page::run(id, token, req, choice, reporter, shared).map(|s| s.stopped_if(token.load(Ordering::SeqCst)));
@@ -2234,6 +2270,8 @@ mod tests {
                 host_limit: None,
                 elevate: false,
                 resolve: None,
+                torrent_files: None,
+                torrent_uploaded: ByteCount::ZERO,
             }
         }
 
@@ -2752,6 +2790,7 @@ mod tests {
                 resplit: AtomicBool::new(true),
                 claimed: Mutex::new(HashSet::new()),
                 route_source: std::sync::OnceLock::new(),
+                torrents: std::sync::OnceLock::new(),
             };
             let mut req = request("https://Files.Example.com/a", Path::new("."), FileExists::Rename);
             req.host_limit = Some(2);

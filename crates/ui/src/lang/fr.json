@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Le système recherche lui-même les noms d’hôte, peut-être via une autre carte. Choisissez un serveur DNS sur HTTPS pour garder les recherches sur celle-ci.",
   "The system's (not encrypted)": "Celui du système (non chiffré)",
   "This adapter is not connected now: downloads will not start until it is.": "Cette carte n’est pas connectée pour l’instant : les téléchargements ne démarreront pas avant qu’elle le soit.",
-  "{adapter} (not connected)": "{adapter} (non connectée)"
+  "{adapter} (not connected)": "{adapter} (non connectée)",
+  "{link} is not a magnet link": "{link} n'est pas un lien magnet",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "Le lien magnet ne donne aucun hachage d'info BitTorrent (xt=urn:btih:...).",
+  "{hash} is not a BitTorrent info hash": "{hash} n'est pas un hachage d'info BitTorrent",
+  "The torrent holds no files.": "Le torrent ne contient aucun fichier.",
+  "The torrent holds {count} files; UDM takes at most {max}.": "Le torrent contient {count} fichiers ; UDM en accepte au plus {max}.",
+  "The torrent names a file UDM cannot save safely: {path}": "Le torrent nomme un fichier qu'UDM ne peut pas enregistrer sans risque : {path}",
+  "The torrent file is larger than {size} and was not read.": "Le fichier torrent dépasse {size} et n'a pas été lu.",
+  "This is not a torrent file: {why}": "Ce n'est pas un fichier torrent : {why}",
+  "Choose at least one of the torrent's files.": "Choisissez au moins un des fichiers du torrent.",
+  "The torrent has no file number {number}.": "Le torrent n'a pas de fichier numéro {number}.",
+  "{value} is not a share ratio between 0 and 100.": "{value} n'est pas un ratio de partage entre 0 et 100."
 }

@@ -1,5 +1,10 @@
 # What the extension does and does not take
 
+A `magnet:` link you click goes to UDM, which downloads its torrent, while UDM is connected and
+**Capture downloads** is on (and the tab captures, and it is not a private window unless UDM lets
+those in). The skip keys, or a middle click, leave it to the
+browser, which opens it with the program it gives magnet links to. This is so in Safari too.
+
 It takes a download from the browser only when all of these hold:
 
 - UDM is connected and **Capture downloads** is on;
@@ -23,7 +28,11 @@ It takes a download from the browser only when all of these hold:
     MIME type the server sent, else the URL. A download that says only "a file"
     (`application/octet-stream`) is taken;
   - it is not smaller than the minimum size, when the browser already knows
-    the size (often it does not yet, and then only the type and site count);
+    the size (often it does not yet, and then only the type and site count).
+    A `.torrent` file (by its name or its type, `application/x-bittorrent`)
+    skips the type list and the minimum size while **Take .torrent files as
+    torrents** is on: UDM fetches it and downloads its torrent
+    ([Torrents](torrents.md));
   - neither its URL nor the page it came from is on an excluded site.
     `example.com` and `*.example.com` both cover the site and every subdomain;
   - its URL matches none of the excluded addresses, where `*` matches any

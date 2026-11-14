@@ -32,6 +32,9 @@ pub struct GetRequest {
     /// Follow the download until it ends (`true`), or return once the
     /// daemon has taken it.
     pub follow: bool,
+    /// A `.torrent` file's contents, read from disk; `url` is then the
+    /// torrent's magnet link, and the daemon keeps the file.
+    pub metainfo: Option<Vec<u8>>,
 }
 
 impl GetRequest {
@@ -46,6 +49,7 @@ impl GetRequest {
             connections: None,
             checksum: None,
             follow: true,
+            metainfo: None,
         }
     }
 
@@ -121,7 +125,11 @@ impl<'a, 's, C: DaemonClient + ?Sized, H: FileHashes + ?Sized> GetFile<'a, 's, C
     }
 
     pub fn run(&self, request: &GetRequest, watch: &mut impl Watch) -> Result<Got, RemoteError> {
-        self.session.send(Command::Add(request.download()))?;
+        let command = match &request.metainfo {
+            Some(metainfo) => Command::AddTorrentFile { metainfo: metainfo.clone(), download: request.download() },
+            None => Command::Add(request.download()),
+        };
+        self.session.send(command)?;
         // The daemon announces the new download, and may start it, before it
         // answers; those events are kept for once the id is known.
         let mut early = Vec::new();

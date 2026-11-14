@@ -32,6 +32,7 @@ use udm_domain::queue::{Queue, WhenDone};
 use udm_domain::quota::QuotaNotice;
 use udm_domain::settings::Settings;
 use udm_domain::tools::{Tool, ToolState};
+use udm_domain::torrent::{FileSelection, SeedLimits, TorrentInfo, TorrentStats};
 use udm_domain::update::Release;
 
 /// The version of the automation API: the messages `docs/command-line.md`
@@ -131,8 +132,34 @@ pub enum Command {
         request: u64,
         cookies: Option<String>,
     },
-    /// A download to hand off to the engine.
+    /// A download to hand off to the engine. A web address of a `.torrent`
+    /// file (by its type or name) is fetched and added as the torrent, when
+    /// the settings catch torrent files.
     Add(Download),
+    /// A `.torrent` file's contents a client read from disk, to add as a
+    /// download of its torrent; `download` says where to save it, its queue
+    /// and the rest, as for `Add`. Answered as `Add` is.
+    AddTorrentFile {
+        metainfo: Vec<u8>,
+        download: Download,
+    },
+    /// Choose which of torrent download `id`'s files to download: a running
+    /// torrent changes at once, a finished one given more files starts
+    /// again.
+    SelectTorrentFiles {
+        id: DownloadId,
+        files: FileSelection,
+    },
+    /// Give torrent download `id` its own seeding limits, or `None` to
+    /// follow the settings'.
+    SetSeedLimits {
+        id: DownloadId,
+        limits: Option<SeedLimits>,
+    },
+    /// Stop seeding finished torrent download `id`.
+    StopSeeding {
+        id: DownloadId,
+    },
     /// Many downloads at once, each added to wait in `queue` (the main
     /// queue when `None`) without starting, and kept as packages as
     /// `packaging` says. Answered with `AddedMany`.
@@ -405,6 +432,19 @@ pub enum Event {
     /// A download left the list.
     Removed {
         id: DownloadId,
+    },
+    /// A torrent download's metadata is known: its name and files.
+    TorrentInfo {
+        id: DownloadId,
+        url: Link,
+        info: TorrentInfo,
+    },
+    /// How a torrent download is doing: its phase, speeds, peers, trackers
+    /// and pieces. Every second or so while it downloads or seeds.
+    TorrentStats {
+        id: DownloadId,
+        url: Link,
+        stats: TorrentStats,
     },
     /// A download's whole entry, replacing what the client had.
     Updated {

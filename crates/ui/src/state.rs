@@ -94,6 +94,10 @@ pub struct AppState {
     pub queues: Vec<Queue>,
     pub speeds: HashMap<DownloadId, Speed>,
     pub segments: HashMap<DownloadId, Vec<SegmentInfo>>,
+    /// Each torrent download's latest stats (`Event::TorrentStats`): its
+    /// speeds, peers, trackers and pieces, for its download window. Its row
+    /// keeps the rest (`DownloadEntry::torrent`).
+    pub torrents: HashMap<DownloadId, udm_domain::torrent::TorrentStats>,
     pub daemon_version: Option<String>,
     /// The rows selected in the main window, in the order picked.
     pub selected: Vec<DownloadId>,
@@ -176,6 +180,7 @@ impl Default for AppState {
             queues: Vec::new(),
             speeds: HashMap::new(),
             segments: HashMap::new(),
+            torrents: HashMap::new(),
             daemon_version: None,
             selected: Vec::new(),
             node: Node::default(),
@@ -623,9 +628,13 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
         Event::Canceled { id, .. } => {
             state.speeds.remove(&id);
         }
+        Event::TorrentStats { id, stats, .. } => {
+            state.torrents.insert(id, stats);
+        }
         Event::Removed { id } => {
             state.speeds.remove(&id);
             state.segments.remove(&id);
+            state.torrents.remove(&id);
             state.selected.retain(|s| *s != id);
             state.to_remove.retain(|s| *s != id);
             state.progress.remove(&id);

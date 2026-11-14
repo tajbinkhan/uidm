@@ -15,6 +15,13 @@
   choose a scanner program such as `clamscan`. These builds were tested on
   Linux; the macOS build is checked by the compiler and CI only.
 
+- Torrents (#249, [Torrents and magnet links](torrents.md)): no sequential download, RSS feeds,
+  IP blocklists, web seeds, protocol encryption or BitTorrent v2-only torrents; incoming
+  connections are TCP only. On Windows torrents do not run while a network adapter is chosen,
+  because librqbit cannot bind its sockets there. A torrent's own speed limit takes effect when it
+  starts, not while it runs. Torrents ignore the proxy settings. They were tested against a local
+  swarm (a second BitTorrent client on `127.0.0.1`), not public trackers or the DHT.
+
 - Debrid accounts (#259, [Debrid accounts](debrid.md)) are experimental:
   they were tested against stand-ins for Real-Debrid's, AllDebrid's and
   Premiumize's APIs, not the services themselves. A link AllDebrid has to

@@ -361,6 +361,23 @@ pub enum Incoming {
     /// Remove the stored debrid key; answered with `settings` to every
     /// client, or `error`. The window's.
     RemoveDebridKey,
+    /// Choose which files of torrent download `id` to download, by their
+    /// numbers in the torrent; `error` when it cannot take them.
+    SelectTorrentFiles {
+        id: DownloadId,
+        files: udm_domain::torrent::FileSelection,
+    },
+    /// Give torrent download `id` its own seeding limits, or follow the
+    /// settings' again with none.
+    SetSeedLimits {
+        id: DownloadId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limits: Option<udm_domain::torrent::SeedLimits>,
+    },
+    /// Stop seeding finished torrent download `id`.
+    StopSeeding {
+        id: DownloadId,
+    },
 }
 
 /// A message from the daemon to a client.
@@ -448,6 +465,20 @@ pub enum Outgoing {
     /// A download was removed from the list (removed or retried).
     Removed {
         id: DownloadId,
+    },
+    /// A torrent download's metadata is known: its name, files and pieces.
+    /// Sent to every client.
+    TorrentInfo {
+        id: DownloadId,
+        url: Link,
+        info: udm_domain::torrent::TorrentInfo,
+    },
+    /// How a torrent download is doing: its phase, speeds, peers, trackers
+    /// and pieces. About every second while it downloads or seeds.
+    TorrentStats {
+        id: DownloadId,
+        url: Link,
+        stats: udm_domain::torrent::TorrentStats,
     },
     /// A download's whole entry, replacing what clients had: used for the
     /// changes no other event covers (`confirming`, `waiting`, and back to

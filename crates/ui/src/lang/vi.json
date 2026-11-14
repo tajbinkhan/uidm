@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Hệ thống tự tra tên máy chủ, có thể qua bộ điều hợp khác. Hãy chọn một máy chủ DNS qua HTTPS để giữ việc tra trên bộ này.",
   "The system's (not encrypted)": "Của hệ thống (không mã hóa)",
   "This adapter is not connected now: downloads will not start until it is.": "Bộ điều hợp này hiện không kết nối: các bản tải sẽ không bắt đầu cho đến khi nó kết nối.",
-  "{adapter} (not connected)": "{adapter} (không kết nối)"
+  "{adapter} (not connected)": "{adapter} (không kết nối)",
+  "{link} is not a magnet link": "{link} không phải là liên kết magnet",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "Liên kết magnet không có mã băm thông tin BitTorrent (xt=urn:btih:...).",
+  "{hash} is not a BitTorrent info hash": "{hash} không phải là mã băm thông tin BitTorrent",
+  "The torrent holds no files.": "Torrent không chứa tệp nào.",
+  "The torrent holds {count} files; UDM takes at most {max}.": "Torrent chứa {count} tệp; UDM chỉ nhận tối đa {max}.",
+  "The torrent names a file UDM cannot save safely: {path}": "Torrent có một tệp mà UDM không thể lưu an toàn: {path}",
+  "The torrent file is larger than {size} and was not read.": "Tệp torrent lớn hơn {size} nên không được đọc.",
+  "This is not a torrent file: {why}": "Đây không phải là tệp torrent: {why}",
+  "Choose at least one of the torrent's files.": "Hãy chọn ít nhất một tệp của torrent.",
+  "The torrent has no file number {number}.": "Torrent không có tệp số {number}.",
+  "{value} is not a share ratio between 0 and 100.": "{value} không phải là tỷ lệ chia sẻ từ 0 đến 100."
 }

@@ -369,6 +369,7 @@ http://127.0.0.1/b.zip
             on_done: None,
             validator: None,
             country: None,
+            torrent: None,
         }
     }
 

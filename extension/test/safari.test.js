@@ -257,6 +257,15 @@ test("disconnecting the port stops it without telling its own listeners", async 
 
 // --- Links taken as they are clicked ---------------------------------------------
 
+test("a click on a .torrent file is taken when UDM's settings take torrent files", () => {
+  const rules = { capture_types: ["zip"], capture_excluded_sites: ["skip.net"], capture_excluded_urls: [], torrents: { catch_torrent_files: true } };
+  assert.equal(clickTaken(rules, "https://cdn.net/a.torrent", null, "https://site.net/"), true, "not a captured type, but a torrent");
+  assert.equal(clickTaken(rules, "https://cdn.net/get?id=3", "Album.torrent", "https://site.net/"), true);
+  assert.equal(clickTaken(rules, "https://skip.net/a.torrent", null, ""), false, "excluded sites still win");
+  const off = { ...rules, torrents: { catch_torrent_files: false } };
+  assert.equal(clickTaken(off, "https://cdn.net/a.torrent", null, ""), false);
+});
+
 test("a click is taken only for a link to a file of a captured type", () => {
   const rules = { capture_types: ["zip", "pdf", "mp4", "rs"], capture_excluded_sites: ["skip.net"], capture_excluded_urls: [] };
   assert.equal(clickTaken(rules, "https://cdn.net/files/a.zip", null, "https://site.net/"), true);
@@ -343,7 +352,7 @@ test("in Safari the worker shares whether and which links to take, and takes a c
   const w = await safariWorker();
   assert.deepEqual(shared(w).at(-1), {
     on: true,
-    rules: { capture_types: ["zip"], capture_excluded_sites: ["skip.net"], capture_excluded_urls: [] },
+    rules: { capture_types: ["zip"], capture_excluded_sites: ["skip.net"], capture_excluded_urls: [], torrents: { catch_torrent_files: false } },
   });
 
   const reply = await w.content({ type: "link:capture", url: "https://cdn.net/a.zip", download: "../Big file.zip" }, 4, "https://site.net/list");
@@ -395,7 +404,10 @@ test("in Safari nothing is taken on a click before UDM's rules are here, or with
 
   w.native.frames.push({ op: "settings", settings: { ...SETTINGS, capture_types: [] } });
   await new Promise((r) => setTimeout(r, 1100));
-  assert.deepEqual(shared(w).at(-1), { on: true, rules: { capture_types: [], capture_excluded_sites: ["skip.net"], capture_excluded_urls: [] } });
+  assert.deepEqual(shared(w).at(-1), {
+    on: true,
+    rules: { capture_types: [], capture_excluded_sites: ["skip.net"], capture_excluded_urls: [], torrents: { catch_torrent_files: false } },
+  });
   // The worker checks the link again: with no types listed, none is taken.
   const before = w.sent.length;
   assert.deepEqual(json(await w.content({ type: "link:capture", url: "https://forge.net/src/main.rs" }, 4)), { ok: false });

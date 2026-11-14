@@ -8,7 +8,7 @@ use udm_application::daemon::service::ServiceError;
 use udm_application::daemon::{Command, Event, Failure};
 use udm_application::downloads::{ConfirmError, StartOrWaitError};
 use udm_domain::debrid::DebridKey;
-use udm_domain::download::{DownloadError, Mismatch};
+use udm_domain::download::{Download, DownloadError, Mismatch};
 use udm_domain::grab::InvalidGrab;
 use udm_domain::pairing::PairingError;
 use udm_domain::ports::{ControlError, SettingsError};
@@ -35,6 +35,14 @@ pub fn incoming(command: Command) -> Incoming {
         Command::Rendered { request, html, url, popups } => Incoming::Rendered { request, html, url, popups },
         Command::Cookies { request, cookies } => Incoming::Cookies { request, cookies },
         Command::Add(d) => Incoming::Add(d),
+        Command::AddTorrentFile { metainfo, download } => {
+            use base64::Engine as _;
+            let file = base64::engine::general_purpose::STANDARD.encode(metainfo);
+            Incoming::Add(Download { torrent_file: Some(file), ..download })
+        }
+        Command::SelectTorrentFiles { id, files } => Incoming::SelectTorrentFiles { id, files },
+        Command::SetSeedLimits { id, limits } => Incoming::SetSeedLimits { id, limits },
+        Command::StopSeeding { id } => Incoming::StopSeeding { id },
         Command::AddMany { items, queue, packaging } => {
             let (package, group_archives) = match packaging {
                 Packaging::None => (None, false),
@@ -108,7 +116,18 @@ pub fn command(msg: Incoming) -> Command {
         Incoming::ListTools => Command::ListTools,
         Incoming::Rendered { request, html, url, popups } => Command::Rendered { request, html, url, popups },
         Incoming::Cookies { request, cookies } => Command::Cookies { request, cookies },
-        Incoming::Add(d) => Command::Add(d),
+        Incoming::Add(mut d) => match d.torrent_file.take() {
+            Some(file) => {
+                use base64::Engine as _;
+                // A file that is not base64 is no torrent: adding it says so.
+                let metainfo = base64::engine::general_purpose::STANDARD.decode(file.trim()).unwrap_or_default();
+                Command::AddTorrentFile { metainfo, download: d }
+            }
+            None => Command::Add(d),
+        },
+        Incoming::SelectTorrentFiles { id, files } => Command::SelectTorrentFiles { id, files },
+        Incoming::SetSeedLimits { id, limits } => Command::SetSeedLimits { id, limits },
+        Incoming::StopSeeding { id } => Command::StopSeeding { id },
         Incoming::AddMany { items, queue, package, group_archives } => {
             let packaging = match package {
                 Some(NewPackage { name, folder }) => Packaging::One { name, folder },
@@ -188,6 +207,8 @@ pub fn event(msg: Outgoing) -> Event {
         Outgoing::Failed { id, url, error } => Event::Failed { id, url, error },
         Outgoing::Canceled { id, url } => Event::Canceled { id, url },
         Outgoing::Removed { id } => Event::Removed { id },
+        Outgoing::TorrentInfo { id, url, info } => Event::TorrentInfo { id, url, info },
+        Outgoing::TorrentStats { id, url, stats } => Event::TorrentStats { id, url, stats },
         Outgoing::Updated { item } => Event::Updated { item },
         Outgoing::Downloads { items } => Event::Downloads { items },
         Outgoing::Settings { settings } => Event::Settings { settings },
@@ -263,6 +284,8 @@ pub fn outgoing(event: Event) -> Option<Outgoing> {
         Event::Failed { id, url, error } => Outgoing::Failed { id, url, error },
         Event::Canceled { id, url } => Outgoing::Canceled { id, url },
         Event::Removed { id } => Outgoing::Removed { id },
+        Event::TorrentInfo { id, url, info } => Outgoing::TorrentInfo { id, url, info },
+        Event::TorrentStats { id, url, stats } => Outgoing::TorrentStats { id, url, stats },
         Event::Updated { item } => Outgoing::Updated { item },
         Event::Downloads { items } => Outgoing::Downloads { items },
         Event::Settings { settings } => Outgoing::Settings { settings },
@@ -581,6 +604,41 @@ mod tests {
         let value = json(&outgoing(event).unwrap());
         let back: Outgoing = serde_json::from_value(value.clone()).unwrap();
         (value, super::event(back))
+    }
+
+    #[test]
+    fn torrent_messages_have_their_wire_shapes() {
+        use udm_domain::torrent::{FileSelection, Ratio, SeedLimits, TorrentPhase, TorrentStats};
+        // A `.torrent` file read from disk travels base64-encoded in `add`.
+        let download = Download {
+            url: "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a".into(),
+            ..Download::default()
+        };
+        let add = incoming(Command::AddTorrentFile { metainfo: b"d4:infoe".to_vec(), download: download.clone() });
+        let value = json(&add);
+        assert_eq!((value["op"].as_str(), value["torrent_file"].as_str()), (Some("add"), Some("ZDQ6aW5mb2U=")));
+        let Command::AddTorrentFile { metainfo, download: back } = command(add) else { panic!("a torrent file") };
+        assert_eq!((metainfo.as_slice(), back.url, back.torrent_file), (&b"d4:infoe"[..], download.url.clone(), None));
+        let garbled: Incoming =
+            serde_json::from_value(serde_json::json!({"op": "add", "url": "x", "torrent_file": "!"})).unwrap();
+        assert!(matches!(command(garbled), Command::AddTorrentFile { metainfo, .. } if metainfo.is_empty()));
+        assert!(matches!(command(incoming(Command::Add(download))), Command::Add(_)), "a plain add stays one");
+
+        let id = DownloadId::new(4);
+        let select = incoming(Command::SelectTorrentFiles { id, files: FileSelection::parse(&[2, 0], 3).unwrap() });
+        assert_eq!(json(&select), serde_json::json!({"op": "select_torrent_files", "id": 4, "files": [0, 2]}));
+        let limits = SeedLimits { ratio: Some(Ratio::new(1.5).unwrap()), minutes: None };
+        let seed = incoming(Command::SetSeedLimits { id, limits: Some(limits) });
+        assert_eq!(json(&seed), serde_json::json!({"op": "set_seed_limits", "id": 4, "limits": {"ratio": 1.5}}));
+        assert!(matches!(command(seed), Command::SetSeedLimits { limits: Some(l), .. } if l == limits));
+        assert_eq!(json(&incoming(Command::StopSeeding { id })), serde_json::json!({"op": "stop_seeding", "id": 4}));
+        let empty = serde_json::json!({"op": "select_torrent_files", "id": 4, "files": []});
+        assert!(serde_json::from_value::<Incoming>(empty).is_err(), "no file chosen is no message");
+
+        let stats = TorrentStats { phase: TorrentPhase::Seeding, down_speed: 5, ..TorrentStats::default() };
+        let (value, back) = round_trip(Event::TorrentStats { id, url: "magnet:?x".into(), stats: stats.clone() });
+        assert_eq!((value["op"].as_str(), value["stats"]["phase"].as_str()), (Some("torrent_stats"), Some("seeding")));
+        assert_eq!(back, Event::TorrentStats { id, url: "magnet:?x".into(), stats });
     }
 
     #[test]

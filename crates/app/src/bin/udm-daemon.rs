@@ -69,7 +69,7 @@ use udm_application::pairing::{PairingDesk, Phone};
 use udm_domain::address::Address;
 use udm_domain::download::Answer;
 use udm_domain::id::DownloadId;
-use udm_domain::ports::{Browser, Debrid, DebridKeys, Probes, SiteCrawler};
+use udm_domain::ports::{Browser, Debrid, DebridKeys, Probes, SiteCrawler, Torrents};
 use udm_domain::seat::Seat;
 use udm_domain::settings::Settings;
 use udm_infrastructure::background;
@@ -97,6 +97,7 @@ use udm_infrastructure::scan::Antivirus;
 use udm_infrastructure::server::{next_client, Clients, Server};
 use udm_infrastructure::settings;
 use udm_infrastructure::store::{DownloadStore, Ended, StoreEvents, StoreFiles, StoreIntake};
+use udm_infrastructure::torrent::{TorrentClient, TorrentDesk};
 use udm_infrastructure::transfers::{self, EarlyHandOver, GoOn, SyncChecker, Transfers};
 use udm_infrastructure::update::{GitHub, LATEST_RELEASE};
 use udm_infrastructure::web_remote::devices::{DeviceFile, OsKeys};
@@ -145,6 +146,9 @@ struct Paths {
     store: StoreFiles,
     /// The remote-control page's certificate and the paired devices.
     remote: Option<PathBuf>,
+    /// The torrents' kept files and resume data; a temporary folder when
+    /// unknown.
+    torrents: Option<PathBuf>,
 }
 
 impl Paths {
@@ -158,6 +162,7 @@ impl Paths {
                 quota: warn("quota", udm_infrastructure::quota::quota_path()),
             },
             remote: warn("remote control", udm_infrastructure::paths::remote_dir()),
+            torrents: warn("torrents", udm_infrastructure::paths::torrents_dir()),
         }
     }
 }
@@ -320,6 +325,16 @@ fn new_daemon(paths: Paths, seat: Seat) -> Built {
         let (links, settings) = (Arc::clone(&links), Arc::clone(&settings));
         transfers.resolve_with(Arc::new(move |link: &Address| links.run(&settings.get().debrid, link)));
     }
+    // Torrents download through the engine; the client seeds them after.
+    let torrent_dir = paths
+        .torrents
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("udm-torrents-{}", std::process::id())));
+    let torrent_client = Arc::new(TorrentClient::new(torrent_dir));
+    transfers.torrents_with(Arc::clone(&torrent_client));
+    udm_infrastructure::torrent::watch_seeding(&torrent_client);
+    let torrents: Arc<dyn Torrents> =
+        Arc::new(TorrentDesk { client: torrent_client, transfers: Arc::clone(&transfers) });
     let pairing = Arc::new(PairingDesk::open(
         Arc::new(DeviceFile::in_dir(paths.remote.as_deref())),
         Arc::new(OsKeys),
@@ -372,6 +387,7 @@ fn new_daemon(paths: Paths, seat: Seat) -> Built {
         debrid,
         debrid_keys,
         links,
+        torrents,
     });
     Built { daemon, clients, dirty: dirty_rx, notes: notes_rx, wake: wake_rx, remote }
 }
@@ -644,8 +660,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("udm_dup_{}_{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let Built { daemon, clients: connections, .. } =
-            new_daemon(Paths { settings: None, store: StoreFiles::default(), remote: None }, Seat::Desktop);
+        let Built { daemon, clients: connections, .. } = new_daemon(
+            Paths { settings: None, store: StoreFiles::default(), remote: None, torrents: None },
+            Seat::Desktop,
+        );
         {
             let mut s = daemon.settings.lock();
             s.download_dir = Some(dir.display().to_string());
@@ -773,8 +791,10 @@ mod tests {
 
     #[test]
     fn a_server_daemon_runs_on_when_it_has_nothing_to_do() {
-        let built =
-            |seat| new_daemon(Paths { settings: None, store: StoreFiles::default(), remote: None }, seat).daemon;
+        let built = |seat| {
+            new_daemon(Paths { settings: None, store: StoreFiles::default(), remote: None, torrents: None }, seat)
+                .daemon
+        };
         let desktop = built(Seat::Desktop);
         assert!(desktop.idle() && desktop.may_exit(), "a desktop daemon with nothing to do exits");
         let server = built(Seat::Server);
@@ -1455,7 +1475,8 @@ mod tests {
                 ..Settings::default()
             };
             settings::save(&s, &path).unwrap();
-            let paths = Paths { settings: Some(path.clone()), store: StoreFiles::default(), remote: None };
+            let paths =
+                Paths { settings: Some(path.clone()), store: StoreFiles::default(), remote: None, torrents: None };
             let daemon = new_daemon(paths, Seat::Desktop).daemon;
             let s = daemon.settings.lock().clone();
             (s, daemon.transfers.engine().per_file_limit())
@@ -2575,8 +2596,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("udm_phone_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let Built { daemon, clients: connections, remote, .. } =
-            new_daemon(Paths { settings: None, store: StoreFiles::default(), remote: Some(dir.join("remote")) }, seat);
+        let Built { daemon, clients: connections, remote, .. } = new_daemon(
+            Paths { settings: None, store: StoreFiles::default(), remote: Some(dir.join("remote")), torrents: None },
+            seat,
+        );
         {
             let mut s = daemon.settings.lock();
             s.download_dir = Some(dir.display().to_string());

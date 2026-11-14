@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "系统会自行查询主机名，可能经由其他适配器。请选择一个 DNS over HTTPS 服务器，使查询保持在此适配器上。",
   "The system's (not encrypted)": "系统的（未加密）",
   "This adapter is not connected now: downloads will not start until it is.": "此适配器当前未连接：在连接之前下载不会开始。",
-  "{adapter} (not connected)": "{adapter}（未连接）"
+  "{adapter} (not connected)": "{adapter}（未连接）",
+  "{link} is not a magnet link": "{link} 不是磁力链接",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "磁力链接中没有 BitTorrent 信息哈希（xt=urn:btih:...）。",
+  "{hash} is not a BitTorrent info hash": "{hash} 不是 BitTorrent 信息哈希",
+  "The torrent holds no files.": "该种子不包含任何文件。",
+  "The torrent holds {count} files; UDM takes at most {max}.": "该种子包含 {count} 个文件；UDM 最多接受 {max} 个。",
+  "The torrent names a file UDM cannot save safely: {path}": "该种子包含 UDM 无法安全保存的文件：{path}",
+  "The torrent file is larger than {size} and was not read.": "种子文件大于 {size}，未读取。",
+  "This is not a torrent file: {why}": "这不是种子文件：{why}",
+  "Choose at least one of the torrent's files.": "请至少选择种子中的一个文件。",
+  "The torrent has no file number {number}.": "该种子没有编号为 {number} 的文件。",
+  "{value} is not a share ratio between 0 and 100.": "{value} 不是 0 到 100 之间的分享率。"
 }

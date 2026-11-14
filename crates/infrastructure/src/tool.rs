@@ -7,7 +7,7 @@
 //! prints each `Report`.
 //!
 //! ```text
-//! udm-cli get URL [-d DIR] [-n NAME] [-c N] [-H "Name: value"]... [--checksum SUM] [--no-wait] [-q]
+//! udm-cli get URL|MAGNET|FILE.torrent [-d DIR] [-n NAME] [-c N] [-H "Name: value"]... [--checksum SUM] [--no-wait] [-q]
 //! udm-cli list [--json]
 //! udm-cli pause ID | --all
 //! udm-cli resume ID | --all
@@ -50,7 +50,8 @@ pub const USAGE: &str = "\
 Usage: udm-cli <command> [options]
 
 Commands:
-  get URL            Download URL now and show its progress until it ends
+  get URL            Download URL now and show its progress until it ends; URL may
+                     also be a magnet link or a .torrent file
     -d, --folder DIR       save in DIR instead of the category's folder
     -n, --name NAME        save as NAME instead of the server's name
     -c, --connections N    open N connections (1 to 16) instead of the setting's
@@ -131,8 +132,11 @@ pub enum UsageError {
     Missing(&'static str),
     #[error("did not expect {0}")]
     Extra(String),
-    #[error("{0} is not an http, https, ftp or ftps address")]
+    #[error("{0} is not an http, https, ftp or ftps address, a magnet link or a .torrent file")]
     NotDownloadAddress(String),
+    /// A `.torrent` file that could not be read, and why.
+    #[error("{0} cannot be read as a torrent: {1}")]
+    BadTorrent(String, String),
     #[error("{0} is not a file name; give the folder with --folder")]
     NotFileName(String),
     #[error("{0} is not a folder UDM can save in")]
@@ -390,8 +394,10 @@ fn parse_get(mut words: Words<'_>, cwd: &Path) -> Result<Invocation, UsageError>
         if request.is_some() {
             return Err(UsageError::Extra(word));
         }
-        let url = Address::parse(word.trim()).map_err(|_| UsageError::NotDownloadAddress(word.clone()))?;
-        request = Some(GetRequest::new(url));
+        request = Some(match Address::parse(word.trim()) {
+            Ok(url) => GetRequest::new(url),
+            Err(_) => torrent_file(&word, cwd)?,
+        });
     }
     let mut request = request.ok_or(UsageError::Missing("the address to download"))?;
     request.folder = folder;
@@ -401,6 +407,29 @@ fn parse_get(mut words: Words<'_>, cwd: &Path) -> Result<Invocation, UsageError>
     request.headers = headers;
     request.follow = follow;
     Ok(Invocation::Get { request, quiet })
+}
+
+/// The `.torrent` file at `word` (under `cwd` when relative), to download
+/// its torrent: read here, and sent to UDM, which keeps it.
+fn torrent_file(word: &str, cwd: &Path) -> Result<GetRequest, UsageError> {
+    let path = cwd.join(word.trim());
+    let named = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent"));
+    if !named || !path.is_file() {
+        return Err(UsageError::NotDownloadAddress(word.to_string()));
+    }
+    let bad = |why: String| UsageError::BadTorrent(word.to_string(), why);
+    let size = std::fs::metadata(&path).map_err(|e| bad(e.to_string()))?.len();
+    if size > udm_domain::torrent::MAX_METAINFO_BYTES as u64 {
+        return Err(bad(
+            udm_domain::torrent::TorrentError::TooBig { max: udm_domain::torrent::MAX_METAINFO_BYTES }.to_string()
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| bad(e.to_string()))?;
+    let meta = crate::torrent::metainfo::Metainfo::read(&bytes).map_err(|e| bad(e.to_string()))?;
+    let url = Address::parse(&meta.magnet().to_uri()).map_err(|e| bad(e.to_string()))?;
+    let mut request = GetRequest::new(url);
+    request.metainfo = Some(bytes);
+    Ok(request)
 }
 
 /// `text` as a full path, under `cwd` when it is relative.
@@ -736,6 +765,26 @@ mod tests {
     }
 
     #[test]
+    fn magnet_links_and_torrent_files_are_taken() {
+        let magnet = "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=x";
+        let r = get(&format!("get {magnet}"));
+        assert_eq!((r.url.as_str(), r.metainfo.is_none()), (magnet, true));
+
+        let dir = std::env::temp_dir().join(format!("udm_cli_torrent_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut info = b"d6:lengthi10e4:name5:a.iso12:piece lengthi16384e6:pieces20:".to_vec();
+        info.extend_from_slice(&[1; 20]);
+        info.push(b'e');
+        let bytes = crate::torrent::metainfo::build(&info, &[]);
+        std::fs::write(dir.join("a.torrent"), &bytes).unwrap();
+        let Ok(Invocation::Get { request, .. }) = parse(&["get", "a.torrent"], &dir) else { panic!("taken") };
+        assert!(request.url.is_torrent() && request.url.as_str().contains("&dn=a.iso"));
+        assert_eq!(request.metainfo, Some(bytes));
+        std::fs::write(dir.join("b.torrent"), b"<html>").unwrap();
+        assert!(matches!(parse(&["get", "b.torrent"], &dir), Err(UsageError::BadTorrent(..))));
+    }
+
+    #[test]
     fn a_relative_folder_is_under_the_current_one() {
         let r = get("get https://x/a -d sub");
         assert_eq!(r.folder.map(PathBuf::from), Some(cwd().join("sub")));
@@ -748,6 +797,7 @@ mod tests {
     fn a_wrong_get_says_what_is_wrong() {
         assert_eq!(args("get"), Err(UsageError::Missing("the address to download")));
         assert_eq!(args("get file:///etc/passwd"), Err(UsageError::NotDownloadAddress("file:///etc/passwd".into())));
+        assert_eq!(args("get missing.torrent"), Err(UsageError::NotDownloadAddress("missing.torrent".into())));
         assert_eq!(args("get https://x/a https://x/b"), Err(UsageError::Extra("https://x/b".into())));
         assert_eq!(args("get https://x/a -c 17"), Err(UsageError::BadConnections("17".into())));
         assert_eq!(args("get https://x/a -c"), Err(UsageError::NeedsValue("-c".into(), "a number")));

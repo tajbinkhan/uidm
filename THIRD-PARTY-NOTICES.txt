@@ -2,7 +2,7 @@ UDM: third-party notices
 ========================
 
 UDM itself is free software under the MIT license (LICENSE). It also
-contains the data below, which comes under its own license.
+contains the data and the code below, which come under their own licenses.
 
 
 Server countries (ip-country.bin)
@@ -31,3 +31,18 @@ country it shows can be wrong: an address block registered in one
 country can be used in another.
 
 There is no warranty for the data, as the license says.
+
+
+BitTorrent client (librqbit)
+----------------------------
+
+UDM downloads torrents with librqbit and the crates of the rqbit project
+(https://github.com/ikatson/rqbit), Copyright Igor Katson, licensed under
+the Apache License, Version 2.0, https://www.apache.org/licenses/LICENSE-2.0
+
+Changes made: UDM builds its own copy of librqbit-tracker-comms 9.1.0
+(vendor/librqbit-tracker-comms in UDM's source), in which the UDP tracker
+client falls back to an IPv4 socket on a system without IPv6.
+
+The code is provided "AS IS", without warranties or conditions of any kind,
+as the license says.

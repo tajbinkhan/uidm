@@ -545,6 +545,8 @@ pub struct FileFacts {
     pub total: Option<ByteCount>,
     /// Whether the server sends the file in ranges, so a download can resume.
     pub resumable: bool,
+    /// For a torrent: what its metadata says, its files among it.
+    pub torrent: Option<crate::torrent::TorrentInfo>,
 }
 
 /// Why a server could not be asked, in words for the user.
@@ -847,4 +849,81 @@ pub trait NetworkAdapters: Send + Sync {
     /// Every adapter with at least one address, or why they could not be
     /// read (`NetworkError::Adapters`).
     fn list(&self) -> Result<Vec<crate::network::NetworkAdapter>, crate::network::NetworkError>;
+}
+
+/// Why the torrent client could not do what was asked, in words for the
+/// user.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TorrentsError {
+    /// The torrent itself is refused: not a torrent, unsafe file names, too
+    /// many files.
+    #[error(transparent)]
+    Torrent(#[from] crate::torrent::TorrentError),
+    /// Fetching a `.torrent` file, asking peers or the client failed, and
+    /// why.
+    #[error("{0}")]
+    Failed(String),
+}
+
+/// A finished torrent that seeds now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seeding {
+    pub info_hash: crate::torrent::InfoHash,
+    /// Bytes uploaded over every run.
+    pub uploaded: ByteCount,
+}
+
+/// The BitTorrent client. Downloading a torrent runs through the engine
+/// like any download (`DownloadControl`): it counts as a running download,
+/// pauses, resumes and follows the speed limit there. This port is the rest:
+/// reading a torrent before it downloads, changing which files it takes,
+/// and seeding once it has finished. Calls that ask the network wait.
+pub trait Torrents: Send + Sync {
+    /// Read a `.torrent` file's contents and keep the file, so the torrent
+    /// downloads by its magnet link. Returns the link and what the torrent
+    /// holds.
+    fn add_file(
+        &self,
+        metainfo: &[u8],
+    ) -> Result<(crate::torrent::MagnetLink, crate::torrent::TorrentInfo), TorrentsError>;
+
+    /// Download the `.torrent` file at `download`'s web address (with its
+    /// cookies and headers), then as `add_file`.
+    fn fetch_file(
+        &self,
+        download: &Download,
+    ) -> Result<(crate::torrent::MagnetLink, crate::torrent::TorrentInfo), TorrentsError>;
+
+    /// What the torrent at `magnet` holds: from its kept file, else asked of
+    /// its peers, waiting at most a few minutes.
+    fn metadata(&self, magnet: &crate::torrent::MagnetLink) -> Result<crate::torrent::TorrentInfo, TorrentsError>;
+
+    /// Download only `files` of the torrent from now on: at once when it
+    /// runs, otherwise when it starts.
+    fn select(
+        &self,
+        info_hash: crate::torrent::InfoHash,
+        files: &crate::torrent::FileSelection,
+    ) -> Result<(), TorrentsError>;
+
+    /// The finished torrents that seed now.
+    fn seeding(&self) -> Vec<Seeding>;
+
+    /// Seed finished download `id` again (after UDM started), from its files
+    /// at `path`, having uploaded `uploaded` before.
+    fn seed(
+        &self,
+        id: DownloadId,
+        magnet: &crate::torrent::MagnetLink,
+        path: &Path,
+        files: Option<&crate::torrent::FileSelection>,
+        uploaded: ByteCount,
+    ) -> Result<(), TorrentsError>;
+
+    /// Stop seeding the torrent; it is complete.
+    fn stop_seeding(&self, info_hash: crate::torrent::InfoHash);
+
+    /// Forget the torrent: it leaves the client, and its kept file and
+    /// resume data go. Its downloaded files are the list's to remove.
+    fn forget(&self, info_hash: crate::torrent::InfoHash);
 }

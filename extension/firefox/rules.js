@@ -58,6 +58,7 @@ var MIME_EXTENSIONS = {
   "audio/x-flac": "flac",
   "audio/x-m4a": "m4a",
   "application/x-iso9660-image": "iso",
+  "application/x-bittorrent": "torrent",
 };
 
 // MIME types that say only "a file": taken when the type list is not empty
@@ -277,6 +278,26 @@ function forceLeavesLink(rules, url) {
   return ext ? PAGE_EXTENSIONS.has(ext) : path === "" || path.endsWith("/");
 }
 
+// Whether `url` is a magnet link UDM can download as a torrent: `magnet:?`
+// with a BitTorrent info hash (40 hexadecimal or 32 base32 characters).
+function isMagnet(url) {
+  const s = String(url || "");
+  return /^magnet:\?/i.test(s) && /[?&]xt=urn:btih:([0-9a-f]{40}|[a-z2-7]{32})(&|$)/i.test(s);
+}
+
+// Whether UDM's settings take `.torrent` files as torrents (its
+// `torrents.catch_torrent_files`, on unless turned off).
+function catchesTorrents(rules) {
+  return !!(rules && rules.torrents && rules.torrents.catch_torrent_files !== false);
+}
+
+// Whether a download, { url, filename, mime }, is a `.torrent` file: by its
+// type or its name.
+function isTorrentFile(item) {
+  const mime = String(item.mime || "").split(";")[0].trim().toLowerCase();
+  return mime === "application/x-bittorrent" || extensionOf(item.filename) === "torrent" || extensionOf(urlPath(item.url)) === "torrent";
+}
+
 // Whether a click on a link to `url` is a download to take as it is clicked,
 // where the browser tells extensions nothing of its downloads (Safari; see
 // shareLinkCapture in background.js). `download` is the link's `download`
@@ -293,7 +314,8 @@ function clickTaken(rules, url, download, page) {
   const types = rules.capture_types || [];
   const filename = linkFileName(download) || "";
   const type = extensionOf(filename) || extensionOf(urlPath(url));
-  if (!type || PAGE_EXTENSIONS.has(type) || !types.includes(type)) return false;
+  const torrent = type === "torrent" && catchesTorrents(rules);
+  if (!torrent && (!type || PAGE_EXTENSIONS.has(type) || !types.includes(type))) return false;
   return captureDecision(rules, { url, referrer: page || "", filename, mime: "", size: 0 }).capture;
 }
 
@@ -324,6 +346,9 @@ function captureDecision(rules, item) {
   for (const address of rules.capture_excluded_urls || []) {
     if (urlMatches(address, item.url)) return { capture: false, reason: `excluded address ${address}` };
   }
+  // A `.torrent` file goes to UDM, which downloads its torrent, whatever
+  // its size (they are small) and the captured types.
+  if (catchesTorrents(rules) && isTorrentFile(item)) return { capture: true, reason: "" };
 
   const minBytes = (rules.capture_min_size_kb || 0) * 1024;
   if (minBytes > 0 && item.size > 0 && item.size < minBytes) {
@@ -421,6 +446,6 @@ function playerCovered(el, container, points, hitAt, ignore) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { mediaPlugin, playerContainer, samplePoints, playerCovered, mimeExtension, extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, parseKeys, trackKey, hiddenMenuItems, linkFileName, linkDescription, forceLeavesLink, clickTaken, clickApplies, urlMatches, selectionButtonAllowed, formFileFields, heldReport, heldApplies, greyPixels, HELD_REFRESH_MS, HELD_EXPIRE_MS };
+  module.exports = { isMagnet, catchesTorrents, isTorrentFile, mediaPlugin, playerContainer, samplePoints, playerCovered, mimeExtension, extensionOf, urlPath, hostOf, siteMatches, downloadType, captureDecision, keyAction, parseKeys, trackKey, hiddenMenuItems, linkFileName, linkDescription, forceLeavesLink, clickTaken, clickApplies, urlMatches, selectionButtonAllowed, formFileFields, heldReport, heldApplies, greyPixels, HELD_REFRESH_MS, HELD_EXPIRE_MS };
 
 }

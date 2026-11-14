@@ -14,6 +14,7 @@ use crate::bytes::ByteCount;
 use crate::country::CountryCode;
 use crate::download::{DownloadEntry, Status, Validator};
 use crate::id::DownloadId;
+use crate::torrent::{TorrentEntry, TorrentInfo, TorrentPhase, TorrentStats};
 
 /// One change to the list, borrowed from whatever message carried it, so
 /// applying one copies only what the table keeps.
@@ -64,6 +65,18 @@ pub enum Change<'a> {
     },
     Removed {
         id: DownloadId,
+    },
+    /// A torrent's metadata is known: its files.
+    TorrentInfo {
+        id: DownloadId,
+        url: &'a str,
+        info: &'a TorrentInfo,
+    },
+    /// How a torrent is doing: its phase, and what it uploaded.
+    TorrentStats {
+        id: DownloadId,
+        url: &'a str,
+        stats: &'a TorrentStats,
     },
     Updated(&'a DownloadEntry),
     Downloads(&'a [DownloadEntry]),
@@ -137,9 +150,12 @@ impl DownloadTable {
                 let e = self.entry(id, url);
                 e.status = Status::Failed;
                 e.error = Some(error.to_string());
+                stop_seeding_phase(e);
             }
             Change::Canceled { id, url } => {
-                self.entry(id, url).status = Status::Canceled;
+                let e = self.entry(id, url);
+                e.status = Status::Canceled;
+                stop_seeding_phase(e);
             }
             Change::NameTaken { id, url, path, total } => {
                 let e = self.entry(id, url);
@@ -150,6 +166,18 @@ impl DownloadTable {
             }
             Change::Removed { id } => {
                 self.entries.remove(&id);
+            }
+            Change::TorrentInfo { id, url, info } => {
+                self.entry(id, url).set_torrent_info(info);
+            }
+            Change::TorrentStats { id, url, stats } => {
+                let e = self.entry(id, url);
+                if e.torrent.is_none() {
+                    e.torrent = TorrentEntry::for_link(url);
+                }
+                if let Some(torrent) = e.torrent.as_mut() {
+                    torrent.observe(stats, now);
+                }
             }
             Change::Updated(item) => {
                 self.entries.insert(item.id, item.clone());
@@ -192,6 +220,13 @@ impl DownloadTable {
     }
 }
 
+/// A torrent that stopped while it seeded no longer seeds.
+fn stop_seeding_phase(e: &mut DownloadEntry) {
+    if let Some(t) = e.torrent.as_mut().filter(|t| t.phase == TorrentPhase::Seeding) {
+        t.phase = TorrentPhase::Complete;
+    }
+}
+
 fn blank(id: DownloadId, url: &str, status: Status) -> DownloadEntry {
     DownloadEntry {
         id,
@@ -221,6 +256,7 @@ fn blank(id: DownloadId, url: &str, status: Status) -> DownloadEntry {
         on_done: None,
         validator: None,
         country: None,
+        torrent: TorrentEntry::for_link(url),
     }
 }
 

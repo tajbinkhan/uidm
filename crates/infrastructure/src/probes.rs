@@ -29,8 +29,32 @@ fn probe_error(e: impl ToString) -> ProbeError {
     ProbeError(e.to_string())
 }
 
+impl ServerProbes {
+    /// The save-as dialog's proposal for a torrent: its metadata (asked of
+    /// its peers when not kept), saved under its name in the folder for its
+    /// category.
+    fn torrent(&self, download: &Download, magnet: &udm_domain::torrent::MagnetLink) -> Result<FileFacts, ProbeError> {
+        let client = self.transfers.torrents().ok_or_else(|| probe_error("Torrents are not available."))?;
+        let info = client.metadata(magnet, crate::torrent::METADATA_WAIT).map_err(probe_error)?.info;
+        let req = self.transfers.request_for(download.clone());
+        let name = if info.single_file() {
+            info.files.as_slice().first().and_then(|f| f.path.first()).cloned().unwrap_or_else(|| info.name.clone())
+        } else {
+            info.name.clone()
+        };
+        let filename = udm_domain::filename::FileName::parse(&name).map_err(probe_error)?;
+        let path = req.folders.for_name(filename.as_str()).join(&filename);
+        let total = Some(info.files.selected_size(download.torrent_files.as_ref()));
+        Ok(FileFacts { filename, path, total, resumable: true, torrent: Some(info) })
+    }
+}
+
 impl Probes for ServerProbes {
     fn link(&self, download: &Download) -> Result<LinkFacts, ProbeError> {
+        // A torrent is asked nothing until it is added.
+        if download.url.address().is_some_and(Address::is_torrent) {
+            return Ok(LinkFacts { total: None, content_type: Some("application/x-bittorrent".into()) });
+        }
         // Not through the debrid account: the link picker probes every link
         // on a page, and unlocking each would send them all to the service
         // (and fill the account's history) before the user picked any.
@@ -40,6 +64,9 @@ impl Probes for ServerProbes {
     }
 
     fn file(&self, download: &Download) -> Result<FileFacts, ProbeError> {
+        if let Some(magnet) = download.url.address().and_then(Address::magnet) {
+            return self.torrent(download, &magnet);
+        }
         // The file a debrid account unlocks the link into, when it does.
         let req = self.transfers.resolved_request(download.clone()).map_err(probe_error)?;
         // Probing a POST download would send a GET (or repeat the POST),
@@ -56,7 +83,7 @@ impl Probes for ServerProbes {
             engine::inspect(&req.url, req.filename.as_deref(), &req.headers, &req.net).map_err(probe_error)?
         };
         let path = req.folders.for_name(found.filename.as_str()).join(&found.filename);
-        Ok(FileFacts { filename: found.filename, path, total: found.total, resumable: found.resumable })
+        Ok(FileFacts { filename: found.filename, path, total: found.total, resumable: found.resumable, torrent: None })
     }
 
     fn media(&self, download: &Download) -> MediaInfo {
@@ -66,6 +93,9 @@ impl Probes for ServerProbes {
     }
 
     fn zip(&self, download: &Download, total: Option<ByteCount>) -> Result<Vec<ZipEntry>, ProbeError> {
+        if download.url.address().is_some_and(Address::is_torrent) {
+            return Err(probe_error("A torrent is not a zip file."));
+        }
         let req = self.transfers.resolved_request(download.clone()).map_err(probe_error)?;
         let total = match total {
             Some(t) => t,

@@ -72,6 +72,8 @@ fn change_of(msg: &Outgoing) -> Option<Change<'_>> {
             Change::NameTaken { id: *id, url: url.as_str(), path, total: *total }
         }
         Outgoing::Removed { id } => Change::Removed { id: *id },
+        Outgoing::TorrentInfo { id, url, info } => Change::TorrentInfo { id: *id, url: url.as_str(), info },
+        Outgoing::TorrentStats { id, url, stats } => Change::TorrentStats { id: *id, url: url.as_str(), stats },
         Outgoing::Updated { item } => Change::Updated(item),
         Outgoing::Downloads { items } => Change::Downloads(items),
         Outgoing::Hello { .. }

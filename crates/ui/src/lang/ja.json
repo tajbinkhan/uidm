@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "システムは別のアダプター経由でホスト名を引くことがあります。このアダプターで検索させるには DNS over HTTPS サーバーを選んでください。",
   "The system's (not encrypted)": "システムのもの (暗号化なし)",
   "This adapter is not connected now: downloads will not start until it is.": "このアダプターは現在接続されていません。接続されるまでダウンロードは始まりません。",
-  "{adapter} (not connected)": "{adapter} (未接続)"
+  "{adapter} (not connected)": "{adapter} (未接続)",
+  "{link} is not a magnet link": "{link} はマグネットリンクではありません",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "マグネットリンクに BitTorrent の info hash（xt=urn:btih:...）がありません。",
+  "{hash} is not a BitTorrent info hash": "{hash} は BitTorrent の info hash ではありません",
+  "The torrent holds no files.": "トレントにファイルがありません。",
+  "The torrent holds {count} files; UDM takes at most {max}.": "トレントには {count} 個のファイルがあります。UDM が扱えるのは最大 {max} 個です。",
+  "The torrent names a file UDM cannot save safely: {path}": "トレントに UDM が安全に保存できないファイル名があります: {path}",
+  "The torrent file is larger than {size} and was not read.": "トレントファイルが {size} を超えているため、読み込みませんでした。",
+  "This is not a torrent file: {why}": "トレントファイルではありません: {why}",
+  "Choose at least one of the torrent's files.": "トレントのファイルを少なくとも 1 つ選んでください。",
+  "The torrent has no file number {number}.": "トレントにファイル番号 {number} はありません。",
+  "{value} is not a share ratio between 0 and 100.": "{value} は 0 から 100 までの共有比ではありません。"
 }

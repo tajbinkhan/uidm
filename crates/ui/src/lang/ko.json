@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "시스템은 다른 어댑터를 통해 호스트 이름을 직접 조회할 수 있습니다. 이 어댑터에서 조회하려면 DNS over HTTPS 서버를 선택하세요.",
   "The system's (not encrypted)": "시스템 설정 (암호화 안 됨)",
   "This adapter is not connected now: downloads will not start until it is.": "이 어댑터는 지금 연결되어 있지 않습니다. 연결될 때까지 다운로드가 시작되지 않습니다.",
-  "{adapter} (not connected)": "{adapter} (연결 안 됨)"
+  "{adapter} (not connected)": "{adapter} (연결 안 됨)",
+  "{link} is not a magnet link": "{link}은(는) 마그넷 링크가 아닙니다",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "마그넷 링크에 BitTorrent 정보 해시(xt=urn:btih:...)가 없습니다.",
+  "{hash} is not a BitTorrent info hash": "{hash}은(는) BitTorrent 정보 해시가 아닙니다",
+  "The torrent holds no files.": "토렌트에 파일이 없습니다.",
+  "The torrent holds {count} files; UDM takes at most {max}.": "토렌트에 파일이 {count}개 있습니다. UDM은 최대 {max}개까지 받습니다.",
+  "The torrent names a file UDM cannot save safely: {path}": "토렌트에 UDM이 안전하게 저장할 수 없는 파일이 있습니다: {path}",
+  "The torrent file is larger than {size} and was not read.": "토렌트 파일이 {size}보다 커서 읽지 않았습니다.",
+  "This is not a torrent file: {why}": "토렌트 파일이 아닙니다: {why}",
+  "Choose at least one of the torrent's files.": "토렌트 파일을 하나 이상 선택하세요.",
+  "The torrent has no file number {number}.": "토렌트에 {number}번 파일이 없습니다.",
+  "{value} is not a share ratio between 0 and 100.": "{value}은(는) 0에서 100 사이의 공유 비율이 아닙니다."
 }

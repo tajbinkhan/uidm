@@ -337,6 +337,8 @@ fn run_cli(args: &[String]) -> i32 {
             host_limit: None,
             elevate: false,
             resolve: None,
+            torrent_files: None,
+            torrent_uploaded: udm_domain::bytes::ByteCount::ZERO,
         },
         Arc::new(move |p: Progress| print_progress(p, &ok_cb)),
     );
@@ -370,6 +372,7 @@ fn print_progress(p: Progress, ok: &AtomicBool) {
         Progress::Failed { error, .. } => eprintln!("\n[failed] {error}"),
         Progress::Canceled { .. } => eprintln!("\n[canceled]"),
         Progress::NameTaken { path, .. } => eprintln!("\n[failed] {} already exists", path.display()),
+        Progress::TorrentInfo { .. } | Progress::TorrentStats { .. } => {}
     }
 }
 

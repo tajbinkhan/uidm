@@ -411,6 +411,19 @@ mod tests {
             dns: udm_domain::network::DnsChoice::Custom(
                 udm_domain::network::DohUrl::parse("https://doh.example/dns-query").unwrap(),
             ),
+            torrents: udm_domain::settings::TorrentSettings {
+                port: Some(51413),
+                dht: false,
+                upnp: false,
+                local_peers: false,
+                max_peers: Some(80),
+                upload_limit_kbps: Some(300),
+                seed_limits: udm_domain::torrent::SeedLimits {
+                    ratio: Some(udm_domain::torrent::Ratio::new(2.5).unwrap()),
+                    minutes: None,
+                },
+                catch_torrent_files: false,
+            },
         };
         save(&s, &path).unwrap();
         assert_eq!(load(&path).unwrap(), s);

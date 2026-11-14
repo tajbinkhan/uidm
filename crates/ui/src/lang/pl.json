@@ -1056,5 +1056,16 @@
   "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "System sam sprawdza nazwy hostów, być może przez inną kartę. Wybierz serwer DNS przez HTTPS, aby zapytania szły przez tę kartę.",
   "The system's (not encrypted)": "Systemowy (nieszyfrowany)",
   "This adapter is not connected now: downloads will not start until it is.": "Ta karta nie jest teraz połączona: pobieranie nie zacznie się, dopóki nie będzie.",
-  "{adapter} (not connected)": "{adapter} (niepołączona)"
+  "{adapter} (not connected)": "{adapter} (niepołączona)",
+  "{link} is not a magnet link": "{link} nie jest linkiem magnet",
+  "The magnet link names no BitTorrent info hash (xt=urn:btih:...).": "Link magnet nie podaje skrótu info BitTorrent (xt=urn:btih:...).",
+  "{hash} is not a BitTorrent info hash": "{hash} nie jest skrótem info BitTorrent",
+  "The torrent holds no files.": "Torrent nie zawiera plików.",
+  "The torrent holds {count} files; UDM takes at most {max}.": "Torrent zawiera {count} plików; UDM przyjmuje najwyżej {max}.",
+  "The torrent names a file UDM cannot save safely: {path}": "Torrent zawiera plik, którego UDM nie może bezpiecznie zapisać: {path}",
+  "The torrent file is larger than {size} and was not read.": "Plik torrent jest większy niż {size} i nie został odczytany.",
+  "This is not a torrent file: {why}": "To nie jest plik torrent: {why}",
+  "Choose at least one of the torrent's files.": "Wybierz co najmniej jeden plik torrenta.",
+  "The torrent has no file number {number}.": "Torrent nie ma pliku numer {number}.",
+  "{value} is not a share ratio between 0 and 100.": "{value} nie jest współczynnikiem udostępniania od 0 do 100."
 }
