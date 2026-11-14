@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Сервіс не дозволяє IP-адресу цього комп'ютера. Часто причиною є VPN або проксі.",
   "The file host is unavailable for now. Try again later.": "Файлообмінник зараз недоступний. Спробуйте пізніше.",
   "The stored key is for {service}. Type a key for this service.": "Збережений ключ належить {service}. Введіть ключ для цього сервісу.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} відхилив обліковий запис debrid: {error} Завантаження тривають без нього."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} відхилив обліковий запис debrid: {error} Завантаження тривають без нього.",
+  "Another DNS over HTTPS server": "Інший сервер DNS через HTTPS",
+  "Any network (the system chooses)": "Будь-яка мережа (обирає система)",
+  "Choose a network adapter.": "Виберіть мережевий адаптер.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "DNS через HTTPS приховує імена, які шукають, від проміжної мережі. Якщо він не відповідає, імена ніколи не шукаються інакше.",
+  "Download through": "Завантажувати через",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "Завантаження можуть іти лише через один мережевий адаптер, наприклад адаптер VPN. Поки він вимкнений, вони зупиняються, а не використовують іншу мережу.",
+  "Look up host names with": "Шукати імена вузлів через",
+  "Network adapter and DNS": "Мережевий адаптер і DNS",
+  "Reading the network adapters…": "Читання мережевих адаптерів…",
+  "Server country": "Країна сервера",
+  "The DNS over HTTPS address must start with https:// and name a server.": "Адреса DNS через HTTPS має починатися з https:// і вказувати сервер.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "Мережевий адаптер {adapter} вимкнений, тому завантаження зупинено, а не переведено на іншу мережу.",
+  "The network adapters could not be read: {error}": "Не вдалося прочитати мережеві адаптери: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Система сама шукає імена вузлів, можливо через інший адаптер. Виберіть сервер DNS через HTTPS, щоб запити йшли через цей.",
+  "The system's (not encrypted)": "Системний (без шифрування)",
+  "This adapter is not connected now: downloads will not start until it is.": "Цей адаптер зараз не підключений: завантаження не почнуться, доки він не підключиться.",
+  "{adapter} (not connected)": "{adapter} (не підключений)"
 }

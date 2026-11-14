@@ -23,7 +23,7 @@ use udm_domain::debrid::{DebridAccount, DebridError, DebridKey, DebridService, S
 use udm_domain::download::Download;
 use udm_domain::ports::{Debrid, DebridKeys, SettingsError};
 
-use crate::connect::{config_for, ProxyRetries};
+use crate::connect::{config_for, NetState};
 use crate::engine;
 use crate::live_settings::LiveSettings;
 
@@ -53,7 +53,7 @@ const MAX_ANSWER: ByteCount = ByteCount::mib(4);
 /// The services' APIs, reached through the settings' proxy.
 pub struct DebridApi {
     settings: Arc<LiveSettings>,
-    retries: Arc<ProxyRetries>,
+    retries: Arc<NetState>,
     endpoints: Endpoints,
 }
 
@@ -68,7 +68,7 @@ struct Call<'a> {
 }
 
 impl DebridApi {
-    pub fn new(settings: Arc<LiveSettings>, retries: Arc<ProxyRetries>) -> Self {
+    pub fn new(settings: Arc<LiveSettings>, retries: Arc<NetState>) -> Self {
         DebridApi { settings, retries, endpoints: Endpoints::default() }
     }
 

@@ -315,6 +315,8 @@ pub struct Ports {
     pub window_files: Arc<dyn WindowFiles>,
     /// Registering UDM with the browsers.
     pub browsers: Arc<dyn BrowserRegistry>,
+    /// The network adapters, for Options.
+    pub adapters: Arc<dyn udm_domain::ports::NetworkAdapters>,
     /// The theme files.
     pub themes: Arc<dyn ThemeFiles>,
     /// Problem reports.
@@ -809,6 +811,15 @@ impl Actor {
         });
     }
 
+    /// Read the network adapters on a worker.
+    fn read_adapters(&mut self) {
+        let (outbox, adapters) = (self.outbox.clone(), Arc::clone(&self.ports.adapters));
+        thread::spawn(move || {
+            let read = adapters.list();
+            let _ = outbox.send(Inbox::Ui(UiMessage::AdaptersRead(read)));
+        });
+    }
+
     /// A browser change, on a worker; the list is read again after it.
     fn browser_action(&mut self, action: BrowserAction) {
         let lang = self.lang();
@@ -1124,6 +1135,7 @@ impl Actor {
                     self.send(Command::ListTools);
                     self.send(Command::RemoteStatus);
                     self.read_browsers();
+                    self.read_adapters();
                 }
                 if let Label::Properties(id) = label {
                     self.read_type_name(id);

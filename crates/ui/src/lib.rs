@@ -80,6 +80,8 @@ pub struct Start {
     pub window_files: Arc<dyn WindowFiles>,
     /// Registering UDM with the browsers, for Options.
     pub browsers: Arc<dyn BrowserRegistry>,
+    /// The computer's network adapters, for Options' Network page.
+    pub adapters: Arc<dyn udm_domain::ports::NetworkAdapters>,
     /// The theme files, for the custom themes.
     pub themes: Arc<dyn ThemeFiles>,
     /// Problem reports: the ones a crash left, and the watchdog's.
@@ -118,6 +120,7 @@ pub fn run(start: Start) -> Result<(), UiError> {
         files,
         window_files,
         browsers,
+        adapters,
         themes,
         reports,
         clipboard,
@@ -167,6 +170,7 @@ pub fn run(start: Start) -> Result<(), UiError> {
                 window_files,
                 folders,
                 browsers,
+                adapters,
                 themes,
                 reports: Arc::clone(&reports),
                 beats: Arc::clone(&beats),

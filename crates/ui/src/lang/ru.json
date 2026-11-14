@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Сервис не разрешает IP-адрес этого компьютера. Часто причина в VPN или прокси.",
   "The file host is unavailable for now. Try again later.": "Файлообменник сейчас недоступен. Повторите попытку позже.",
   "The stored key is for {service}. Type a key for this service.": "Сохранённый ключ относится к {service}. Введите ключ для этого сервиса.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} отклонил учётную запись debrid: {error} Загрузки продолжаются без неё."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} отклонил учётную запись debrid: {error} Загрузки продолжаются без неё.",
+  "Another DNS over HTTPS server": "Другой сервер DNS через HTTPS",
+  "Any network (the system chooses)": "Любая сеть (выбирает система)",
+  "Choose a network adapter.": "Выберите сетевой адаптер.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "DNS через HTTPS скрывает запрашиваемые имена от промежуточной сети. Если он не отвечает, имена никогда не запрашиваются иным способом.",
+  "Download through": "Загружать через",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "Загрузки могут идти только через один сетевой адаптер, например адаптер VPN. Пока он отключён, они останавливаются, а не используют другую сеть.",
+  "Look up host names with": "Определять имена узлов через",
+  "Network adapter and DNS": "Сетевой адаптер и DNS",
+  "Reading the network adapters…": "Чтение сетевых адаптеров…",
+  "Server country": "Страна сервера",
+  "The DNS over HTTPS address must start with https:// and name a server.": "Адрес DNS через HTTPS должен начинаться с https:// и указывать сервер.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "Сетевой адаптер {adapter} отключён, поэтому загрузки остановлены, а не переведены на другую сеть.",
+  "The network adapters could not be read: {error}": "Не удалось прочитать сетевые адаптеры: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Система сама определяет имена узлов, возможно через другой адаптер. Выберите сервер DNS через HTTPS, чтобы запросы шли через этот.",
+  "The system's (not encrypted)": "Системный (без шифрования)",
+  "This adapter is not connected now: downloads will not start until it is.": "Этот адаптер сейчас не подключён: загрузки не начнутся, пока он не подключится.",
+  "{adapter} (not connected)": "{adapter} (не подключён)"
 }

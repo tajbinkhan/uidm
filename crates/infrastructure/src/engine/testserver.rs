@@ -77,6 +77,8 @@ pub struct TestServer {
     pub refused: Arc<AtomicU64>,
     /// The most connections from one client answered at once.
     pub peak_per_client: Arc<AtomicUsize>,
+    /// Connections accepted so far.
+    pub connections: Arc<AtomicU64>,
 }
 
 /// What every connection's thread shares.
@@ -186,9 +188,12 @@ impl TestServer {
             cookies_seen: Arc::clone(&seen.cookies_seen),
             refused: Arc::clone(&seen.refused),
             peak_per_client: Arc::clone(&seen.peak_per_client),
+            connections: Arc::new(AtomicU64::new(0)),
         };
+        let connections = Arc::clone(&server.connections);
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                connections.fetch_add(1, Ordering::SeqCst);
                 let body = Arc::clone(&body);
                 let seen = seen.clone();
                 let behavior = behavior.clone();

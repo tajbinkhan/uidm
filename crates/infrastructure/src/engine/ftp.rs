@@ -188,6 +188,10 @@ pub struct FtpOptions {
     /// A SOCKS proxy to tunnel every connection through, when there is no
     /// FTP proxy.
     pub socks: Option<net::SocksProxy>,
+    /// The network adapter every connection is bound to, the data
+    /// connections and the active-mode listener included, and where names
+    /// are looked up.
+    pub route: crate::route::Route,
 }
 
 /// A logged-in control connection.
@@ -202,10 +206,17 @@ struct Control {
     socks: Option<(net::SocksProxy, String)>,
     /// Data connections are TLS too: the server took `PROT P`.
     protected: bool,
+    /// How the data connections go out.
+    route: crate::route::Route,
+    /// The server's address, when connected to it directly rather than
+    /// through a proxy.
+    server: Option<IpAddr>,
 }
 
+/// An I/O error as the engine's, keeping a refusal because the network
+/// adapter is down.
 fn io(e: std::io::Error) -> EngineError {
-    EngineError::Io(e.to_string())
+    EngineError::from(e)
 }
 
 /// Whether `s` holds a character that would break an FTP command line.
@@ -255,27 +266,21 @@ impl Control {
         let host = host.to_string();
         // Through a proxy, the login names the server to reach.
         let socks = opts.socks.clone().filter(|_| proxy.is_none());
-        let (addr, target) = match proxy {
-            Some(proxy) => {
-                let (h, p) = proxy.rsplit_once(':').unwrap_or((proxy, "21"));
-                let addr = (h, p.parse().unwrap_or(21))
-                    .to_socket_addrs_first()
-                    .ok_or_else(|| EngineError::Io(format!("could not find the FTP proxy {proxy}")))?;
-                (addr, Some(if port == 21 { host.clone() } else { format!("{host}:{port}") }))
-            }
-            // The SOCKS proxy finds the server; this address is not used.
-            None if socks.is_some() => (SocketAddr::from(([0, 0, 0, 0], 0)), None),
-            None => {
-                let addr = (host.as_str(), port)
-                    .to_socket_addrs_first()
-                    .ok_or_else(|| EngineError::Io(format!("could not find the FTP server {host}")))?;
-                (addr, None)
-            }
+        let route = &opts.route;
+        let target = proxy.map(|_| if port == 21 { host.clone() } else { format!("{host}:{port}") });
+        let stream = match (proxy, &socks) {
+            (Some(proxy), _) => route.connect_to(proxy, 21, CONNECT_TIMEOUT).map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => EngineError::Io(format!("could not find the FTP proxy {proxy}")),
+                _ => io(e),
+            })?,
+            // The SOCKS proxy finds the server.
+            (None, Some(socks)) => socks.connect(route, &host, port, CONNECT_TIMEOUT).map_err(io)?,
+            (None, None) => route.connect(&host, port, CONNECT_TIMEOUT).map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => EngineError::Io(format!("could not find the FTP server {host}")),
+                _ => io(e),
+            })?,
         };
-        let stream = match &socks {
-            Some(proxy) => proxy.connect(&host, port, CONNECT_TIMEOUT).map_err(io)?,
-            None => TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).map_err(io)?,
-        };
+        let server = (proxy.is_none() && socks.is_none()).then(|| stream.peer_addr().ok().map(|a| a.ip())).flatten();
         stream.set_read_timeout(Some(TIMEOUT)).map_err(io)?;
         stream.set_write_timeout(Some(TIMEOUT)).map_err(io)?;
         let tls_name = match parsed.host() {
@@ -288,6 +293,8 @@ impl Control {
             tls_name,
             socks: socks.map(|p| (p, host.clone())),
             protected: false,
+            route: route.clone(),
+            server,
         };
         if security == Security::Implicit {
             c = c.start_tls()?;
@@ -379,13 +386,13 @@ impl Control {
         if !self.conn.buffer().is_empty() {
             return Err(EngineError::Protocol("the FTP server sent more before TLS started".into()));
         }
-        let Control { conn, host, tls_name, socks, protected } = self;
+        let Control { conn, host, tls_name, socks, protected, route, server } = self;
         let stream = match conn.into_inner() {
             Conn::Plain(stream) => stream,
             Conn::Tls(_) => return Err(EngineError::Protocol("TLS has already started".into())),
         };
         let conn = BufReader::new(secure(stream, &tls_name)?);
-        Ok(Control { conn, host, tls_name, socks, protected })
+        Ok(Control { conn, host, tls_name, socks, protected, route, server })
     }
 
     /// One reply, joining the lines of a multi-line one. Each line is read up
@@ -434,7 +441,7 @@ impl Control {
         let peer = self.conn.get_ref().tcp().peer_addr().map_err(io)?;
         if active && self.socks.is_none() {
             let local = self.conn.get_ref().tcp().local_addr().map_err(io)?;
-            let listener = TcpListener::bind(SocketAddr::new(local.ip(), 0)).map_err(io)?;
+            let listener = self.route.listen(local.ip()).map_err(io)?;
             let port = listener.local_addr().map_err(io)?.port();
             let cmd = match local.ip() {
                 IpAddr::V4(ip) => {
@@ -462,8 +469,8 @@ impl Control {
         let stream = match &self.socks {
             // The control connection's peer is the proxy, so the data
             // connection names the server again.
-            Some((proxy, host)) => proxy.connect(host, port, CONNECT_TIMEOUT).map_err(io)?,
-            None => TcpStream::connect_timeout(&SocketAddr::new(peer.ip(), port), CONNECT_TIMEOUT).map_err(io)?,
+            Some((proxy, host)) => proxy.connect(&self.route, host, port, CONNECT_TIMEOUT).map_err(io)?,
+            None => self.route.connect_addr(SocketAddr::new(peer.ip(), port), CONNECT_TIMEOUT).map_err(io)?,
         };
         Ok(Data::Connected(stream))
     }
@@ -485,16 +492,6 @@ struct Target<'a> {
     host: &'a str,
     port: u16,
     proxy: Option<&'a str>,
-}
-
-trait FirstAddr {
-    fn to_socket_addrs_first(&self) -> Option<SocketAddr>;
-}
-
-impl FirstAddr for (&str, u16) {
-    fn to_socket_addrs_first(&self) -> Option<SocketAddr> {
-        std::net::ToSocketAddrs::to_socket_addrs(self).ok()?.next()
-    }
 }
 
 enum Data {
@@ -578,6 +575,7 @@ pub fn probe(url: &str, opts: &FtpOptions) -> Result<Probe, EngineError> {
         last_modified,
         suggested_filename: None,
         content_type: None,
+        server: c.server,
     })
 }
 
@@ -912,6 +910,28 @@ mod tests {
         assert_eq!(read_all(fetch(&s.url, &FtpOptions::default(), 1000, Some(1999)).unwrap()), &data[1000..2000]);
         let active = FtpOptions { active: true, ..FtpOptions::default() };
         assert_eq!(read_all(fetch(&s.url, &active, 4000, None).unwrap()), &data[4000..]);
+    }
+
+    #[test]
+    fn binds_control_and_data_connections_to_the_adapter_in_both_modes() {
+        let data = body(4000);
+        let s = server::start(data.clone(), None);
+        let (route, stand_in) = crate::route::tests::bound_to_loopback();
+        let passive = FtpOptions { route: route.clone(), ..FtpOptions::default() };
+        let active = FtpOptions { active: true, ..passive.clone() };
+        let found = probe(&s.url, &passive).unwrap();
+        assert_eq!(found.total, Some(4000));
+        assert_eq!(found.server, Some(IpAddr::from([127, 0, 0, 1])), "the server it reached");
+        assert_eq!(read_all(fetch(&s.url, &passive, 0, None).unwrap()), data);
+        assert_eq!(read_all(fetch(&s.url, &active, 1000, None).unwrap()), &data[1000..]);
+        // Once the adapter is gone, nothing connects, and the error says why.
+        stand_in.gone.store(true, std::sync::atomic::Ordering::SeqCst);
+        for opts in [&passive, &active] {
+            match fetch(&s.url, opts, 0, None) {
+                Err(EngineError::AdapterDown(down)) => assert_eq!(down.adapter, "Test adapter"),
+                other => panic!("expected the adapter to be down, got {:?}", other.map(|_| ())),
+            }
+        }
     }
 
     #[test]

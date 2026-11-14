@@ -75,7 +75,11 @@
       <Tabs {tabs} bind:current={tab}>
         <div class="page">
           {#if tab === 'status'}
-            <p class="address" title={view.address}>{view.address}</p>
+            <!-- The server's country goes before the address: the page has
+                 no room for another row. -->
+            <p class="address" title={view.address}>
+              {#if view.country}<span class="country" title={t('Server country')}>{view.country}</span>{/if}{view.address}
+            </p>
             <dl class="pairs">
               <dt>{t('Status')}</dt>
               <dd>{view.status}</dd>
@@ -258,6 +262,10 @@
 
   .resume {
     padding-left: 78px;
+  }
+
+  .country {
+    margin-right: 6px;
   }
 
   .kb {

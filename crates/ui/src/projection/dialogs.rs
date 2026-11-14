@@ -183,6 +183,7 @@ pub fn download(ctx: &Ctx, state: &AppState, id: DownloadId) -> Option<DownloadV
                 (Some(_), false) => "No",
             })
             .to_string(),
+        country: e.country.map(format::country).unwrap_or_default(),
         fraction,
         running: matches!(e.status, Status::Downloading | Status::Queued),
         can_resume: is_startable(e.status),

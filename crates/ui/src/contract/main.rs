@@ -119,6 +119,9 @@ pub struct Row {
     pub save_to: String,
     pub page: String,
     pub referrer: String,
+    /// The server's country: its flag and ISO code, such as "🇺🇸 US"; empty
+    /// when unknown.
+    pub country: String,
 }
 
 /// The kind of file a row holds, for its icon.
@@ -159,6 +162,7 @@ pub enum ColumnKey {
     Page,
     Referrer,
     Description,
+    Country,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -368,6 +368,7 @@ http://127.0.0.1/b.zip
             from_browser: false,
             on_done: None,
             validator: None,
+            country: None,
         }
     }
 

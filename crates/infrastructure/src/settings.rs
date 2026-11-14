@@ -403,6 +403,13 @@ mod tests {
                 service: Some(udm_domain::debrid::DebridService::Premiumize),
                 key_service: Some(udm_domain::debrid::DebridService::Premiumize),
             },
+            network_adapter: Some(udm_domain::network::AdapterChoice {
+                id: udm_domain::network::AdapterId::parse("wg0").unwrap(),
+                name: "Work VPN".into(),
+            }),
+            dns: udm_domain::network::DnsChoice::Custom(
+                udm_domain::network::DohUrl::parse("https://doh.example/dns-query").unwrap(),
+            ),
         };
         save(&s, &path).unwrap();
         assert_eq!(load(&path).unwrap(), s);

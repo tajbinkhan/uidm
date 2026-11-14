@@ -264,6 +264,28 @@ export type AboutView = {
 	connected: boolean,
 };
 
+/**
+ *  A network adapter as Options keeps it: its id, and the name to say
+ *  which one is down once it is gone.
+ */
+export type AdapterDraft = {
+	id: string,
+	name: string,
+};
+
+/**  A network adapter as Options lists it. */
+export type AdapterRow = {
+	id: string,
+	name: string,
+	/**
+	 *  What the list shows: its name and addresses, or that it is not
+	 *  connected.
+	 */
+	label: string,
+	/**  Connections can go through it now. */
+	up: boolean,
+};
+
 /**  Add URL ("Enter new address to download"). */
 export type AddUrlView = AddUrlView_Serialize | AddUrlView_Deserialize;
 
@@ -452,7 +474,7 @@ export type ColumnHead_Serialize = {
 };
 
 /**  The list's columns, in the order the window saves them. */
-export type ColumnKey = "name" | "queue" | "size" | "progress" | "speed" | "timeLeft" | "status" | "lastTry" | "saveTo" | "page" | "referrer" | "description";
+export type ColumnKey = "name" | "queue" | "size" | "progress" | "speed" | "timeLeft" | "status" | "lastTry" | "saveTo" | "page" | "referrer" | "description" | "country";
 
 /**  What Convert makes from a finished video. */
 export type ConvertTarget = "mp4" | "mp3" | "m4a" | "opus" | "flac";
@@ -530,6 +552,15 @@ export type DeviceRow = {
 	detail: string,
 };
 
+/**  Where host names are looked up. */
+export type DnsDraft = "system" | "cloudflare" | "google" | "quad9" | "custom";
+
+/**  A resolver Options offers. */
+export type DnsRow = {
+	value: DnsDraft,
+	label: string,
+};
+
 /**  Download complete. */
 export type DoneView = {
 	id: Id,
@@ -560,6 +591,8 @@ export type DownloadView = {
 	speed: string,
 	timeLeft: string,
 	resume: string,
+	/**  The server's country, its flag and code; empty when unknown. */
+	country: string,
 	fraction: number,
 	running: boolean,
 	canResume: boolean,
@@ -676,6 +709,14 @@ export type ExtrasDraft_Deserialize = {
 	debridKey: string,
 	/**  Remove the stored key. */
 	debridForget: boolean,
+	/**
+	 *  The network adapter every connection is bound to; `None` lets the
+	 *  system choose.
+	 */
+	adapter?: AdapterDraft | null,
+	dns: DnsDraft,
+	/**  The custom DNS over HTTPS resolver's address. */
+	dnsUrl: string,
 };
 
 /**
@@ -735,6 +776,14 @@ export type ExtrasDraft_Serialize = {
 	debridKey: string,
 	/**  Remove the stored key. */
 	debridForget: boolean,
+	/**
+	 *  The network adapter every connection is bound to; `None` lets the
+	 *  system choose.
+	 */
+	adapter: AdapterDraft | null,
+	dns: DnsDraft,
+	/**  The custom DNS over HTTPS resolver's address. */
+	dnsUrl: string,
 };
 
 export type FileExistsChoice = "rename" | "overwrite" | "ask";
@@ -1323,6 +1372,33 @@ export type MainView_Serialize = {
 	chrome: MainChrome_Serialize,
 };
 
+/**  Options' Network page beyond the settings. */
+export type NetworkView = NetworkView_Serialize | NetworkView_Deserialize;
+
+/**  Options' Network page beyond the settings. */
+export type NetworkView_Deserialize = {
+	/**
+	 *  The adapters, the chosen one first when it is not there now; `None`
+	 *  while they are read.
+	 */
+	adapters?: AdapterRow[] | null,
+	/**  Why they could not be read. */
+	adaptersError?: string | null,
+	resolvers: DnsRow[],
+};
+
+/**  Options' Network page beyond the settings. */
+export type NetworkView_Serialize = {
+	/**
+	 *  The adapters, the chosen one first when it is not there now; `None`
+	 *  while they are read.
+	 */
+	adapters: AdapterRow[] | null,
+	/**  Why they could not be read. */
+	adaptersError: string | null,
+	resolvers: DnsRow[],
+};
+
 export type NotifyChoice = "off" | "toast" | "dialog";
 
 /**  The Options on completion tab's choices. */
@@ -1525,6 +1601,7 @@ export type OptionsView_Deserialize = {
 	/**  A portable copy, which does not start when the user signs in. */
 	portable: boolean,
 	debrid: DebridView_Deserialize,
+	network: NetworkView_Deserialize,
 };
 
 /**  The Options window. */
@@ -1557,6 +1634,7 @@ export type OptionsView_Serialize = {
 	/**  A portable copy, which does not start when the user signs in. */
 	portable: boolean,
 	debrid: DebridView_Serialize,
+	network: NetworkView_Serialize,
 };
 
 /**  A package's menu in the categories tree. */
@@ -1935,6 +2013,11 @@ export type Row_Deserialize = {
 	saveTo: string,
 	page: string,
 	referrer: string,
+	/**
+	 *  The server's country: its flag and ISO code, such as "🇺🇸 US"; empty
+	 *  when unknown.
+	 */
+	country: string,
 };
 
 /**  One download in the list, each column's text already formatted. */
@@ -1962,6 +2045,11 @@ export type Row_Serialize = {
 	saveTo: string,
 	page: string,
 	referrer: string,
+	/**
+	 *  The server's country: its flag and ISO code, such as "🇺🇸 US"; empty
+	 *  when unknown.
+	 */
+	country: string,
 };
 
 /**  Download File Info: where a probed download goes before it starts. */

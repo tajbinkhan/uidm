@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Hizmet bu bilgisayarın IP adresine izin vermiyor. Bunun nedeni çoğu zaman bir VPN veya proxy'dir.",
   "The file host is unavailable for now. Try again later.": "Dosya barındırıcısı şu anda kullanılamıyor. Daha sonra yeniden deneyin.",
   "The stored key is for {service}. Type a key for this service.": "Kayıtlı anahtar {service} için. Bu hizmet için bir anahtar yazın.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} debrid hesabını reddetti: {error} İndirmeler hesap olmadan sürüyor."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} debrid hesabını reddetti: {error} İndirmeler hesap olmadan sürüyor.",
+  "Another DNS over HTTPS server": "Başka bir HTTPS üzerinden DNS sunucusu",
+  "Any network (the system chooses)": "Herhangi bir ağ (sistem seçer)",
+  "Choose a network adapter.": "Bir ağ bağdaştırıcısı seçin.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "HTTPS üzerinden DNS, aranan adları aradaki ağdan gizler. Başarısız olursa adlar asla başka bir yolla aranmaz.",
+  "Download through": "Şunun üzerinden indir",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "İndirmeler, VPN’inki gibi tek bir ağ bağdaştırıcısından geçebilir. Bağdaştırıcı bağlı değilken başka bir ağı kullanmak yerine durur.",
+  "Look up host names with": "Ana bilgisayar adlarını şununla ara",
+  "Network adapter and DNS": "Ağ bağdaştırıcısı ve DNS",
+  "Reading the network adapters…": "Ağ bağdaştırıcıları okunuyor…",
+  "Server country": "Sunucunun ülkesi",
+  "The DNS over HTTPS address must start with https:// and name a server.": "HTTPS üzerinden DNS adresi https:// ile başlamalı ve bir sunucu belirtmelidir.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "{adapter} ağ bağdaştırıcısı bağlı değil, bu yüzden indirmeler başka bir ağ kullanmak yerine durduruldu.",
+  "The network adapters could not be read: {error}": "Ağ bağdaştırıcıları okunamadı: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Sistem ana bilgisayar adlarını kendisi arar, belki başka bir bağdaştırıcı üzerinden. Aramaları bu bağdaştırıcıda tutmak için bir HTTPS üzerinden DNS sunucusu seçin.",
+  "The system's (not encrypted)": "Sistemin (şifresiz)",
+  "This adapter is not connected now: downloads will not start until it is.": "Bu bağdaştırıcı şu anda bağlı değil: bağlanana kadar indirmeler başlamaz.",
+  "{adapter} (not connected)": "{adapter} (bağlı değil)"
 }

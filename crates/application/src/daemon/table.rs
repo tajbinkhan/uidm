@@ -9,16 +9,19 @@ use super::Event;
 pub fn change_of(event: &Event) -> Option<Change<'_>> {
     Some(match event {
         Event::Added { id, url } => Change::Added { id: *id, url: url.as_str() },
-        Event::Started { id, url, path, total, resumable, connections, partial, validator } => Change::Started {
-            id: *id,
-            url: url.as_str(),
-            path,
-            total: *total,
-            resumable: *resumable,
-            connections: *connections,
-            partial: partial.as_deref(),
-            validator: validator.as_ref(),
-        },
+        Event::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
+            Change::Started {
+                id: *id,
+                url: url.as_str(),
+                path,
+                total: *total,
+                resumable: *resumable,
+                connections: *connections,
+                partial: partial.as_deref(),
+                validator: validator.as_ref(),
+                country: *country,
+            }
+        }
         Event::Progress { id, url, done, total, parts, .. } => {
             Change::Progress { id: *id, url: url.as_str(), done: *done, total: *total, parts: *parts }
         }

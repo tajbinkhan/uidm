@@ -839,3 +839,12 @@ pub trait DebridKeys: Send + Sync {
     /// Remove the stored key; none stored is not an error.
     fn remove_key(&self) -> Result<(), SettingsError>;
 }
+
+/// The computer's network adapters, for binding downloads to one
+/// (`crate::network`). Listed afresh each time: an adapter that went away
+/// is gone from the next list, which is what the kill switch looks for.
+pub trait NetworkAdapters: Send + Sync {
+    /// Every adapter with at least one address, or why they could not be
+    /// read (`NetworkError::Adapters`).
+    fn list(&self) -> Result<Vec<crate::network::NetworkAdapter>, crate::network::NetworkError>;
+}

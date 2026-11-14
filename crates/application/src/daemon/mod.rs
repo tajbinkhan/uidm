@@ -374,6 +374,8 @@ pub enum Event {
         connections: usize,
         partial: Option<String>,
         validator: Option<Validator>,
+        /// The country of the server it connected to, when known.
+        country: Option<udm_domain::country::CountryCode>,
     },
     /// Progress of a running download.
     Progress {

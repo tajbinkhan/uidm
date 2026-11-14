@@ -50,6 +50,7 @@ pub struct OptionsView {
     /// A portable copy, which does not start when the user signs in.
     pub portable: bool,
     pub debrid: DebridView,
+    pub network: NetworkView,
 }
 
 /// Keys held while clicking a link.
@@ -327,6 +328,66 @@ pub struct ExtrasDraft {
     pub debrid_key: String,
     /// Remove the stored key.
     pub debrid_forget: bool,
+    // Network.
+    /// The network adapter every connection is bound to; `None` lets the
+    /// system choose.
+    pub adapter: Option<AdapterDraft>,
+    pub dns: DnsDraft,
+    /// The custom DNS over HTTPS resolver's address.
+    pub dns_url: String,
+}
+
+/// A network adapter as Options keeps it: its id, and the name to say
+/// which one is down once it is gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterDraft {
+    pub id: String,
+    pub name: String,
+}
+
+/// Where host names are looked up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DnsDraft {
+    System,
+    Cloudflare,
+    Google,
+    Quad9,
+    Custom,
+}
+
+/// A network adapter as Options lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterRow {
+    pub id: String,
+    pub name: String,
+    /// What the list shows: its name and addresses, or that it is not
+    /// connected.
+    pub label: String,
+    /// Connections can go through it now.
+    pub up: bool,
+}
+
+/// A resolver Options offers.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsRow {
+    pub value: DnsDraft,
+    pub label: String,
+}
+
+/// Options' Network page beyond the settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkView {
+    /// The adapters, the chosen one first when it is not there now; `None`
+    /// while they are read.
+    pub adapters: Option<Vec<AdapterRow>>,
+    /// Why they could not be read.
+    pub adapters_error: Option<String>,
+    pub resolvers: Vec<DnsRow>,
 }
 
 /// A debrid service Options offers.

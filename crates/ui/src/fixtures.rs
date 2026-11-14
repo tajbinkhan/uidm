@@ -67,6 +67,14 @@ fn sample() -> AppState {
             let mut e = entry(i as u64 + 1, name, *status, *total, done);
             e.url = format!("{SITE}/{name}").into();
             e.last_try = Some(START + DAY * (i as u64 / 2) + 3600 * 14 + 60 * i as u64);
+            // The servers' countries, for the Country column and the
+            // download window.
+            e.country = match i + 1 {
+                2 | 12 => udm_domain::country::CountryCode::parse("US"),
+                4 => udm_domain::country::CountryCode::parse("DE"),
+                6 | 14 => udm_domain::country::CountryCode::parse("NL"),
+                _ => None,
+            };
             e.description = match i + 1 {
                 3 => Some("MP3, 64 kbps, 3:05:42".into()),
                 6 => Some("Video: 1920x1080, 2:11:05".into()),
@@ -173,7 +181,22 @@ fn fixtures() -> serde_json::Value {
             service: Some(udm_domain::debrid::DebridService::RealDebrid),
             key_service: Some(udm_domain::debrid::DebridService::RealDebrid),
         };
+        // Downloads go through a VPN's adapter, with names looked up at
+        // Quad9.
+        settings.network_adapter = Some(udm_domain::network::AdapterChoice {
+            id: udm_domain::network::AdapterId::parse("wg0").unwrap(),
+            name: "wg0".into(),
+        });
+        settings.dns = udm_domain::network::DnsChoice::Quad9;
     }
+    let adapter = |id: &str, addresses: &[&str]| udm_domain::network::NetworkAdapter {
+        id: udm_domain::network::AdapterId::parse(id).unwrap(),
+        name: id.into(),
+        addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+        up: true,
+    };
+    let adapters = vec![adapter("eth0", &["192.168.1.5", "fe80::5"]), adapter("wg0", &["10.2.0.2"])];
+    apply(&mut s, UiMessage::AdaptersRead(Ok(adapters)));
     let tool = |tool, path: Option<&str>, installed: Option<&str>| udm_domain::tools::ToolState {
         tool,
         path: path.map(Into::into),

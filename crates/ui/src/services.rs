@@ -12,7 +12,7 @@ use udm_domain::settings::{AddedBrowser, Theme};
 use udm_domain::tools::{Tool, ToolState};
 
 use crate::contract::{
-    Banner, BrowserRowView, Choice, DeviceRow, Id, OptionsView, PairingView, RemoteView, ToolKey, ToolRow,
+    AdapterRow, Banner, BrowserRowView, Choice, DeviceRow, Id, OptionsView, PairingView, RemoteView, ToolKey, ToolRow,
 };
 use crate::i18n::{fill, Language};
 use crate::projection::{format, Ctx};
@@ -57,6 +57,8 @@ pub struct Services {
     pub themes: ThemesRead,
     /// Check account, and what it found.
     pub debrid: DebridState,
+    /// The network adapters a worker read; `None` until it did.
+    pub adapters: Option<Result<Vec<udm_domain::network::NetworkAdapter>, udm_domain::network::NetworkError>>,
 }
 
 /// Where Options' Check account stands.
@@ -299,6 +301,38 @@ fn theme_choices(lang: &'static Language, state: &AppState) -> Vec<Choice> {
     out
 }
 
+/// The adapters Options lists: each with its addresses, or as not
+/// connected, and the chosen one first when it is not there now, so the
+/// list still shows what downloads are bound to.
+fn adapter_rows(
+    lang: &'static Language,
+    adapters: &[udm_domain::network::NetworkAdapter],
+    chosen: Option<&udm_domain::network::AdapterChoice>,
+) -> Vec<AdapterRow> {
+    let not_connected = |name: &str| fill(lang.tr("{adapter} (not connected)"), &[("adapter", name)]);
+    let mut rows: Vec<AdapterRow> = adapters
+        .iter()
+        .map(|a| AdapterRow {
+            id: a.id.to_string(),
+            name: a.name.clone(),
+            label: if a.usable() { format!("{} ({})", a.name, a.addresses_text()) } else { not_connected(&a.name) },
+            up: a.usable(),
+        })
+        .collect();
+    if let Some(c) = chosen.filter(|c| !adapters.iter().any(|a| a.id == c.id)) {
+        rows.insert(
+            0,
+            AdapterRow {
+                id: c.id.to_string(),
+                name: c.label().to_string(),
+                label: not_connected(c.label()),
+                up: false,
+            },
+        );
+    }
+    rows
+}
+
 /// Options' view with what the daemon and the workers reported.
 pub fn fill_view(ctx: &Ctx, state: &AppState, view: &mut OptionsView) {
     let lang = ctx.lang;
@@ -318,6 +352,15 @@ pub fn fill_view(ctx: &Ctx, state: &AppState, view: &mut OptionsView) {
         })
         .unwrap_or_default();
     view.browser_note = s.browser_note.clone();
+    let chosen = state.settings.as_ref().and_then(|s| s.network_adapter.as_ref());
+    match &s.adapters {
+        None => {}
+        Some(Ok(adapters)) => view.network.adapters = Some(adapter_rows(lang, adapters, chosen)),
+        Some(Err(e)) => {
+            view.network.adapters = Some(adapter_rows(lang, &[], chosen));
+            view.network.adapters_error = Some(crate::errors::text::network(lang, e));
+        }
+    }
     view.creation_time = state.system.creation_time;
     view.portable = state.system.portable;
     view.themes = theme_choices(lang, state);
@@ -349,6 +392,40 @@ mod tests {
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
         }
+    }
+
+    #[test]
+    fn the_adapters_list_shows_addresses_and_keeps_the_chosen_one() {
+        use udm_domain::network::{AdapterChoice, AdapterId, NetworkAdapter, NetworkError};
+        let adapter = |id: &str, addresses: &[&str], up: bool| NetworkAdapter {
+            id: AdapterId::parse(id).unwrap(),
+            name: format!("{id} adapter"),
+            addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+            up,
+        };
+        let mut s = AppState::default();
+        let settings = udm_domain::settings::Settings {
+            network_adapter: Some(AdapterChoice { id: AdapterId::parse("tun9").unwrap(), name: "Old VPN".into() }),
+            ..udm_domain::settings::Settings::default()
+        };
+        s.settings = Some(settings.clone());
+        let mut view = crate::options::view(ctx().lang, &settings);
+        fill_view(&ctx(), &s, &mut view);
+        assert_eq!(view.network.adapters, None, "still being read");
+        let read = vec![adapter("eth0", &["192.168.1.5", "fe80::1"], true), adapter("wg0", &["10.2.0.2"], false)];
+        apply(&mut s, UiMessage::AdaptersRead(Ok(read)));
+        fill_view(&ctx(), &s, &mut view);
+        let rows = view.network.adapters.clone().unwrap();
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Old VPN (not connected)", "eth0 adapter (192.168.1.5, fe80::1)", "wg0 adapter (not connected)"]
+        );
+        assert_eq!(rows.iter().map(|r| r.up).collect::<Vec<_>>(), [false, true, false]);
+        apply(&mut s, UiMessage::AdaptersRead(Err(NetworkError::Adapters("no access".into()))));
+        fill_view(&ctx(), &s, &mut view);
+        assert_eq!(view.network.adapters.map(|r| r.len()), Some(1), "the chosen one stays listed");
+        assert_eq!(view.network.adapters_error.as_deref(), Some("The network adapters could not be read: no access"));
     }
 
     #[test]

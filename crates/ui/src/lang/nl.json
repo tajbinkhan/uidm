@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "De dienst staat het IP-adres van deze computer niet toe. Vaak is een VPN of proxy de oorzaak.",
   "The file host is unavailable for now. Try again later.": "De bestandshost is op dit moment niet beschikbaar. Probeer het later opnieuw.",
   "The stored key is for {service}. Type a key for this service.": "De opgeslagen sleutel is van {service}. Typ een sleutel voor deze dienst.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} weigerde het debrid-account: {error} Downloads gaan zonder het account verder."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} weigerde het debrid-account: {error} Downloads gaan zonder het account verder.",
+  "Another DNS over HTTPS server": "Andere DNS-over-HTTPS-server",
+  "Any network (the system chooses)": "Elk netwerk (het systeem kiest)",
+  "Choose a network adapter.": "Kies een netwerkadapter.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "DNS over HTTPS verbergt de opgezochte namen voor het netwerk ertussen. Als het mislukt, worden namen nooit op een andere manier opgezocht.",
+  "Download through": "Downloaden via",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "Downloads kunnen via één netwerkadapter lopen, zoals die van een VPN. Zolang die niet verbonden is, stoppen ze in plaats van een ander netwerk te gebruiken.",
+  "Look up host names with": "Hostnamen opzoeken met",
+  "Network adapter and DNS": "Netwerkadapter en DNS",
+  "Reading the network adapters…": "Netwerkadapters worden gelezen…",
+  "Server country": "Land van de server",
+  "The DNS over HTTPS address must start with https:// and name a server.": "Het DNS-over-HTTPS-adres moet met https:// beginnen en een server noemen.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "De netwerkadapter {adapter} is niet verbonden, dus de downloads zijn gestopt in plaats van een ander netwerk te gebruiken.",
+  "The network adapters could not be read: {error}": "De netwerkadapters konden niet worden gelezen: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Het systeem zoekt hostnamen zelf op, mogelijk via een andere adapter. Kies een DNS-over-HTTPS-server om het opzoeken op deze te houden.",
+  "The system's (not encrypted)": "Die van het systeem (niet versleuteld)",
+  "This adapter is not connected now: downloads will not start until it is.": "Deze adapter is nu niet verbonden: downloads starten pas als hij dat is.",
+  "{adapter} (not connected)": "{adapter} (niet verbonden)"
 }

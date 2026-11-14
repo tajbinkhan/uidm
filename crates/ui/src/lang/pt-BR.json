@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "O serviço não permite o endereço IP deste computador. Uma VPN ou um proxy costuma ser a causa.",
   "The file host is unavailable for now. Try again later.": "O servidor de arquivos está indisponível no momento. Tente novamente mais tarde.",
   "The stored key is for {service}. Type a key for this service.": "A chave salva é do {service}. Digite uma chave para este serviço.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} recusou a conta debrid: {error} Os downloads continuam sem ela."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} recusou a conta debrid: {error} Os downloads continuam sem ela.",
+  "Another DNS over HTTPS server": "Outro servidor DNS sobre HTTPS",
+  "Any network (the system chooses)": "Qualquer rede (o sistema escolhe)",
+  "Choose a network adapter.": "Escolha um adaptador de rede.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "O DNS sobre HTTPS esconde os nomes consultados da rede intermediária. Se falhar, os nomes nunca são consultados de outra forma.",
+  "Download through": "Baixar por",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "Os downloads podem passar por um único adaptador de rede, como o de uma VPN. Enquanto ele estiver desconectado, eles param em vez de usar outra rede.",
+  "Look up host names with": "Consultar nomes de host com",
+  "Network adapter and DNS": "Adaptador de rede e DNS",
+  "Reading the network adapters…": "Lendo os adaptadores de rede…",
+  "Server country": "País do servidor",
+  "The DNS over HTTPS address must start with https:// and name a server.": "O endereço DNS sobre HTTPS deve começar com https:// e indicar um servidor.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "O adaptador de rede {adapter} está desconectado, então os downloads pararam em vez de usar outra rede.",
+  "The network adapters could not be read: {error}": "Não foi possível ler os adaptadores de rede: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "O sistema consulta os nomes de host por conta própria, talvez por outro adaptador. Escolha um servidor DNS sobre HTTPS para manter as consultas neste.",
+  "The system's (not encrypted)": "O do sistema (sem criptografia)",
+  "This adapter is not connected now: downloads will not start until it is.": "Este adaptador não está conectado agora: os downloads não vão começar até que esteja.",
+  "{adapter} (not connected)": "{adapter} (desconectado)"
 }

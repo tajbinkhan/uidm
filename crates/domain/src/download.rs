@@ -521,6 +521,11 @@ pub struct DownloadEntry {
     /// checked, so a synchronizing queue can tell whether it changed since.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validator: Option<Validator>,
+    /// The country of the server its last start connected to, from the
+    /// address table UDM ships; `None` when unknown, private or reached
+    /// through a proxy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<crate::country::CountryCode>,
 }
 
 /// What a server says identifies one version of a file: its size, ETag and

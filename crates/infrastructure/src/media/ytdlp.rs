@@ -14,6 +14,7 @@
 //! there), on `PATH`, next to UDM's programs, or next to ffmpeg.
 
 use std::io::Read as _;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -120,8 +121,9 @@ pub fn find(ffmpeg: Option<&Path>) -> Option<PathBuf> {
 
 /// Arguments every yt-dlp run gets. yt-dlp needs a JavaScript runtime for
 /// YouTube and looks only for Deno unless told otherwise, so Node is named
-/// when it is there and Deno is not.
-fn common_args(cmd: &mut Command, proxy: Option<&str>) {
+/// when it is there and Deno is not. `source` is the address of the network
+/// adapter downloads are bound to, which yt-dlp connects from.
+fn common_args(cmd: &mut Command, proxy: Option<&str>, source: Option<IpAddr>) {
     cmd.args(["--no-playlist", "--no-warnings", "--no-color", "--ignore-config"]);
     let on_path = |name: &str| {
         std::env::var_os("PATH")
@@ -133,13 +135,16 @@ fn common_args(cmd: &mut Command, proxy: Option<&str>) {
     if let Some(proxy) = proxy {
         cmd.args(["--proxy", proxy]);
     }
+    if let Some(source) = source {
+        cmd.arg("--source-address").arg(source.to_string());
+    }
 }
 
 /// The yt-dlp command for `url`, ready for the arguments that differ.
-pub fn command(yt_dlp: &Path, proxy: Option<&str>) -> Command {
+pub fn command(yt_dlp: &Path, proxy: Option<&str>, source: Option<IpAddr>) -> Command {
     let mut cmd = Command::new(yt_dlp);
     crate::platform::no_window(&mut cmd);
-    common_args(&mut cmd, proxy);
+    common_args(&mut cmd, proxy, source);
     cmd.stdin(Stdio::null());
     cmd
 }
@@ -159,9 +164,9 @@ pub fn complaint(stderr: &str) -> String {
 
 /// What the page at `url` offers, read by yt-dlp: its video's qualities,
 /// or a playlist's videos. Given up after `timeout`.
-pub fn probe(yt_dlp: &Path, url: &str, proxy: Option<&str>, timeout: Duration) -> MediaInfo {
+pub fn probe(yt_dlp: &Path, url: &str, proxy: Option<&str>, source: Option<IpAddr>, timeout: Duration) -> MediaInfo {
     let failed = |why: String| MediaInfo::failed(Some(MediaKind::Page), why);
-    let child = command(yt_dlp, proxy)
+    let child = command(yt_dlp, proxy, source)
         .args(["-J", "--flat-playlist", "--playlist-end", &MAX_PLAYLIST_ENTRIES.to_string(), "--"])
         .arg(url)
         .stdout(Stdio::piped())
@@ -747,18 +752,18 @@ mod tests {
     fn any_page_is_read_by_the_program_and_slow_ones_give_up() {
         let json = r#"{"duration": 5, "formats": [{"format_id": "1", "vcodec": "avc1", "acodec": "mp4a", "height": 480, "tbr": 900}]}"#;
         let ok = fake_yt_dlp("ok", &format!("cat <<'EOF'\n{json}\nEOF"));
-        let info = probe(&ok, "https://videos.example/watch/1", None, Duration::from_secs(20));
+        let info = probe(&ok, "https://videos.example/watch/1", None, None, Duration::from_secs(20));
         assert!(info.error.is_none(), "{:?}", info.error);
         assert_eq!(info.video[0].height, Some(480));
 
         let slow = fake_yt_dlp("slow", "sleep 30");
         let started = Instant::now();
-        let info = probe(&slow, "https://videos.example/watch/2", None, Duration::from_millis(300));
+        let info = probe(&slow, "https://videos.example/watch/2", None, None, Duration::from_millis(300));
         assert!(info.error.unwrap().contains("did not answer"));
         assert!(started.elapsed() < Duration::from_secs(10));
 
         let fails = fake_yt_dlp("fails", "echo 'ERROR: Unsupported URL: https://x/' >&2; exit 1");
-        let info = probe(&fails, "https://x/", None, Duration::from_secs(20));
+        let info = probe(&fails, "https://x/", None, None, Duration::from_secs(20));
         assert!(info.error.unwrap().starts_with("yt-dlp: Unsupported URL"));
         for p in [ok, slow, fails] {
             let _ = std::fs::remove_dir_all(p.parent().unwrap());

@@ -96,6 +96,7 @@ fn name(key: ColumnKey) -> &'static str {
         ColumnKey::Page => "referrer",
         ColumnKey::Referrer => "referer",
         ColumnKey::Description => "description",
+        ColumnKey::Country => "country",
     }
 }
 

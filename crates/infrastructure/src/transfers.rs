@@ -25,7 +25,7 @@ use udm_domain::ports::{
 };
 
 use crate::app::{progress_to_outgoing, to_request};
-use crate::connect::{config_for, ProxyRetries};
+use crate::connect::{config_for, NetState};
 use crate::engine::{self, DownloadRequest, Engine, Progress};
 use crate::live_settings::LiveSettings;
 use crate::net::{self, ProxyKind};
@@ -158,7 +158,7 @@ pub struct Transfers {
     engine: Arc<Engine>,
     store: Arc<DownloadStore>,
     settings: Arc<LiveSettings>,
-    retries: Arc<ProxyRetries>,
+    retries: Arc<NetState>,
     /// Reaches every client.
     events: Arc<dyn StoreEvents>,
     early: Arc<EarlyRuns>,
@@ -179,7 +179,7 @@ impl Transfers {
         store: Arc<DownloadStore>,
         events: Arc<dyn StoreEvents>,
         settings: Arc<LiveSettings>,
-        retries: Arc<ProxyRetries>,
+        retries: Arc<NetState>,
         next_id: DownloadId,
     ) -> Self {
         let early = Arc::new(EarlyRuns::default());
@@ -246,7 +246,7 @@ impl Transfers {
     /// Note that `url` is retried through the browser's proxy. Returns false
     /// when it already was.
     pub fn note_browser_proxy_retry(&self, url: String) -> bool {
-        self.retries.insert(url)
+        self.retries.retries.insert(url)
     }
 
     /// Write the history and the saved requests now.

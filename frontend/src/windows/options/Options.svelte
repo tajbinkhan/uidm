@@ -22,6 +22,7 @@
   import Tools from './Tools.svelte';
   import Remote from './Remote.svelte';
   import Debrid from './Debrid.svelte';
+  import Network from './Network.svelte';
 
   const view: OptionsView | null = $derived(projection.view?.window === 'options' ? projection.view.view : null);
 
@@ -40,7 +41,8 @@
     | 'archives'
     | 'tools'
     | 'remote'
-    | 'debrid';
+    | 'debrid'
+    | 'network';
   // IDM's two rows, and behind them a row of UDM's own pages.
   const rows: { key: Page; label: string }[][] = [
     [
@@ -54,6 +56,7 @@
     ],
     [
       { key: 'proxy', label: 'Proxy / Socks' },
+      { key: 'network', label: 'Network' },
       { key: 'logins', label: 'Sites Logins' },
       { key: 'sounds', label: 'Sounds' },
     ],
@@ -151,6 +154,8 @@
           <Debrid {view} />
         {:else if page === 'proxy'}
           <Proxy />
+        {:else if page === 'network'}
+          <Network {view} />
         {:else if page === 'logins'}
           <Logins />
         {:else}

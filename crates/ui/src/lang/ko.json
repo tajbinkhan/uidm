@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "서비스가 이 컴퓨터의 IP 주소를 허용하지 않습니다. VPN이나 프록시가 원인인 경우가 많습니다.",
   "The file host is unavailable for now. Try again later.": "파일 호스트를 지금은 사용할 수 없습니다. 나중에 다시 시도하세요.",
   "The stored key is for {service}. Type a key for this service.": "저장된 키는 {service}의 키입니다. 이 서비스의 키를 입력하세요.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service}에서 디브리드 계정을 거부했습니다: {error} 다운로드는 계정 없이 계속됩니다."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service}에서 디브리드 계정을 거부했습니다: {error} 다운로드는 계정 없이 계속됩니다.",
+  "Another DNS over HTTPS server": "다른 DNS over HTTPS 서버",
+  "Any network (the system chooses)": "모든 네트워크 (시스템이 선택)",
+  "Choose a network adapter.": "네트워크 어댑터를 선택하세요.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "DNS over HTTPS는 조회하는 이름을 중간 네트워크로부터 숨깁니다. 실패해도 다른 방법으로 이름을 조회하지 않습니다.",
+  "Download through": "다운로드 경로",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "다운로드가 VPN 등 하나의 네트워크 어댑터만 거치게 할 수 있습니다. 어댑터가 끊기면 다른 네트워크를 쓰지 않고 멈춥니다.",
+  "Look up host names with": "호스트 이름 조회 방법",
+  "Network adapter and DNS": "네트워크 어댑터와 DNS",
+  "Reading the network adapters…": "네트워크 어댑터를 읽는 중…",
+  "Server country": "서버 국가",
+  "The DNS over HTTPS address must start with https:// and name a server.": "DNS over HTTPS 주소는 https://로 시작하고 서버를 지정해야 합니다.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "네트워크 어댑터 {adapter}이(가) 끊겨서 다른 네트워크를 쓰지 않고 다운로드를 멈췄습니다.",
+  "The network adapters could not be read: {error}": "네트워크 어댑터를 읽을 수 없습니다: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "시스템은 다른 어댑터를 통해 호스트 이름을 직접 조회할 수 있습니다. 이 어댑터에서 조회하려면 DNS over HTTPS 서버를 선택하세요.",
+  "The system's (not encrypted)": "시스템 설정 (암호화 안 됨)",
+  "This adapter is not connected now: downloads will not start until it is.": "이 어댑터는 지금 연결되어 있지 않습니다. 연결될 때까지 다운로드가 시작되지 않습니다.",
+  "{adapter} (not connected)": "{adapter} (연결 안 됨)"
 }

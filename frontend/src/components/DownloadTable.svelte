@@ -94,6 +94,8 @@
         return r.referrer;
       case 'description':
         return r.description;
+      case 'country':
+        return r.country;
     }
   }
 

@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Le service n'accepte pas l'adresse IP de cet ordinateur. Un VPN ou un proxy en est souvent la cause.",
   "The file host is unavailable for now. Try again later.": "L'hébergeur de fichiers est indisponible pour le moment. Réessayez plus tard.",
   "The stored key is for {service}. Type a key for this service.": "La clé enregistrée est celle de {service}. Saisissez une clé pour ce service.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} a refusé le compte debrid : {error} Les téléchargements continuent sans lui."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} a refusé le compte debrid : {error} Les téléchargements continuent sans lui.",
+  "Another DNS over HTTPS server": "Autre serveur DNS sur HTTPS",
+  "Any network (the system chooses)": "N’importe quel réseau (le système choisit)",
+  "Choose a network adapter.": "Choisissez une carte réseau.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "Le DNS sur HTTPS cache les noms recherchés au réseau intermédiaire. S’il échoue, les noms ne sont jamais recherchés autrement.",
+  "Download through": "Télécharger via",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "Les téléchargements peuvent passer par une seule carte réseau, comme celle d’un VPN. Quand elle est coupée, ils s’arrêtent au lieu d’utiliser un autre réseau.",
+  "Look up host names with": "Rechercher les noms d’hôte avec",
+  "Network adapter and DNS": "Carte réseau et DNS",
+  "Reading the network adapters…": "Lecture des cartes réseau…",
+  "Server country": "Pays du serveur",
+  "The DNS over HTTPS address must start with https:// and name a server.": "L’adresse DNS sur HTTPS doit commencer par https:// et nommer un serveur.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "La carte réseau {adapter} est coupée : les téléchargements se sont arrêtés au lieu d’utiliser un autre réseau.",
+  "The network adapters could not be read: {error}": "Impossible de lire les cartes réseau : {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Le système recherche lui-même les noms d’hôte, peut-être via une autre carte. Choisissez un serveur DNS sur HTTPS pour garder les recherches sur celle-ci.",
+  "The system's (not encrypted)": "Celui du système (non chiffré)",
+  "This adapter is not connected now: downloads will not start until it is.": "Cette carte n’est pas connectée pour l’instant : les téléchargements ne démarreront pas avant qu’elle le soit.",
+  "{adapter} (not connected)": "{adapter} (non connectée)"
 }

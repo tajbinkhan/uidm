@@ -5,6 +5,7 @@
 use udm_application::daemon::Command;
 use udm_domain::debrid::{DebridKey, DebridService};
 use udm_domain::id::QueueId;
+use udm_domain::network::{AdapterChoice, AdapterId, DnsChoice, DohUrl};
 use udm_domain::settings::{
     default_capture_types, parse_extensions, CaptureKey, Category, Duplicate, InvalidSettings, Notify, PanelView,
     ProxyMode, Scanner, ServerLimit, Settings, SiteLogin, SocksVersion, Theme, BROWSER_MENU_ITEMS, CONNECTIONS_RANGE,
@@ -13,6 +14,7 @@ use udm_domain::settings::{
 use udm_domain::theme::ThemeName;
 
 use crate::contract::SystemProxyView;
+use crate::contract::{AdapterDraft, DnsDraft, DnsRow, NetworkView};
 use crate::contract::{
     CategoryDraft, Choice, DebridChoice, DebridServiceRow, DebridView, DuplicateChoice, ExtrasDraft, FileExistsChoice,
     KeysDraft, LoginDraft, NotifyChoice, OptionsDraft, OptionsView, ProxyChoice, ProxyDraft, SelectionChoice,
@@ -36,6 +38,9 @@ pub enum OptionsError {
     Port,
     #[error("Choose the debrid service the account is with.")]
     DebridService,
+    /// The custom DNS over HTTPS address, or the adapter, is not one.
+    #[error(transparent)]
+    Network(#[from] udm_domain::network::NetworkError),
 }
 
 /// The debrid service a choice names.
@@ -383,7 +388,33 @@ fn extras(s: &Settings) -> ExtrasDraft {
         debrid_service: s.debrid.service.map(debrid_choice),
         debrid_key: String::new(),
         debrid_forget: false,
+        adapter: s.network_adapter.as_ref().map(|a| AdapterDraft { id: a.id.to_string(), name: a.name.clone() }),
+        dns: dns_draft(&s.dns),
+        dns_url: match &s.dns {
+            DnsChoice::Custom(url) => url.as_str().to_string(),
+            _ => String::new(),
+        },
     }
+}
+
+fn dns_draft(d: &DnsChoice) -> DnsDraft {
+    match d {
+        DnsChoice::System => DnsDraft::System,
+        DnsChoice::Cloudflare => DnsDraft::Cloudflare,
+        DnsChoice::Google => DnsDraft::Google,
+        DnsChoice::Quad9 => DnsDraft::Quad9,
+        DnsChoice::Custom(_) => DnsDraft::Custom,
+    }
+}
+
+/// The resolvers Options offers: the system's, the presets by their own
+/// names, and one the user names.
+fn network_view(lang: &'static Language) -> NetworkView {
+    let mut resolvers =
+        vec![DnsRow { value: DnsDraft::System, label: lang.tr("The system's (not encrypted)").to_string() }];
+    resolvers.extend(DnsChoice::PRESETS.iter().map(|d| DnsRow { value: dns_draft(d), label: d.name().to_string() }));
+    resolvers.push(DnsRow { value: DnsDraft::Custom, label: lang.tr("Another DNS over HTTPS server").to_string() });
+    NetworkView { adapters: None, adapters_error: None, resolvers }
 }
 
 /// The extras' values on `s`.
@@ -472,6 +503,17 @@ fn apply_extras(e: &ExtrasDraft, done_dialog: bool, current: &Settings, s: &mut 
     if (s.debrid.enabled || typed) && s.debrid.service.is_none() {
         return Err(OptionsError::DebridService);
     }
+    s.network_adapter = match &e.adapter {
+        None => None,
+        Some(a) => Some(AdapterChoice { id: AdapterId::parse(&a.id)?, name: a.name.trim().to_string() }),
+    };
+    s.dns = match e.dns {
+        DnsDraft::System => DnsChoice::System,
+        DnsDraft::Cloudflare => DnsChoice::Cloudflare,
+        DnsDraft::Google => DnsChoice::Google,
+        DnsDraft::Quad9 => DnsChoice::Quad9,
+        DnsDraft::Custom => DnsChoice::Custom(DohUrl::parse(&e.dns_url)?),
+    };
     Ok(())
 }
 
@@ -511,6 +553,7 @@ pub fn view(lang: &'static Language, s: &Settings) -> OptionsView {
         creation_time: false,
         portable: false,
         debrid: debrid_view(s),
+        network: network_view(lang),
     }
 }
 
@@ -745,6 +788,36 @@ mod tests {
         assert_eq!(out.remote_addresses, ["192.168.1.5", "10.0.0.2"]);
         d.extras.remote_port = 70_000;
         assert_eq!(settings(&d, &s), Err(OptionsError::Port));
+    }
+
+    #[test]
+    fn the_network_adapter_and_dns_reach_the_settings() {
+        let s = Settings::default();
+        let mut d = draft(&s);
+        assert_eq!((d.extras.adapter.clone(), d.extras.dns), (None, DnsDraft::System));
+        d.extras.adapter = Some(AdapterDraft { id: " wg0 ".into(), name: "Work VPN".into() });
+        d.extras.dns = DnsDraft::Custom;
+        d.extras.dns_url = "http://doh.example/q".into();
+        assert_eq!(settings(&d, &s), Err(OptionsError::Network(udm_domain::network::NetworkError::DohAddress)));
+        d.extras.dns_url = "https://doh.example/q".into();
+        let out = settings(&d, &s).unwrap();
+        assert_eq!(out.network_adapter.as_ref().map(|a| (a.id.as_str(), a.name.as_str())), Some(("wg0", "Work VPN")));
+        assert_eq!(out.dns, DnsChoice::Custom(DohUrl::parse("https://doh.example/q").unwrap()));
+        // What was saved comes back as it was.
+        let back = draft(&out);
+        assert_eq!(back.extras.dns, DnsDraft::Custom);
+        assert_eq!(back.extras.dns_url, "https://doh.example/q");
+        assert_eq!(settings(&back, &out).unwrap(), out);
+        d.extras.adapter = Some(AdapterDraft { id: "  ".into(), name: String::new() });
+        assert!(settings(&d, &s).is_err(), "no adapter without an id");
+        d.extras.adapter = None;
+        d.extras.dns = DnsDraft::Quad9;
+        let out = settings(&d, &s).unwrap();
+        assert_eq!((out.network_adapter, out.dns), (None, DnsChoice::Quad9));
+        let view = view(resolve("en", &[]), &s);
+        let labels: Vec<&str> = view.network.resolvers.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels[0], "The system's (not encrypted)");
+        assert_eq!(labels.len(), 5);
     }
 
     #[test]

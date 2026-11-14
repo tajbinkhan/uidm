@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "该服务不允许此计算机的 IP 地址。原因通常是 VPN 或代理。",
   "The file host is unavailable for now. Try again later.": "该网盘暂时不可用。请稍后再试。",
   "The stored key is for {service}. Type a key for this service.": "已保存的密钥属于 {service}。请输入此服务的密钥。",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} 拒绝了 Debrid 账户：{error} 下载将不经该账户继续进行。"
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} 拒绝了 Debrid 账户：{error} 下载将不经该账户继续进行。",
+  "Another DNS over HTTPS server": "其他 DNS over HTTPS 服务器",
+  "Any network (the system chooses)": "任意网络（由系统选择）",
+  "Choose a network adapter.": "请选择网络适配器。",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "DNS over HTTPS 会向中间网络隐藏所查询的名称。查询失败时，绝不会改用其他方式查询名称。",
+  "Download through": "下载使用",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "下载可以只通过一个网络适配器，例如 VPN 的适配器。它断开时，下载会停止，而不是改用其他网络。",
+  "Look up host names with": "查询主机名使用",
+  "Network adapter and DNS": "网络适配器和 DNS",
+  "Reading the network adapters…": "正在读取网络适配器…",
+  "Server country": "服务器所在国家/地区",
+  "The DNS over HTTPS address must start with https:// and name a server.": "DNS over HTTPS 地址必须以 https:// 开头并指明服务器。",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "网络适配器 {adapter} 已断开，因此下载已停止，而没有改用其他网络。",
+  "The network adapters could not be read: {error}": "无法读取网络适配器：{error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "系统会自行查询主机名，可能经由其他适配器。请选择一个 DNS over HTTPS 服务器，使查询保持在此适配器上。",
+  "The system's (not encrypted)": "系统的（未加密）",
+  "This adapter is not connected now: downloads will not start until it is.": "此适配器当前未连接：在连接之前下载不会开始。",
+  "{adapter} (not connected)": "{adapter}（未连接）"
 }

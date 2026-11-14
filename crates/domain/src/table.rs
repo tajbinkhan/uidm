@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use crate::address::Link;
 use crate::bytes::ByteCount;
+use crate::country::CountryCode;
 use crate::download::{DownloadEntry, Status, Validator};
 use crate::id::DownloadId;
 
@@ -31,6 +32,7 @@ pub enum Change<'a> {
         connections: usize,
         partial: Option<&'a str>,
         validator: Option<&'a Validator>,
+        country: Option<CountryCode>,
     },
     Progress {
         id: DownloadId,
@@ -84,7 +86,7 @@ impl DownloadTable {
             Change::Added { id, url } => {
                 self.entries.entry(id).or_insert_with(|| blank(id, url, Status::Queued));
             }
-            Change::Started { id, url, path, total, resumable, connections, partial, validator } => {
+            Change::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
                 let e = self.entry(id, url);
                 e.status = Status::Downloading;
                 e.path = Some(path.to_string());
@@ -97,6 +99,7 @@ impl DownloadTable {
                 if let Some(v) = validator {
                     e.validator = Some(v.clone());
                 }
+                e.country = country;
                 e.error = None;
                 e.scan = None;
                 e.note = None;
@@ -217,6 +220,7 @@ fn blank(id: DownloadId, url: &str, status: Status) -> DownloadEntry {
         from_browser: false,
         on_done: None,
         validator: None,
+        country: None,
     }
 }
 
@@ -238,6 +242,7 @@ mod tests {
                 connections: 4,
                 partial: None,
                 validator: None,
+                country: CountryCode::parse("NL"),
             },
             NOW,
         );
@@ -263,6 +268,7 @@ mod tests {
         assert_eq!(e.status, Status::Downloading);
         assert_eq!(e.connections, 4);
         assert_eq!(e.last_try, Some(NOW));
+        assert_eq!(e.country.map(|c| c.to_string()).as_deref(), Some("NL"), "the server's country");
         t.change(progress(1, 400), NOW);
         assert_eq!(t.get(DownloadId::new(1)).unwrap().done, ByteCount::new(400));
         t.change(Change::Done { id: DownloadId::new(1), url: URL, path: "/dl/f.zip", note: None }, NOW);

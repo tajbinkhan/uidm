@@ -86,10 +86,14 @@ impl Probes for ServerProbes {
         // The proxy a download of the page would use; no cookies.
         let req = self.transfers.request_for(Download { url: page.clone().into(), ..Download::default() });
         let proxy = req.net.proxy.as_ref().and_then(|p| p.proxy_for(page.as_str()));
+        // Bound to the chosen network adapter through gallery-dl's own
+        // option; not run at all while it is down.
+        let source = req.net.route.source_address().map_err(|down| GalleryError::Failed(down.to_string()))?;
         crate::media::gallerydl::probe(
             &program,
             page.as_str(),
             proxy.as_deref(),
+            source,
             user_agent,
             crate::media::gallerydl::PROBE_TIMEOUT,
         )

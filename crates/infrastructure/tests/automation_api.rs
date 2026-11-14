@@ -241,6 +241,7 @@ fn the_events_the_daemon_sends_fit() {
             connections: 1,
             partial: Some("/tmp/a.iso".into()),
             validator: None,
+            country: udm_domain::country::CountryCode::parse("US"),
         },
         Outgoing::Progress {
             id,

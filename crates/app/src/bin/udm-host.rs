@@ -302,6 +302,17 @@ fn run_cli(args: &[String]) -> i32 {
     let output_dir = args.get(3).map(PathBuf::from).unwrap_or_else(default_downloads_dir);
     eprintln!("[udm-host] downloading {url} -> {}", output_dir.display());
 
+    // No proxy or login, as ever in this test mode, but the network adapter
+    // and DNS the settings choose, so it never goes out another way.
+    let settings =
+        match udm_infrastructure::settings::settings_path().and_then(|p| udm_infrastructure::settings::load(&p)) {
+            Ok(settings) => settings,
+            Err(e) => {
+                eprintln!("[udm-host] the settings could not be read: {e}");
+                return 1;
+            }
+        };
+    let route = udm_infrastructure::connect::Network::default().route(&settings);
     let ok = Arc::new(AtomicBool::new(false));
     let ok_cb = Arc::clone(&ok);
     engine::run_blocking(
@@ -314,7 +325,7 @@ fn run_cli(args: &[String]) -> i32 {
             reuse_path: None,
             file_exists: FileExists::Rename,
             post_body: None,
-            net: Default::default(),
+            net: Arc::new(udm_infrastructure::net::NetConfig { route, ..Default::default() }),
             media: None,
             ffmpeg: None,
             speed_limit: None,

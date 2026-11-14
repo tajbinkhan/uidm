@@ -130,16 +130,19 @@ pub fn post_body(d: &Download) -> Option<Vec<u8>> {
 /// Map an engine event to the message sent to clients.
 pub fn progress_to_outgoing(p: Progress) -> Outgoing {
     match p {
-        Progress::Started { id, url, path, total, resumable, connections, partial, validator } => Outgoing::Started {
-            id,
-            url: url.into(),
-            path: path.display().to_string(),
-            total,
-            resumable,
-            connections,
-            partial: partial.map(|p| p.display().to_string()),
-            validator,
-        },
+        Progress::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
+            Outgoing::Started {
+                id,
+                url: url.into(),
+                path: path.display().to_string(),
+                total,
+                resumable,
+                connections,
+                partial: partial.map(|p| p.display().to_string()),
+                validator,
+                country,
+            }
+        }
         Progress::Advanced { id, url, done, total, parts, segments } => {
             Outgoing::Progress { id, url: url.into(), done, total, parts, segments }
         }

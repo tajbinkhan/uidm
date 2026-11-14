@@ -25,6 +25,7 @@
 //! installs it there), on `PATH`, or next to UDM's programs.
 
 use std::io::{BufRead as _, BufReader, Read as _};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,9 +57,10 @@ pub fn find() -> Option<PathBuf> {
     own.into_iter().chain(on_path).chain(beside).map(|dir| dir.join(&name)).find(|p| p.is_file())
 }
 
-/// The arguments that read `url`, with the settings' `proxy` and the
+/// The arguments that read `url`, with the settings' `proxy`, the address
+/// of the network adapter downloads are bound to (`source`) and the
 /// browser's `user_agent`.
-pub fn args(url: &str, proxy: Option<&str>, user_agent: Option<&str>) -> Vec<String> {
+pub fn args(url: &str, proxy: Option<&str>, source: Option<IpAddr>, user_agent: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = [
         "--config-ignore",
         "--no-input",
@@ -78,6 +80,9 @@ pub fn args(url: &str, proxy: Option<&str>, user_agent: Option<&str>) -> Vec<Str
     }
     if let Some(proxy) = proxy {
         args.extend(["--proxy".to_string(), proxy.to_string()]);
+    }
+    if let Some(source) = source {
+        args.extend(["--source-address".to_string(), source.to_string()]);
     }
     args.extend(["--".to_string(), url.to_string()]);
     args
@@ -209,6 +214,7 @@ pub fn probe(
     program: &Path,
     url: &str,
     proxy: Option<&str>,
+    source: Option<IpAddr>,
     user_agent: Option<&str>,
     timeout: Duration,
 ) -> Result<Gallery, GalleryError> {
@@ -220,7 +226,7 @@ pub fn probe(
         cmd.process_group(0);
     }
     let child = cmd
-        .args(args(url, proxy, user_agent))
+        .args(args(url, proxy, source, user_agent))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -319,7 +325,7 @@ mod tests {
 
     #[test]
     fn the_arguments_read_without_downloading() {
-        let a = args("https://g.example/a", Some("http://proxy:3128"), Some("Agent"));
+        let a = args("https://g.example/a", Some("http://proxy:3128"), None, Some("Agent"));
         assert_eq!(
             a,
             [
@@ -341,7 +347,7 @@ mod tests {
             ]
         );
         // The page comes after `--`, so it can never be taken for an option.
-        assert_eq!(args("--help", None, None).iter().rev().take(2).collect::<Vec<_>>(), ["--help", "--"]);
+        assert_eq!(args("--help", None, None, None).iter().rev().take(2).collect::<Vec<_>>(), ["--help", "--"]);
     }
 
     const LINES: &str = concat!(
@@ -396,18 +402,24 @@ mod tests {
     #[test]
     fn a_stand_in_gallery_dl_lists_fails_or_is_given_up() {
         let ok = fake("ok", &format!("[ \"$1\" = --config-ignore ] || exit 3\ncat <<'EOF'\n{LINES}EOF"));
-        let g = probe(&ok, "https://g.example/album", None, None, Duration::from_secs(20)).unwrap();
+        let g = probe(&ok, "https://g.example/album", None, None, None, Duration::from_secs(20)).unwrap();
         assert_eq!(g.pictures.len(), 2);
 
         let unknown = fake("unknown", "echo \"[gallery-dl][error] Unsupported URL '$*'\" >&2; exit 64");
-        assert_eq!(probe(&unknown, "https://x/", None, None, Duration::from_secs(20)), Err(GalleryError::Unsupported));
+        assert_eq!(
+            probe(&unknown, "https://x/", None, None, None, Duration::from_secs(20)),
+            Err(GalleryError::Unsupported)
+        );
 
         let empty = fake("empty", "exit 0");
-        assert_eq!(probe(&empty, "https://x/", None, None, Duration::from_secs(20)), Err(GalleryError::NothingFound));
+        assert_eq!(
+            probe(&empty, "https://x/", None, None, None, Duration::from_secs(20)),
+            Err(GalleryError::NothingFound)
+        );
 
         let fails = fake("fails", "echo '[flickr][error] HttpError: 403' >&2; exit 4");
         assert_eq!(
-            probe(&fails, "https://x/", None, None, Duration::from_secs(20)),
+            probe(&fails, "https://x/", None, None, None, Duration::from_secs(20)),
             Err(GalleryError::Failed("HttpError: 403".into()))
         );
 
@@ -415,15 +427,18 @@ mod tests {
         let first = LINES.lines().nth(1).unwrap();
         let partial = fake("partial", &format!("cat <<'EOF'\n{first}\nEOF\nsleep 30"));
         let started = Instant::now();
-        let g = probe(&partial, "https://x/", None, None, Duration::from_millis(800)).unwrap();
+        let g = probe(&partial, "https://x/", None, None, None, Duration::from_millis(800)).unwrap();
         assert_eq!(g.pictures.len(), 1);
         let slow = fake("slow", "sleep 30");
-        assert_eq!(probe(&slow, "https://x/", None, None, Duration::from_millis(300)), Err(GalleryError::TimedOut(0)));
+        assert_eq!(
+            probe(&slow, "https://x/", None, None, None, Duration::from_millis(300)),
+            Err(GalleryError::TimedOut(0))
+        );
         assert!(started.elapsed() < Duration::from_secs(10));
 
         let missing = Path::new("/nonexistent/gallery-dl");
         assert!(matches!(
-            probe(missing, "https://x/", None, None, Duration::from_secs(1)),
+            probe(missing, "https://x/", None, None, None, Duration::from_secs(1)),
             Err(GalleryError::Failed(_))
         ));
     }
@@ -435,7 +450,7 @@ mod tests {
         let script = "i=0; while [ $i -lt 5000 ]; do echo \"[3, \\\"https://i.example/$i.jpg\\\", {}]\"; i=$((i+1)); done; sleep 30";
         let many = fake("many", script);
         let started = Instant::now();
-        let g = probe(&many, "https://x/", None, None, Duration::from_secs(25)).unwrap();
+        let g = probe(&many, "https://x/", None, None, None, Duration::from_secs(25)).unwrap();
         assert_eq!(g.pictures.len(), MAX_PICTURES);
         assert!(started.elapsed() < Duration::from_secs(20), "it was stopped, not waited for");
     }

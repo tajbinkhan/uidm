@@ -883,6 +883,15 @@ pub struct Settings {
     /// Its API key is stored sealed beside the settings, never here.
     #[serde(default)]
     pub debrid: crate::debrid::DebridSettings,
+    /// The network adapter every connection is bound to; when it is down,
+    /// downloads stop rather than use another network. `None` lets the
+    /// system choose, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_adapter: Option<crate::network::AdapterChoice>,
+    /// Where host names are looked up: the system, or a DNS over HTTPS
+    /// resolver.
+    #[serde(default)]
+    pub dns: crate::network::DnsChoice,
 }
 
 fn default_remote_port() -> u16 {
@@ -1025,6 +1034,8 @@ impl Default for Settings {
             remote_port: DEFAULT_REMOTE_PORT,
             remote_addresses: Vec::new(),
             debrid: crate::debrid::DebridSettings::default(),
+            network_adapter: None,
+            dns: crate::network::DnsChoice::System,
         }
     }
 }

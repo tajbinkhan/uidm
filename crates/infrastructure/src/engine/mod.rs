@@ -10,7 +10,7 @@
 //! Progress is reported through a cloneable `Reporter`.
 
 mod ftp;
-mod http;
+pub(crate) mod http;
 mod limit;
 mod page;
 mod resume;
@@ -179,6 +179,8 @@ pub enum Progress {
         partial: Option<PathBuf>,
         /// What the server said identifies this version of the file.
         validator: Option<Validator>,
+        /// The country of the server it connected to, when known.
+        country: Option<udm_domain::country::CountryCode>,
     },
     Advanced {
         id: DownloadId,
@@ -271,6 +273,10 @@ pub enum EngineError {
     /// UAC prompt, else the helper failed and `why` says how.
     #[error("{}", not_moved_text(file, dir, why.as_deref()))]
     NotMoved { file: PathBuf, dir: PathBuf, why: Option<String> },
+    /// The network adapter downloads are bound to is down: nothing is sent
+    /// another way, and trying again cannot help until it is back.
+    #[error(transparent)]
+    AdapterDown(#[from] udm_domain::network::AdapterDown),
 }
 
 /// What [`EngineError::NotMoved`] says.
@@ -296,13 +302,17 @@ impl EngineError {
                 | EngineError::NeedsAdmin(_)
                 | EngineError::NotMoved { .. }
                 | EngineError::Unresolved(_)
+                | EngineError::AdapterDown(_)
         )
     }
 }
 
 impl From<std::io::Error> for EngineError {
     fn from(e: std::io::Error) -> Self {
-        EngineError::Io(e.to_string())
+        match crate::route::adapter_down_in(&e) {
+            Some(down) => EngineError::AdapterDown(down.clone()),
+            None => EngineError::Io(e.to_string()),
+        }
     }
 }
 
@@ -665,11 +675,25 @@ fn run(id: DownloadId, token: CancelToken, req: DownloadRequest, reporter: Repor
         own_limits.insert(id, (Arc::clone(&own), own_rate));
         own
     };
+    // The kill switch: a download bound to a network adapter does not start
+    // while it is down, and stops as soon as it goes.
+    let watch = match AdapterWatch::start(&req.net.route, &token) {
+        Ok(watch) => watch,
+        Err(down) => {
+            reporter.send(Progress::Failed { id, url, error: down.to_string() });
+            return;
+        }
+    };
     let result = if req.elevate {
         run_elevated(id, &token, &mut req, &reporter, shared)
     } else {
         run_inner(id, &token, &req, &reporter, shared)
     };
+    if let Some(down) = watch.and_then(AdapterWatch::finish) {
+        tracing::warn!(download_id = id.get(), adapter = %down.adapter, "stopped: the network adapter is down");
+        reporter.send(Progress::Failed { id, url, error: down.to_string() });
+        return;
+    }
     {
         let mut own_limits = shared.own_limits.lock_or_recover();
         if own_limits.get(&id).is_some_and(|(o, _)| Arc::ptr_eq(o, &own)) {
@@ -696,6 +720,58 @@ fn run(id: DownloadId, token: CancelToken, req: DownloadRequest, reporter: Repor
             }
             reporter.send(Progress::Failed { id, url, error })
         }
+    }
+}
+
+/// Watches the network adapter a running download is bound to, on a thread
+/// of its own: when the adapter goes, it stops the download (as a cancel
+/// does, so every connection closes at its next read) and keeps why, so the
+/// download fails with [`AdapterDown`] rather than being canceled.
+///
+/// [`AdapterDown`]: udm_domain::network::AdapterDown
+struct AdapterWatch {
+    /// Dropped when the download ends, which ends the thread.
+    done: std::sync::mpsc::Sender<()>,
+    thread: thread::JoinHandle<Option<udm_domain::network::AdapterDown>>,
+}
+
+impl AdapterWatch {
+    /// `Ok(None)` for a download bound to no adapter; an error when the
+    /// adapter is down already.
+    fn start(
+        route: &crate::route::Route,
+        token: &CancelToken,
+    ) -> Result<Option<AdapterWatch>, udm_domain::network::AdapterDown> {
+        let Some(binding) = route.binding.clone() else {
+            return Ok(None);
+        };
+        binding.adapter()?;
+        let (done, ended) = std::sync::mpsc::channel::<()>();
+        let token = Arc::clone(token);
+        let thread = thread::Builder::new().name("udm-adapter-watch".into()).spawn(move || loop {
+            match ended.recv_timeout(binding.watch_every) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                _ => return None,
+            }
+            if let Err(down) = binding.adapter() {
+                token.store(true, Ordering::Relaxed);
+                return Some(down);
+            }
+        });
+        match thread {
+            Ok(thread) => Ok(Some(AdapterWatch { done, thread })),
+            // Without the watch, every new connection still checks.
+            Err(e) => {
+                tracing::warn!(error = %e, "could not watch the network adapter");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Stop watching; the adapter's going, if it went.
+    fn finish(self) -> Option<udm_domain::network::AdapterDown> {
+        drop(self.done);
+        self.thread.join().ok().flatten()
     }
 }
 
@@ -842,6 +918,7 @@ fn run_inner(
         connections,
         partial: (work != output).then(|| work.clone()),
         validator: Some(probe.validator()),
+        country: probe.server.and_then(crate::country::of),
     });
 
     let own = shared.own_limiter(id);
@@ -968,6 +1045,7 @@ fn run_post(
         connections: 1,
         partial: None,
         validator: None,
+        country: probe.server.and_then(crate::country::of),
     });
     let mut file = File::create(&output)?;
     let mut buf = vec![0u8; BUF_SIZE];
@@ -1123,11 +1201,18 @@ pub fn probe_media(
     if !ytdlp::supports(url) && !(page && web) {
         return stream::probe(url, headers, net);
     }
+    // yt-dlp connects from the chosen network adapter's address, and is not
+    // run while it is down.
+    let source = match net.route.source_address() {
+        Ok(source) => source,
+        Err(down) => return MediaInfo::failed(Some(MediaKind::Page), down.to_string()),
+    };
     match ytdlp::find(ffmpeg) {
         Some(yt_dlp) => ytdlp::probe(
             &yt_dlp,
             url,
             net.proxy.as_ref().and_then(|p| p.proxy_for(url)).as_deref(),
+            source,
             ytdlp::PROBE_TIMEOUT,
         ),
         None => MediaInfo::failed(Some(MediaKind::Page), ytdlp::MISSING.into()),
@@ -2778,6 +2863,99 @@ mod tests {
         }
 
         #[test]
+        fn a_download_bound_to_the_loopback_adapter_completes() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("bound");
+            let (route, _stand_in) = crate::route::tests::bound_to_loopback();
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig { route, ..NetConfig::default() });
+            let path = download(|_| {}, req);
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_download_stops_when_its_adapter_goes_and_connects_no_more() {
+            // Four connections at 256 KiB/s each: about two seconds for the
+            // file, if nothing stops it.
+            let behavior = Behavior { bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("adapter_gone");
+            let (route, stand_in) = crate::route::tests::bound_to_loopback();
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig { route, ..NetConfig::default() });
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(Arc::new(move |p: Progress| drop(tx.lock().unwrap().send(p))), 1);
+            engine.enqueue(req);
+            let mut gone_at = None;
+            let error = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("download timed out") {
+                    Progress::Advanced { done, .. } if gone_at.is_none() && done.get() > 64 * 1024 => {
+                        stand_in.gone.store(true, Ordering::SeqCst);
+                        gone_at = Some((Instant::now(), server.connections.load(Ordering::SeqCst)));
+                    }
+                    Progress::Failed { error, .. } => break error,
+                    Progress::Finished { .. } => panic!("the download should have stopped"),
+                    Progress::Canceled { .. } => panic!("stopped as canceled, not as failed"),
+                    _ => {}
+                }
+            };
+            let (when, connections) = gone_at.expect("it was receiving");
+            assert_eq!(error, "The network adapter Test adapter is down");
+            assert!(when.elapsed() < Duration::from_secs(2), "stopped promptly");
+            std::thread::sleep(Duration::from_millis(500));
+            assert_eq!(server.connections.load(Ordering::SeqCst), connections, "no connection after it went");
+            assert!(server.served.load(Ordering::SeqCst) < LEN as u64, "not finished another way");
+
+            // A download bound to an adapter that is down does not start.
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig { route: crate::route::tests::bound_to_loopback().0, ..NetConfig::default() });
+            let mut route = req.net.route.clone();
+            route.binding = route.binding.map(|b| crate::route::Binding {
+                choice: udm_domain::network::AdapterChoice {
+                    id: udm_domain::network::AdapterId::parse("udm-missing0").unwrap(),
+                    name: "Gone VPN".into(),
+                },
+                ..b
+            });
+            req.net = Arc::new(NetConfig { route, ..NetConfig::default() });
+            let before = server.connections.load(Ordering::SeqCst);
+            assert_eq!(download_err(req), "The network adapter Gone VPN is down");
+            assert_eq!(server.connections.load(Ordering::SeqCst), before);
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn names_are_looked_up_with_dns_over_https() {
+            let server = TestServer::start(body(LEN));
+            let lookups = crate::doh::tests::stand_in(|name, kind, q| {
+                let known = name == "files.udm.test" && kind == 1;
+                let records = if known { vec![(vec![0xc0, 12], 1, 60, vec![127, 0, 0, 1])] } else { Vec::new() };
+                crate::doh::tests::response(q, if name == "files.udm.test" { 0 } else { 3 }, &records)
+            });
+            let doh = Arc::new(crate::doh::tests::doh_at(&lookups));
+            let dir = temp_dir("doh");
+            let url = server.url.replace("127.0.0.1", "files.udm.test");
+            let mut req = request(&url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig {
+                route: crate::route::Route { binding: None, dns: Some(Arc::clone(&doh)) },
+                ..NetConfig::default()
+            });
+            let path = download(|_| {}, req);
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            assert!(lookups.queries.load(Ordering::SeqCst) >= 1);
+            // A name the resolver does not know is not asked of the system.
+            let mut req = request(&server.url.replace("127.0.0.1", "localhost.udm.test"), &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig {
+                route: crate::route::Route { binding: None, dns: Some(doh) },
+                ..NetConfig::default()
+            });
+            assert!(download_err(req).contains("was not found by the DNS over HTTPS resolver"));
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
         fn a_resolved_address_is_downloaded_without_the_old_sites_headers() {
             let server = TestServer::start(body(LEN));
             let dir = temp_dir("resolved");
@@ -2861,6 +3039,7 @@ mod tests {
                 ftp_proxy_login: Default::default(),
                 proxy: None,
                 logins: vec![login("127.0.0.1", "ann", "wrong")],
+                route: Default::default(),
             });
             let err = download_err(req);
             assert_eq!(err, "The login for 127.0.0.1 was refused (realm: files)");
@@ -2876,6 +3055,7 @@ mod tests {
                 ftp_proxy_login: Default::default(),
                 proxy: None,
                 logins: vec![login("example.com", "x", "y"), login("127.0.0.1", "ann", "pa ss")],
+                route: Default::default(),
             });
             let path = download(|_| {}, req);
             assert_eq!(fs::read(&path).unwrap(), data);
@@ -2895,6 +3075,7 @@ mod tests {
                     ftp_proxy_login: Default::default(),
                     proxy: None,
                     logins: vec![login("127.0.0.1", "CORP\\ann", password)],
+                    route: Default::default(),
                 })
             };
 
@@ -2938,6 +3119,7 @@ mod tests {
                 ftp_proxy_login: Default::default(),
                 proxy: None,
                 logins: vec![login("127.0.0.1", "ann", "pw")],
+                route: Default::default(),
             });
             let path = download(|_| {}, req);
             assert_eq!(fs::read(&path).unwrap(), data);
@@ -2999,6 +3181,7 @@ mod tests {
                     ..Default::default()
                 }),
                 logins: Vec::new(),
+                route: Default::default(),
             });
 
             let path = download(|_| {}, req);

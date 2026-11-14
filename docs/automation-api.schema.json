@@ -301,9 +301,10 @@
         "path": { "type": "string" },
         "total": { "type": ["integer", "null"], "minimum": 0 },
         "resumable": { "type": "boolean" },
-        "connections": { "type": "integer", "minimum": 0 }
+        "connections": { "type": "integer", "minimum": 0 },
+        "country": { "description": "The ISO 3166-1 code of the server's country, from the address table UDM ships; left out when unknown, private or reached through a proxy.", "type": "string", "pattern": "^[A-Z]{2}$" }
       },
-      "examples": [{ "op": "started", "id": 7, "url": "https://example.com/a.iso", "path": "D:\\Downloads\\a.iso", "total": 1048576, "resumable": true, "connections": 4 }]
+      "examples": [{ "op": "started", "id": 7, "url": "https://example.com/a.iso", "path": "D:\\Downloads\\a.iso", "total": 1048576, "resumable": true, "connections": 4, "country": "US" }]
     },
     "progress": {
       "description": "Sent a few times a second while a download runs.",

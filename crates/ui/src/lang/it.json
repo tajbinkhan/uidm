@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Il servizio non accetta l'indirizzo IP di questo computer. Spesso la causa è una VPN o un proxy.",
   "The file host is unavailable for now. Try again later.": "L'host di file non è disponibile al momento. Riprova più tardi.",
   "The stored key is for {service}. Type a key for this service.": "La chiave memorizzata è di {service}. Digita una chiave per questo servizio.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} ha rifiutato l'account debrid: {error} I download continuano senza di esso."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} ha rifiutato l'account debrid: {error} I download continuano senza di esso.",
+  "Another DNS over HTTPS server": "Altro server DNS su HTTPS",
+  "Any network (the system chooses)": "Qualsiasi rete (sceglie il sistema)",
+  "Choose a network adapter.": "Scegli una scheda di rete.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "Il DNS su HTTPS nasconde i nomi cercati alla rete intermedia. Se non risponde, i nomi non vengono mai cercati in altro modo.",
+  "Download through": "Scarica tramite",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "I download possono passare da una sola scheda di rete, come quella di una VPN. Finché è scollegata, si fermano invece di usare un’altra rete.",
+  "Look up host names with": "Cerca i nomi host con",
+  "Network adapter and DNS": "Scheda di rete e DNS",
+  "Reading the network adapters…": "Lettura delle schede di rete…",
+  "Server country": "Paese del server",
+  "The DNS over HTTPS address must start with https:// and name a server.": "L’indirizzo DNS su HTTPS deve iniziare con https:// e indicare un server.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "La scheda di rete {adapter} è scollegata, quindi i download si sono fermati invece di usare un’altra rete.",
+  "The network adapters could not be read: {error}": "Impossibile leggere le schede di rete: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Il sistema cerca da sé i nomi host, magari tramite un’altra scheda. Scegli un server DNS su HTTPS per tenere le ricerche su questa.",
+  "The system's (not encrypted)": "Quello del sistema (non cifrato)",
+  "This adapter is not connected now: downloads will not start until it is.": "Questa scheda ora non è collegata: i download non partiranno finché non lo sarà.",
+  "{adapter} (not connected)": "{adapter} (non collegata)"
 }

@@ -38,6 +38,7 @@ fn main() -> anyhow::Result<()> {
         files: Arc::new(infra::files::DiskFiles),
         window_files: Arc::new(infra::window_files::WindowDir::new()),
         browsers: Arc::new(infra::browsers::Registry),
+        adapters: Arc::new(infra::adapters::SystemAdapters),
         themes: Arc::new(infra::themes::ThemeDir::new()),
         reports: Arc::new(infra::crash::ReportFiles::new()),
         clipboard: Arc::new(infra::clipboard::SystemClipboard),

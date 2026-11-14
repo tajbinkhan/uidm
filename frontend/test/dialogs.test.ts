@@ -63,6 +63,8 @@ describe('the dialogs', () => {
     const calls = shell('download-12', 'download');
     render(Download);
     expect(screen.getByText('633.453 MB ( 16.28 % )')).toBeTruthy();
+    // The server's country, its flag made by the shell.
+    expect(screen.getByTitle('Server country').textContent).toBe('\u{1F1FA}\u{1F1F8} US');
     await fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
     expect(sent(calls, 'control_download').at(-1)?.args).toEqual({ action: 'pause' });
     await fireEvent.click(screen.getByRole('tab', { name: 'Speed Limiter' }));

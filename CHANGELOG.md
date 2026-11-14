@@ -6,6 +6,18 @@ first. UDM was called Pullbay in version 0.4 and UIDM up to version 0.3.3.
 
 ## Unreleased
 
+Downloads can go through one network adapter only, such as a VPN's (#261). **Options > Network**
+lists the adapters with their addresses; with one chosen, every connection is bound to it
+(downloads, probes, stream segments, FTP's control and data connections, proxies, the update
+check, tool installs, debrid accounts), and when it is down nothing connects: downloads stop with
+"The network adapter … is down" instead of going out another way, and a running download stops
+within two seconds of the adapter going. yt-dlp and gallery-dl get the adapter's address with
+`--source-address` and are not run while it is down. Host names can be looked up with DNS over
+HTTPS at Cloudflare, Google, Quad9 or a server you name, failing closed. A new **Country** column
+and the download window show the server's country with its flag, from an address table built
+into UDM (`@ip-location-db/geo-whois-asn-country`), so nothing is looked up online
+([Network adapter, encrypted DNS and the server's country](docs/network.md)).
+
 The browser extension is ready for the Chrome Web Store and Firefox Add-ons (#248). Each release
 carries `UDM-<version>-chromium-store.zip` and `UDM-<version>-firefox-store.zip`, made by
 `installer/make-store-zips.js`, and a tag submits them to the stores the repository has keys for.

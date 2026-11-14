@@ -408,6 +408,10 @@ pub enum Outgoing {
         /// The server's size, ETag and date for the file, when it said.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         validator: Option<Validator>,
+        /// The ISO 3166 code of the server's country (`US`), from the
+        /// address table UDM ships, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        country: Option<udm_domain::country::CountryCode>,
     },
     /// Periodic progress for a running download.
     Progress {

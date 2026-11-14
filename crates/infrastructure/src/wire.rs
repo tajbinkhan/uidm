@@ -178,8 +178,8 @@ pub fn event(msg: Outgoing) -> Event {
         Outgoing::RenderPage { request, url } => Event::RenderPage { request, url },
         Outgoing::CommandLine { window_open } => Event::CommandLine { window_open },
         Outgoing::Added { id, url } => Event::Added { id, url },
-        Outgoing::Started { id, url, path, total, resumable, connections, partial, validator } => {
-            Event::Started { id, url, path, total, resumable, connections, partial, validator }
+        Outgoing::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
+            Event::Started { id, url, path, total, resumable, connections, partial, validator, country }
         }
         Outgoing::Progress { id, url, done, total, parts, segments } => {
             Event::Progress { id, url, done, total, parts, segments }
@@ -253,8 +253,8 @@ pub fn outgoing(event: Event) -> Option<Outgoing> {
         Event::RenderPage { request, url } => Outgoing::RenderPage { request, url },
         Event::CommandLine { window_open } => Outgoing::CommandLine { window_open },
         Event::Added { id, url } => Outgoing::Added { id, url },
-        Event::Started { id, url, path, total, resumable, connections, partial, validator } => {
-            Outgoing::Started { id, url, path, total, resumable, connections, partial, validator }
+        Event::Started { id, url, path, total, resumable, connections, partial, validator, country } => {
+            Outgoing::Started { id, url, path, total, resumable, connections, partial, validator, country }
         }
         Event::Progress { id, url, done, total, parts, segments } => {
             Outgoing::Progress { id, url, done, total, parts, segments }

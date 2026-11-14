@@ -1,5 +1,11 @@
 # Proxies and logins
 
+The settings `network_adapter` (`{"id": "wg0", "name": "wg0"}`) and `dns`
+(`"system"`, `"cloudflare"`, `"google"`, `"quad9"` or `{"custom": "https://..."}`)
+bind every connection, the proxy's included, to one adapter and choose the
+resolver; while an adapter is chosen, no configuration script is used. See
+[Network adapter, encrypted DNS and the server's country](network.md).
+
 The settings hold `proxy_mode` (`none`, `system`, `script` or `manual`), the
 manual `proxy_http`, `proxy_https`, `proxy_ftp` and `proxy_socks5` (each
 `host:port`), each one's user name (`proxy_username` for HTTP, then

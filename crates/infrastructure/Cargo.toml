@@ -55,6 +55,17 @@ percent-encoding.workspace = true
 # request must come back as the bytes asked for.
 reqwest = { version = "0.12", default-features = false, features = ["native-tls-alpn", "http2", "socks"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+# Binding the FTP engine's sockets, and its active-mode listener, to the
+# network adapter Options picks (`route`): `bind_device` on Linux, the
+# interface index on macOS, the adapter's address on Windows. reqwest and
+# tokio already depend on this exact version; `all` only unlocks those
+# calls, so no new crate enters the lock file.
+socket2 = { version = "0.6", features = ["all"] }
+# The computer's network adapters and their addresses, for Options' list
+# and the kill switch (`adapters`): getifaddrs on macOS and Linux,
+# GetAdaptersAddresses on Windows. Small, with only libc and windows-sys
+# (both already in the lock file) under it.
+if-addrs = "=0.15.0"
 # FTPS: TLS on the FTP engine's blocking control and data connections, through
 # the same OS TLS as reqwest (SChannel on Windows, Security.framework on macOS,
 # OpenSSL elsewhere). reqwest already pulls in this exact crate for

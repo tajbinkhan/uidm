@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "サービスはこのコンピューターの IP アドレスを許可していません。VPN やプロキシが原因であることがよくあります。",
   "The file host is unavailable for now. Try again later.": "ファイルホストは現在利用できません。後でもう一度お試しください。",
   "The stored key is for {service}. Type a key for this service.": "保存されているキーは {service} のものです。このサービスのキーを入力してください。",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} がデブリッドアカウントを拒否しました: {error} ダウンロードはアカウントなしで続行します。"
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} がデブリッドアカウントを拒否しました: {error} ダウンロードはアカウントなしで続行します。",
+  "Another DNS over HTTPS server": "別の DNS over HTTPS サーバー",
+  "Any network (the system chooses)": "任意のネットワーク (システムが選択)",
+  "Choose a network adapter.": "ネットワーク アダプターを選んでください。",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "DNS over HTTPS は、引いた名前を途中のネットワークから隠します。失敗しても、名前を別の方法で引くことはありません。",
+  "Download through": "使用するアダプター",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "ダウンロードを VPN などの 1 つのネットワーク アダプターだけに通せます。切断中は、別のネットワークを使わずに停止します。",
+  "Look up host names with": "ホスト名の検索に使うもの",
+  "Network adapter and DNS": "ネットワーク アダプターと DNS",
+  "Reading the network adapters…": "ネットワーク アダプターを読み込んでいます…",
+  "Server country": "サーバーの国",
+  "The DNS over HTTPS address must start with https:// and name a server.": "DNS over HTTPS のアドレスは https:// で始まり、サーバーを指定する必要があります。",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "ネットワーク アダプター {adapter} が切断されたため、別のネットワークを使わずにダウンロードを停止しました。",
+  "The network adapters could not be read: {error}": "ネットワーク アダプターを読み込めませんでした: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "システムは別のアダプター経由でホスト名を引くことがあります。このアダプターで検索させるには DNS over HTTPS サーバーを選んでください。",
+  "The system's (not encrypted)": "システムのもの (暗号化なし)",
+  "This adapter is not connected now: downloads will not start until it is.": "このアダプターは現在接続されていません。接続されるまでダウンロードは始まりません。",
+  "{adapter} (not connected)": "{adapter} (未接続)"
 }

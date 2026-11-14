@@ -295,6 +295,8 @@ pub enum UiMessage {
     BrowsersRead(Option<Box<crate::services::BrowsersRead>>),
     /// What a browser change said.
     BrowserNote(Option<crate::contract::Banner>),
+    /// The network adapters a worker read, or why they could not be.
+    AdaptersRead(Result<Vec<udm_domain::network::NetworkAdapter>, udm_domain::network::NetworkError>),
     /// The theme files and the system's contrast colors.
     ThemesRead(Box<udm_application::themes::ThemesRead>),
     /// Reports a crash or an earlier stall left, newest first.
@@ -500,6 +502,7 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
         }
         UiMessage::BrowsersRead(read) => state.services.browsers = read.map(|r| *r),
         UiMessage::BrowserNote(note) => state.services.browser_note = note,
+        UiMessage::AdaptersRead(read) => state.services.adapters = Some(read),
         UiMessage::ThemesRead(read) => state.services.themes = *read,
         UiMessage::ReportsFound(found) => state.reports.found(found),
         UiMessage::Froze { lasted_ms, draft } => state.reports.froze(lasted_ms, draft),
@@ -585,7 +588,22 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
         Event::ShowDone { id } => {
             state.done.insert(id);
         }
-        Event::Failed { id, .. } | Event::Canceled { id, .. } => {
+        // A download stopped because the network adapter downloads are
+        // bound to went down: the banner says so, in the user's language.
+        Event::Failed { id, error, .. } => {
+            state.speeds.remove(&id);
+            if let Some(down) = udm_domain::network::AdapterDown::read(&error) {
+                let lang = crate::projection::language(state);
+                let text = crate::i18n::fill(
+                    lang.tr(
+                        "The network adapter {adapter} is down, so downloads stopped instead of using another network.",
+                    ),
+                    &[("adapter", &down.adapter)],
+                );
+                state.notice = Some(Notice { text, error: true });
+            }
+        }
+        Event::Canceled { id, .. } => {
             state.speeds.remove(&id);
         }
         Event::Removed { id } => {
@@ -641,6 +659,26 @@ mod tests {
 
     fn event(state: &mut AppState, event: Event) {
         apply(state, UiMessage::Daemon { event: Box::new(event), at: Instant::now(), unix: 0 });
+    }
+
+    #[test]
+    fn a_download_stopped_by_a_down_adapter_says_so() {
+        let mut s = AppState::default();
+        added(&mut s, 1);
+        let url: udm_domain::address::Link = "https://e.com/1.zip".into();
+        event(
+            &mut s,
+            Event::Failed { id: DownloadId::new(1), url: url.clone(), error: "server returned HTTP 404".into() },
+        );
+        assert!(s.notice.is_none(), "other failures show no banner");
+        let down = udm_domain::network::AdapterDown { adapter: "wg0".into() };
+        event(&mut s, Event::Failed { id: DownloadId::new(1), url, error: down.to_string() });
+        let notice = s.notice.expect("a banner");
+        assert!(notice.error);
+        assert_eq!(
+            notice.text,
+            "The network adapter wg0 is down, so downloads stopped instead of using another network."
+        );
     }
 
     #[test]

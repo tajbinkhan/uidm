@@ -205,6 +205,7 @@ mod tests {
             from_browser: false,
             on_done: None,
             validator: None,
+            country: None,
         }
     }
 

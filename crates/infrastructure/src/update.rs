@@ -19,7 +19,7 @@ use udm_domain::download::Download;
 use udm_domain::ports::ReleaseSource;
 use udm_domain::update::UpdateError;
 
-use crate::connect::{config_for, ProxyRetries};
+use crate::connect::{config_for, NetState};
 use crate::engine;
 use crate::live_settings::LiveSettings;
 
@@ -197,14 +197,14 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// this copy as it was installed, checked against UDM's release key.
 pub struct GitHub {
     settings: Arc<LiveSettings>,
-    retries: Arc<ProxyRetries>,
+    retries: Arc<NetState>,
     url: String,
     install: Install,
     key: &'static str,
 }
 
 impl GitHub {
-    pub fn new(settings: Arc<LiveSettings>, retries: Arc<ProxyRetries>, url: &str) -> Self {
+    pub fn new(settings: Arc<LiveSettings>, retries: Arc<NetState>, url: &str) -> Self {
         let install = crate::update_in_place::this_install();
         GitHub { settings, retries, url: url.to_string(), install, key: RELEASE_KEY }
     }

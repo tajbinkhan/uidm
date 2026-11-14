@@ -139,6 +139,8 @@ pub struct DownloadView {
     pub speed: String,
     pub time_left: String,
     pub resume: String,
+    /// The server's country, its flag and code; empty when unknown.
+    pub country: String,
     #[specta(type = specta_typescript::Number)]
     pub fraction: f32,
     pub running: bool,

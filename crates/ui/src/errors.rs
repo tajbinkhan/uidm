@@ -45,6 +45,7 @@ pub fn options(lang: &'static Language, e: &crate::options::OptionsError) -> Inv
         E::Theme(name) => fill(lang.tr("\"{name}\" is not a theme."), &[("name", name)]),
         E::Port => lang.tr("Type a port from 1 to 65535.").to_string(),
         E::DebridService => lang.tr("Choose the debrid service the account is with.").to_string(),
+        E::Network(n) => text::network(lang, n),
     };
     error(ErrorKind::Invalid, message)
 }
@@ -562,6 +563,19 @@ pub mod text {
     }
 
     /// Why a debrid service would not unlock a link or show the account.
+    pub fn network(lang: &'static Language, e: &udm_domain::network::NetworkError) -> String {
+        use udm_domain::network::NetworkError as E;
+        match e {
+            E::NoAdapter => lang.tr("Choose a network adapter.").to_string(),
+            E::DohAddress => {
+                lang.tr("The DNS over HTTPS address must start with https:// and name a server.").to_string()
+            }
+            E::Adapters(why) => {
+                crate::i18n::fill(lang.tr("The network adapters could not be read: {error}"), &[("error", why)])
+            }
+        }
+    }
+
     pub fn debrid(lang: &'static Language, e: &udm_domain::debrid::DebridError) -> String {
         use udm_domain::debrid::DebridError as E;
         match e {

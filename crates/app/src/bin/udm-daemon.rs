@@ -75,7 +75,7 @@ use udm_domain::settings::Settings;
 use udm_infrastructure::background;
 use udm_infrastructure::browser_bridge::BrowserBridge;
 use udm_infrastructure::clock::LocalClock;
-use udm_infrastructure::connect::ProxyRetries;
+use udm_infrastructure::connect::NetState;
 use udm_infrastructure::conversions::Conversions;
 use udm_infrastructure::crawler::Crawler;
 use udm_infrastructure::daemon_args::{self, Invocation};
@@ -131,7 +131,7 @@ impl Wiring for Wired {
     type Projects = ProjectFiles;
     type GrabRuns = ScheduledGrabs;
     type Notifier = Notices;
-    type Retries = ProxyRetries;
+    type Retries = NetState;
     type Found = FoundFiles;
 }
 
@@ -224,7 +224,7 @@ fn new_daemon(paths: Paths, seat: Seat) -> Built {
     let (store, dirty_rx, next_id) = DownloadStore::open(paths.store.clone(), Arc::clone(&clients) as _);
     let store = Arc::new(store);
     let settings = Arc::new(LiveSettings::new(settings, paths.settings.clone()));
-    let retries = Arc::new(ProxyRetries::default());
+    let retries = Arc::new(NetState::default());
     let events: Arc<dyn StoreEvents> = Arc::clone(&clients) as _;
     let windows: Arc<dyn Windows> = Arc::clone(&clients) as _;
     let files = Arc::new(DiskFiles);
@@ -1155,7 +1155,7 @@ mod tests {
         let through = |s: &Settings| t.daemon.transfers.net_for(&d, s).proxy.and_then(|p| p.proxy_for(d.url.as_str()));
         let after = Settings { use_browser_proxy: true, browser_proxy_after_errors: true, ..Settings::default() };
         assert_eq!(through(&after), None, "not before it failed");
-        t.daemon.browser_proxy_retries.insert(d.url.to_string());
+        t.daemon.browser_proxy_retries.retries.insert(d.url.to_string());
         assert_eq!(through(&after).as_deref(), Some("http://bp:3128"), "once it failed");
         // A download that never failed is not retried through it.
         assert!(!t.daemon.retry_through_browser_proxy(DownloadId::new(999), &after));

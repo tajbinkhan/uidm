@@ -133,6 +133,7 @@ fn compare(sort: Sort, a: &DownloadEntry, b: &DownloadEntry, state: &AppState) -
         ColumnKey::Page => known(lower(a.page.as_deref()), lower(b.page.as_deref()), down),
         ColumnKey::Referrer => known(lower(a.referrer.as_deref()), lower(b.referrer.as_deref()), down),
         ColumnKey::Description => known(lower(a.description.as_deref()), lower(b.description.as_deref()), down),
+        ColumnKey::Country => known(a.country, b.country, down),
     }
 }
 
@@ -227,6 +228,7 @@ pub fn row(ctx: &Ctx, state: &AppState, queued: &HashMap<DownloadId, ()>, e: &Do
             .unwrap_or_default(),
         page: e.page.clone().unwrap_or_default(),
         referrer: e.referrer.clone().unwrap_or_default(),
+        country: e.country.map(format::country).unwrap_or_default(),
     }
 }
 
@@ -244,6 +246,7 @@ fn column_title(key: ColumnKey) -> &'static str {
         ColumnKey::Page => "Parent web page",
         ColumnKey::Referrer => "Referrer",
         ColumnKey::Description => "Description",
+        ColumnKey::Country => "Country",
     }
 }
 

@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Der Dienst lässt die IP-Adresse dieses Computers nicht zu. Häufig ist ein VPN oder ein Proxy der Grund.",
   "The file host is unavailable for now. Try again later.": "Der Filehoster ist derzeit nicht verfügbar. Versuchen Sie es später erneut.",
   "The stored key is for {service}. Type a key for this service.": "Der gespeicherte Schlüssel gehört zu {service}. Geben Sie einen Schlüssel für diesen Dienst ein.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} hat das Debrid-Konto abgelehnt: {error} Downloads laufen ohne das Konto weiter."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} hat das Debrid-Konto abgelehnt: {error} Downloads laufen ohne das Konto weiter.",
+  "Another DNS over HTTPS server": "Anderer DNS-over-HTTPS-Server",
+  "Any network (the system chooses)": "Beliebiges Netzwerk (das System wählt)",
+  "Choose a network adapter.": "Wählen Sie einen Netzwerkadapter.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "DNS over HTTPS verbirgt die nachgeschlagenen Namen vor dem Netzwerk dazwischen. Schlägt es fehl, werden Namen nie auf andere Weise nachgeschlagen.",
+  "Download through": "Herunterladen über",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "Downloads können nur über einen Netzwerkadapter laufen, etwa den eines VPN. Ist er getrennt, halten sie an, statt ein anderes Netzwerk zu nutzen.",
+  "Look up host names with": "Hostnamen nachschlagen mit",
+  "Network adapter and DNS": "Netzwerkadapter und DNS",
+  "Reading the network adapters…": "Netzwerkadapter werden gelesen…",
+  "Server country": "Land des Servers",
+  "The DNS over HTTPS address must start with https:// and name a server.": "Die DNS-over-HTTPS-Adresse muss mit https:// beginnen und einen Server nennen.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "Der Netzwerkadapter {adapter} ist getrennt, daher wurden die Downloads angehalten, statt ein anderes Netzwerk zu nutzen.",
+  "The network adapters could not be read: {error}": "Die Netzwerkadapter konnten nicht gelesen werden: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Das System schlägt Hostnamen selbst nach, womöglich über einen anderen Adapter. Wählen Sie einen DNS-over-HTTPS-Server, damit die Abfragen auf diesem bleiben.",
+  "The system's (not encrypted)": "Das des Systems (unverschlüsselt)",
+  "This adapter is not connected now: downloads will not start until it is.": "Dieser Adapter ist gerade nicht verbunden: Downloads starten erst, wenn er es ist.",
+  "{adapter} (not connected)": "{adapter} (nicht verbunden)"
 }

@@ -241,6 +241,7 @@ mod tests {
             connections: 2,
             partial: None,
             validator: None,
+            country: None,
         }
     }
 

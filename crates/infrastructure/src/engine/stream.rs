@@ -323,6 +323,7 @@ pub(super) fn run(
         last_modified: None,
         suggested_filename: None,
         content_type: None,
+        server: None,
     };
     let claim = choose_output(&shared.claimed, &dir, &filename, req, &probe)?;
     let output = claim.path.clone();
@@ -366,6 +367,7 @@ pub(super) fn run(
         connections: workers,
         partial: (parts != beside).then(|| parts.clone()),
         validator: None,
+        country: None,
     });
     fetch_all(id, token, agent, req, &jobs, workers, reporter, shared)?;
     if token.load(Ordering::Relaxed) {

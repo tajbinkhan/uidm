@@ -228,12 +228,19 @@ impl SocksProxy {
     }
 
     /// Open a connection to `host:port` through the proxy (a SOCKS CONNECT).
-    pub fn connect(&self, host: &str, port: u16, timeout: std::time::Duration) -> io::Result<std::net::TcpStream> {
+    /// The connection to the proxy goes out by `route`, which also looks up
+    /// a name SOCKS4 cannot send.
+    pub fn connect(
+        &self,
+        route: &crate::route::Route,
+        host: &str,
+        port: u16,
+        timeout: std::time::Duration,
+    ) -> io::Result<std::net::TcpStream> {
         use std::io::{Read, Write};
-        use std::net::{IpAddr, TcpStream, ToSocketAddrs};
+        use std::net::IpAddr;
         let fail = |m: String| io::Error::other(format!("the SOCKS proxy {}: {m}", self.addr));
-        let proxy = self.addr.to_socket_addrs()?.next().ok_or_else(|| fail("could not be found".into()))?;
-        let mut s = TcpStream::connect_timeout(&proxy, timeout)?;
+        let mut s = route.connect_to(&self.addr, 1080, timeout)?;
         s.set_read_timeout(Some(timeout))?;
         s.set_write_timeout(Some(timeout))?;
         let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -319,8 +326,9 @@ impl SocksProxy {
                     Some(host)
                 }
                 None => {
-                    let ip = (host, port)
-                        .to_socket_addrs()?
+                    let ip = route
+                        .lookup(host, port)?
+                        .into_iter()
                         .find_map(|a| match a.ip() {
                             IpAddr::V4(ip) => Some(ip),
                             IpAddr::V6(_) => None,
@@ -598,6 +606,9 @@ pub struct NetConfig {
     pub ftp_proxy: Option<String>,
     /// The FTP proxy's own login, sent before the server's.
     pub ftp_proxy_login: ProxyLogin,
+    /// The network adapter connections are bound to, and where names are
+    /// looked up.
+    pub route: crate::route::Route,
 }
 
 /// Split a `WWW-Authenticate` header into its scheme and parameters.
@@ -1224,7 +1235,9 @@ mod tests {
             let wants_login = scheme == "socks5" && !login.is_empty();
             let server = socks_server::start(wants_login.then_some("ann:pw"));
             let proxy = SocksProxy::parse(&format!("{scheme}://{}", server.addr), &login).unwrap();
-            let s = proxy.connect("localhost", port, timeout).unwrap_or_else(|e| panic!("{scheme}: {e}"));
+            let s = proxy
+                .connect(&crate::route::Route::default(), "localhost", port, timeout)
+                .unwrap_or_else(|e| panic!("{scheme}: {e}"));
             assert_eq!(read(s), "hello", "{scheme}");
             let seen = server.targets.lock().unwrap().clone();
             let want = if scheme == "socks4" { format!("127.0.0.1:{port}") } else { format!("localhost:{port}") };
@@ -1233,7 +1246,7 @@ mod tests {
         // A wrong password is refused.
         let server = socks_server::start(Some("ann:pw"));
         let proxy = SocksProxy::parse(&format!("socks5://{}", server.addr), &ProxyLogin::new("ann", "no")).unwrap();
-        let e = proxy.connect("localhost", port, timeout).unwrap_err();
+        let e = proxy.connect(&crate::route::Route::default(), "localhost", port, timeout).unwrap_err();
         assert!(e.to_string().contains("refused the login"), "{e}");
     }
 

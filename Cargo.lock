@@ -2140,6 +2140,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5463,6 +5473,7 @@ dependencies = [
  "flate2",
  "getrandom 0.4.3",
  "hmac",
+ "if-addrs",
  "libc",
  "lzma-rust2",
  "md-5",
@@ -5482,6 +5493,7 @@ dependencies = [
  "serde_json",
  "sha1 0.10.7",
  "sha2 0.11.1",
+ "socket2",
  "tar",
  "thiserror 2.0.21",
  "tokio",

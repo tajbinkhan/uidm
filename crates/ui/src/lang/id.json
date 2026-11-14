@@ -1032,5 +1032,22 @@
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Layanan tidak mengizinkan alamat IP komputer ini. VPN atau proxy sering menjadi penyebabnya.",
   "The file host is unavailable for now. Try again later.": "Host berkas sedang tidak tersedia. Coba lagi nanti.",
   "The stored key is for {service}. Type a key for this service.": "Kunci yang tersimpan milik {service}. Ketik kunci untuk layanan ini.",
-  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} menolak akun debrid: {error} Unduhan tetap berjalan tanpa akun itu."
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} menolak akun debrid: {error} Unduhan tetap berjalan tanpa akun itu.",
+  "Another DNS over HTTPS server": "Server DNS over HTTPS lain",
+  "Any network (the system chooses)": "Jaringan apa saja (dipilih sistem)",
+  "Choose a network adapter.": "Pilih adaptor jaringan.",
+  "DNS over HTTPS hides the names looked up from the network in between. Names are never looked up another way when it fails.": "DNS over HTTPS menyembunyikan nama yang dicari dari jaringan di antaranya. Jika gagal, nama tidak pernah dicari dengan cara lain.",
+  "Download through": "Unduh melalui",
+  "Downloads can go through one network adapter only, such as a VPN’s. While it is down, they stop instead of using another network.": "Unduhan hanya dapat melewati satu adaptor jaringan, misalnya milik VPN. Selama adaptor itu terputus, unduhan berhenti alih-alih memakai jaringan lain.",
+  "Look up host names with": "Cari nama host dengan",
+  "Network adapter and DNS": "Adaptor jaringan dan DNS",
+  "Reading the network adapters…": "Membaca adaptor jaringan…",
+  "Server country": "Negara server",
+  "The DNS over HTTPS address must start with https:// and name a server.": "Alamat DNS over HTTPS harus diawali https:// dan menyebut server.",
+  "The network adapter {adapter} is down, so downloads stopped instead of using another network.": "Adaptor jaringan {adapter} terputus, jadi unduhan dihentikan alih-alih memakai jaringan lain.",
+  "The network adapters could not be read: {error}": "Adaptor jaringan tidak dapat dibaca: {error}",
+  "The system looks up host names itself, possibly through another adapter. Choose a DNS over HTTPS server to keep lookups on this one.": "Sistem mencari nama host sendiri, mungkin melalui adaptor lain. Pilih server DNS over HTTPS agar pencarian tetap di adaptor ini.",
+  "The system's (not encrypted)": "Milik sistem (tidak terenkripsi)",
+  "This adapter is not connected now: downloads will not start until it is.": "Adaptor ini sedang tidak terhubung: unduhan tidak akan dimulai sampai terhubung.",
+  "{adapter} (not connected)": "{adapter} (tidak terhubung)"
 }

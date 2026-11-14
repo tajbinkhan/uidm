@@ -114,6 +114,34 @@ describe("Options' own pages", () => {
     expect(draft.extras).toMatchObject({ debridOn: true, debridService: 'allDebrid', debridKey: 'NEWKEY', debridForget: false });
   });
 
+  it('the network page binds downloads to an adapter and picks the resolver', async () => {
+    editing.draft = null;
+    const calls = shell('options', 'options');
+    render(Options);
+    await fireEvent.click(screen.getByRole('tab', { name: 'Network' }));
+    const adapter = screen.getByLabelText('Download through') as HTMLSelectElement;
+    expect(adapter.value).toBe('wg0');
+    expect([...adapter.options].map((o) => o.text)).toEqual(['Any network (the system chooses)', 'eth0 (192.168.1.5, fe80::5)', 'wg0 (10.2.0.2)']);
+    expect((screen.getByLabelText('Quad9 (9.9.9.9)') as HTMLInputElement).checked).toBe(true);
+    const url = screen.getByLabelText('Address') as HTMLInputElement;
+    expect(url.disabled).toBe(true);
+    await fireEvent.change(adapter, { target: { value: 'eth0' } });
+    await fireEvent.click(screen.getByLabelText('Another DNS over HTTPS server'));
+    expect(url.disabled).toBe(false);
+    await fireEvent.input(url, { target: { value: 'https://doh.example/dns-query' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+    let draft = sent(calls, 'save_options').at(-1)?.args.draft as { extras: Record<string, unknown> };
+    expect(draft.extras).toMatchObject({ adapter: { id: 'eth0', name: 'eth0' }, dns: 'custom', dnsUrl: 'https://doh.example/dns-query' });
+    // The system's DNS, while bound, says lookups may leave by another adapter.
+    await fireEvent.click(screen.getByLabelText("The system's (not encrypted)"));
+    expect(screen.getByText(/^The system looks up host names itself/)).toBeTruthy();
+    await fireEvent.change(adapter, { target: { value: '' } });
+    expect(screen.queryByText(/^The system looks up host names itself/)).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+    draft = sent(calls, 'save_options').at(-1)?.args.draft as { extras: Record<string, unknown> };
+    expect(draft.extras).toMatchObject({ adapter: null, dns: 'system' });
+  });
+
   it('a stored debrid key can be removed, and checking needs a key', async () => {
     editing.draft = null;
     const calls = shell('options', 'options');

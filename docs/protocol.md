@@ -92,7 +92,7 @@ Daemon to clients:
 { "op": "pong" }
 { "op": "ack", "id": 1, "url": "https://...", "status": "accepted" }
 { "op": "added", "id": 1, "url": "https://..." }
-{ "op": "started", "id": 1, "url": "...", "path": "C:\\Users\\...\\f.zip", "total": 12345, "resumable": true, "connections": 8 }
+{ "op": "started", "id": 1, "url": "...", "path": "C:\\Users\\...\\f.zip", "total": 12345, "resumable": true, "connections": 8, "country": "US" }
 { "op": "progress", "id": 1, "url": "...", "done": 1048576, "total": 12345 }
 { "op": "done", "id": 1, "url": "...", "path": "C:\\Users\\...\\f.zip" }
 { "op": "failed", "id": 1, "url": "...", "error": "..." }
