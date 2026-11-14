@@ -1637,6 +1637,7 @@ impl Actor {
             now: Instant::now(),
             unix: self.ports.times.unix_now(),
             downloads: self.downloads.clone(),
+            flags: !cfg!(windows),
         };
         let index = crate::i18n::LANGUAGES.iter().position(|l| l.code == ctx.lang.code).unwrap_or(0);
         self.ports.language.store(index, Ordering::Relaxed);

@@ -183,7 +183,7 @@ pub fn download(ctx: &Ctx, state: &AppState, id: DownloadId) -> Option<DownloadV
                 (Some(_), false) => "No",
             })
             .to_string(),
-        country: e.country.map(format::country).unwrap_or_default(),
+        country: e.country.map(|c| format::country(c, ctx.flags)).unwrap_or_default(),
         fraction,
         running: matches!(e.status, Status::Downloading | Status::Queued),
         can_resume: is_startable(e.status),
@@ -281,6 +281,7 @@ mod tests {
             now: std::time::Instant::now(),
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
+            flags: true,
         }
     }
 

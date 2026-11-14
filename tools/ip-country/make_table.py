@@ -3,17 +3,20 @@
 
 UDM shows each download's server country from a table built into the
 program, so no address is ever sent anywhere to look it up. The table comes
-from the npm package @ip-location-db/geo-whois-asn-country, whose
+from ip-location-db's geo-whois-asn-country database, data of the Number
+Resource Organization under CC BY 4.0 (THIRD-PARTY-NOTICES.txt): its
 geo-whois-asn-country-ipv4.csv and geo-whois-asn-country-ipv6.csv list
 inclusive ranges as `start,end,country`.
 
-Usage (Python 3, standard library only):
+Usage (Python 3, standard library only), before each release, from the
+latest GitHub release's CSVs:
 
-    npm pack @ip-location-db/geo-whois-asn-country
-    tar -xzf ip-location-db-geo-whois-asn-country-*.tgz
-    python3 tools/ip-country/make_table.py package crates/infrastructure/data/ip-country.bin
+    gh release download --repo sapics/ip-location-db --dir ipdb --pattern 'geo-whois-asn-country-ipv4.csv' --pattern 'geo-whois-asn-country-ipv6.csv'
+    python3 tools/ip-country/make_table.py ipdb crates/infrastructure/data/ip-country.bin
 
-then write the package's version into crates/infrastructure/data/README.md.
+then write the release's tag and date into crates/infrastructure/data/README.md
+(docs/building.md, "Making a release"). Any folder holding the two CSVs works,
+such as the npm package's, unpacked.
 
 The table (before zlib compression):
 
@@ -103,7 +106,7 @@ def pack(starts, codes, fmt):
 
 def main():
     if len(sys.argv) != 3:
-        sys.exit("usage: make_table.py <unpacked package folder> <output file>")
+        sys.exit("usage: make_table.py <folder with the two CSVs> <output file>")
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     v4 = table(ranges(src / "geo-whois-asn-country-ipv4.csv", 32, 0), 1 << 32)
     v6 = table(ranges(src / "geo-whois-asn-country-ipv6.csv", 128, 64), 1 << 64)

@@ -157,8 +157,8 @@ impl Read for Body {
                     return Ok(0);
                 }
                 Ok(Err(e)) => {
-                    return Err(match crate::route::adapter_down_in(&e) {
-                        Some(down) => io::Error::other(down.clone()),
+                    return Err(match crate::route::refusal_in(&e) {
+                        Some(refusal) => io::Error::other(refusal),
                         None => io::Error::other(error_text(&e)),
                     })
                 }
@@ -229,10 +229,7 @@ const MAX_REDIRECTS: usize = 8;
 /// The proxy URL `net` gives, as reqwest reads it. SOCKS5 lets the proxy
 /// look up host names, which reqwest calls `socks5h`.
 fn reqwest_proxy(proxy: &str) -> Result<reqwest::Proxy, EngineError> {
-    let proxy = match proxy.get(..9) {
-        Some(p) if p.eq_ignore_ascii_case("socks5://") => format!("socks5h://{}", &proxy[9..]),
-        _ => proxy.to_string(),
-    };
+    let proxy = crate::net::remote_names(proxy.to_string());
     reqwest::Proxy::all(&proxy).map_err(|e| EngineError::Http(format!("bad proxy setting: {e}")))
 }
 
@@ -438,8 +435,8 @@ fn header_map(headers: &[(String, String)]) -> HeaderMap {
 /// A request that got no answer, as the engine's error: the network
 /// adapter being down when that is why, so the download stops for good.
 fn transport(e: &reqwest::Error) -> EngineError {
-    match crate::route::adapter_down_in(e) {
-        Some(down) => EngineError::AdapterDown(down.clone()),
+    match crate::route::refusal_in(e) {
+        Some(refusal) => refusal.into(),
         None => EngineError::Http(error_text(e)),
     }
 }

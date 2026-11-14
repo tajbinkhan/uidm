@@ -175,7 +175,10 @@ shows up on that runner. With the target added through `rustup`,
 `cargo clippy --target x86_64-pc-windows-gnu` or
 `--target x86_64-apple-darwin` lints that code from Linux too.
 
-The installers come from `.github/workflows/release.yml`. Set the version in
+### Making a release
+
+The installers come from `.github/workflows/release.yml`. Before a release,
+make the server-country table again from the newest data (below). Set the version in
 `Cargo.toml` and `extension/chromium/manifest.json`, remake the Firefox and
 Safari copies (`node installer/make-firefox.js`, `node installer/make-safari.js`), commit, and push a tag that matches it:
 
@@ -193,6 +196,27 @@ files are kept as artifacts for one day only, to hand them from the
 builders to the release. Starting the workflow by hand
 (**Actions > Release > Run workflow**) builds the same files without a
 release, as artifacts for a day.
+
+**The server-country table.** `crates/infrastructure/data/ip-country.bin`
+must be made again from the CSV files of the latest
+[ip-location-db GitHub release](https://github.com/sapics/ip-location-db/releases)
+before each release: the copy in the repository was made from the project's
+npm package, whose data has known wrong rows and which no longer gets
+updates. With the [GitHub CLI](https://cli.github.com/), from the
+repository's root:
+
+```bash
+gh release download --repo sapics/ip-location-db --dir ipdb --pattern 'geo-whois-asn-country-ipv4.csv' --pattern 'geo-whois-asn-country-ipv6.csv' && python3 tools/ip-country/make_table.py ipdb crates/infrastructure/data/ip-country.bin && rm -r ipdb
+```
+
+If `gh` finds no file of those names, look at the release's file list for the
+`geo-whois-asn-country` IPv4 and IPv6 CSVs (`start,end,country` rows) and
+download those two under these names. Then write the release's tag and date in
+`crates/infrastructure/data/README.md`, run
+`cargo test -p udm-infrastructure country` (it looks up a few well-known
+servers in the new table), and commit the table with the README. The data is
+CC BY 4.0: `THIRD-PARTY-NOTICES.txt`, which every package ships, carries its
+notice.
 
 To build the installer, install [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 (`winget install JRSoftware.InnoSetup`), then run:

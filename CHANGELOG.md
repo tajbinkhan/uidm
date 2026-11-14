@@ -11,12 +11,17 @@ lists the adapters with their addresses; with one chosen, every connection is bo
 (downloads, probes, stream segments, FTP's control and data connections, proxies, the update
 check, tool installs, debrid accounts), and when it is down nothing connects: downloads stop with
 "The network adapter … is down" instead of going out another way, and a running download stops
-within two seconds of the adapter going. yt-dlp and gallery-dl get the adapter's address with
-`--source-address` and are not run while it is down. Host names can be looked up with DNS over
-HTTPS at Cloudflare, Google, Quad9 or a server you name, failing closed. A new **Country** column
-and the download window show the server's country with its flag, from an address table built
-into UDM (`@ip-location-db/geo-whois-asn-country`), so nothing is looked up online
-([Network adapter, encrypted DNS and the server's country](docs/network.md)).
+within two seconds of the adapter going. Changing the adapter or the resolver reaches queued and
+running downloads at once (running ones go on from where they are), a `utun3` or `tun0` that is
+another tunnel after a reconnect counts as down, and a new address on Windows binds again. yt-dlp
+and gallery-dl get the adapter's address with `--source-address` and are not run while it is down.
+Host names can be looked up with DNS over HTTPS at Cloudflare, Google, Quad9 or a server you name,
+failing closed. A new **Country** column and the download window show the server's country (with
+its flag, except on Windows), from an address table built into UDM, so nothing is looked up
+online; it contains data from the NRO under CC BY 4.0, whose notice is in the new
+`THIRD-PARTY-NOTICES.txt` that every package ships, and in **About UDM**
+([Network adapter, encrypted DNS and the server's country](docs/network.md)). A manual SOCKS5
+proxy is now handed on as `socks5h`, so yt-dlp and gallery-dl leave name lookups to it too.
 
 The browser extension is ready for the Chrome Web Store and Firefox Add-ons (#248). Each release
 carries `UDM-<version>-chromium-store.zip` and `UDM-<version>-firefox-store.zip`, made by

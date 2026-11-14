@@ -74,7 +74,7 @@ node "$root/installer/make-firefox.js" --check >/dev/null
 mkdir -p "$app/Contents/Resources/extension" "$app/Contents/Resources/firefox"
 cp -R "$root/extension/chromium/." "$app/Contents/Resources/extension/"
 cp -R "$root/extension/firefox/." "$app/Contents/Resources/firefox/"
-cp "$root/README.md" "$app/Contents/Resources/"
+cp "$root/README.md" "$root/THIRD-PARTY-NOTICES.txt" "$app/Contents/Resources/"
 
 # The Safari extension, an app extension in Contents/PlugIns, signed there
 # with its own entitlements. A build that fails leaves it out, so the disk

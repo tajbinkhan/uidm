@@ -50,10 +50,14 @@ pub fn date(lang: &'static Language, unix: u64, offset: i64) -> String {
     lang.date_time(ymd, minutes.rem_euclid(1440) as u32)
 }
 
-/// How far along a download is, from 0 to 1, when that is known.
 /// A country as the list shows it: its flag, made of the two regional
-/// indicator symbols for its letters, then its code ("🇩🇪 DE").
-pub fn country(code: CountryCode) -> String {
+/// indicator symbols for its letters, then its code ("🇩🇪 DE"). Where the
+/// system draws no flags (Windows draws the letters again, "DE DE"), the
+/// code alone (`Ctx::flags`).
+pub fn country(code: CountryCode, flag: bool) -> String {
+    if !flag {
+        return code.to_string();
+    }
     let flag: String = code
         .letters()
         .iter()
@@ -63,6 +67,7 @@ pub fn country(code: CountryCode) -> String {
     format!("{flag} {code}")
 }
 
+/// How far along a download is, from 0 to 1, when that is known.
 pub fn fraction(e: &DownloadEntry) -> Option<f32> {
     let parts = e.parts.filter(|[_, all]| *all > 0);
     match (e.total, parts) {
@@ -145,8 +150,9 @@ mod tests {
     #[test]
     fn a_country_shows_its_flag_and_code() {
         let code = |c: &str| udm_domain::country::CountryCode::parse(c).unwrap();
-        assert_eq!(super::country(code("US")), "\u{1F1FA}\u{1F1F8} US");
-        assert_eq!(super::country(code("de")), "\u{1F1E9}\u{1F1EA} DE");
+        assert_eq!(super::country(code("US"), true), "\u{1F1FA}\u{1F1F8} US");
+        assert_eq!(super::country(code("de"), true), "\u{1F1E9}\u{1F1EA} DE");
+        assert_eq!(super::country(code("de"), false), "DE", "where flags do not draw");
     }
 
     use super::*;

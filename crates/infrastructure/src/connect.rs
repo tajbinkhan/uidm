@@ -74,9 +74,13 @@ impl Default for Network {
     }
 }
 
+/// How long the system's adapter list is kept for the connections and the
+/// watcher that look at it.
+const ADAPTERS_KEPT: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl Network {
     pub fn new(adapters: Arc<dyn NetworkAdapters>) -> Network {
-        Network { adapters, doh: Mutex::new(None) }
+        Network { adapters: Arc::new(crate::adapters::Cached::new(adapters, ADAPTERS_KEPT)), doh: Mutex::new(None) }
     }
 
     /// The adapters, for the window's list.
@@ -291,7 +295,11 @@ mod tests {
         assert!(net.proxy.and_then(|p| p.pac).is_some());
 
         let bound = Settings {
-            network_adapter: Some(AdapterChoice { id: AdapterId::parse("wg0").unwrap(), name: "VPN".into() }),
+            network_adapter: Some(AdapterChoice {
+                id: AdapterId::parse("wg0").unwrap(),
+                name: "VPN".into(),
+                subnets: Vec::new(),
+            }),
             dns: DnsChoice::Quad9,
             ..plain
         };
@@ -319,7 +327,11 @@ mod tests {
         };
         let via = |url: &str, s: &Settings| net(url, s).proxy.and_then(|p| p.proxy_for(url));
         assert_eq!(via("http://x.net/a.zip", &s).as_deref(), Some("http://web:8080"));
-        assert_eq!(via("https://x.net/a.zip", &s).as_deref(), Some("socks5://sock:1080"));
+        // SOCKS5 always has the proxy look up names, even with remote DNS
+        // off (that choice is SOCKS4's).
+        assert_eq!(via("https://x.net/a.zip", &s).as_deref(), Some("socks5h://sock:1080"));
+        let local = Settings { proxy_remote_dns: false, ..s.clone() };
+        assert_eq!(via("https://x.net/a.zip", &local).as_deref(), Some("socks5h://sock:1080"));
         let off = Settings { proxy_socks_https: false, ..s.clone() };
         assert_eq!(
             via("https://x.net/a.zip", &off).as_deref(),

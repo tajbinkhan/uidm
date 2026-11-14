@@ -524,7 +524,7 @@ pub struct DownloadEntry {
     /// The country of the server its last start connected to, from the
     /// address table UDM ships; `None` when unknown, private or reached
     /// through a proxy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::country::read_lenient")]
     pub country: Option<crate::country::CountryCode>,
 }
 

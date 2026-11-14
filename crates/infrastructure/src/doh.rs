@@ -4,11 +4,13 @@
 //!
 //! - A preset resolver's own host is never looked up: its addresses come
 //!   with it (`udm_domain::network::DnsChoice::endpoint`). A custom
-//!   resolver's host is looked up once by the system, when it is first
-//!   asked, unless it is an address.
+//!   resolver's host is looked up once by the system, unbound, when it is
+//!   first asked (after the adapter is checked), unless it is an address.
 //! - It fails closed: a lookup the resolver does not answer fails, and is
 //!   never asked of the system instead.
-//! - Answers are kept as long as their time to live says, within
+//! - A and AAAA are asked at once, each query padded to a multiple of 128
+//!   bytes (EDNS(0) padding, RFC 8467) so its length says less about the
+//!   name. Answers are kept as long as their time to live says, within
 //!   `udm_domain::network::dns_cache_seconds`.
 //!
 //! [`Doh`] is reqwest's resolver for every download's client
@@ -20,7 +22,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use udm_domain::network::{dns_cache_seconds, DohEndpoint};
+use udm_domain::network::{answer_ttl, dns_cache_seconds, DohEndpoint};
 use udm_domain::sync::LockExt;
 
 use crate::route::Binding;
@@ -35,6 +37,20 @@ const MAX_ANSWER: usize = 64 * 1024;
 const TYPE_A: u16 = 1;
 const TYPE_CNAME: u16 = 5;
 const TYPE_AAAA: u16 = 28;
+const TYPE_OPT: u16 = 41;
+/// The Internet class, the only one asked or read.
+const CLASS_IN: u16 = 1;
+/// EDNS(0)'s padding option (RFC 7830), and the block queries are padded
+/// to (RFC 8467).
+const OPTION_PADDING: u16 = 12;
+const PAD_TO: usize = 128;
+
+/// How the system looks up a name, for a custom resolver's own host.
+type SystemLookup = fn(&str) -> std::io::Result<Vec<IpAddr>>;
+
+fn system_lookup(host: &str) -> std::io::Result<Vec<IpAddr>> {
+    std::net::ToSocketAddrs::to_socket_addrs(&(host, 443)).map(|found| found.map(|a| a.ip()).collect())
+}
 
 /// Why a name was not found.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -55,7 +71,7 @@ pub enum DohError {
 /// down.
 fn unanswered(e: &reqwest::Error) -> DohError {
     match crate::route::adapter_down_in(e) {
-        Some(down) => DohError::AdapterDown(down.clone()),
+        Some(down) => DohError::AdapterDown(down),
         None => DohError::Unanswered(crate::engine::http::error_text(e)),
     }
 }
@@ -64,10 +80,14 @@ fn unanswered(e: &reqwest::Error) -> DohError {
 pub struct Doh {
     endpoint: DohEndpoint,
     binding: Option<Binding>,
-    /// Made when first asked: building it may look up a custom resolver's
-    /// host.
-    client: OnceLock<reqwest::Client>,
+    /// The resolver's addresses: the preset's, or a custom resolver's host
+    /// as the system found it the first time it was needed.
+    addresses: OnceLock<Vec<SocketAddr>>,
+    /// The client, with the address it was bound to where connections are
+    /// bound by address: made again when the adapter's address changes.
+    client: Mutex<Option<(Option<IpAddr>, reqwest::Client)>>,
     cache: Mutex<HashMap<String, (Vec<IpAddr>, Instant)>>,
+    system: SystemLookup,
 }
 
 impl std::fmt::Debug for Doh {
@@ -78,7 +98,14 @@ impl std::fmt::Debug for Doh {
 
 impl Doh {
     pub fn new(endpoint: DohEndpoint, binding: Option<Binding>) -> Doh {
-        Doh { endpoint, binding, client: OnceLock::new(), cache: Mutex::new(HashMap::new()) }
+        Doh {
+            endpoint,
+            binding,
+            addresses: OnceLock::new(),
+            client: Mutex::new(None),
+            cache: Mutex::new(HashMap::new()),
+            system: system_lookup,
+        }
     }
 
     /// The resolver's address, for logs.
@@ -90,22 +117,19 @@ impl Doh {
     /// addresses known for it, bound like every download's connection, and
     /// through no proxy.
     async fn client(&self) -> Result<reqwest::Client, DohError> {
-        if let Some(client) = self.client.get() {
-            return Ok(client.clone());
+        // The adapter first: while it is down nothing is looked up, not even
+        // a custom resolver's host.
+        let bound_to = match &self.binding {
+            Some(binding) => binding.bound_address()?,
+            None => None,
+        };
+        if let Some((at, client)) = self.client.lock_or_recover().as_ref() {
+            if *at == bound_to {
+                return Ok(client.clone());
+            }
         }
         let host = self.endpoint.host.clone();
-        let mut addresses: Vec<SocketAddr> =
-            self.endpoint.bootstrap.iter().map(|ip| SocketAddr::new(*ip, 443)).collect();
-        if addresses.is_empty() && host.trim_matches(['[', ']']).parse::<IpAddr>().is_err() {
-            // A custom resolver: the system finds its host, once.
-            let lookup = host.clone();
-            addresses = tokio::task::spawn_blocking(move || {
-                std::net::ToSocketAddrs::to_socket_addrs(&(lookup.as_str(), 443)).map(Iterator::collect::<Vec<_>>)
-            })
-            .await
-            .map_err(|e| DohError::Unanswered(e.to_string()))?
-            .map_err(|e| DohError::Unanswered(format!("{host} could not be found: {e}")))?;
-        }
+        let addresses = self.addresses().await?;
         let mut builder = reqwest::Client::builder()
             .use_native_tls()
             .connect_timeout(QUERY_TIMEOUT)
@@ -119,7 +143,31 @@ impl Doh {
             builder = binding.bind(builder)?;
         }
         let client = builder.build().map_err(|e| DohError::Unanswered(crate::engine::http::error_text(&e)))?;
-        Ok(self.client.get_or_init(|| client).clone())
+        *self.client.lock_or_recover() = Some((bound_to, client.clone()));
+        Ok(client)
+    }
+
+    /// The resolver's addresses: the preset's own; a custom resolver's host
+    /// as the system finds it, once (it cannot be looked up through
+    /// itself); none for a resolver named by its address.
+    async fn addresses(&self) -> Result<Vec<SocketAddr>, DohError> {
+        if let Some(known) = self.addresses.get() {
+            return Ok(known.clone());
+        }
+        let host = self.endpoint.host.clone();
+        let mut addresses: Vec<SocketAddr> =
+            self.endpoint.bootstrap.iter().map(|ip| SocketAddr::new(*ip, 443)).collect();
+        if addresses.is_empty() && host.trim_matches(['[', ']']).parse::<IpAddr>().is_err() {
+            let (lookup, system) = (host.clone(), self.system);
+            addresses = tokio::task::spawn_blocking(move || system(&lookup))
+                .await
+                .map_err(|e| DohError::Unanswered(e.to_string()))?
+                .map_err(|e| DohError::Unanswered(format!("{host} could not be found: {e}")))?
+                .into_iter()
+                .map(|ip| SocketAddr::new(ip, 443))
+                .collect();
+        }
+        Ok(self.addresses.get_or_init(|| addresses).clone())
     }
 
     /// The addresses of `name`: IPv4 ones first, then IPv6.
@@ -134,14 +182,14 @@ impl Doh {
             }
         }
         let client = self.client().await?;
-        let v4 = self.ask(&client, &name, TYPE_A).await;
-        let v6 = self.ask(&client, &name, TYPE_AAAA).await;
+        let (v4, v6) = both(self.ask(&client, &name, TYPE_A), self.ask(&client, &name, TYPE_AAAA)).await;
         let (found, ttl) = match (v4, v6) {
             (Err(e), Err(_)) => return Err(e),
             (Ok(a), Err(_)) | (Err(_), Ok(a)) => a,
             (Ok((mut a, t1)), Ok((b, t2))) => {
+                let ttl = answer_ttl((a.len(), t1), (b.len(), t2));
                 a.extend(b);
-                (a, t1.min(t2))
+                (a, ttl)
             }
         };
         if found.is_empty() {
@@ -169,7 +217,7 @@ impl Doh {
     /// smallest time to live among the records that led to them.
     async fn ask(&self, client: &reqwest::Client, name: &str, kind: u16) -> Result<(Vec<IpAddr>, u32), DohError> {
         let query = query(name, kind).ok_or_else(|| DohError::NotFound(name.to_string()))?;
-        let sent = client
+        let mut sent = client
             .post(&self.endpoint.url)
             .header(reqwest::header::CONTENT_TYPE, "application/dns-message")
             .header(reqwest::header::ACCEPT, "application/dns-message")
@@ -180,12 +228,48 @@ impl Doh {
         if !sent.status().is_success() {
             return Err(DohError::Unanswered(format!("HTTP {}", sent.status().as_u16())));
         }
-        let body = sent.bytes().await.map_err(|e| unanswered(&e))?;
-        if body.len() > MAX_ANSWER {
-            return Err(DohError::Unanswered("the answer is too long".into()));
+        let too_long = || DohError::Unanswered("the answer is too long".into());
+        if sent.content_length().is_some_and(|n| n > MAX_ANSWER as u64) {
+            return Err(too_long());
+        }
+        // Read no more than the longest DNS message, whatever the server
+        // sends.
+        let mut body = Vec::new();
+        while let Some(chunk) = sent.chunk().await.map_err(|e| unanswered(&e))? {
+            if body.len() + chunk.len() > MAX_ANSWER {
+                return Err(too_long());
+            }
+            body.extend_from_slice(&chunk);
         }
         read_answer(&body, name, kind)
     }
+}
+
+/// Run `a` and `b` at once; both their outputs.
+async fn both<A: std::future::Future, B: std::future::Future>(a: A, b: B) -> (A::Output, B::Output) {
+    use std::task::Poll;
+    let (mut a, mut b) = (std::pin::pin!(a), std::pin::pin!(b));
+    let (mut done_a, mut done_b) = (None, None);
+    std::future::poll_fn(move |cx| {
+        if done_a.is_none() {
+            if let Poll::Ready(out) = a.as_mut().poll(cx) {
+                done_a = Some(out);
+            }
+        }
+        if done_b.is_none() {
+            if let Poll::Ready(out) = b.as_mut().poll(cx) {
+                done_b = Some(out);
+            }
+        }
+        match (done_a.take(), done_b.take()) {
+            (Some(a), Some(b)) => Poll::Ready((a, b)),
+            (a, b) => {
+                (done_a, done_b) = (a, b);
+                Poll::Pending
+            }
+        }
+    })
+    .await
 }
 
 /// `localhost` is this computer, and is never asked of a resolver (RFC 6761).
@@ -219,9 +303,29 @@ impl reqwest::dns::Resolve for Resolver {
 }
 
 /// A query for `name`'s records of `kind`, as RFC 8484 asks: id 0, so
-/// answers can be cached, and recursion wanted. `None` for a name DNS
-/// cannot carry.
+/// answers can be cached, and recursion wanted, with an EDNS(0) record
+/// whose padding brings the message to a multiple of 128 bytes. `None` for
+/// a name DNS cannot carry.
 pub fn query(name: &str, kind: u16) -> Option<Vec<u8>> {
+    let mut q = question(name, kind)?;
+    // One additional record: the OPT pseudo-record.
+    q[11] = 1;
+    // Its fixed part (root name, type, UDP size, flags, data length) and
+    // the padding option's code and length come to 15 bytes.
+    let padding = (PAD_TO - (q.len() + 15) % PAD_TO) % PAD_TO;
+    q.push(0);
+    q.extend_from_slice(&TYPE_OPT.to_be_bytes());
+    q.extend_from_slice(&1232u16.to_be_bytes());
+    q.extend_from_slice(&[0, 0, 0, 0]);
+    q.extend_from_slice(&((4 + padding) as u16).to_be_bytes());
+    q.extend_from_slice(&OPTION_PADDING.to_be_bytes());
+    q.extend_from_slice(&(padding as u16).to_be_bytes());
+    q.resize(q.len() + padding, 0);
+    Some(q)
+}
+
+/// The header and question of a query for `name`'s records of `kind`.
+fn question(name: &str, kind: u16) -> Option<Vec<u8>> {
     let mut q = vec![0, 0, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
     let name = name.trim_end_matches('.');
     if name.is_empty() || name.len() > 253 {
@@ -236,7 +340,7 @@ pub fn query(name: &str, kind: u16) -> Option<Vec<u8>> {
     }
     q.push(0);
     q.extend_from_slice(&kind.to_be_bytes());
-    q.extend_from_slice(&1u16.to_be_bytes());
+    q.extend_from_slice(&CLASS_IN.to_be_bytes());
     Some(q)
 }
 
@@ -334,6 +438,7 @@ pub fn read_answer(bytes: &[u8], name: &str, kind: u16) -> Result<(Vec<IpAddr>, 
     struct Record {
         owner: String,
         kind: u16,
+        class: u16,
         ttl: u32,
         data: Data,
     }
@@ -346,7 +451,7 @@ pub fn read_answer(bytes: &[u8], name: &str, kind: u16) -> Result<(Vec<IpAddr>, 
     for _ in 0..answers {
         let record = (|| {
             let owner = m.name()?;
-            let (kind, _class, ttl, len) = (m.u16()?, m.u16()?, m.u32()?, usize::from(m.u16()?));
+            let (kind, class, ttl, len) = (m.u16()?, m.u16()?, m.u32()?, usize::from(m.u16()?));
             let start = m.at;
             let rdata = m.skip(len)?;
             let data = match (kind, len) {
@@ -358,10 +463,13 @@ pub fn read_answer(bytes: &[u8], name: &str, kind: u16) -> Result<(Vec<IpAddr>, 
                 (TYPE_CNAME, _) => Data::Alias(name_at(bytes, start)?.0),
                 _ => Data::Other,
             };
-            Some(Record { owner, kind, ttl, data })
+            Some(Record { owner, kind, class, ttl, data })
         })()
         .ok_or_else(|| bad("has a damaged record"))?;
-        records.push(record);
+        // Only the Internet class says anything about addresses.
+        if record.class == CLASS_IN {
+            records.push(record);
+        }
     }
     // The names that stand for `name`: itself and its aliases, followed
     // until no new one turns up.
@@ -408,7 +516,10 @@ pub(crate) mod tests {
     /// A DNS response to `query` with these answer records, each `(owner
     /// bytes, type, ttl, rdata)`; owners may be compression pointers.
     pub fn response(query: &[u8], rcode: u8, records: &[(Vec<u8>, u16, u32, Vec<u8>)]) -> Vec<u8> {
-        let mut r = query.to_vec();
+        // The header and question, without the query's OPT record.
+        let (_, end) = name_at(query, 12).unwrap();
+        let mut r = query[..end + 4].to_vec();
+        r[10..12].copy_from_slice(&[0, 0]);
         r[2] = 0x81;
         r[3] = 0x80 | rcode;
         r[6..8].copy_from_slice(&(records.len() as u16).to_be_bytes());
@@ -437,24 +548,46 @@ pub(crate) mod tests {
     }
 
     /// The question's name and type in a query.
-    fn question(q: &[u8]) -> (String, u16) {
+    fn asked(q: &[u8]) -> (String, u16) {
         let (name, end) = name_at(q, 12).unwrap();
         (name, u16::from_be_bytes([q[end], q[end + 1]]))
     }
 
     #[test]
-    fn a_query_asks_for_one_name() {
+    fn a_query_asks_for_one_name_and_is_padded() {
         let q = query("Files.Example.com.", TYPE_AAAA).unwrap();
-        assert_eq!(&q[..12], &[0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(question(&q), ("files.example.com".to_string(), TYPE_AAAA));
+        assert_eq!(&q[..12], &[0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(asked(&q), ("files.example.com".to_string(), TYPE_AAAA));
         assert!(query("a..b", TYPE_A).is_none());
         assert!(query(&"x".repeat(64), TYPE_A).is_none());
+        // Every name gives a query of whole 128-byte blocks, its padding an
+        // EDNS(0) option.
+        for name in ["a.b", "files.example.com", &format!("{}.example", "x".repeat(60))] {
+            let q = query(name, TYPE_A).unwrap();
+            assert_eq!(q.len() % 128, 0, "{name}: {} bytes", q.len());
+            let (_, end) = name_at(&q, 12).unwrap();
+            let opt = end + 4;
+            assert_eq!(&q[opt..opt + 3], &[0, 0, 41], "the OPT record");
+            let data = usize::from(u16::from_be_bytes([q[opt + 9], q[opt + 10]]));
+            assert_eq!(opt + 11 + data, q.len());
+            assert_eq!(u16::from_be_bytes([q[opt + 11], q[opt + 12]]), OPTION_PADDING);
+        }
+    }
+
+    #[test]
+    fn records_of_another_class_are_left_out() {
+        let q = query("a.example", TYPE_A).unwrap();
+        let mut answer = response(&q, 0, &[(QNAME.to_vec(), TYPE_A, 30, vec![6, 6, 6, 6])]);
+        // The record's class, after its name pointer and type: CHAOS.
+        let at = answer.len() - 4 - 2 - 4 - 2;
+        answer[at..at + 2].copy_from_slice(&3u16.to_be_bytes());
+        assert_eq!(read_answer(&answer, "a.example", TYPE_A).unwrap().0, Vec::<IpAddr>::new());
     }
 
     #[test]
     fn compressed_names_and_cname_chains_are_followed() {
         let q = query("www.example.com", TYPE_A).unwrap();
-        assert_eq!(q.len(), 33);
+        assert_eq!(name_at(&q, 12).unwrap().1 + 4, 33, "the question ends at 33");
         // www.example.com CNAME edge.cdn.net, its data at 45; "cdn.net" in
         // it at 50.
         let first = (QNAME.to_vec(), TYPE_CNAME, 300, labels("edge.cdn.net"));
@@ -555,7 +688,7 @@ pub(crate) mod tests {
                         let mut q = vec![0; length];
                         reader.read_exact(&mut q).unwrap();
                         counted.fetch_add(1, Ordering::SeqCst);
-                        let (name, kind) = question(&q);
+                        let (name, kind) = asked(&q);
                         let body = answer(&name, kind, &q);
                         let head = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: {}\r\n\r\n",
@@ -605,13 +738,62 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_new_address_of_the_adapter_makes_a_new_client() {
+        let server = stand_in(|_, kind, q| match kind {
+            TYPE_A => response(q, 0, &[(QNAME.to_vec(), TYPE_A, 300, vec![127, 0, 0, 1])]),
+            _ => response(q, 0, &[]),
+        });
+        let (route, stand_in) = crate::route::tests::bound_to_loopback();
+        let binding = Binding { by_address: true, ..route.binding.unwrap() };
+        let doh = Doh::new(
+            DohEndpoint {
+                url: server.url.clone(),
+                host: "127.0.0.1".into(),
+                bootstrap: vec![IpAddr::from([127, 0, 0, 1])],
+            },
+            Some(binding),
+        );
+        let bound = |doh: &Doh| doh.client.lock().unwrap().as_ref().and_then(|(at, _)| *at);
+        doh.lookup_blocking("one.test").unwrap();
+        assert_eq!(bound(&doh), Some(IpAddr::from([127, 0, 0, 1])));
+        // A VPN reconnecting with another address.
+        stand_in.adapter.lock().unwrap().addresses.insert(0, IpAddr::from([127, 0, 0, 2]));
+        doh.lookup_blocking("two.test").unwrap();
+        assert_eq!(bound(&doh), Some(IpAddr::from([127, 0, 0, 2])), "bound again, to the new address");
+    }
+
+    /// Names the system stand-in was asked.
+    static ASKED_OF_THE_SYSTEM: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// A system that knows every name, and notes each one it is asked.
+    fn knowing_system(host: &str) -> std::io::Result<Vec<IpAddr>> {
+        ASKED_OF_THE_SYSTEM.lock().unwrap().push(host.to_string());
+        Ok(vec![IpAddr::from([127, 0, 0, 1])])
+    }
+
+    #[test]
     fn names_are_looked_up_cached_and_never_asked_of_the_system_when_it_fails() {
         let server = stand_in(|name, kind, q| match (name, kind) {
             ("files.test", TYPE_A) => response(q, 0, &[(QNAME.to_vec(), TYPE_A, 300, vec![127, 0, 0, 1])]),
+            // The empty answer's time to live does not cut the address's.
             ("files.test", _) => response(q, 0, &[]),
             (_, _) => response(q, 3, &[]),
         });
-        let doh = doh_at(&server);
+        // A custom resolver named by its host, on a system that would
+        // answer any name: the system is asked for the resolver's host
+        // once, and for nothing else, however lookups fail.
+        let port = server.url.split(':').nth(2).and_then(|p| p.split('/').next()).unwrap().to_string();
+        let doh = Doh {
+            system: knowing_system,
+            ..Doh::new(
+                DohEndpoint {
+                    url: format!("http://doh-resolver.test:{port}/dns-query"),
+                    host: "doh-resolver.test".into(),
+                    bootstrap: Vec::new(),
+                },
+                None,
+            )
+        };
         assert_eq!(doh.lookup_blocking("files.test").unwrap(), vec![IpAddr::from([127, 0, 0, 1])]);
         assert_eq!(server.queries.load(Ordering::SeqCst), 2, "A and AAAA");
         assert_eq!(doh.lookup_blocking("FILES.test.").unwrap(), vec![IpAddr::from([127, 0, 0, 1])]);
@@ -621,6 +803,8 @@ pub(crate) mod tests {
         // A name the resolver does not know fails, even one the system
         // knows.
         assert!(matches!(doh.lookup_blocking("missing.test"), Err(DohError::NotFound(_))));
+        assert!(matches!(doh.lookup_blocking("missing.test"), Err(DohError::NotFound(_))));
+        assert_eq!(*ASKED_OF_THE_SYSTEM.lock().unwrap(), vec!["doh-resolver.test".to_string()]);
         // A resolver that cannot be reached fails too.
         let gone = Doh::new(
             DohEndpoint {

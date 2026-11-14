@@ -406,6 +406,7 @@ mod tests {
             network_adapter: Some(udm_domain::network::AdapterChoice {
                 id: udm_domain::network::AdapterId::parse("wg0").unwrap(),
                 name: "Work VPN".into(),
+                subnets: Vec::new(),
             }),
             dns: udm_domain::network::DnsChoice::Custom(
                 udm_domain::network::DohUrl::parse("https://doh.example/dns-query").unwrap(),

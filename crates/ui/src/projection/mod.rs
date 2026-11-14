@@ -25,6 +25,9 @@ pub struct Ctx {
     pub unix: u64,
     /// The system's Downloads folder, for default folders.
     pub downloads: std::path::PathBuf,
+    /// Whether the system draws flags from their regional indicator
+    /// letters; Windows draws the letters.
+    pub flags: bool,
 }
 
 /// The language the settings name.

@@ -119,12 +119,25 @@ pub fn parse_bypass(text: &str) -> Vec<String> {
 }
 
 /// The URL scheme for a SOCKS proxy: SOCKS5 always lets the proxy look up
-/// names; SOCKS4 does only as SOCKS4a.
+/// names, which the scheme says (`socks5h`; to reqwest, yt-dlp and
+/// gallery-dl, `socks5` means looking them up here); SOCKS4 does only as
+/// SOCKS4a.
 pub fn socks_scheme(v5: bool, remote_dns: bool) -> &'static str {
     match (v5, remote_dns) {
-        (true, _) => "socks5",
+        (true, _) => "socks5h",
         (false, true) => "socks4a",
         (false, false) => "socks4",
+    }
+}
+
+/// `proxy` with a SOCKS5 proxy's scheme saying that the proxy looks up host
+/// names (`socks5h://`), as UDM always has it do: a browser's or the
+/// environment's `socks5://` too. A name looked up here would go to the
+/// system's resolver, outside the proxy.
+pub fn remote_names(proxy: String) -> String {
+    match proxy.get(..9) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("socks5://") => format!("socks5h://{}", &proxy[9..]),
+        _ => proxy,
     }
 }
 
@@ -137,10 +150,10 @@ impl ProxyRules {
             return None;
         }
         if let Some(Ok(answer)) = self.pac.as_ref().map(|source| crate::pac::proxy_for(source, url)) {
-            return answer;
+            return answer.map(remote_names);
         }
         let (scheme, addr, login) = self.fixed_for(url)?;
-        Some(format!("{scheme}://{}{addr}", login.userinfo()))
+        Some(remote_names(format!("{scheme}://{}{addr}", login.userinfo())))
     }
 
     /// The login of the fixed proxy `url` goes through, when it has one. A
@@ -611,6 +624,21 @@ pub struct NetConfig {
     pub route: crate::route::Route,
 }
 
+impl NetConfig {
+    /// The same, going out by `route`. Bound to an adapter, it uses no
+    /// proxy configuration script, which the system would fetch unbound.
+    pub fn with_route(&self, route: crate::route::Route) -> NetConfig {
+        let mut net = self.clone();
+        if route.binding.is_some() {
+            if let Some(rules) = net.proxy.as_mut() {
+                rules.pac = None;
+            }
+        }
+        net.route = route;
+        net
+    }
+}
+
 /// Split a `WWW-Authenticate` header into its scheme and parameters.
 fn parse_challenge(header: &str) -> (String, Vec<(String, String)>) {
     let header = header.trim();
@@ -1073,7 +1101,12 @@ mod tests {
         assert_eq!(rules.proxy_for("https://a.com/").as_deref(), Some("socks4a://s:1080"));
         assert_eq!(rules.proxy_for("https://x.corp.net/"), None);
         assert_eq!(socks_scheme(false, false), "socks4");
-        assert_eq!(socks_scheme(true, false), "socks5");
+        assert_eq!(socks_scheme(true, false), "socks5h");
+        assert_eq!(socks_scheme(true, true), "socks5h");
+        assert_eq!(remote_names("SOCKS5://u:p@s:1080".into()), "socks5h://u:p@s:1080");
+        assert_eq!(remote_names("socks5h://s:1".into()), "socks5h://s:1");
+        assert_eq!(remote_names("socks4://s:1".into()), "socks4://s:1");
+        assert!(SocksProxy::parse("socks5h://s:1080", &ProxyLogin::default()).is_some_and(|p| p.v5 && p.remote_dns));
     }
 
     #[test]
@@ -1100,7 +1133,7 @@ mod tests {
         assert_eq!(rules.proxy_for("http://10.0.0.1/f"), None);
 
         let socks = ProxyRules { socks: Some("socks5://s:1080".into()), ..ProxyRules::default() };
-        assert_eq!(socks.proxy_for("https://a.com/").as_deref(), Some("socks5://s:1080"));
+        assert_eq!(socks.proxy_for("https://a.com/").as_deref(), Some("socks5h://s:1080"));
         let https_only = ProxyRules { https: Some("s:1".into()), ..ProxyRules::default() };
         assert_eq!(https_only.proxy_for("http://a.com/"), None, "no proxy for http");
         assert_eq!(ProxyRules::default().proxy_for("http://a.com/"), None);
@@ -1133,7 +1166,7 @@ mod tests {
         assert_eq!(fixed.proxy_for("http://intra/a"), None, "bypassed");
 
         let socks = p(BrowserProxyMode::Fixed, &|p| p.socks = Some("socks5://s:1080".into())).unwrap();
-        assert_eq!(socks.proxy_for("https://x/a"), Some("socks5://s:1080".into()));
+        assert_eq!(socks.proxy_for("https://x/a"), Some("socks5h://s:1080".into()));
         // Chrome's one SOCKS proxy for https only.
         let https_socks = p(BrowserProxyMode::Fixed, &|p| {
             p.http = Some("http://web:80".into());
@@ -1167,7 +1200,7 @@ mod tests {
             ..ProxyRules::default()
         };
         assert_eq!(rules.proxy_for("http://a.com/").as_deref(), Some("http://web:1@web:8080"));
-        assert_eq!(rules.proxy_for("https://a.com/").as_deref(), Some("socks5://sock:2@s:1080"));
+        assert_eq!(rules.proxy_for("https://a.com/").as_deref(), Some("socks5h://sock:2@s:1080"));
         assert_eq!(rules.login_for("https://a.com/").map(|l| l.username.as_str()), Some("sock"));
         let no_login = ProxyRules { socks_login: ProxyLogin::default(), ..rules };
         assert_eq!(no_login.login_for("https://a.com/"), None);
@@ -1183,7 +1216,7 @@ mod tests {
             ..ProxyRules::default()
         };
         assert_eq!(rules.proxy_for("http://a.com/").as_deref(), Some("http://web:8080"));
-        assert_eq!(rules.proxy_for("https://a.com/").as_deref(), Some("socks5://s:1080"));
+        assert_eq!(rules.proxy_for("https://a.com/").as_deref(), Some("socks5h://s:1080"));
         let off = ProxyRules { socks_for_https: false, ..rules.clone() };
         assert_eq!(off.proxy_for("https://a.com/").as_deref(), Some("http://web:8080"));
         // Without a SOCKS proxy, the setting changes nothing.

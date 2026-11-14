@@ -466,6 +466,7 @@ mod tests {
             now: Instant::now(),
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
+            flags: true,
         };
         let mut s = with(vec![entry(1, "Report.PDF", Status::Done, 1, 1), entry(2, "README", Status::Done, 1, 1)]);
         let id = DownloadId::new(1);
@@ -504,6 +505,7 @@ mod tests {
             now: std::time::Instant::now(),
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
+            flags: true,
         };
         let mut choices = column_choices(&ctx, &s);
         assert_eq!(choices.len(), ALL_COLUMNS.len());

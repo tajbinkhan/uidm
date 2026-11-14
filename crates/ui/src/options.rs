@@ -505,7 +505,10 @@ fn apply_extras(e: &ExtrasDraft, done_dialog: bool, current: &Settings, s: &mut 
     }
     s.network_adapter = match &e.adapter {
         None => None,
-        Some(a) => Some(AdapterChoice { id: AdapterId::parse(&a.id)?, name: a.name.trim().to_string() }),
+        // The daemon keeps the networks a numbered adapter was on.
+        Some(a) => {
+            Some(AdapterChoice { id: AdapterId::parse(&a.id)?, name: a.name.trim().to_string(), subnets: Vec::new() })
+        }
     };
     s.dns = match e.dns {
         DnsDraft::System => DnsChoice::System,

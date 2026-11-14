@@ -85,6 +85,7 @@ Source: "{#Root}\extension\chromium\*"; DestDir: "{app}\extension"; Flags: ignor
 Source: "{#Root}\extension\firefox\*"; DestDir: "{app}\firefox"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "udm.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Root}\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Microsoft's WebView2 bootstrapper, which build.ps1 downloads: the window
 ; draws with the WebView2 runtime, installed here only when it is missing.
 Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: NeedsWebView2

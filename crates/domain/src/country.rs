@@ -109,15 +109,19 @@ const MAGIC: &[u8] = b"UDMCTRY1";
 
 /// Address ranges and their countries. Each list of starts is sorted; a
 /// range runs from its start to the next one, and a range without a
-/// country (between listed ones) has no code.
+/// country (between listed ones) has the code `[0, 0]`. Codes are kept as
+/// their two bytes, as the table holds them.
 #[derive(Debug, Clone, Default)]
 pub struct CountryTable {
     v4: Vec<u32>,
-    v4_codes: Vec<Option<CountryCode>>,
+    v4_codes: Vec<[u8; 2]>,
     /// The first 64 bits of IPv6 range starts.
     v6: Vec<u64>,
-    v6_codes: Vec<Option<CountryCode>>,
+    v6_codes: Vec<[u8; 2]>,
 }
+
+/// No country, in the table.
+const NONE: [u8; 2] = [0, 0];
 
 /// Reads the table's bytes in order.
 struct Reader<'a>(&'a [u8]);
@@ -149,13 +153,22 @@ impl Reader<'_> {
             at += step;
             starts.push(T::try_from(at).map_err(|_| TableError)?);
         }
-        let codes = (0..count).map(|_| self.take::<2>().map(CountryCode::from_bytes)).collect::<Result<_, _>>()?;
+        let codes = (0..count)
+            .map(|_| {
+                let code = self.take::<2>()?;
+                // Two capital letters, or none.
+                match code == NONE || CountryCode::from_bytes(code).is_some() {
+                    true => Ok(code),
+                    false => Err(TableError),
+                }
+            })
+            .collect::<Result<_, _>>()?;
         Ok((starts, codes))
     }
 }
 
 /// A table's starts and their countries.
-type Ranges<T> = (Vec<T>, Vec<Option<CountryCode>>);
+type Ranges<T> = (Vec<T>, Vec<[u8; 2]>);
 
 impl CountryTable {
     /// Read a table from its uncompressed bytes (see
@@ -172,11 +185,12 @@ impl CountryTable {
 
     /// A table of these ranges, for tests: each start and its country.
     pub fn from_ranges(v4: &[(u32, Option<CountryCode>)], v6: &[(u64, Option<CountryCode>)]) -> CountryTable {
+        let code = |c: Option<CountryCode>| c.map_or(NONE, |c| c.0);
         CountryTable {
             v4: v4.iter().map(|r| r.0).collect(),
-            v4_codes: v4.iter().map(|r| r.1).collect(),
+            v4_codes: v4.iter().map(|r| code(r.1)).collect(),
             v6: v6.iter().map(|r| r.0).collect(),
-            v6_codes: v6.iter().map(|r| r.1).collect(),
+            v6_codes: v6.iter().map(|r| code(r.1)).collect(),
         }
     }
 
@@ -201,9 +215,28 @@ impl CountryTable {
 }
 
 /// The code of the range holding `key`: the last start at or before it.
-fn find<T: Ord + Copy>(starts: &[T], codes: &[Option<CountryCode>], key: T) -> Option<CountryCode> {
+fn find<T: Ord + Copy>(starts: &[T], codes: &[[u8; 2]], key: T) -> Option<CountryCode> {
     let at = starts.partition_point(|s| *s <= key).checked_sub(1)?;
-    codes.get(at).copied().flatten()
+    codes.get(at).copied().and_then(CountryCode::from_bytes)
+}
+
+/// A country as a file holds it, read leniently: anything that is not a
+/// country code (an older or damaged `history.json`) reads as none, so the
+/// rest of the row still loads. For `#[serde(deserialize_with)]`.
+pub fn read_lenient<'de, D>(d: D) -> Result<Option<CountryCode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Read {
+        Code(String),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Read::deserialize(d)? {
+        Read::Code(code) => CountryCode::parse(&code),
+        Read::Other(_) => None,
+    })
 }
 
 #[cfg(test)]
@@ -301,5 +334,25 @@ mod tests {
         assert_eq!(code("1A"), None);
         assert_eq!(serde_json::to_string(&code("DE").unwrap()).unwrap(), r#""DE""#);
         assert!(serde_json::from_str::<CountryCode>(r#""D""#).is_err());
+    }
+
+    #[test]
+    fn a_damaged_code_reads_as_no_country() {
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(default, deserialize_with = "read_lenient")]
+            country: Option<CountryCode>,
+        }
+        let read = |json: &str| serde_json::from_str::<Row>(json).unwrap().country;
+        assert_eq!(read(r#"{"country":"de"}"#), code("DE"));
+        for odd in [r#"{"country":"Germany"}"#, r#"{"country":42}"#, r#"{"country":null}"#, "{}"] {
+            assert_eq!(read(odd), None, "{odd}");
+        }
+    }
+
+    #[test]
+    fn a_table_with_a_code_that_is_not_letters_is_refused() {
+        assert!(CountryTable::parse(&bytes(&[(0, b"U1")], &[])).is_err());
+        assert!(CountryTable::parse(&bytes(&[(0, b"us")], &[])).is_err());
     }
 }

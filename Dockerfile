@@ -43,6 +43,8 @@ RUN apt-get update \
  && mkdir -p /config /downloads \
  && chown udm:udm /config /downloads
 COPY --from=build /out/ /usr/local/bin/
+# The country table's data is CC BY 4.0, whose notice goes with it.
+COPY THIRD-PARTY-NOTICES.txt /usr/share/doc/udm/
 
 # Every program in the container finds the same folders, so `docker exec`
 # reaches the running daemon with its token.
@@ -56,6 +58,6 @@ WORKDIR /downloads
 LABEL org.opencontainers.image.title="UDM" \
       org.opencontainers.image.description="UDM's download daemon in server mode" \
       org.opencontainers.image.source="https://github.com/tajbinkhan/UDM" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="MIT AND CC-BY-4.0"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "udm-daemon", "--server"]

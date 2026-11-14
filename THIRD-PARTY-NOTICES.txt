@@ -1,0 +1,33 @@
+UDM: third-party notices
+========================
+
+UDM itself is free software under the MIT license (LICENSE). It also
+contains the data below, which comes under its own license.
+
+
+Server countries (ip-country.bin)
+---------------------------------
+
+UDM shows the country of each download's server from a table of address
+ranges built into its programs.
+
+  Contains data from the Number Resource Organization (NRO),
+  https://www.nro.net/, licensed under the Creative Commons Attribution
+  4.0 International License (CC BY 4.0),
+  https://creativecommons.org/licenses/by/4.0/
+
+The data reached UDM through the ip-location-db project's
+geo-whois-asn-country database (https://github.com/sapics/ip-location-db),
+which merges the WHOIS and ASN country data of the five regional internet
+registries (AFRINIC, APNIC, ARIN, LACNIC and RIPE NCC) that the NRO
+publishes.
+
+Changes made: UDM converted the database's IPv4 and IPv6 CSV files into a
+compressed table of address ranges (tools/ip-country/make_table.py in
+UDM's source): neighboring ranges of one country are merged, IPv6 ranges
+are kept to /64 prefixes, and rows that are not a two-letter country code
+are left out. The table says nothing more than the data does, and a
+country it shows can be wrong: an address block registered in one
+country can be used in another.
+
+There is no warranty for the data, as the license says.

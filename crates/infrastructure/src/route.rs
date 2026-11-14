@@ -6,32 +6,49 @@
 //! - Linux: the socket is bound to the interface (`SO_BINDTODEVICE`), so
 //!   its packets can only leave through it. Unprivileged since Linux 5.7.
 //! - macOS: likewise (`IP_BOUND_IF` / `IPV6_BOUND_IF`).
-//! - Windows: the socket is bound to the adapter's address, which Windows'
-//!   strong host model sends only through that adapter. A connection to
-//!   an address of the other family than the one bound (IPv6 from an
-//!   IPv4 address) cannot be made.
+//! - Windows: the socket is bound to the adapter's address. Windows sends
+//!   it out through that adapter only under its strong host model for
+//!   sending, which is the default; an interface with `weakhostsend` turned
+//!   on (by an administrator, some VPN or virtualization software) may send
+//!   it out by another (`docs/network.md` says how to check). A connection
+//!   to an address of the other family than the one bound (IPv6 from an
+//!   IPv4 address) cannot be made. When the adapter gets a new address (a
+//!   VPN reconnecting), a running download starts again from where it is,
+//!   bound to the new one ([`Watch`]).
 //!
 //! The kill switch: before every connection, through the HTTP client's
 //! connector ([`KillSwitch`]) and the FTP engine's own sockets alike, the
-//! adapter is looked up afresh through the `NetworkAdapters` port. When it
-//! is missing, stopped or has no address the connection fails with
-//! [`AdapterDown`], and nothing falls back to another network. A running
-//! download looks every [`Binding::watch_every`] too (`engine::run`), so
-//! one already receiving stops as soon as the adapter goes.
+//! adapter is looked up through the `NetworkAdapters` port (the daemon's
+//! keeps the system's list for a second, `adapters::Cached`). When it is
+//! missing, stopped, has no address or is another connection with its name
+//! the connection fails with [`AdapterDown`], and nothing falls back to
+//! another network. One watcher thread looks at the adapter of every
+//! running download every [`Binding::watch_every`] too ([`Watch`]), so one
+//! already receiving stops as soon as the adapter goes.
 
+use std::collections::HashSet;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use udm_domain::network::{bound_adapter, AdapterChoice, AdapterDown, NetworkAdapter};
+use udm_domain::network::{bound_adapter, AdapterChoice, AdapterDown, AdapterId, BindRefused, NetworkAdapter};
 use udm_domain::ports::NetworkAdapters;
+use udm_domain::sync::{recover, LockExt};
 
 use crate::doh::Doh;
 
-/// How often a running download looks at its adapter.
-pub const WATCH_EVERY: Duration = Duration::from_secs(2);
+/// How often the watcher looks at running downloads' adapters. With the
+/// daemon's list at most a second old, a download stops within two seconds
+/// of its adapter going.
+pub const WATCH_EVERY: Duration = Duration::from_secs(1);
+
+/// Whether this system binds a connection to an adapter by its address
+/// (Windows) rather than by its interface (Linux, macOS).
+pub const BINDS_BY_ADDRESS: bool =
+    !cfg!(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios"));
 
 /// The adapter connections are bound to.
 #[derive(Clone)]
@@ -40,6 +57,9 @@ pub struct Binding {
     pub adapters: Arc<dyn NetworkAdapters>,
     /// How often a running download checks that the adapter is still up.
     pub watch_every: Duration,
+    /// Connections are bound to the adapter's address ([`BINDS_BY_ADDRESS`]),
+    /// so a new address means binding again.
+    pub by_address: bool,
 }
 
 impl std::fmt::Debug for Binding {
@@ -50,17 +70,54 @@ impl std::fmt::Debug for Binding {
 
 impl Binding {
     pub fn new(choice: AdapterChoice, adapters: Arc<dyn NetworkAdapters>) -> Binding {
-        Binding { choice, adapters, watch_every: WATCH_EVERY }
+        Binding { choice, adapters, watch_every: WATCH_EVERY, by_address: BINDS_BY_ADDRESS }
     }
 
     /// The adapter as it is now, or why connections may not be made. An
     /// adapter list that cannot be read counts as the adapter being down.
     pub fn adapter(&self) -> Result<NetworkAdapter, AdapterDown> {
         let adapters = self.adapters.list().unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "the network adapters could not be read");
+            // `adapters::Cached` logs it once; this is asked per connection.
+            tracing::debug!(error = %e, "the network adapters could not be read");
             Vec::new()
         });
         bound_adapter(&self.choice, &adapters).cloned()
+    }
+
+    /// The address connections are bound to now, where they are bound by
+    /// address; `None` where they are bound by interface.
+    pub fn bound_address(&self) -> Result<Option<IpAddr>, AdapterDown> {
+        let adapter = self.adapter()?;
+        Ok(if self.by_address { adapter.bind_address() } else { None })
+    }
+
+    /// Whether the system lets UDM bind connections to an interface at all:
+    /// Linux before 5.7 lets only administrators. Asked once, with the
+    /// first adapter that is there to ask about; elsewhere always yes.
+    pub fn permitted(&self) -> Result<(), BindRefused> {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            static PERMITTED: OnceLock<bool> = OnceLock::new();
+            let permitted = match PERMITTED.get() {
+                Some(known) => *known,
+                None => match device_bind_permitted(self.choice.id.as_str()) {
+                    Some(answer) => *PERMITTED.get_or_init(|| answer),
+                    None => true,
+                },
+            };
+            if !permitted {
+                return Err(BindRefused::new(&self.choice));
+            }
+        }
+        Ok(())
+    }
+
+    /// `e`, or [`BindRefused`] when it is the system refusing the binding.
+    fn refused(&self, e: io::Error) -> io::Error {
+        if !BINDS_BY_ADDRESS && e.kind() == io::ErrorKind::PermissionDenied {
+            return io::Error::other(BindRefused::new(&self.choice));
+        }
+        e
     }
 
     /// `builder` with its connections bound to the adapter, and each one
@@ -81,7 +138,7 @@ impl Binding {
     fn socket(&self, peer: IpAddr) -> io::Result<Socket> {
         let adapter = self.adapter().map_err(io::Error::other)?;
         let socket = Socket::new(Domain::for_address(SocketAddr::new(peer, 0)), Type::STREAM, Some(Protocol::TCP))?;
-        bind_socket(&socket, &adapter, peer)?;
+        bind_socket(&socket, &adapter, peer).map_err(|e| self.refused(e))?;
         Ok(socket)
     }
 
@@ -89,9 +146,22 @@ impl Binding {
     fn listener(&self, ip: IpAddr) -> io::Result<Socket> {
         let adapter = self.adapter().map_err(io::Error::other)?;
         let socket = Socket::new(Domain::for_address(SocketAddr::new(ip, 0)), Type::STREAM, Some(Protocol::TCP))?;
-        bind_listener(&socket, &adapter, ip)?;
+        bind_listener(&socket, &adapter, ip).map_err(|e| self.refused(e))?;
         socket.listen(1)?;
         Ok(socket)
+    }
+}
+
+/// Whether a socket may be bound to interface `name`: `Some(false)` when
+/// the system refuses for want of rights, `None` when the answer says
+/// nothing about that (the interface is not there, say).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn device_bind_permitted(name: &str) -> Option<bool> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, None).ok()?;
+    match socket.bind_device(Some(name.as_bytes())) {
+        Ok(()) => Some(true),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Some(false),
+        Err(_) => None,
     }
 }
 
@@ -164,6 +234,16 @@ impl Route {
             builder = builder.dns_resolver(Arc::new(crate::doh::Resolver(Arc::clone(doh))));
         }
         Ok(builder)
+    }
+
+    /// Whether connections can be bound now: the adapter is there and the
+    /// system lets UDM bind to it. For a download about to start.
+    pub fn ready(&self) -> Result<(), RouteRefusal> {
+        if let Some(binding) = &self.binding {
+            binding.adapter()?;
+            binding.permitted()?;
+        }
+        Ok(())
     }
 
     /// The address a program UDM runs (yt-dlp, gallery-dl) is told to
@@ -267,27 +347,189 @@ fn split_host_port(text: &str, default_port: u16) -> Option<(&str, u16)> {
     }
 }
 
+/// Why a bound connection could not be made: the adapter is down, or the
+/// system will not bind to it. Neither is helped by trying again.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RouteRefusal {
+    #[error(transparent)]
+    Down(#[from] AdapterDown),
+    #[error(transparent)]
+    Refused(#[from] BindRefused),
+}
+
 /// Whether `e` is a connection refused because the adapter is down.
 pub fn is_adapter_down(e: &io::Error) -> bool {
     adapter_down_in(e).is_some()
 }
 
 /// The [`AdapterDown`] somewhere in `e`'s causes, if any.
-pub fn adapter_down_in<'a>(e: &'a (dyn std::error::Error + 'static)) -> Option<&'a AdapterDown> {
+pub fn adapter_down_in(e: &(dyn std::error::Error + 'static)) -> Option<AdapterDown> {
+    match refusal_in(e)? {
+        RouteRefusal::Down(down) => Some(down),
+        RouteRefusal::Refused(_) => None,
+    }
+}
+
+/// Why `e` is a bound connection refused, if it is: the adapter down, or
+/// the system refusing the binding.
+pub fn refusal_in(e: &(dyn std::error::Error + 'static)) -> Option<RouteRefusal> {
+    find_in::<RouteRefusal>(e)
+        .cloned()
+        .or_else(|| find_in::<AdapterDown>(e).cloned().map(RouteRefusal::Down))
+        .or_else(|| find_in::<BindRefused>(e).cloned().map(RouteRefusal::Refused))
+}
+
+/// The `T` somewhere in `e`'s causes, if any, also inside an `io::Error`.
+fn find_in<'a, T: std::error::Error + 'static>(e: &'a (dyn std::error::Error + 'static)) -> Option<&'a T> {
     let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(e);
     while let Some(c) = cause {
-        if let Some(down) = c.downcast_ref::<AdapterDown>() {
-            return Some(down);
+        if let Some(found) = c.downcast_ref::<T>() {
+            return Some(found);
         }
-        if let Some(down) = c.downcast_ref::<io::Error>().and_then(|io| io.get_ref()).and_then(|inner| {
+        if let Some(found) = c.downcast_ref::<io::Error>().and_then(|io| io.get_ref()).and_then(|inner| {
             let inner: &(dyn std::error::Error + 'static) = inner;
-            inner.downcast_ref::<AdapterDown>()
+            inner.downcast_ref::<T>()
         }) {
-            return Some(down);
+            return Some(found);
         }
         cause = c.source();
     }
     None
+}
+
+/// A running download's watch on the adapter it is bound to, kept by the
+/// one watcher thread every running download shares. When the adapter
+/// goes, the watcher stops the download (as a cancel does, so every
+/// connection closes at its next read) and keeps why, for [`Watch::finish`].
+/// Where connections are bound by address, an adapter that got another
+/// address asks for the download to start again, bound to the new one.
+pub struct Watch(Arc<Watched>);
+
+struct Watched {
+    binding: Binding,
+    /// Stops the download's connections.
+    stop: Arc<AtomicBool>,
+    /// Set, with `stop`, to have the download start again.
+    restart: Arc<AtomicBool>,
+    /// The address its connections are bound to, where that is how.
+    address: Option<IpAddr>,
+    /// Why it was stopped, and whether the download stopped watching; the
+    /// watcher stops a download only under this lock, and never once
+    /// `finish` has taken it.
+    state: Mutex<WatchState>,
+}
+
+#[derive(Default)]
+struct WatchState {
+    finished: bool,
+    down: Option<AdapterDown>,
+}
+
+impl Watch {
+    /// Watch `binding`'s adapter for a download stopped through `stop`; an
+    /// error when the adapter is down already.
+    pub fn start(binding: &Binding, stop: &Arc<AtomicBool>, restart: &Arc<AtomicBool>) -> Result<Watch, AdapterDown> {
+        let address = binding.bound_address()?;
+        let watched = Arc::new(Watched {
+            binding: binding.clone(),
+            stop: Arc::clone(stop),
+            restart: Arc::clone(restart),
+            address,
+            state: Mutex::default(),
+        });
+        watcher().add(&watched);
+        Ok(Watch(watched))
+    }
+
+    /// Stop watching; the adapter's going, if it went. Once this returns,
+    /// the watcher no longer stops the download.
+    pub fn finish(self) -> Option<AdapterDown> {
+        let mut state = self.0.state.lock_or_recover();
+        state.finished = true;
+        state.down.take()
+    }
+}
+
+impl Watched {
+    /// Look at the adapter once; whether it is down.
+    fn check(&self) -> bool {
+        let found = self.binding.bound_address();
+        let mut state = self.state.lock_or_recover();
+        if state.finished {
+            return false;
+        }
+        match found {
+            Err(down) => {
+                state.down = Some(down);
+                self.stop.store(true, Ordering::SeqCst);
+                true
+            }
+            Ok(address) if address != self.address => {
+                tracing::info!(adapter = %self.binding.choice.label(), "the network adapter's address changed; a download starts again");
+                self.restart.store(true, Ordering::SeqCst);
+                self.stop.store(true, Ordering::SeqCst);
+                false
+            }
+            Ok(_) => false,
+        }
+    }
+}
+
+/// The downloads being watched, and the thread that watches them.
+#[derive(Default)]
+struct Watcher {
+    watched: Mutex<Vec<Weak<Watched>>>,
+    added: Condvar,
+}
+
+/// The one watcher, started the first time a download is watched.
+fn watcher() -> &'static Watcher {
+    static WATCHER: OnceLock<Watcher> = OnceLock::new();
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    let watcher = WATCHER.get_or_init(Watcher::default);
+    STARTED.call_once(|| {
+        let spawned = std::thread::Builder::new().name("udm-adapter-watch".into()).spawn(|| watcher.run());
+        if let Err(e) = spawned {
+            // Every new connection still checks the adapter.
+            tracing::warn!(error = %e, "could not watch the network adapters");
+        }
+    });
+    watcher
+}
+
+impl Watcher {
+    fn add(&self, watched: &Arc<Watched>) {
+        self.watched.lock_or_recover().push(Arc::downgrade(watched));
+        self.added.notify_one();
+    }
+
+    fn run(&self) {
+        // Adapters seen down, so their going is logged once, not per download.
+        let mut down: HashSet<AdapterId> = HashSet::new();
+        let mut watched = self.watched.lock_or_recover();
+        loop {
+            let every = watched.iter().filter_map(Weak::upgrade).map(|w| w.binding.watch_every).min();
+            watched = match every {
+                None => recover(self.added.wait(watched)),
+                Some(every) => recover(self.added.wait_timeout(watched, every)).0,
+            };
+            watched.retain(|w| w.strong_count() > 0);
+            let live: Vec<Arc<Watched>> = watched.iter().filter_map(Weak::upgrade).collect();
+            drop(watched);
+            let mut now_down = HashSet::new();
+            for w in live.iter().filter(|w| !w.stop.load(Ordering::SeqCst)) {
+                if w.check() {
+                    now_down.insert(w.binding.choice.id.clone());
+                }
+            }
+            for id in now_down.difference(&down) {
+                tracing::warn!(adapter = %id, "the network adapter downloads are bound to is down; they stop");
+            }
+            down = now_down;
+            drop(live);
+            watched = self.watched.lock_or_recover();
+        }
+    }
 }
 
 /// A connector layer for the HTTP client that looks at the adapter before
@@ -334,7 +576,8 @@ where
         match self.binding.adapter() {
             Ok(_) => Box::pin(async move { inner.call(req).await }),
             Err(down) => {
-                tracing::warn!(adapter = %down.adapter, "a connection was refused: the network adapter is down");
+                // The watcher logs the adapter's going once.
+                tracing::debug!(adapter = %down.adapter, "a connection was refused: the network adapter is down");
                 Box::pin(async move { Err(S::Error::from(down)) })
             }
         }
@@ -356,24 +599,58 @@ pub(crate) mod tests {
     }
 
     /// A stand-in for the system's adapters: the loopback one, until it is
-    /// made to disappear.
+    /// made to disappear (or given other addresses).
     pub struct StandIn {
-        pub adapter: NetworkAdapter,
+        pub adapter: Mutex<NetworkAdapter>,
         pub gone: AtomicBool,
     }
 
     impl NetworkAdapters for StandIn {
         fn list(&self) -> Result<Vec<NetworkAdapter>, NetworkError> {
-            Ok(if self.gone.load(Ordering::SeqCst) { Vec::new() } else { vec![self.adapter.clone()] })
+            Ok(if self.gone.load(Ordering::SeqCst) { Vec::new() } else { vec![self.adapter.lock().unwrap().clone()] })
         }
     }
 
     pub fn bound_to_loopback() -> (Route, Arc<StandIn>) {
         let adapter = loopback();
-        let choice = AdapterChoice { id: adapter.id.clone(), name: "Test adapter".into() };
-        let stand_in = Arc::new(StandIn { adapter, gone: AtomicBool::new(false) });
+        let choice = AdapterChoice { id: adapter.id.clone(), name: "Test adapter".into(), subnets: Vec::new() };
+        let stand_in = Arc::new(StandIn { adapter: Mutex::new(adapter), gone: AtomicBool::new(false) });
         let binding = Binding { watch_every: Duration::from_millis(100), ..Binding::new(choice, stand_in.clone()) };
         (Route { binding: Some(binding), dns: None }, stand_in)
+    }
+
+    #[test]
+    fn the_watcher_stops_a_download_whose_adapter_goes() {
+        let (route, stand_in) = bound_to_loopback();
+        let binding = route.binding.unwrap();
+        let (stop, restart) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let watch = Watch::start(&binding, &stop, &restart).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!stop.load(Ordering::SeqCst), "up: left alone");
+        stand_in.gone.store(true, Ordering::SeqCst);
+        let waited = std::time::Instant::now();
+        while !stop.load(Ordering::SeqCst) && waited.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(stop.load(Ordering::SeqCst) && !restart.load(Ordering::SeqCst));
+        assert_eq!(watch.finish().map(|d| d.adapter), Some("Test adapter".into()));
+        // A download bound to it now does not start.
+        assert!(Watch::start(&binding, &stop, &restart).is_err());
+    }
+
+    #[test]
+    fn a_new_address_starts_a_download_bound_by_address_again() {
+        let (route, stand_in) = bound_to_loopback();
+        let binding = Binding { by_address: true, ..route.binding.unwrap() };
+        let (stop, restart) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let watch = Watch::start(&binding, &stop, &restart).unwrap();
+        stand_in.adapter.lock().unwrap().addresses.insert(0, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
+        let waited = std::time::Instant::now();
+        while !stop.load(Ordering::SeqCst) && waited.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(stop.load(Ordering::SeqCst) && restart.load(Ordering::SeqCst), "started again, not failed");
+        assert_eq!(watch.finish(), None);
     }
 
     #[test]
@@ -390,7 +667,7 @@ pub(crate) mod tests {
 
         stand_in.gone.store(true, Ordering::SeqCst);
         let refused = route.connect("127.0.0.1", at.port(), Duration::from_secs(5)).unwrap_err();
-        assert_eq!(adapter_down_in(&refused).map(|d| d.adapter.as_str()), Some("Test adapter"));
+        assert_eq!(adapter_down_in(&refused).map(|d| d.adapter), Some("Test adapter".into()));
         assert!(is_adapter_down(&route.listen(IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap_err()));
         assert!(route.source_address().is_err(), "no program is run unbound");
     }
@@ -399,15 +676,19 @@ pub(crate) mod tests {
     /// reached: the binding is the system's, not only a check.
     #[cfg(target_os = "linux")]
     #[test]
+    #[ignore = "needs a network adapter besides loopback, with an IPv4 address: run with --ignored"]
     fn a_socket_bound_elsewhere_cannot_reach_loopback() {
-        let Some(other) = crate::adapters::SystemAdapters.list().unwrap().into_iter().find(|a| {
-            a.usable() && !a.addresses.iter().any(IpAddr::is_loopback) && a.addresses.iter().any(IpAddr::is_ipv4)
-        }) else {
-            return;
-        };
+        let other = crate::adapters::SystemAdapters
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|a| {
+                a.usable() && !a.addresses.iter().any(IpAddr::is_loopback) && a.addresses.iter().any(IpAddr::is_ipv4)
+            })
+            .expect("this test needs a network adapter besides loopback, with an IPv4 address");
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let at = listener.local_addr().unwrap();
-        let choice = AdapterChoice { id: other.id.clone(), name: String::new() };
+        let choice = AdapterChoice { id: other.id.clone(), name: String::new(), subnets: Vec::new() };
         let route = Route { binding: Some(Binding::new(choice, Arc::new(crate::adapters::SystemAdapters))), dns: None };
         assert!(route.connect_addr(at, Duration::from_millis(500)).is_err(), "{other:?}");
         assert!(Route::default().connect_addr(at, Duration::from_secs(2)).is_ok());
@@ -425,7 +706,8 @@ pub(crate) mod tests {
 
     #[test]
     fn an_adapter_that_does_not_exist_is_down() {
-        let choice = AdapterChoice { id: AdapterId::parse("udm-no-such-adapter0").unwrap(), name: String::new() };
+        let choice =
+            AdapterChoice { id: AdapterId::parse("udmnone0").unwrap(), name: String::new(), subnets: Vec::new() };
         let route = Route { binding: Some(Binding::new(choice, Arc::new(crate::adapters::SystemAdapters))), dns: None };
         assert!(route.check().is_err());
         assert!(route.client(reqwest::Client::builder()).is_err());

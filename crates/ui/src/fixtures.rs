@@ -157,6 +157,7 @@ fn fixtures() -> serde_json::Value {
         now: std::time::Instant::now(),
         unix: 1_700_000_000,
         downloads: std::path::PathBuf::from("/home/u/Downloads"),
+        flags: true,
     };
     let dark = projection::look(&s);
     if let Some(settings) = s.settings.as_mut() {
@@ -186,6 +187,7 @@ fn fixtures() -> serde_json::Value {
         settings.network_adapter = Some(udm_domain::network::AdapterChoice {
             id: udm_domain::network::AdapterId::parse("wg0").unwrap(),
             name: "wg0".into(),
+            subnets: Vec::new(),
         });
         settings.dns = udm_domain::network::DnsChoice::Quad9;
     }
@@ -193,6 +195,7 @@ fn fixtures() -> serde_json::Value {
         id: udm_domain::network::AdapterId::parse(id).unwrap(),
         name: id.into(),
         addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+        subnets: Vec::new(),
         up: true,
     };
     let adapters = vec![adapter("eth0", &["192.168.1.5", "fe80::5"]), adapter("wg0", &["10.2.0.2"])];

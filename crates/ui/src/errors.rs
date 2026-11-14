@@ -562,11 +562,13 @@ pub mod text {
         }
     }
 
-    /// Why a debrid service would not unlock a link or show the account.
+    /// Why a network setting is not usable, or the adapters' list could not
+    /// be read.
     pub fn network(lang: &'static Language, e: &udm_domain::network::NetworkError) -> String {
         use udm_domain::network::NetworkError as E;
         match e {
             E::NoAdapter => lang.tr("Choose a network adapter.").to_string(),
+            E::BadAdapter => lang.tr("That is not the name of a network adapter.").to_string(),
             E::DohAddress => {
                 lang.tr("The DNS over HTTPS address must start with https:// and name a server.").to_string()
             }
@@ -576,6 +578,7 @@ pub mod text {
         }
     }
 
+    /// Why a debrid service would not unlock a link or show the account.
     pub fn debrid(lang: &'static Language, e: &udm_domain::debrid::DebridError) -> String {
         use udm_domain::debrid::DebridError as E;
         match e {

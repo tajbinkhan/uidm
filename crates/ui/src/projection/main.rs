@@ -228,7 +228,7 @@ pub fn row(ctx: &Ctx, state: &AppState, queued: &HashMap<DownloadId, ()>, e: &Do
             .unwrap_or_default(),
         page: e.page.clone().unwrap_or_default(),
         referrer: e.referrer.clone().unwrap_or_default(),
-        country: e.country.map(format::country).unwrap_or_default(),
+        country: e.country.map(|c| format::country(c, ctx.flags)).unwrap_or_default(),
     }
 }
 
@@ -499,6 +499,7 @@ mod tests {
             now: std::time::Instant::now(),
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
+            flags: true,
         }
     }
 

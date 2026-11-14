@@ -195,6 +195,10 @@ impl Transfers {
         );
         set_limits(&engine, s.engine_limits(false));
         engine.set_next_id(next_id);
+        // Each download goes out the way the settings say as it starts, not
+        // as they said when it was queued.
+        let (live, net) = (Arc::clone(&settings), Arc::clone(&retries));
+        engine.route_from(Arc::new(move || net.network.route(&live.get())));
         Transfers {
             engine: Arc::new(engine),
             store,
@@ -572,7 +576,8 @@ impl Transfers {
     }
 
     /// The engine request for `download`, with the settings' folder,
-    /// connections and file-name policy, and its proxy and logins.
+    /// connections and file-name policy, and its proxy and logins. The
+    /// engine takes its network adapter and resolver afresh as it starts.
     pub fn request_for(&self, download: Download) -> DownloadRequest {
         let settings = self.settings.lock().clone();
         let net = config_for(&download, &settings, &self.retries);
@@ -620,11 +625,21 @@ impl Transfers {
     }
 
     /// Validate, save and apply new settings, then tell every client. Running
-    /// downloads keep going; new ones use the new values.
+    /// downloads keep going; new ones use the new values. A change of the
+    /// network adapter or the resolver starts running downloads again from
+    /// where they are, so none goes on the old way.
     pub fn set_settings(&self, mut new: Settings) -> Result<(), SaveError> {
         settings::validate(&new)?;
+        let old = self.settings.get();
         // Only the daemon notes update checks; a window's copy may be older.
-        new.last_update_check = new.last_update_check.max(self.settings.lock().last_update_check);
+        new.last_update_check = new.last_update_check.max(old.last_update_check);
+        // The networks a numbered adapter (`utun3`) was on when chosen, so
+        // another connection given its name later is not taken for it.
+        if let Some(choice) = new.network_adapter.as_mut() {
+            let adapters = self.retries.network.adapters().list().unwrap_or_default();
+            choice.remember(old.network_adapter.as_ref(), &adapters);
+        }
+        let network_changed = new.network_adapter != old.network_adapter || new.dns != old.dns;
         let new = self.store_secrets(new)?;
         let old_autostart = self.settings.lock().start_with_windows;
         if new.start_with_windows != old_autostart {
@@ -644,6 +659,9 @@ impl Transfers {
             *current = new.clone();
             (was != lifted).then_some(lifted)
         };
+        if network_changed {
+            self.engine.restart_running();
+        }
         self.events.announce(&Outgoing::Settings { settings: new });
         if let Some(lifted) = applied {
             self.events.announce(&Outgoing::LimitLifted { lifted });

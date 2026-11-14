@@ -106,7 +106,7 @@ jobs:
           Copy-Item -Recurse extension\chromium "$out\extension"
           Copy-Item -Recurse extension\firefox "$out\firefox"
           Copy-Item -Recurse host "$out"
-          Copy-Item install-host.ps1, README.md "$out"
+          Copy-Item install-host.ps1, README.md, THIRD-PARTY-NOTICES.txt "$out"
           # The marker makes the zip a portable copy (docs/portable.md).
           Copy-Item installer\windows\portable.txt "$out"
           Compress-Archive -Path $out -DestinationPath "dist\UDM-$version-windows-portable.zip"

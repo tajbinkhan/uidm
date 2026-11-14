@@ -312,11 +312,16 @@ fn adapter_rows(
     let not_connected = |name: &str| fill(lang.tr("{adapter} (not connected)"), &[("adapter", name)]);
     let mut rows: Vec<AdapterRow> = adapters
         .iter()
-        .map(|a| AdapterRow {
-            id: a.id.to_string(),
-            name: a.name.clone(),
-            label: if a.usable() { format!("{} ({})", a.name, a.addresses_text()) } else { not_connected(&a.name) },
-            up: a.usable(),
+        .map(|a| {
+            // Another connection that took the chosen adapter's name is not
+            // it: downloads treat it as down, and so does the list.
+            let up = a.usable() && chosen.is_none_or(|c| c.id != a.id || c.is(a));
+            AdapterRow {
+                id: a.id.to_string(),
+                name: a.name.clone(),
+                label: if up { format!("{} ({})", a.name, a.addresses_text()) } else { not_connected(&a.name) },
+                up,
+            }
         })
         .collect();
     if let Some(c) = chosen.filter(|c| !adapters.iter().any(|a| a.id == c.id)) {
@@ -391,6 +396,7 @@ mod tests {
             now: Instant::now(),
             unix: 1_700_000_000,
             downloads: std::path::PathBuf::from("/home/u/Downloads"),
+            flags: true,
         }
     }
 
@@ -401,11 +407,16 @@ mod tests {
             id: AdapterId::parse(id).unwrap(),
             name: format!("{id} adapter"),
             addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+            subnets: Vec::new(),
             up,
         };
         let mut s = AppState::default();
         let settings = udm_domain::settings::Settings {
-            network_adapter: Some(AdapterChoice { id: AdapterId::parse("tun9").unwrap(), name: "Old VPN".into() }),
+            network_adapter: Some(AdapterChoice {
+                id: AdapterId::parse("tun9").unwrap(),
+                name: "Old VPN".into(),
+                subnets: Vec::new(),
+            }),
             ..udm_domain::settings::Settings::default()
         };
         s.settings = Some(settings.clone());

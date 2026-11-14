@@ -16,27 +16,128 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
-/// A network adapter as the system names it for good: the interface's name
-/// on Linux and macOS (`wg0`, `utun3`), the adapter's GUID on Windows. Read
-/// back as written, so a setting naming an adapter that no longer exists
-/// still loads, and binds to nothing.
+/// A network adapter as the system names it: the interface's name on Linux
+/// and macOS (`wg0`, `utun3`), the adapter's GUID on Windows. A setting
+/// naming an adapter that no longer exists still loads, and binds to
+/// nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
 pub struct AdapterId(String);
 
+/// The longest interface name Linux and macOS take (`IFNAMSIZ`, 16, less
+/// its final NUL).
+const INTERFACE_NAME: usize = 15;
+/// The longest id a Windows adapter has: a GUID in braces is 38.
+const WINDOWS_ID: usize = 64;
+
+/// Interface names the system hands out by number, in turn, so that one
+/// connection's name is another's later: macOS' `utun3`, Linux's `tun0`.
+const NUMBERED: [&str; 5] = ["utun", "tun", "tap", "ppp", "ipsec"];
+
 impl AdapterId {
-    /// An adapter's id as the system gives it or the window sends it back:
-    /// not empty once trimmed.
+    /// An adapter's id as the system gives it or the window (or a settings
+    /// file) sends it back: not empty once trimmed, and no control
+    /// characters. An interface name (not a Windows adapter's `{GUID}`) has
+    /// at most 15 bytes, no spaces and no `/`, as the system's own do, so
+    /// it can always be handed to the system.
     pub fn parse(id: &str) -> Result<AdapterId, NetworkError> {
         let id = id.trim();
         if id.is_empty() {
             return Err(NetworkError::NoAdapter);
+        }
+        if id.chars().any(char::is_control) {
+            return Err(NetworkError::BadAdapter);
+        }
+        let windows = cfg!(windows) || (id.starts_with('{') && id.ends_with('}'));
+        let fits = if windows {
+            id.len() <= WINDOWS_ID
+        } else {
+            id.len() <= INTERFACE_NAME && !id.contains('/') && !id.chars().any(char::is_whitespace)
+        };
+        if !fits {
+            return Err(NetworkError::BadAdapter);
         }
         Ok(AdapterId(id.to_string()))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Whether the system hands this name out by number (`utun3`, `tun0`),
+    /// so it may name another connection later.
+    pub fn is_numbered(&self) -> bool {
+        NUMBERED
+            .iter()
+            .any(|p| self.0.strip_prefix(p).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+    }
+}
+
+impl TryFrom<String> for AdapterId {
+    type Error = NetworkError;
+
+    fn try_from(id: String) -> Result<Self, Self::Error> {
+        AdapterId::parse(&id)
+    }
+}
+
+impl From<AdapterId> for String {
+    fn from(id: AdapterId) -> String {
+        id.0
+    }
+}
+
+/// A network an adapter is on: an address with the bits that name the
+/// network (`10.2.0.0/24`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Subnet {
+    base: IpAddr,
+    prefix: u8,
+}
+
+impl Subnet {
+    /// The network of `ip` with a prefix of `prefix` bits; `None` for a
+    /// prefix longer than the address.
+    pub fn new(ip: IpAddr, prefix: u8) -> Option<Subnet> {
+        let base = match ip {
+            IpAddr::V4(v4) if prefix <= 32 => {
+                IpAddr::V4(Ipv4Addr::from(u32::from(v4) & u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0)))
+            }
+            IpAddr::V6(v6) if prefix <= 128 => {
+                IpAddr::V6(Ipv6Addr::from(u128::from(v6) & u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0)))
+            }
+            _ => return None,
+        };
+        Some(Subnet { base, prefix })
+    }
+
+    /// Whether `ip` is on this network.
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        Subnet::new(ip, self.prefix).is_some_and(|s| s.base == self.base)
+    }
+}
+
+impl fmt::Display for Subnet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.base, self.prefix)
+    }
+}
+
+impl TryFrom<String> for Subnet {
+    type Error = NetworkError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        let (ip, prefix) = text.split_once('/').ok_or(NetworkError::BadAdapter)?;
+        let ip = ip.parse().map_err(|_| NetworkError::BadAdapter)?;
+        let prefix = prefix.parse().map_err(|_| NetworkError::BadAdapter)?;
+        Subnet::new(ip, prefix).ok_or(NetworkError::BadAdapter)
+    }
+}
+
+impl From<Subnet> for String {
+    fn from(s: Subnet) -> String {
+        s.to_string()
     }
 }
 
@@ -54,9 +155,19 @@ pub struct AdapterChoice {
     pub id: AdapterId,
     #[serde(default)]
     pub name: String,
+    /// The networks it was on when it was chosen, kept only for a name the
+    /// system hands out by number (`utun3`, `tun0`): an adapter of that
+    /// name on none of them is another connection, and counts as down.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subnets: Vec<Subnet>,
 }
 
 impl AdapterChoice {
+    /// `adapter`, chosen now: with its networks when its name is numbered.
+    pub fn of(adapter: &NetworkAdapter) -> AdapterChoice {
+        AdapterChoice { id: adapter.id.clone(), name: adapter.name.clone(), subnets: adapter.networks_to_keep() }
+    }
+
     /// The name to show for it.
     pub fn label(&self) -> &str {
         if self.name.trim().is_empty() {
@@ -64,6 +175,27 @@ impl AdapterChoice {
         } else {
             &self.name
         }
+    }
+
+    /// Whether `adapter` is the connection that was chosen: it has the id
+    /// and, when networks were kept, an address on one of them.
+    pub fn is(&self, adapter: &NetworkAdapter) -> bool {
+        adapter.id == self.id
+            && (self.subnets.is_empty()
+                || adapter.addresses.iter().any(|a| self.subnets.iter().any(|s| s.contains(*a))))
+    }
+
+    /// The networks to keep with this choice, as the settings are saved:
+    /// those it had before when it is the same adapter (so another
+    /// connection that took its name is still not taken for it), else those
+    /// the adapter is on now when its name is numbered, if it is there.
+    pub fn remember(&mut self, before: Option<&AdapterChoice>, adapters: &[NetworkAdapter]) {
+        if let Some(before) = before.filter(|b| b.id == self.id && !b.subnets.is_empty()) {
+            self.subnets = before.subnets.clone();
+            return;
+        }
+        self.subnets =
+            adapters.iter().find(|a| a.id == self.id).map(NetworkAdapter::networks_to_keep).unwrap_or_default();
     }
 }
 
@@ -76,6 +208,8 @@ pub struct NetworkAdapter {
     /// elsewhere).
     pub name: String,
     pub addresses: Vec<IpAddr>,
+    /// The networks those addresses are on, where the system says.
+    pub subnets: Vec<Subnet>,
     /// The system says it is running.
     pub up: bool,
 }
@@ -110,6 +244,15 @@ impl NetworkAdapter {
     /// address.
     pub fn usable(&self) -> bool {
         self.up && !self.addresses.is_empty()
+    }
+
+    /// The networks a choice of it keeps: when its name is numbered, those
+    /// that are not link-local.
+    fn networks_to_keep(&self) -> Vec<Subnet> {
+        if !self.id.is_numbered() {
+            return Vec::new();
+        }
+        self.subnets.iter().filter(|s| !link_local(s.base)).copied().collect()
     }
 
     /// The adapter's addresses as Options lists them.
@@ -153,13 +296,40 @@ impl AdapterDown {
 }
 
 /// The adapter connections must go through under `choice`, among
-/// `adapters`: there, running, and with an address. Anything else is
-/// [`AdapterDown`]; there is no other network to fall back to.
+/// `adapters`: there, the same connection ([`AdapterChoice::is`]), running,
+/// and with an address. Anything else is [`AdapterDown`]; there is no other
+/// network to fall back to.
 pub fn bound_adapter<'a>(
     choice: &AdapterChoice,
     adapters: &'a [NetworkAdapter],
 ) -> Result<&'a NetworkAdapter, AdapterDown> {
-    adapters.iter().find(|a| a.id == choice.id && a.usable()).ok_or_else(|| AdapterDown::new(choice))
+    adapters.iter().find(|a| choice.is(a) && a.usable()).ok_or_else(|| AdapterDown::new(choice))
+}
+
+/// Why no connection could be bound to the adapter: the system refused it
+/// (Linux before 5.7 lets only administrators bind to an interface). The
+/// download stops rather than go out unbound.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{BIND_REFUSED}{adapter}{BIND_REFUSED_END}")]
+pub struct BindRefused {
+    /// The adapter's name, as the user chose it.
+    pub adapter: String,
+}
+
+const BIND_REFUSED: &str = "The system would not bind connections to the network adapter ";
+const BIND_REFUSED_END: &str = " (on Linux, this needs version 5.7 or later)";
+
+impl BindRefused {
+    pub fn new(choice: &AdapterChoice) -> BindRefused {
+        BindRefused { adapter: choice.label().to_string() }
+    }
+
+    /// The reason read back from a download's error text, as
+    /// [`AdapterDown::read`].
+    pub fn read(error: &str) -> Option<BindRefused> {
+        let adapter = error.strip_prefix(BIND_REFUSED)?.strip_suffix(BIND_REFUSED_END)?;
+        Some(BindRefused { adapter: adapter.to_string() })
+    }
 }
 
 /// Why a network setting or the adapters' list is not usable.
@@ -167,6 +337,10 @@ pub fn bound_adapter<'a>(
 pub enum NetworkError {
     #[error("Choose a network adapter.")]
     NoAdapter,
+    /// An adapter's id no system gives: control characters, or an
+    /// interface name that is too long or has spaces.
+    #[error("That is not the name of a network adapter.")]
+    BadAdapter,
     /// A custom DNS over HTTPS resolver's address that is not an https://
     /// address with a host.
     #[error("The DNS over HTTPS address must start with https:// and name a server.")]
@@ -326,11 +500,24 @@ impl DnsChoice {
     }
 }
 
-/// How long an answer is kept, from the time to live the resolver gave it:
-/// at least half a minute, so a resolver that says 0 is not asked for every
-/// connection, and at most an hour.
+/// How long an answer is kept, from the time to live the resolver gave its
+/// addresses: at least half a minute, so a resolver that says 0 is not
+/// asked for every connection, and at most an hour.
 pub fn dns_cache_seconds(ttl: u32) -> u64 {
     u64::from(ttl).clamp(30, 3600)
+}
+
+/// The time to live of a name's addresses from the two families' answers,
+/// each `(addresses, ttl)`: the shorter of those that gave addresses. An
+/// empty answer's time to live (often 0, or the zone's negative one) says
+/// nothing about the addresses the other family gave.
+pub fn answer_ttl(v4: (usize, u32), v6: (usize, u32)) -> u32 {
+    match (v4.0 > 0, v6.0 > 0) {
+        (true, true) => v4.1.min(v6.1),
+        (true, false) => v4.1,
+        (false, true) => v6.1,
+        (false, false) => 0,
+    }
 }
 
 #[cfg(test)]
@@ -338,16 +525,13 @@ mod tests {
     use super::*;
 
     fn adapter(id: &str, addresses: &[&str], up: bool) -> NetworkAdapter {
-        NetworkAdapter {
-            id: AdapterId::parse(id).unwrap(),
-            name: format!("{id} name"),
-            addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
-            up,
-        }
+        let addresses: Vec<IpAddr> = addresses.iter().map(|a| a.parse().unwrap()).collect();
+        let subnets = addresses.iter().map(|a| Subnet::new(*a, if a.is_ipv4() { 24 } else { 64 }).unwrap()).collect();
+        NetworkAdapter { id: AdapterId::parse(id).unwrap(), name: format!("{id} name"), addresses, subnets, up }
     }
 
     fn choice(id: &str) -> AdapterChoice {
-        AdapterChoice { id: AdapterId::parse(id).unwrap(), name: "My VPN".into() }
+        AdapterChoice { id: AdapterId::parse(id).unwrap(), name: "My VPN".into(), subnets: Vec::new() }
     }
 
     #[test]
@@ -366,10 +550,80 @@ mod tests {
     fn the_down_reason_reads_back_from_its_text() {
         let down = AdapterDown::new(&choice("wg0"));
         assert_eq!(down.to_string(), "The network adapter My VPN is down");
-        assert_eq!(AdapterDown::read(&down.to_string()), Some(down));
+        assert_eq!(AdapterDown::read(&down.to_string()), Some(down.clone()));
         assert_eq!(AdapterDown::read("server returned HTTP 404"), None);
-        let unnamed = AdapterChoice { id: AdapterId::parse("wg0").unwrap(), name: String::new() };
+        let unnamed = AdapterChoice { id: AdapterId::parse("wg0").unwrap(), name: String::new(), subnets: Vec::new() };
         assert_eq!(AdapterDown::new(&unnamed).adapter, "wg0");
+        let refused = BindRefused::new(&choice("wg0"));
+        assert_eq!(BindRefused::read(&refused.to_string()), Some(refused));
+        assert_eq!(BindRefused::read(&down.to_string()), None);
+    }
+
+    #[test]
+    fn adapter_ids_are_names_the_system_could_give() {
+        for good in ["wg0", "utun3", "enp0s31f6", "tun-vpn.1", "{4D36E972-E325-11CE-BFC1-08002BE10318}"] {
+            assert_eq!(AdapterId::parse(good).unwrap().as_str(), good);
+        }
+        assert_eq!(AdapterId::parse(" wg0 ").unwrap().as_str(), "wg0");
+        assert_eq!(AdapterId::parse(""), Err(NetworkError::NoAdapter));
+        for bad in ["wg\0", "eth\n0", "{x\u{7f}}"] {
+            assert_eq!(AdapterId::parse(bad), Err(NetworkError::BadAdapter), "{bad:?}");
+        }
+        // Interface names: what Linux and macOS would take.
+        if !cfg!(windows) {
+            for bad in ["a-name-of-16-byt", "my vpn", "a/b"] {
+                assert_eq!(AdapterId::parse(bad), Err(NetworkError::BadAdapter), "{bad:?}");
+            }
+        }
+        assert_eq!(AdapterId::parse(&format!("{{{}}}", "x".repeat(70))), Err(NetworkError::BadAdapter));
+        // A settings file is held to the same rules.
+        assert!(serde_json::from_str::<AdapterChoice>(r#"{"id":"wg\u00000","name":"x"}"#).is_err());
+        assert!(serde_json::from_str::<AdapterChoice>(r#"{"id":"wg0"}"#).is_ok());
+    }
+
+    #[test]
+    fn a_numbered_name_on_other_networks_is_another_connection() {
+        let id = |s: &str| AdapterId::parse(s).unwrap();
+        assert!(id("utun3").is_numbered() && id("tun0").is_numbered() && id("ppp0").is_numbered());
+        assert!(!id("wg0").is_numbered() && !id("utun").is_numbered() && !id("tunnel0").is_numbered());
+
+        let vpn = adapter("utun3", &["10.8.0.6", "fe80::1"], true);
+        let chosen = AdapterChoice::of(&vpn);
+        assert_eq!(chosen.subnets, vec![Subnet::new("10.8.0.0".parse().unwrap(), 24).unwrap()], "link-local left out");
+        assert!(bound_adapter(&chosen, std::slice::from_ref(&vpn)).is_ok());
+        // Reconnected with another address on the same network: the same.
+        let again = adapter("utun3", &["10.8.0.9"], true);
+        assert!(bound_adapter(&chosen, &[again]).is_ok());
+        // Another tunnel that took the name: down, never used.
+        let other = adapter("utun3", &["172.20.1.2"], true);
+        assert_eq!(bound_adapter(&chosen, &[other]), Err(AdapterDown { adapter: "utun3 name".into() }));
+        // A name that is the user's own keeps no networks.
+        assert!(AdapterChoice::of(&adapter("wg0", &["10.2.0.2"], true)).subnets.is_empty());
+
+        // Saving keeps the networks of the same choice, and takes them
+        // afresh for a new one.
+        let mut sent = AdapterChoice { subnets: Vec::new(), ..chosen.clone() };
+        sent.remember(Some(&chosen), &[adapter("utun3", &["172.20.1.2"], true)]);
+        assert_eq!(sent.subnets, chosen.subnets);
+        let mut new = AdapterChoice { id: id("tun0"), name: "tun0".into(), subnets: Vec::new() };
+        new.remember(Some(&chosen), &[adapter("tun0", &["10.9.0.2"], true)]);
+        assert_eq!(new.subnets, vec![Subnet::new("10.9.0.0".parse().unwrap(), 24).unwrap()]);
+        let json = serde_json::to_string(&new).unwrap();
+        assert_eq!(json, r#"{"id":"tun0","name":"tun0","subnets":["10.9.0.0/24"]}"#);
+        assert_eq!(serde_json::from_str::<AdapterChoice>(&json).unwrap(), new);
+    }
+
+    #[test]
+    fn subnets_hold_the_addresses_under_their_prefix() {
+        let net = Subnet::new("10.2.3.4".parse().unwrap(), 16).unwrap();
+        assert_eq!(net.to_string(), "10.2.0.0/16");
+        assert!(net.contains("10.2.200.1".parse().unwrap()));
+        assert!(!net.contains("10.3.0.1".parse().unwrap()));
+        assert!(!net.contains("fd00::1".parse().unwrap()));
+        let six = Subnet::new("2001:db8:1:2::5".parse().unwrap(), 64).unwrap();
+        assert!(six.contains("2001:db8:1:2:ffff::1".parse().unwrap()));
+        assert_eq!(Subnet::new("1.2.3.4".parse().unwrap(), 0).unwrap().to_string(), "0.0.0.0/0");
+        assert!(Subnet::new("1.2.3.4".parse().unwrap(), 33).is_none());
     }
 
     #[test]
@@ -380,7 +634,6 @@ mod tests {
         assert_eq!(adapter("y", &["fe80::1"], true).bind_address(), Some("fe80::1".parse().unwrap()));
         assert_eq!(adapter("z", &["fd00::1"], true).address_for("1.2.3.4".parse().unwrap()), None);
         assert_eq!(adapter("z", &[], true).bind_address(), None);
-        assert!(AdapterId::parse("  ").is_err());
     }
 
     #[test]
@@ -426,5 +679,9 @@ mod tests {
         assert_eq!(dns_cache_seconds(0), 30);
         assert_eq!(dns_cache_seconds(300), 300);
         assert_eq!(dns_cache_seconds(u32::MAX), 3600);
+        // An empty answer's time to live does not shorten the other's.
+        assert_eq!(answer_ttl((2, 300), (0, 0)), 300);
+        assert_eq!(answer_ttl((0, 5), (1, 600)), 600);
+        assert_eq!(answer_ttl((1, 300), (1, 60)), 60);
     }
 }

@@ -592,14 +592,23 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
         // bound to went down: the banner says so, in the user's language.
         Event::Failed { id, error, .. } => {
             state.speeds.remove(&id);
-            if let Some(down) = udm_domain::network::AdapterDown::read(&error) {
-                let lang = crate::projection::language(state);
-                let text = crate::i18n::fill(
+            let lang = crate::projection::language(state);
+            let banner = if let Some(down) = udm_domain::network::AdapterDown::read(&error) {
+                Some(crate::i18n::fill(
                     lang.tr(
                         "The network adapter {adapter} is down, so downloads stopped instead of using another network.",
                     ),
                     &[("adapter", &down.adapter)],
-                );
+                ))
+            } else {
+                udm_domain::network::BindRefused::read(&error).map(|refused| {
+                    crate::i18n::fill(
+                        lang.tr("The system would not bind downloads to the network adapter {adapter}. On Linux, this needs version 5.7 or later."),
+                        &[("adapter", &refused.adapter)],
+                    )
+                })
+            };
+            if let Some(text) = banner {
                 state.notice = Some(Notice { text, error: true });
             }
         }
@@ -678,6 +687,19 @@ mod tests {
         assert_eq!(
             notice.text,
             "The network adapter wg0 is down, so downloads stopped instead of using another network."
+        );
+    }
+
+    #[test]
+    fn a_download_the_system_would_not_bind_says_so() {
+        let mut s = AppState::default();
+        added(&mut s, 1);
+        let refused = udm_domain::network::BindRefused { adapter: "wg0".into() };
+        let url: udm_domain::address::Link = "https://e.com/1.zip".into();
+        event(&mut s, Event::Failed { id: DownloadId::new(1), url, error: refused.to_string() });
+        assert_eq!(
+            s.notice.expect("a banner").text,
+            "The system would not bind downloads to the network adapter wg0. On Linux, this needs version 5.7 or later."
         );
     }
 

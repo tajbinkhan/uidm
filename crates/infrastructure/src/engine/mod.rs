@@ -277,6 +277,18 @@ pub enum EngineError {
     /// another way, and trying again cannot help until it is back.
     #[error(transparent)]
     AdapterDown(#[from] udm_domain::network::AdapterDown),
+    /// The system would not bind a connection to the adapter.
+    #[error(transparent)]
+    BindRefused(#[from] udm_domain::network::BindRefused),
+}
+
+impl From<crate::route::RouteRefusal> for EngineError {
+    fn from(refusal: crate::route::RouteRefusal) -> Self {
+        match refusal {
+            crate::route::RouteRefusal::Down(down) => EngineError::AdapterDown(down),
+            crate::route::RouteRefusal::Refused(refused) => EngineError::BindRefused(refused),
+        }
+    }
 }
 
 /// What [`EngineError::NotMoved`] says.
@@ -303,14 +315,15 @@ impl EngineError {
                 | EngineError::NotMoved { .. }
                 | EngineError::Unresolved(_)
                 | EngineError::AdapterDown(_)
+                | EngineError::BindRefused(_)
         )
     }
 }
 
 impl From<std::io::Error> for EngineError {
     fn from(e: std::io::Error) -> Self {
-        match crate::route::adapter_down_in(&e) {
-            Some(down) => EngineError::AdapterDown(down.clone()),
+        match crate::route::refusal_in(&e) {
+            Some(refusal) => refusal.into(),
             None => EngineError::Io(e.to_string()),
         }
     }
@@ -330,9 +343,27 @@ impl Reporter {
 /// One queued unit of work.
 struct Job {
     id: DownloadId,
-    token: CancelToken,
+    flags: Arc<RunFlags>,
     req: DownloadRequest,
 }
+
+/// What stops a queued or running download, and why.
+#[derive(Default)]
+struct RunFlags {
+    /// Stops its connections at their next read.
+    token: CancelToken,
+    /// The user canceled (or paused) it.
+    canceled: AtomicBool,
+    /// It is to start again from where it is: the network settings changed,
+    /// or its adapter got a new address.
+    restart: Arc<AtomicBool>,
+    /// It is running, not waiting in the queue.
+    running: AtomicBool,
+}
+
+/// Where a download's connections go out, asked as each one starts (and
+/// starts again), so a change of the settings reaches queued downloads.
+pub type RouteSource = Arc<dyn Fn() -> crate::route::Route + Send + Sync>;
 
 /// Which jobs wait and how many run.
 struct Sched {
@@ -361,6 +392,9 @@ struct Shared {
     resplit: AtomicBool,
     /// Output files in use, so two downloads never pick the same file.
     claimed: Mutex<HashSet<PathBuf>>,
+    /// Where downloads' connections go out now; `None` keeps each
+    /// request's own.
+    route_source: std::sync::OnceLock<RouteSource>,
 }
 
 /// How often a connection waiting for its host to have room looks again.
@@ -443,7 +477,7 @@ impl Shared {
 
 struct Inner {
     sched: Mutex<Sched>,
-    registry: Mutex<HashMap<DownloadId, CancelToken>>,
+    registry: Mutex<HashMap<DownloadId, Arc<RunFlags>>>,
     shared: Arc<Shared>,
     reporter: Reporter,
 }
@@ -470,6 +504,7 @@ impl Engine {
                     host_slots: HostSlots::default(),
                     resplit: AtomicBool::new(true),
                     claimed: Mutex::new(HashSet::new()),
+                    route_source: std::sync::OnceLock::new(),
                 }),
                 reporter: Reporter(cb),
             }),
@@ -492,10 +527,28 @@ impl Engine {
 
     /// Queue `req` under an id from `reserve_id`.
     pub fn enqueue_as(&self, id: DownloadId, req: DownloadRequest) {
-        let token: CancelToken = Arc::new(AtomicBool::new(false));
-        self.inner.registry.lock_or_recover().insert(id, Arc::clone(&token));
-        self.inner.sched.lock_or_recover().queue.push_back(Job { id, token, req });
+        let flags = Arc::new(RunFlags::default());
+        self.inner.registry.lock_or_recover().insert(id, Arc::clone(&flags));
+        self.inner.sched.lock_or_recover().queue.push_back(Job { id, flags, req });
         pump(&self.inner);
+    }
+
+    /// Take each download's route from `source` as it starts, instead of
+    /// the one its request was made with. Only the first call counts.
+    pub fn route_from(&self, source: RouteSource) {
+        let _ = self.inner.shared.route_source.set(source);
+    }
+
+    /// Start every running download again from where it is, so its new
+    /// connections go out the way `route_from`'s source says now. Waiting
+    /// downloads take the new way when they start.
+    pub fn restart_running(&self) {
+        for flags in self.inner.registry.lock_or_recover().values() {
+            if flags.running.load(Ordering::SeqCst) {
+                flags.restart.store(true, Ordering::SeqCst);
+                flags.token.store(true, Ordering::SeqCst);
+            }
+        }
     }
 
     /// Make the next id at least `next`, so ids keep increasing across
@@ -575,10 +628,11 @@ impl Engine {
     /// canceled at once; a running one stops at its next read. Unknown ids are
     /// ignored.
     pub fn cancel(&self, id: DownloadId) {
-        let Some(token) = self.inner.registry.lock_or_recover().get(&id).cloned() else {
+        let Some(flags) = self.inner.registry.lock_or_recover().get(&id).cloned() else {
             return;
         };
-        token.store(true, Ordering::Relaxed);
+        flags.canceled.store(true, Ordering::SeqCst);
+        flags.token.store(true, Ordering::SeqCst);
         let queued = {
             let mut sched = self.inner.sched.lock_or_recover();
             let pos = sched.queue.iter().position(|j| j.id == id);
@@ -610,12 +664,12 @@ fn pump(inner: &Arc<Inner>) {
         let inner = Arc::clone(inner);
         thread::spawn(move || {
             let id = job.id;
-            let token = Arc::clone(&job.token);
-            run(job.id, job.token, job.req, inner.reporter.clone(), &inner.shared);
+            let flags = Arc::clone(&job.flags);
+            run(job.id, &job.flags, job.req, inner.reporter.clone(), &inner.shared);
             // The same id may already be queued again (a paused download put
-            // back in its queue); leave that run's token alone.
+            // back in its queue); leave that run's flags alone.
             let mut registry = inner.registry.lock_or_recover();
-            if registry.get(&id).is_some_and(|t| Arc::ptr_eq(t, &token)) {
+            if registry.get(&id).is_some_and(|f| Arc::ptr_eq(f, &flags)) {
                 registry.remove(&id);
             }
             drop(registry);
@@ -634,8 +688,9 @@ pub fn run_blocking(req: DownloadRequest, cb: Arc<dyn Fn(Progress) + Send + Sync
         host_slots: HostSlots::default(),
         resplit: AtomicBool::new(true),
         claimed: Mutex::new(HashSet::new()),
+        route_source: std::sync::OnceLock::new(),
     };
-    run(DownloadId::NONE, Arc::new(AtomicBool::new(false)), req, Reporter(cb), &shared);
+    run(DownloadId::NONE, &RunFlags::default(), req, Reporter(cb), &shared);
 }
 
 /// Statuses that, on a retried or resumed download, usually mean the link or
@@ -643,12 +698,18 @@ pub fn run_blocking(req: DownloadRequest, cb: Arc<dyn Fn(Progress) + Send + Sync
 const EXPIRED_STATUSES: [u16; 4] = [401, 403, 404, 410];
 
 /// Run one download to completion (blocking), reporting a terminal event.
-fn run(id: DownloadId, token: CancelToken, req: DownloadRequest, reporter: Reporter, shared: &Shared) {
+/// A download bound to a network adapter does not start while it is down,
+/// and stops as soon as it goes (the kill switch, `route::Watch`). Asked to
+/// start again (`Engine::restart_running`, or its adapter's new address), it
+/// goes on from where it is, its connections going out the way they go now.
+fn run(id: DownloadId, flags: &RunFlags, req: DownloadRequest, reporter: Reporter, shared: &Shared) {
     let url = req.url.clone();
+    let token = &flags.token;
     if token.load(Ordering::Relaxed) {
         reporter.send(Progress::Canceled { id, url });
         return;
     }
+    flags.running.store(true, Ordering::SeqCst);
     let mut req = req;
     // A download unlocked into another address is still named by its own
     // in the events, as the list and the browser know it.
@@ -675,103 +736,109 @@ fn run(id: DownloadId, token: CancelToken, req: DownloadRequest, reporter: Repor
         own_limits.insert(id, (Arc::clone(&own), own_rate));
         own
     };
-    // The kill switch: a download bound to a network adapter does not start
-    // while it is down, and stops as soon as it goes.
-    let watch = match AdapterWatch::start(&req.net.route, &token) {
-        Ok(watch) => watch,
-        Err(down) => {
-            reporter.send(Progress::Failed { id, url, error: down.to_string() });
+    // However the download ends, its own limiter goes.
+    let _own = OwnLimitGuard { shared, id, own };
+    // Where the file is being written, to go on there when it starts again.
+    let written: Arc<Mutex<Option<Written>>> = Arc::default();
+    let reporter = {
+        let (inner, written) = (reporter, Arc::clone(&written));
+        Reporter(Arc::new(move |p: Progress| {
+            if let Progress::Started { path, partial, .. } = &p {
+                *written.lock_or_recover() = Some((path.clone(), partial.clone()));
+            }
+            inner.send(p)
+        }))
+    };
+    loop {
+        if let Some(source) = shared.route_source.get() {
+            req.net = Arc::new(req.net.with_route(source()));
+        }
+        if let Err(refusal) = req.net.route.ready() {
+            reporter.send(Progress::Failed { id, url, error: refusal.to_string() });
             return;
         }
-    };
-    let result = if req.elevate {
-        run_elevated(id, &token, &mut req, &reporter, shared)
-    } else {
-        run_inner(id, &token, &req, &reporter, shared)
-    };
-    if let Some(down) = watch.and_then(AdapterWatch::finish) {
-        tracing::warn!(download_id = id.get(), adapter = %down.adapter, "stopped: the network adapter is down");
-        reporter.send(Progress::Failed { id, url, error: down.to_string() });
-        return;
-    }
-    {
-        let mut own_limits = shared.own_limits.lock_or_recover();
-        if own_limits.get(&id).is_some_and(|(o, _)| Arc::ptr_eq(o, &own)) {
-            own_limits.remove(&id);
-        }
-    }
-    if token.load(Ordering::Relaxed) {
-        reporter.send(Progress::Canceled { id, url });
-        return;
-    }
-    match result {
-        Ok(Saved { path, note }) => reporter.send(Progress::Finished { id, url, path, note }),
-        Err(EngineError::NameTaken { path, total }) => {
-            reporter.send(Progress::NameTaken { id, url, path, total: total.map(ByteCount::new) })
-        }
-        Err(e) => {
-            let mut error = e.to_string();
-            if let EngineError::Status(code) = e {
-                if req.reuse_path.is_some() && EXPIRED_STATUSES.contains(&code) {
-                    error.push_str(
-                        ". The link or its sign-in may have expired; start the download again from its web page.",
-                    );
-                }
+        let watch = match req.net.route.binding.as_ref().map(|b| crate::route::Watch::start(b, token, &flags.restart)) {
+            Some(Err(down)) => {
+                reporter.send(Progress::Failed { id, url, error: down.to_string() });
+                return;
             }
-            reporter.send(Progress::Failed { id, url, error })
-        }
-    }
-}
-
-/// Watches the network adapter a running download is bound to, on a thread
-/// of its own: when the adapter goes, it stops the download (as a cancel
-/// does, so every connection closes at its next read) and keeps why, so the
-/// download fails with [`AdapterDown`] rather than being canceled.
-///
-/// [`AdapterDown`]: udm_domain::network::AdapterDown
-struct AdapterWatch {
-    /// Dropped when the download ends, which ends the thread.
-    done: std::sync::mpsc::Sender<()>,
-    thread: thread::JoinHandle<Option<udm_domain::network::AdapterDown>>,
-}
-
-impl AdapterWatch {
-    /// `Ok(None)` for a download bound to no adapter; an error when the
-    /// adapter is down already.
-    fn start(
-        route: &crate::route::Route,
-        token: &CancelToken,
-    ) -> Result<Option<AdapterWatch>, udm_domain::network::AdapterDown> {
-        let Some(binding) = route.binding.clone() else {
-            return Ok(None);
+            Some(Ok(watch)) => Some(watch),
+            None => None,
         };
-        binding.adapter()?;
-        let (done, ended) = std::sync::mpsc::channel::<()>();
-        let token = Arc::clone(token);
-        let thread = thread::Builder::new().name("udm-adapter-watch".into()).spawn(move || loop {
-            match ended.recv_timeout(binding.watch_every) {
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                _ => return None,
+        let result = if req.elevate {
+            run_elevated(id, token, &mut req, &reporter, shared)
+        } else {
+            run_inner(id, token, &req, &reporter, shared)
+        };
+        // A stopped download returns its file too: whether it was stopped is
+        // what tells. After `finish`, the watcher no longer stops it, so a
+        // download that ran to its end is finished whatever the adapter did
+        // after.
+        let stopped = token.load(Ordering::SeqCst);
+        let down = watch.and_then(crate::route::Watch::finish);
+        if stopped {
+            // The user's cancel or pause is theirs, whatever the adapter did.
+            if flags.canceled.load(Ordering::SeqCst) {
+                reporter.send(Progress::Canceled { id, url });
+                return;
             }
-            if let Err(down) = binding.adapter() {
-                token.store(true, Ordering::Relaxed);
-                return Some(down);
+            if flags.restart.swap(false, Ordering::SeqCst) {
+                if let Some((path, partial)) = written.lock_or_recover().take() {
+                    req.reuse_path = Some(path);
+                    req.reuse_partial = partial;
+                }
+                token.store(false, Ordering::SeqCst);
+                tracing::info!(download_id = id.get(), "starting again: the network changed");
+                continue;
             }
-        });
-        match thread {
-            Ok(thread) => Ok(Some(AdapterWatch { done, thread })),
-            // Without the watch, every new connection still checks.
+            match down {
+                Some(down) => {
+                    tracing::debug!(download_id = id.get(), adapter = %down.adapter, "stopped: the network adapter is down");
+                    reporter.send(Progress::Failed { id, url, error: down.to_string() });
+                }
+                None => reporter.send(Progress::Canceled { id, url }),
+            }
+            return;
+        }
+        match result {
+            Ok(Saved { path, note }) => reporter.send(Progress::Finished { id, url, path, note }),
+            Err(EngineError::NameTaken { path, total }) => {
+                reporter.send(Progress::NameTaken { id, url, path, total: total.map(ByteCount::new) })
+            }
             Err(e) => {
-                tracing::warn!(error = %e, "could not watch the network adapter");
-                Ok(None)
+                let mut error = e.to_string();
+                if let EngineError::Status(code) = e {
+                    if req.reuse_path.is_some() && EXPIRED_STATUSES.contains(&code) {
+                        error.push_str(
+                            ". The link or its sign-in may have expired; start the download again from its web page.",
+                        );
+                    }
+                }
+                reporter.send(Progress::Failed { id, url, error })
             }
         }
+        return;
     }
+}
 
-    /// Stop watching; the adapter's going, if it went.
-    fn finish(self) -> Option<udm_domain::network::AdapterDown> {
-        drop(self.done);
-        self.thread.join().ok().flatten()
+/// The file a download is writing, and its partial file when that is
+/// elsewhere.
+type Written = (PathBuf, Option<PathBuf>);
+
+/// Removes a download's own limiter when the download ends, however it
+/// ends, unless the same id already runs again with another.
+struct OwnLimitGuard<'a> {
+    shared: &'a Shared,
+    id: DownloadId,
+    own: Arc<RateLimiter>,
+}
+
+impl Drop for OwnLimitGuard<'_> {
+    fn drop(&mut self) {
+        let mut own_limits = self.shared.own_limits.lock_or_recover();
+        if own_limits.get(&self.id).is_some_and(|(o, _)| Arc::ptr_eq(o, &self.own)) {
+            own_limits.remove(&self.id);
+        }
     }
 }
 
@@ -2656,6 +2723,7 @@ mod tests {
                 host_slots: HostSlots::default(),
                 resplit: AtomicBool::new(true),
                 claimed: Mutex::new(HashSet::new()),
+                route_source: std::sync::OnceLock::new(),
             };
             let mut req = request("https://Files.Example.com/a", Path::new("."), FileExists::Rename);
             req.host_limit = Some(2);
@@ -2914,8 +2982,9 @@ mod tests {
             let mut route = req.net.route.clone();
             route.binding = route.binding.map(|b| crate::route::Binding {
                 choice: udm_domain::network::AdapterChoice {
-                    id: udm_domain::network::AdapterId::parse("udm-missing0").unwrap(),
+                    id: udm_domain::network::AdapterId::parse("udmmissing0").unwrap(),
                     name: "Gone VPN".into(),
+                    subnets: Vec::new(),
                 },
                 ..b
             });
@@ -2923,6 +2992,141 @@ mod tests {
             let before = server.connections.load(Ordering::SeqCst);
             assert_eq!(download_err(req), "The network adapter Gone VPN is down");
             assert_eq!(server.connections.load(Ordering::SeqCst), before);
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        /// An engine whose downloads take their route from `source` as they
+        /// start, and a channel of its events.
+        fn routed_engine(
+            source: Arc<Mutex<crate::route::Route>>,
+            concurrency: usize,
+        ) -> (Engine, mpsc::Receiver<Progress>) {
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(Arc::new(move |p: Progress| drop(tx.lock().unwrap().send(p))), concurrency);
+            engine.route_from(Arc::new(move || source.lock().unwrap().clone()));
+            (engine, rx)
+        }
+
+        #[test]
+        fn a_queued_download_goes_out_the_way_the_settings_say_when_it_starts() {
+            let behavior = Behavior { bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("route_at_start");
+            let source = Arc::new(Mutex::new(crate::route::Route::default()));
+            let (engine, rx) = routed_engine(Arc::clone(&source), 1);
+            let first = engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let second = engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            // Queued unbound; the adapter chosen since is down.
+            let (bound, stand_in) = crate::route::tests::bound_to_loopback();
+            stand_in.gone.store(true, Ordering::SeqCst);
+            *source.lock().unwrap() = bound;
+            engine.cancel(first);
+            let error = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Failed { id, error, .. } if id == second => break error,
+                    Progress::Finished { id, .. } if id == second => panic!("it went out unbound"),
+                    _ => {}
+                }
+            };
+            assert_eq!(error, "The network adapter Test adapter is down");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_running_download_starts_again_bound_when_the_settings_change() {
+            let behavior = Behavior { bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("route_restart");
+            let source = Arc::new(Mutex::new(crate::route::Route::default()));
+            let (engine, rx) = routed_engine(Arc::clone(&source), 1);
+            engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let (bound, stand_in) = crate::route::tests::bound_to_loopback();
+            let (mut bound_now, mut starts, mut paths) = (Some(bound), 0, Vec::new());
+            let error = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Started { path, .. } => {
+                        starts += 1;
+                        paths.push(path);
+                        if starts == 2 {
+                            // Started again: now bound, so it stops when
+                            // the adapter goes.
+                            stand_in.gone.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    Progress::Advanced { done, .. } if done.get() > 64 * 1024 => {
+                        if let Some(bound) = bound_now.take() {
+                            *source.lock().unwrap() = bound;
+                            engine.restart_running();
+                        }
+                    }
+                    Progress::Failed { error, .. } => break error,
+                    Progress::Finished { .. } => panic!("it went on unbound"),
+                    Progress::Canceled { .. } => panic!("a restart is not a cancel"),
+                    _ => {}
+                }
+            };
+            assert_eq!(starts, 2);
+            assert_eq!(paths[0], paths[1], "it went on in the same file");
+            assert_eq!(error, "The network adapter Test adapter is down");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_download_started_again_goes_on_from_where_it_was() {
+            // Slow enough that the restart comes well before the end, even
+            // on a busy machine.
+            let behavior = Behavior { bytes_per_sec: Some(128 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("route_resume");
+            let source = Arc::new(Mutex::new(crate::route::Route::default()));
+            let (engine, rx) = routed_engine(Arc::clone(&source), 1);
+            engine.enqueue(request(&server.url, &dir, FileExists::Rename));
+            let mut restarted = false;
+            let path = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Advanced { done, .. } if !restarted && done.get() > LEN as u64 / 4 => {
+                        *source.lock().unwrap() = crate::route::tests::bound_to_loopback().0;
+                        engine.restart_running();
+                        restarted = true;
+                    }
+                    Progress::Finished { path, .. } => break path,
+                    Progress::Failed { error, .. } => panic!("{error}"),
+                    _ => {}
+                }
+            };
+            assert!(restarted);
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            let served = server.served.load(Ordering::SeqCst);
+            assert!(served < LEN as u64 * 3 / 2, "resumed, not downloaded twice: {served} bytes");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_cancel_is_a_cancel_even_when_the_adapter_goes_too() {
+            let behavior = Behavior { bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("cancel_and_down");
+            let (route, stand_in) = crate::route::tests::bound_to_loopback();
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.net = Arc::new(NetConfig { route, ..NetConfig::default() });
+            req.speed_limit = Some(1 << 30);
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(Arc::new(move |p: Progress| drop(tx.lock().unwrap().send(p))), 1);
+            let id = engine.enqueue(req);
+            let ended = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Advanced { done, .. } if done.get() > 64 * 1024 => {
+                        engine.cancel(id);
+                        stand_in.gone.store(true, Ordering::SeqCst);
+                    }
+                    p @ (Progress::Canceled { .. } | Progress::Failed { .. } | Progress::Finished { .. }) => break p,
+                    _ => {}
+                }
+            };
+            assert!(matches!(ended, Progress::Canceled { .. }), "the user's cancel wins");
+            assert!(engine.inner.shared.own_limits.lock().unwrap().is_empty(), "its limiter is gone");
             fs::remove_dir_all(&dir).ok();
         }
 
