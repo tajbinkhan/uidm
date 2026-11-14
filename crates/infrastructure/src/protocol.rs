@@ -730,6 +730,11 @@ pub enum Outgoing {
     Debrid {
         check: udm_domain::debrid::DebridCheck,
     },
+    /// To the windows: the debrid service refused the account when its
+    /// hosts were read, so downloads go on without it. At most once an hour.
+    DebridRefused {
+        refused: udm_domain::debrid::Refused,
+    },
 }
 
 /// Read one framed message from `reader`.

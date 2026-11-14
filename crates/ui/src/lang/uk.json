@@ -1031,5 +1031,6 @@
   "{service}: {error}": "{service}: {error}",
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Сервіс не дозволяє IP-адресу цього комп'ютера. Часто причиною є VPN або проксі.",
   "The file host is unavailable for now. Try again later.": "Файлообмінник зараз недоступний. Спробуйте пізніше.",
-  "The stored key is for {service}. Type a key for this service.": "Збережений ключ належить {service}. Введіть ключ для цього сервісу."
+  "The stored key is for {service}. Type a key for this service.": "Збережений ключ належить {service}. Введіть ключ для цього сервісу.",
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} відхилив обліковий запис debrid: {error} Завантаження тривають без нього."
 }

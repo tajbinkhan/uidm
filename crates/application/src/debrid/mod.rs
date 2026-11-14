@@ -7,6 +7,6 @@ mod resolve_link;
 mod set_key;
 
 pub use check_account::CheckAccount;
-pub use resolve_link::{ResolveLink, HOSTS_FOR, LINK_FOR};
+pub use resolve_link::{AccountAlerts, ResolveLink, HOSTS_FOR, LINK_FOR};
 pub use set_key::SetKey;
 pub use udm_domain::debrid::Refused;

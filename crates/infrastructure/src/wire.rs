@@ -236,6 +236,7 @@ pub fn event(msg: Outgoing) -> Event {
         Outgoing::Rejected { url, message, error_kind } => Event::Rejected { url, error: failure(message, error_kind) },
         Outgoing::Remote { state } => Event::Remote { state },
         Outgoing::Debrid { check } => Event::Debrid { check },
+        Outgoing::DebridRefused { refused } => Event::DebridRefused { refused },
     }
 }
 
@@ -325,6 +326,7 @@ pub fn outgoing(event: Event) -> Option<Outgoing> {
         }
         Event::Remote { state } => Outgoing::Remote { state },
         Event::Debrid { check } => Outgoing::Debrid { check },
+        Event::DebridRefused { refused } => Outgoing::DebridRefused { refused },
     })
 }
 
@@ -614,6 +616,13 @@ mod tests {
             assert_eq!(value["op"], "debrid");
             assert_eq!(back, Event::Debrid { check });
         }
+        let refused = udm_domain::debrid::Refused { service: DebridService::Premiumize, error: DebridError::BadKey };
+        let (value, back) = round_trip(Event::DebridRefused { refused: refused.clone() });
+        assert_eq!(
+            value,
+            serde_json::json!({"op": "debrid_refused", "refused": {"service": "premiumize", "error": {"kind": "bad_key"}}})
+        );
+        assert_eq!(back, Event::DebridRefused { refused });
     }
 
     #[test]

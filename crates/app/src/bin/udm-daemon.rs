@@ -310,7 +310,12 @@ fn new_daemon(paths: Paths, seat: Seat) -> Built {
     // the address to start from, on its own thread.
     let debrid: Arc<dyn Debrid> = Arc::new(DebridApi::new(Arc::clone(&settings), Arc::clone(&retries)));
     let debrid_keys: Arc<dyn DebridKeys> = Arc::new(KeyFile::new());
-    let links = Arc::new(ResolveLink::new(Arc::clone(&debrid), Arc::clone(&debrid_keys), Arc::new(LocalClock)));
+    let links = Arc::new(ResolveLink::new(
+        Arc::clone(&debrid),
+        Arc::clone(&debrid_keys),
+        Arc::new(LocalClock),
+        Arc::clone(&clients) as _,
+    ));
     {
         let (links, settings) = (Arc::clone(&links), Arc::clone(&settings));
         transfers.resolve_with(Arc::new(move |link: &Address| links.run(&settings.get().debrid, link)));

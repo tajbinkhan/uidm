@@ -253,7 +253,7 @@ pub fn failure_text(service: DebridService, error: &DebridError) -> String {
 
 /// Why a download could not go through the debrid account: the service and
 /// what it said.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("{}", failure_text(*service, error))]
 pub struct Refused {
     pub service: DebridService,

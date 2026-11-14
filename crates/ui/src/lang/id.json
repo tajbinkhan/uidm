@@ -1031,5 +1031,6 @@
   "{service}: {error}": "{service}: {error}",
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Layanan tidak mengizinkan alamat IP komputer ini. VPN atau proxy sering menjadi penyebabnya.",
   "The file host is unavailable for now. Try again later.": "Host berkas sedang tidak tersedia. Coba lagi nanti.",
-  "The stored key is for {service}. Type a key for this service.": "Kunci yang tersimpan milik {service}. Ketik kunci untuk layanan ini."
+  "The stored key is for {service}. Type a key for this service.": "Kunci yang tersimpan milik {service}. Ketik kunci untuk layanan ini.",
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} menolak akun debrid: {error} Unduhan tetap berjalan tanpa akun itu."
 }

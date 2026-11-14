@@ -1031,5 +1031,6 @@
   "{service}: {error}": "{service}: {error}",
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "서비스가 이 컴퓨터의 IP 주소를 허용하지 않습니다. VPN이나 프록시가 원인인 경우가 많습니다.",
   "The file host is unavailable for now. Try again later.": "파일 호스트를 지금은 사용할 수 없습니다. 나중에 다시 시도하세요.",
-  "The stored key is for {service}. Type a key for this service.": "저장된 키는 {service}의 키입니다. 이 서비스의 키를 입력하세요."
+  "The stored key is for {service}. Type a key for this service.": "저장된 키는 {service}의 키입니다. 이 서비스의 키를 입력하세요.",
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service}에서 디브리드 계정을 거부했습니다: {error} 다운로드는 계정 없이 계속됩니다."
 }

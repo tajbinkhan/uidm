@@ -1031,5 +1031,6 @@
   "{service}: {error}": "{service} : {error}",
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Le service n'accepte pas l'adresse IP de cet ordinateur. Un VPN ou un proxy en est souvent la cause.",
   "The file host is unavailable for now. Try again later.": "L'hébergeur de fichiers est indisponible pour le moment. Réessayez plus tard.",
-  "The stored key is for {service}. Type a key for this service.": "La clé enregistrée est celle de {service}. Saisissez une clé pour ce service."
+  "The stored key is for {service}. Type a key for this service.": "La clé enregistrée est celle de {service}. Saisissez une clé pour ce service.",
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} a refusé le compte debrid : {error} Les téléchargements continuent sans lui."
 }

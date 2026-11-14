@@ -1031,5 +1031,6 @@
   "{service}: {error}": "{service}: {error}",
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Dịch vụ không cho phép địa chỉ IP của máy tính này. Nguyên nhân thường là VPN hoặc proxy.",
   "The file host is unavailable for now. Try again later.": "Máy chủ tệp hiện không khả dụng. Hãy thử lại sau.",
-  "The stored key is for {service}. Type a key for this service.": "Khóa đã lưu là của {service}. Hãy nhập khóa cho dịch vụ này."
+  "The stored key is for {service}. Type a key for this service.": "Khóa đã lưu là của {service}. Hãy nhập khóa cho dịch vụ này.",
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} đã từ chối tài khoản debrid: {error} Các tải xuống vẫn tiếp tục mà không dùng tài khoản."
 }

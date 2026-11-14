@@ -572,6 +572,11 @@ pub enum Event {
     Debrid {
         check: DebridCheck,
     },
+    /// The debrid service refused the account when its hosts were read, so
+    /// downloads go on without it; to the windows, at most once an hour.
+    DebridRefused {
+        refused: udm_domain::debrid::Refused,
+    },
 }
 
 impl From<QuotaNotice> for Event {

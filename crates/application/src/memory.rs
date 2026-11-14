@@ -1568,3 +1568,19 @@ impl udm_domain::ports::DebridKeys for Keyring {
         Ok(())
     }
 }
+
+/// What the user was told about the debrid account.
+#[derive(Default)]
+pub struct Alerts(Mutex<Vec<udm_domain::debrid::Refused>>);
+
+impl Alerts {
+    pub fn heard(&self) -> Vec<udm_domain::debrid::Refused> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl crate::debrid::AccountAlerts for Alerts {
+    fn refused(&self, refused: &udm_domain::debrid::Refused) {
+        self.0.lock().unwrap().push(refused.clone());
+    }
+}

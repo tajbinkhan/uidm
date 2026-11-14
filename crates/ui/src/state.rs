@@ -608,6 +608,16 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
         Event::GrabDone { files, pages, explored, stopped, login_cookies } => {
             state.grab.done(files, pages, explored, stopped, login_cookies)
         }
+        // The main window's banner says the account was refused and that
+        // downloads go on without it.
+        Event::DebridRefused { refused } => {
+            let lang = crate::projection::language(state);
+            let text = crate::i18n::fill(
+                lang.tr("{service} refused the debrid account: {error} Downloads go on without it."),
+                &[("service", refused.service.name()), ("error", &crate::errors::text::debrid(lang, &refused.error))],
+            );
+            state.notice = Some(Notice { text, error: true });
+        }
         Event::Error { error } | Event::Rejected { error, .. } => {
             state.notice =
                 Some(Notice { text: crate::errors::failure(crate::projection::language(state), &error), error: true });

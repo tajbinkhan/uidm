@@ -135,6 +135,7 @@ Daemon to clients:
   "fingerprint": "53:79:5D:...", "devices": [ { "id": 1, "name": "iPhone", "paired_at": 1762790000,
   "last_seen": 1762790400 } ], "pairing": { "link": "https://192.168.1.20:18443/#pair=...",
   "code": "...", "expires_at": 1762790300 } } }
+{ "op": "debrid_refused", "refused": { "service": "all_debrid", "error": { "kind": "bad_key" } } }
 { "op": "debrid", "check": { "service": "real_debrid", "outcome": { "Ok": { "username": "ann",
   "premium": true, "premium_until": 1765000000 } } } }
 { "op": "error", "message": "..." }
@@ -170,7 +171,10 @@ other (a blank key is not a message the daemon reads), `remove_debrid_key`
 removes it, and the daemon then sends every client `settings`, whose
 `debrid.key_service` names the service a key is stored for. The key goes no
 further than the daemon: no message from it carries the key, and a key is
-only ever sent to its own service.
+only ever sent to its own service. `debrid_refused` goes to the windows when
+the service refuses the account while the daemon reads its list of hosts;
+downloads then go on without the account, and it is said at most once an
+hour.
 
 `ack`, `downloads`, `remote`, `debrid` and `error` go only to the client that asked, as does
 `settings` when it answers `get_settings`; everything else goes to every

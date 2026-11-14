@@ -1031,5 +1031,6 @@
   "{service}: {error}": "{service}: {error}",
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "サービスはこのコンピューターの IP アドレスを許可していません。VPN やプロキシが原因であることがよくあります。",
   "The file host is unavailable for now. Try again later.": "ファイルホストは現在利用できません。後でもう一度お試しください。",
-  "The stored key is for {service}. Type a key for this service.": "保存されているキーは {service} のものです。このサービスのキーを入力してください。"
+  "The stored key is for {service}. Type a key for this service.": "保存されているキーは {service} のものです。このサービスのキーを入力してください。",
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} がデブリッドアカウントを拒否しました: {error} ダウンロードはアカウントなしで続行します。"
 }

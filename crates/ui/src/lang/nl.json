@@ -1031,5 +1031,6 @@
   "{service}: {error}": "{service}: {error}",
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "De dienst staat het IP-adres van deze computer niet toe. Vaak is een VPN of proxy de oorzaak.",
   "The file host is unavailable for now. Try again later.": "De bestandshost is op dit moment niet beschikbaar. Probeer het later opnieuw.",
-  "The stored key is for {service}. Type a key for this service.": "De opgeslagen sleutel is van {service}. Typ een sleutel voor deze dienst."
+  "The stored key is for {service}. Type a key for this service.": "De opgeslagen sleutel is van {service}. Typ een sleutel voor deze dienst.",
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} weigerde het debrid-account: {error} Downloads gaan zonder het account verder."
 }

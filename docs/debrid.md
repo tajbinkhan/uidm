@@ -60,10 +60,12 @@ unlocked file too, not the file host's page.
 - If the service cannot be reached for its list of hosts (it is down), links download as they
   would without the account, and UDM tries the list again five minutes later.
 - If the service refuses the key or the account when UDM reads the list (AllDebrid and
-  Premiumize need the key for it), UDM cannot tell a file host's link from any other, so
-  downloads fail with that reason until you fix the key or turn the account off, rather than
-  save a file host's web page as your file. When UDM still has an earlier list from the same
-  service, only the links to its hosts fail.
+  Premiumize need the key for it, for example after the key was revoked or the account stopped
+  being premium), downloads go on as they would without the account, and the main window's
+  banner (and the Debrid page) says the service refused the account, once an hour until you fix
+  the key or turn the account off. A link to a file host then downloads from the host itself,
+  which may give a web page instead of the file. When UDM still has an earlier list from the
+  same service, only the links to its hosts fail, each with the service's reason.
 
 Streams, video pages (yt-dlp) and form posts never go through the account. Neither do `ftp://`
 links.

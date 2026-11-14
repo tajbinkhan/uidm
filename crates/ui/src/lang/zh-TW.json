@@ -1031,5 +1031,6 @@
   "{service}: {error}": "{service}：{error}",
   "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "此服務不允許這台電腦的 IP 位址。原因通常是 VPN 或代理伺服器。",
   "The file host is unavailable for now. Try again later.": "此檔案空間暫時無法使用。請稍後再試。",
-  "The stored key is for {service}. Type a key for this service.": "已儲存的金鑰屬於 {service}。請輸入此服務的金鑰。"
+  "The stored key is for {service}. Type a key for this service.": "已儲存的金鑰屬於 {service}。請輸入此服務的金鑰。",
+  "{service} refused the debrid account: {error} Downloads go on without it.": "{service} 拒絕了 Debrid 帳戶：{error} 下載將不透過該帳戶繼續進行。"
 }

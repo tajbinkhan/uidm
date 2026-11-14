@@ -17,6 +17,24 @@ pub const LINK_FOR: u64 = 10 * 60;
 /// How long a list of hosts that could not be read is not asked for again,
 /// in seconds, so a service that is down does not hold up every download.
 const FAILED_HOSTS_FOR: u64 = 5 * 60;
+/// How long a list of hosts the service refused (a revoked key, an account
+/// no longer premium) is not asked for again, in seconds; the user hears
+/// of it once in that time.
+const REFUSED_HOSTS_FOR: u64 = 60 * 60;
+
+/// Where the user hears that the debrid service refused the account while
+/// UDM read its hosts, so downloads went on without it.
+pub trait AccountAlerts: Send + Sync {
+    fn refused(&self, refused: &Refused);
+}
+
+/// The desktop windows hear it as `DebridRefused`, which the main window's
+/// banner shows.
+impl<T: crate::daemon::ClientList> AccountAlerts for T {
+    fn refused(&self, refused: &Refused) {
+        self.to_windows(crate::daemon::Event::DebridRefused { refused: refused.clone() });
+    }
+}
 
 /// What `ResolveLink` keeps between downloads.
 #[derive(Default)]
@@ -35,20 +53,28 @@ pub struct ResolveLink {
     debrid: Arc<dyn Debrid>,
     keys: Arc<dyn DebridKeys>,
     clock: Arc<dyn Timestamps>,
+    alerts: Arc<dyn AccountAlerts>,
     memo: Mutex<Memo>,
 }
 
 impl ResolveLink {
-    pub fn new(debrid: Arc<dyn Debrid>, keys: Arc<dyn DebridKeys>, clock: Arc<dyn Timestamps>) -> Self {
-        ResolveLink { debrid, keys, clock, memo: Mutex::default() }
+    pub fn new(
+        debrid: Arc<dyn Debrid>,
+        keys: Arc<dyn DebridKeys>,
+        clock: Arc<dyn Timestamps>,
+        alerts: Arc<dyn AccountAlerts>,
+    ) -> Self {
+        ResolveLink { debrid, keys, clock, alerts, memo: Mutex::default() }
     }
 
     /// The direct link to download `link` from, or `None` to download it as
     /// it is: the account is off, the host is not one the service supports
-    /// (or the service says so when asked), or the service cannot be
-    /// reached for its list of hosts. Any other answer from the service,
-    /// such as a refused key, fails the download rather than download the
-    /// file host's page in place of the file.
+    /// (or the service says so when asked), or its list of hosts cannot be
+    /// had. A refused key or account is no reason to stop every download:
+    /// the user hears of it (`AccountAlerts`) and downloads go on without
+    /// the account. A link the service refuses to unlock fails, as does a
+    /// link to a host on an older list kept from the same service, rather
+    /// than download the file host's page in place of the file.
     pub fn run(&self, settings: &DebridSettings, link: &Address) -> Result<Option<Unrestricted>, Refused> {
         let Some(service) = settings.active() else {
             return Ok(None);
@@ -61,10 +87,8 @@ impl ResolveLink {
             return Ok(None);
         };
         let now = self.clock.unix_now();
-        let hosts = match self.hosts(service, &key, now) {
-            Ok(hosts) => hosts,
-            Err(DebridError::Network(_)) => return Ok(None),
-            Err(error) => return Err(Refused { service, error }),
+        let Ok(hosts) = self.hosts(service, &key, now) else {
+            return Ok(None);
         };
         if !wants_unrestrict(settings, &hosts, link) {
             return Ok(None);
@@ -99,7 +123,8 @@ impl ResolveLink {
 
     /// The hosts `service` supports, read again once they are older than
     /// `HOSTS_FOR`; why not, a while, when they cannot be read and no older
-    /// list of the service's is kept.
+    /// list of the service's is kept. A refusal is told to the user each
+    /// time it is read, so once in `REFUSED_HOSTS_FOR`.
     fn hosts(
         &self,
         service: DebridService,
@@ -108,7 +133,11 @@ impl ResolveLink {
     ) -> Result<SupportedHosts, DebridError> {
         if let Some((kept, at, hosts)) = &self.memo.lock_or_recover().hosts {
             let age = now.saturating_sub(*at);
-            let fresh = if hosts.is_ok() { HOSTS_FOR } else { FAILED_HOSTS_FOR };
+            let fresh = match hosts {
+                Ok(_) => HOSTS_FOR,
+                Err(DebridError::Network(_)) => FAILED_HOSTS_FOR,
+                Err(_) => REFUSED_HOSTS_FOR,
+            };
             if *kept == service && age < fresh {
                 return hosts.clone();
             }
@@ -119,9 +148,18 @@ impl ResolveLink {
                 tracing::warn!(service = %service, error = %e, "could not read the debrid service's hosts");
                 // An older list of the service's still tells which links
                 // are its hosts'; those then fail when they are unlocked.
-                match &self.memo.lock_or_recover().hosts {
-                    Some((kept, _, Ok(old))) if *kept == service => Ok(old.clone()),
-                    _ => Err(e),
+                let older = match &self.memo.lock_or_recover().hosts {
+                    Some((kept, _, Ok(old))) if *kept == service => Some(old.clone()),
+                    _ => None,
+                };
+                match older {
+                    Some(old) => Ok(old),
+                    None => {
+                        if !matches!(e, DebridError::Network(_)) {
+                            self.alerts.refused(&Refused { service, error: e.clone() });
+                        }
+                        Err(e)
+                    }
                 }
             }
         };
@@ -141,7 +179,7 @@ impl ResolveLink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{DebridDesk, Keyring, Seconds};
+    use crate::memory::{Alerts, DebridDesk, Keyring, Seconds};
 
     const RG: &str = "https://rapidgator.net/file/1/a.zip.html";
     const DIRECT: &str = "https://dl.real-debrid.com/d/1/a.zip";
@@ -155,10 +193,15 @@ mod tests {
     }
 
     fn resolve(desk: DebridDesk, now: u64) -> (ResolveLink, Arc<DebridDesk>, Arc<Seconds>) {
-        let (desk, clock) = (Arc::new(desk), Arc::new(Seconds::at(now)));
-        let links =
-            ResolveLink::new(desk.clone(), Arc::new(Keyring::holding(DebridService::RealDebrid, "k")), clock.clone());
+        let (links, desk, clock, _) = alerted(desk, now);
         (links, desk, clock)
+    }
+
+    fn alerted(desk: DebridDesk, now: u64) -> (ResolveLink, Arc<DebridDesk>, Arc<Seconds>, Arc<Alerts>) {
+        let (desk, clock, alerts) = (Arc::new(desk), Arc::new(Seconds::at(now)), Arc::new(Alerts::default()));
+        let keys = Arc::new(Keyring::holding(DebridService::RealDebrid, "k"));
+        let links = ResolveLink::new(desk.clone(), keys, clock.clone(), alerts.clone());
+        (links, desk, clock, alerts)
     }
 
     fn addr(text: &str) -> Address {
@@ -181,11 +224,16 @@ mod tests {
         assert_eq!(links.run(&DebridSettings { key_service: None, ..on() }, &addr(RG)), Ok(None));
         assert_eq!(links.run(&on(), &addr("ftp://rapidgator.net/a")), Ok(None));
         assert!(desk.calls().is_empty());
-        let none = ResolveLink::new(desk.clone(), Arc::new(Keyring::default()), Arc::new(Seconds::at(0)));
+        let none = ResolveLink::new(
+            desk.clone(),
+            Arc::new(Keyring::default()),
+            Arc::new(Seconds::at(0)),
+            Arc::new(Alerts::default()),
+        );
         assert_eq!(none.run(&on(), &addr(RG)), Ok(None), "a key that cannot be read");
         // A key stored for another service is never sent to this one.
         let other = Arc::new(Keyring::holding(DebridService::Premiumize, "pm"));
-        let wrong = ResolveLink::new(desk.clone(), other, Arc::new(Seconds::at(0)));
+        let wrong = ResolveLink::new(desk.clone(), other, Arc::new(Seconds::at(0)), Arc::new(Alerts::default()));
         assert_eq!(wrong.run(&on(), &addr(RG)), Ok(None));
         assert!(desk.calls().is_empty());
     }
@@ -226,14 +274,31 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_key_on_the_hosts_list_fails_the_download() {
+    fn a_refused_key_on_the_hosts_list_lets_downloads_go_on_and_says_so_once() {
         let desk = DebridDesk::new(&["rapidgator.net"], &[(RG, DIRECT)]);
         *desk.hosts.lock().unwrap() = Err(DebridError::BadKey);
-        let (links, desk, _) = resolve(desk, 0);
-        let want = Err(Refused { service: DebridService::RealDebrid, error: DebridError::BadKey });
-        assert_eq!(links.run(&on(), &addr(RG)), want);
-        assert_eq!(links.run(&on(), &addr("https://example.com/a.zip")), want, "no list says it is not a host's");
+        let (links, desk, clock, alerts) = alerted(desk, 0);
+        assert_eq!(links.run(&on(), &addr(RG)), Ok(None), "downloaded as without an account");
+        assert_eq!(links.run(&on(), &addr("https://example.com/a.zip")), Ok(None));
+        let refused = Refused { service: DebridService::RealDebrid, error: DebridError::BadKey };
+        assert_eq!(alerts.heard(), std::slice::from_ref(&refused), "told once");
         assert_eq!(desk.calls().len(), 1, "the refusal is kept a while");
+        clock.set(REFUSED_HOSTS_FOR - 1);
+        links.run(&on(), &addr(RG)).unwrap();
+        assert_eq!(alerts.heard().len(), 1);
+        clock.set(REFUSED_HOSTS_FOR);
+        links.run(&on(), &addr(RG)).unwrap();
+        assert_eq!(alerts.heard(), [refused.clone(), refused], "told again an hour later");
+        assert_eq!(desk.calls().len(), 2);
+    }
+
+    #[test]
+    fn a_service_that_cannot_be_reached_is_not_told() {
+        let desk = DebridDesk::new(&["rapidgator.net"], &[(RG, DIRECT)]);
+        *desk.hosts.lock().unwrap() = Err(DebridError::Network("down".into()));
+        let (links, _, _, alerts) = alerted(desk, 0);
+        assert_eq!(links.run(&on(), &addr(RG)), Ok(None));
+        assert!(alerts.heard().is_empty());
     }
 
     #[test]

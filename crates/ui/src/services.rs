@@ -86,6 +86,12 @@ pub fn take(state: &mut AppState, event: &Event) {
         }
         Event::Remote { state } => s.remote = Some(state.clone()),
         Event::Debrid { check } => s.debrid = DebridState::Checked(check.clone()),
+        // Options shows a refusal while downloads went on without the
+        // account, unless a check is waiting for its own answer.
+        Event::DebridRefused { refused } if !matches!(s.debrid, DebridState::Checking(_)) => {
+            let check = DebridCheck { service: refused.service, outcome: Err(refused.error.clone()) };
+            s.debrid = DebridState::Checked(check);
+        }
         // A check the daemon will not answer does not wait for ever.
         Event::Lost(_) | Event::Error { .. } if matches!(s.debrid, DebridState::Checking(_)) => {
             s.debrid = DebridState::Unanswered
@@ -399,6 +405,25 @@ mod tests {
         // Options opened again starts without the old answer.
         apply(&mut s, UiMessage::OptionsOpened);
         assert_eq!(shown(&s), (false, None));
+    }
+
+    #[test]
+    fn a_refused_account_shows_in_the_main_window_and_options() {
+        use udm_domain::debrid::{DebridError, DebridService, Refused};
+        let mut s = AppState::default();
+        let refused = Refused { service: DebridService::AllDebrid, error: DebridError::BadKey };
+        let event = Event::DebridRefused { refused };
+        apply(&mut s, UiMessage::Daemon { event: Box::new(event), at: Instant::now(), unix: 0 });
+        let notice = s.notice.clone().unwrap();
+        assert!(notice.error);
+        assert_eq!(
+            notice.text,
+            "AllDebrid refused the debrid account: The service refused the API key, or no key is stored. \
+             Downloads go on without it."
+        );
+        let mut view = crate::options::view(ctx().lang, &udm_domain::settings::Settings::default());
+        fill_view(&ctx(), &s, &mut view);
+        assert!(view.debrid.check.is_some_and(|b| b.error && b.text.starts_with("AllDebrid: ")));
     }
 
     #[test]
