@@ -15,12 +15,14 @@ quota, pauses, resumes, and carries on after UDM starts again. Once it has finis
   the browser downloads (by their type, `application/x-bittorrent`, or their name). UDM fetches a
   `.torrent` file itself, with the page's cookies, as it does any download the browser hands over.
   Holding the skip key while you click leaves a magnet link to the browser, which opens it with
-  whatever program it gives magnet links to. In Safari, which tells extensions nothing about its
+  whatever program it gives magnet links to, and so does a page on a site in **Excluded sites**. In
+  Safari, which tells extensions nothing about its
   downloads, a link to a `.torrent` file is taken as it is clicked. A torrent file is taken
   whatever its size and the captured file types, unless its site or address is excluded; with
   **Take .torrent files as torrents** off, it is a file like any other.
 - **The command line**: `udm-cli get "magnet:?xt=urn:btih:..."`, or `udm-cli get file.torrent`
-  ([Command line](command-line.md#get)).
+  ([Command line](command-line.md#get)). A `.torrent` file sent this way may be at most 2.75 MB,
+  since it travels in one message to UDM; add a larger one from its web address.
 - **AI assistants**: `udm-mcp`'s `add_download` takes magnet links ([AI assistants](ai-assistants.md)).
 
 UDM needs the torrent's *metadata*, the list of its files, before it can save anything. A
@@ -28,9 +30,18 @@ UDM needs the torrent's *metadata*, the list of its files, before it can save an
 a second to a few minutes. The save-as dialog waits for it, for at most three minutes, and then
 lists the torrent's files: tick the ones you want, and choose the folder and category as for any
 download. With **Ask where to save** off, the torrent downloads every file. A torrent of several
-files gets a folder of its own, named after the torrent; a torrent of one file is saved under that
-file's name. UDM keeps a copy of each torrent's `.torrent` file, so it never asks for the
-metadata twice.
+files gets a folder of its own, named after the torrent (or as you name it in the dialog); a
+torrent of one file is saved under that file's name, which the torrent fixes: the dialog lets you
+choose only its folder. UDM keeps a copy of each torrent's `.torrent` file, so it never asks for
+the metadata twice.
+
+When the folder (or the one file) is there already, **If the file exists** in **Options** decides,
+as for any download: a numbered name (`Album (1)`; a torrent of one file keeps its name and goes in
+a numbered folder of its own, `a (1)/a.iso`), asking in the save-as dialog, or overwriting, which
+checks what is there, keeps what matches the torrent and writes the rest. A torrent is one
+download: adding one that is in the list already shows the one there, or replaces it, as
+**If the address is in the list** says, but never adds a second copy. **Download again** checks a
+finished torrent's files against it from the start, under the same rule.
 
 You can change which files a torrent downloads later. A running torrent takes the new choice at
 once; a finished one given more files starts again for them; a stopped one takes it when it
@@ -48,6 +59,9 @@ its files, its peers, its trackers and a map of its pieces.
   under 16 KB/s is taken as 16 KB/s, the least a torrent can be held to.
 - **The quota** counts what torrents download, and pauses them with everything else when it is
   reached. What they upload does not count.
+- **Progress** counts the chosen files only. While a torrent checks the data already on disk (when
+  it starts again, or overwrites a folder), the list says it is checking and counts nothing, so the
+  quota never takes checked data for downloaded data.
 - **Pausing** stops a torrent where it is. Starting it again, or starting UDM again, goes on from
   there: UDM keeps which pieces it has (its *resume data*) beside its copy of the `.torrent` file,
   in UDM's data folder, so it does not read all the data again.
@@ -66,9 +80,16 @@ place among the downloads that run at once. It stops by itself at the first of t
 
 Either limit can be turned off; with both off, a torrent seeds until you stop it or remove it. A
 ratio of 0, or 0 minutes, means no seeding at all. A torrent can have limits of its own, in place
-of these. When UDM starts again, the torrents that were seeding check their files and go on
-seeding; one whose files are gone or changed stops instead, and is never downloaded again on its
-own. Removing a torrent from the list stops its seeding and forgets its resume data.
+of these. When UDM starts again, the torrents that were seeding go on seeding once their files are
+checked: each is added paused, and uploads only when its data is complete. One whose files are
+gone, have another size or do not match stops instead; nothing is written to its files or
+downloaded for it. One whose network adapter is not up yet (a VPN that connects after UDM starts)
+waits, and seeds once the adapter is up. Seeding counts as work: on a desktop, UDM's background
+service does not exit when the window is closed while a torrent seeds. Removing a torrent from the
+list stops its seeding and forgets its resume data.
+
+The BitTorrent session (its listener and the DHT) runs only while a torrent downloads, seeds or is
+being read; a minute after the last one stops, it closes.
 
 ## Settings
 
@@ -104,7 +125,13 @@ In `settings.json`, the `torrents` section (**Options > Torrents** in the window
   torrent with a name it could not save safely inside its folder: `..`, a path separator, NUL, a
   character Windows does not allow (`< > : " | ? *`), a device name such as `CON`, a name ending in
   a dot or a space, or two names that differ only in case. It also refuses torrents of more than
-  10,000 files and `.torrent` files (or metadata from peers) larger than 16 MB.
+  10,000 files, whose file names take more than 1.5 MB in all, or whose `.torrent` file (or
+  metadata from peers) is larger than 16 MB. Names that differ only in their Unicode
+  normalization (é written as one character or two) are not told apart. On Windows, each file a
+  torrent writes is marked as coming from the internet (`Zone.Identifier`), so SmartScreen checks
+  a program before it runs and Office opens a document in Protected View.
+- **Peers a magnet link names** (`x.pe`) are tried only when given by their address; a name would
+  have to be looked up.
 - **What it never does**: run anything from a torrent, open a web interface or API, or listen on
   any port but the one above.
 
@@ -122,9 +149,13 @@ or the torrent settings moves running and seeding torrents to the new setting at
   network** to download torrents there.
 - **With DNS over HTTPS**, no tracker or DHT name goes to the system's resolver: the DHT's starting
   nodes and the UDP trackers are looked up through UDM's resolver and handed to librqbit as
-  addresses, and HTTP trackers named by a host name are left out (the download window shows them as
-  skipped). A torrent whose only trackers are HTTP ones then finds its peers through the DHT, the
-  magnet link's peers and peer exchange.
+  addresses, and HTTP and HTTPS trackers are left out, even one given by its address, because
+  librqbit's client would follow a redirect to a name and look that up with the system (the
+  download window shows them as skipped). A torrent whose only trackers are HTTP ones then finds
+  its peers through the DHT, the magnet link's peers and peer exchange.
+- **librqbit's HTTP client** (for HTTP trackers) may take a proxy from the `HTTP_PROXY`,
+  `HTTPS_PROXY` and `ALL_PROXY` environment variables UDM was started with; with an adapter chosen,
+  its connections are bound to the adapter all the same.
 
 ## What is not there
 

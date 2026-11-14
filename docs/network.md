@@ -90,7 +90,8 @@ settings moves them to a session for the new setting at once. On Windows the cli
 an adapter, so torrents do not run while one is chosen there: they stop with "Torrents cannot be
 bound to a network adapter on Windows", rather than going out unbound. With DNS over HTTPS, no
 tracker or DHT name is looked up by the system: the DHT's starting nodes and UDP trackers are looked
-up through UDM's resolver, and HTTP trackers named by a host name are left out.
+up through UDM's resolver, and HTTP trackers are left out (librqbit's client would look up the name
+a redirect sends it to with the system).
 
 ### Programs UDM runs
 

@@ -43,6 +43,7 @@ pub fn incoming(command: Command) -> Incoming {
         Command::SelectTorrentFiles { id, files } => Incoming::SelectTorrentFiles { id, files },
         Command::SetSeedLimits { id, limits } => Incoming::SetSeedLimits { id, limits },
         Command::StopSeeding { id } => Incoming::StopSeeding { id },
+        Command::TorrentFiles { id } => Incoming::TorrentFiles { id },
         Command::AddMany { items, queue, packaging } => {
             let (package, group_archives) = match packaging {
                 Packaging::None => (None, false),
@@ -128,6 +129,7 @@ pub fn command(msg: Incoming) -> Command {
         Incoming::SelectTorrentFiles { id, files } => Command::SelectTorrentFiles { id, files },
         Incoming::SetSeedLimits { id, limits } => Command::SetSeedLimits { id, limits },
         Incoming::StopSeeding { id } => Command::StopSeeding { id },
+        Incoming::TorrentFiles { id } => Command::TorrentFiles { id },
         Incoming::AddMany { items, queue, package, group_archives } => {
             let packaging = match package {
                 Some(NewPackage { name, folder }) => Packaging::One { name, folder },
@@ -607,6 +609,45 @@ mod tests {
     }
 
     #[test]
+    fn a_large_torrent_fits_in_a_message() {
+        use udm_domain::torrent::{TorrentFiles, TorrentInfo, TorrentStats, MAX_FILE_NAME_BYTES, MAX_TORRENT_FILES};
+        // The most files, with names as long as the list allows, each named
+        // with characters JSON escapes.
+        let per = MAX_FILE_NAME_BYTES / MAX_TORRENT_FILES - 1;
+        let raw = (0..MAX_TORRENT_FILES)
+            .map(|i| (vec![format!("{i:05}{}", "\u{00e9}".repeat((per - 5) / 2))], u64::MAX / 2, false))
+            .collect();
+        let files = TorrentFiles::parse(raw).unwrap();
+        let hash = udm_domain::torrent::InfoHash::from_bytes([1; 20]);
+        let info = TorrentInfo {
+            info_hash: hash,
+            name: "Big".into(),
+            files: files.clone(),
+            piece_size: udm_domain::bytes::ByteCount::new(1 << 24),
+            pieces: u32::MAX,
+            private: false,
+        };
+        let id = DownloadId::new(1);
+        let url: udm_domain::address::Link = format!("magnet:?xt=urn:btih:{hash}").into();
+        let frame = serde_json::to_vec(&outgoing(Event::TorrentInfo { id, url: url.clone(), info }).unwrap()).unwrap();
+        assert!(frame.len() < crate::app::MAX_MESSAGE_BYTES as usize, "{} bytes", frame.len());
+        // Its row carries no file list, and its stats no file progress at
+        // this size.
+        let mut row: udm_domain::download::DownloadEntry = serde_json::from_value(serde_json::json!({
+            "id": 1, "url": url, "status": "downloading", "connections": 1, "done": 0, "resumable": true,
+        }))
+        .unwrap();
+        let mut torrent = udm_domain::torrent::TorrentEntry::new(hash);
+        torrent.files = files;
+        row.torrent = Some(torrent);
+        let frame = serde_json::to_vec(&outgoing(Event::Updated { item: row }).unwrap()).unwrap();
+        assert!(frame.len() < 1024, "{} bytes", frame.len());
+        let stats = TorrentStats::default();
+        let frame = serde_json::to_vec(&outgoing(Event::TorrentStats { id, url, stats }).unwrap()).unwrap();
+        assert!(frame.len() < 1024);
+    }
+
+    #[test]
     fn torrent_messages_have_their_wire_shapes() {
         use udm_domain::torrent::{FileSelection, Ratio, SeedLimits, TorrentPhase, TorrentStats};
         // A `.torrent` file read from disk travels base64-encoded in `add`.
@@ -632,6 +673,7 @@ mod tests {
         assert_eq!(json(&seed), serde_json::json!({"op": "set_seed_limits", "id": 4, "limits": {"ratio": 1.5}}));
         assert!(matches!(command(seed), Command::SetSeedLimits { limits: Some(l), .. } if l == limits));
         assert_eq!(json(&incoming(Command::StopSeeding { id })), serde_json::json!({"op": "stop_seeding", "id": 4}));
+        assert_eq!(json(&incoming(Command::TorrentFiles { id })), serde_json::json!({"op": "torrent_files", "id": 4}));
         let empty = serde_json::json!({"op": "select_torrent_files", "id": 4, "files": []});
         assert!(serde_json::from_value::<Incoming>(empty).is_err(), "no file chosen is no message");
 

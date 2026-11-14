@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "這不是種子檔案：{why}",
   "Choose at least one of the torrent's files.": "請至少選擇種子中的一個檔案。",
   "The torrent has no file number {number}.": "該種子沒有編號 {number} 的檔案。",
-  "{value} is not a share ratio between 0 and 100.": "{value} 不是 0 到 100 之間的分享率。"
+  "{value} is not a share ratio between 0 and 100.": "{value} 不是 0 到 100 之間的分享率。",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "該種子的檔名總長超過 {size}；UDM 只接受更短的清單。",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "單一檔案的種子保留其檔名 {name}；請只選擇資料夾。"
 }

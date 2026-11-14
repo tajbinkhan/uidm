@@ -255,6 +255,9 @@ test("magnet links and torrent files", () => {
   assert.ok(!isMagnet("magnet:?xt=urn:ed2k:31d6cfe0d16ae931b73c59d7e0c089c0"), "not BitTorrent");
   assert.ok(!isMagnet(`magnet:?xt=urn:btih:${hash}0`));
   assert.ok(!isMagnet(`https://x/?xt=urn:btih:${hash}`));
+  assert.ok(isMagnet(`magnet:?dn=a&xt=urn%3Abtih%3A${hash}`), "percent-encoded, as the daemon reads it too");
+  assert.ok(isMagnet(`magnet:?xt.1=urn:btih:${hash}`));
+  assert.ok(!isMagnet("magnet:?xt=urn%3Abtih%3A%ZZ"));
   assert.ok(isTorrentFile({ url: "https://x/a.torrent" }));
   assert.ok(isTorrentFile({ url: "https://x/get?id=1", mime: "application/x-bittorrent; charset=binary" }));
   assert.ok(isTorrentFile({ url: "https://x/get?id=1", filename: "Album.TORRENT" }));
@@ -286,7 +289,21 @@ test("the worker hands a clicked magnet link to UDM while capture is on", async 
   assert.equal(add.url, magnet);
   const before = w.sent.length;
   assert.equal((await w.content({ type: "link:magnet", url: "https://site.net/a.zip" }, 3)).ok, false);
+  // A page on a site the settings leave to the browser keeps its magnet links.
+  assert.equal((await w.content({ type: "link:magnet", url: magnet }, 3, "https://cdn.example.com/")).ok, false);
   assert.equal(w.sent.length, before);
+});
+
+test("a .torrent download goes to UDM with its type, even without a request to tell it", async () => {
+  const w = loadWorker();
+  w.port.onMessage.fire({ op: "hello", name: "udm-daemon", version: "x" });
+  w.port.onMessage.fire({ op: "settings", settings: { ...RULES, torrents: { catch_torrent_files: true } } });
+  await w.chrome.downloads.onCreated.fire(
+    download({ url: "https://dl.net/download.php?id=3", filename: "/home/u/Downloads/x.torrent", mime: "application/x-bittorrent" }),
+  );
+  const add = w.sent.filter((m) => m.op === "add").at(-1);
+  assert.equal(add.url, "https://dl.net/download.php?id=3");
+  assert.equal(add.content_type, "application/x-bittorrent");
 });
 
 test("address exceptions with wildcards", () => {

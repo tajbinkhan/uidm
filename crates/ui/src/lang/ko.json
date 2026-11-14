@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "토렌트 파일이 아닙니다: {why}",
   "Choose at least one of the torrent's files.": "토렌트 파일을 하나 이상 선택하세요.",
   "The torrent has no file number {number}.": "토렌트에 {number}번 파일이 없습니다.",
-  "{value} is not a share ratio between 0 and 100.": "{value}은(는) 0에서 100 사이의 공유 비율이 아닙니다."
+  "{value} is not a share ratio between 0 and 100.": "{value}은(는) 0에서 100 사이의 공유 비율이 아닙니다.",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "토렌트의 파일 이름이 {size}를 넘습니다. UDM은 더 짧은 목록만 받습니다.",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "파일이 하나인 토렌트는 파일 이름 {name}을(를) 그대로 사용합니다. 폴더만 선택하세요."
 }

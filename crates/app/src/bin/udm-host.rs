@@ -137,6 +137,42 @@ fn mode(args: &[String]) -> Mode {
 
 /// Relay frames between the browser (stdio) and the daemon (loopback TCP),
 /// starting the daemon first when `spawn` and it is not running.
+/// The most a message to the browser may be: Chrome closes the native host
+/// that sends a larger one.
+const MAX_TO_BROWSER: usize = 1024 * 1024;
+
+/// A frame from the daemon as it may go to the browser, or `None` to drop
+/// it. The extension has no use for torrents' stats, files or rows'
+/// torrent part, which can be large, and Chrome takes no message over
+/// [`MAX_TO_BROWSER`].
+fn to_browser(frame: Vec<u8>) -> Option<Vec<u8>> {
+    let frame = if frame.windows(8).any(|w| w == b"\"torrent") {
+        let mut msg: serde_json::Value = serde_json::from_slice(&frame).ok()?;
+        let op = msg.get("op").and_then(|o| o.as_str()).unwrap_or("");
+        if op.starts_with("torrent_") {
+            return None;
+        }
+        let strip = |entry: &mut serde_json::Value| {
+            if let Some(entry) = entry.as_object_mut() {
+                entry.remove("torrent");
+            }
+        };
+        match op {
+            "downloads" => msg.get_mut("items").and_then(|i| i.as_array_mut()).into_iter().flatten().for_each(strip),
+            "updated" => msg.get_mut("item").into_iter().for_each(strip),
+            _ => {}
+        }
+        serde_json::to_vec(&msg).ok()?
+    } else {
+        frame
+    };
+    if frame.len() > MAX_TO_BROWSER {
+        tracing::warn!(bytes = frame.len(), "dropped a message too large for the browser");
+        return None;
+    }
+    Some(frame)
+}
+
 fn run_relay(spawn: bool) -> anyhow::Result<()> {
     use anyhow::Context as _;
     let daemon =
@@ -150,6 +186,7 @@ fn run_relay(spawn: bool) -> anyhow::Result<()> {
         let stdout = io::stdout();
         let mut out = stdout.lock();
         while let Ok(Some(frame)) = read_message(&mut from_daemon, MAX_MESSAGE_BYTES) {
+            let Some(frame) = to_browser(frame) else { continue };
             if write_frame(&mut out, &frame).is_err() || out.flush().is_err() {
                 break;
             }
@@ -378,7 +415,7 @@ fn print_progress(p: Progress, ok: &AtomicBool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_browser, mode, Mode};
+    use super::{from_browser, mode, to_browser, Mode, MAX_TO_BROWSER};
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -414,6 +451,22 @@ mod tests {
         assert!(op(br#"{"op":"convert","id":1}"#).is_none());
         assert!(op(br#"not json"#).is_none());
         assert!(op(br#"{"url":"no op"}"#).is_none());
+    }
+
+    #[test]
+    fn the_browser_hears_nothing_of_torrents_and_nothing_too_large() {
+        assert_eq!(to_browser(br#"{"op":"torrent_stats","id":1}"#.to_vec()), None);
+        assert_eq!(to_browser(br#"{"op":"torrent_info","id":1}"#.to_vec()), None);
+        let rows = br#"{"op":"downloads","items":[{"id":1,"url":"magnet:?x","torrent":{"info_hash":"ab"}},{"id":2}]}"#;
+        let rows: serde_json::Value = serde_json::from_slice(&to_browser(rows.to_vec()).unwrap()).unwrap();
+        assert_eq!(rows["items"][0].get("torrent"), None);
+        assert_eq!(rows["items"][1]["id"], 2);
+        let updated = to_browser(br#"{"op":"updated","item":{"id":1,"torrent":{}}}"#.to_vec()).unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&updated).unwrap()["item"].get("torrent"), None);
+        let plain = br#"{"op":"progress","id":1}"#.to_vec();
+        assert_eq!(to_browser(plain.clone()), Some(plain), "passed on as it is");
+        let big = format!(r#"{{"op":"pick_links","page":"{}"}}"#, "x".repeat(MAX_TO_BROWSER));
+        assert_eq!(to_browser(big.into_bytes()), None);
     }
 
     #[test]

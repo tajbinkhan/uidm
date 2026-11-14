@@ -29,6 +29,16 @@
 //! up through UDM's resolver and handed to librqbit as addresses, and HTTP
 //! trackers with a name (whose lookups librqbit's own client would make)
 //! are left out.
+//!
+//! With DNS over HTTPS, HTTP trackers are left out even when named by an
+//! address: librqbit's own HTTP client follows a tracker's redirect, and
+//! would look the name it is sent to up with the system. That client may
+//! also take a proxy from the `HTTP_PROXY` and `HTTPS_PROXY` environment
+//! variables (`docs/torrents.md`).
+//!
+//! The session runs only while something needs it: a torrent downloading,
+//! seeding, or being read; a minute after the last one stops, it closes its
+//! listener and DHT ([`TorrentClient::watch_seeding`]).
 
 pub mod metainfo;
 #[cfg(test)]
@@ -52,7 +62,7 @@ use udm_domain::bytes::ByteCount;
 use udm_domain::download::Download;
 use udm_domain::id::DownloadId;
 use udm_domain::ports::{Seeding, Torrents, TorrentsError};
-use udm_domain::settings::TorrentSettings;
+use udm_domain::settings::{FileExists, TorrentSettings};
 use udm_domain::sync::LockExt;
 use udm_domain::torrent::{
     FileSelection, InfoHash, MagnetLink, PeerInfo, PieceMap, TorrentError, TorrentInfo, TorrentPhase, TorrentStats,
@@ -75,8 +85,15 @@ const TICK: Duration = Duration::from_millis(500);
 const STATS_EVERY: Duration = Duration::from_secs(1);
 /// How often the seeding torrents are looked at.
 const SEED_EVERY: Duration = Duration::from_secs(2);
+/// How long the session stays up with nothing to do.
+const IDLE_SESSION: Duration = Duration::from_secs(60);
 /// Peers from a magnet link tried first, at most.
 const MAX_INITIAL_PEERS: usize = 50;
+/// The most trackers a torrent's stats list.
+const MAX_LISTED_TRACKERS: usize = 100;
+/// A torrent's stats carry each file's progress only up to this many files,
+/// so they stay small enough to send every second.
+pub const MAX_STATS_FILES: usize = 1000;
 
 /// What a download of a torrent says when it cannot be bound on this system.
 pub const WINDOWS_BOUND: &str = "Torrents cannot be bound to a network adapter on Windows, so they do not run while \
@@ -97,11 +114,13 @@ pub struct Tuning {
     /// `None` uses librqbit's (by name, through the system's resolver,
     /// unless DNS over HTTPS is chosen).
     pub dht_bootstrap: Option<Vec<String>>,
+    /// How long the session stays up with nothing to do.
+    pub idle_session: Duration,
 }
 
 impl Default for Tuning {
     fn default() -> Self {
-        Tuning { listen_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED), dht_bootstrap: None }
+        Tuning { listen_ip: IpAddr::V6(Ipv6Addr::UNSPECIFIED), dht_bootstrap: None, idle_session: IDLE_SESSION }
     }
 }
 
@@ -152,8 +171,9 @@ struct Seed {
     folder: PathBuf,
     files: Vec<usize>,
     trackers: Vec<TrackerInfo>,
-    /// Its data was found complete (a torrent seeded after a restart is
-    /// checked first).
+    /// Its data was found complete, and it uploads. A torrent added to seed
+    /// (after a restart, or to a new session) is added paused and checked
+    /// first, so nothing is downloaded or written for it.
     checked: bool,
 }
 
@@ -164,6 +184,15 @@ struct SeedView {
     handle: Arc<ManagedTorrent>,
     trackers: Vec<TrackerInfo>,
     checked: bool,
+}
+
+/// A torrent to seed once its network is there (its adapter is up).
+struct PendingSeed {
+    id: DownloadId,
+    magnet: MagnetLink,
+    path: PathBuf,
+    files: Option<FileSelection>,
+    uploaded: ByteCount,
 }
 
 /// What a torrent uploaded: librqbit counts per run, UDM over all of them.
@@ -194,7 +223,12 @@ impl Uploads {
 struct Inner {
     live: Option<Live>,
     seeding: HashMap<InfoHash, Seed>,
+    pending: HashMap<InfoHash, PendingSeed>,
     uploads: HashMap<InfoHash, Uploads>,
+    /// Engine runs and metadata reads using the session now, by torrent.
+    using: HashMap<InfoHash, usize>,
+    /// Since when the session has had nothing to do.
+    idle_since: Option<Instant>,
 }
 
 /// The BitTorrent client: the session, the torrents' kept files, and the
@@ -203,6 +237,9 @@ pub struct TorrentClient {
     dir: PathBuf,
     tuning: Tuning,
     inner: Mutex<Inner>,
+    /// Held while a session is built, so two are never built at once and
+    /// `inner` is free meanwhile.
+    building: Mutex<()>,
     sink: OnceLock<Sink>,
     route: OnceLock<RouteSource>,
     settings: OnceLock<SettingsSource>,
@@ -212,7 +249,7 @@ pub struct TorrentClient {
     generation: AtomicU64,
 }
 
-/// A failure of librqbit's, as text.
+/// A failure of librqbit's, as the engine's error.
 fn failed(e: impl std::fmt::Display) -> EngineError {
     EngineError::Torrent(format!("{e:#}"))
 }
@@ -235,6 +272,39 @@ fn id20(hash: InfoHash) -> Id20 {
     Id20::new(hash.bytes())
 }
 
+/// A torrent marked as in use while it lives: an engine run, or a read of
+/// its metadata. The session does not close while one is.
+struct InUse<'a> {
+    client: &'a TorrentClient,
+    hash: InfoHash,
+}
+
+impl<'a> InUse<'a> {
+    fn new(client: &'a TorrentClient, hash: InfoHash) -> Self {
+        let mut inner = client.inner();
+        *inner.using.entry(hash).or_default() += 1;
+        inner.idle_since = None;
+        InUse { client, hash }
+    }
+
+    /// How many hold this torrent, this one among them.
+    fn holders(&self) -> usize {
+        self.client.inner().using.get(&self.hash).copied().unwrap_or(0)
+    }
+}
+
+impl Drop for InUse<'_> {
+    fn drop(&mut self) {
+        let mut inner = self.client.inner();
+        if let Some(n) = inner.using.get_mut(&self.hash) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                inner.using.remove(&self.hash);
+            }
+        }
+    }
+}
+
 impl TorrentClient {
     /// A client keeping its files in `dir` (`paths::torrents_dir()`).
     pub fn new(dir: PathBuf) -> Self {
@@ -246,6 +316,7 @@ impl TorrentClient {
             dir,
             tuning,
             inner: Mutex::default(),
+            building: Mutex::new(()),
             sink: OnceLock::new(),
             route: OnceLock::new(),
             settings: OnceLock::new(),
@@ -282,6 +353,11 @@ impl TorrentClient {
         self.route.get().map(|r| r()).unwrap_or_default()
     }
 
+    /// Where the session listens, while one runs.
+    pub fn listen_addr(&self) -> Option<SocketAddr> {
+        self.inner().live.as_ref().and_then(|l| l.session.listen_addr())
+    }
+
     fn session_dir(&self) -> PathBuf {
         self.dir.join("session")
     }
@@ -294,6 +370,11 @@ impl TorrentClient {
     fn kept(&self, hash: InfoHash) -> Option<Metainfo> {
         let bytes = std::fs::read(self.kept_path(hash)).ok()?;
         Metainfo::read(&bytes).ok().filter(|m| m.info.info_hash == hash)
+    }
+
+    /// What the torrent holds, from its kept file.
+    pub fn info(&self, hash: InfoHash) -> Option<TorrentInfo> {
+        self.kept(hash).map(|m| m.info)
     }
 
     /// Keep `bytes`, the torrent's `.torrent` file, written whole or not at
@@ -332,40 +413,57 @@ impl TorrentClient {
 
     /// The session for `route` and the settings now, built when there is
     /// none or it was built for others (the seeding torrents move to the
-    /// new one). Fails on Windows while an adapter is chosen.
+    /// new one, checked again before they upload). Fails on Windows while an
+    /// adapter is chosen. Not to be called on the runtime: it blocks on it,
+    /// and so does a lookup through DNS over HTTPS.
     fn live(&self, route: &Route) -> Result<(Arc<Session>, u64), EngineError> {
         if cfg!(windows) && route.binding.is_some() {
             return Err(EngineError::Torrent(WINDOWS_BOUND.to_string()));
         }
         let settings = self.settings();
         let key = SessionKey::of(route, &settings);
-        let mut inner = self.inner();
-        if let Some(live) = inner.live.as_ref().filter(|l| l.key == key && !l.down.load(Ordering::SeqCst)) {
+        let _building = self.building.lock_or_recover();
+        if let Some(live) = self.inner().live.as_ref().filter(|l| l.key == key && !l.down.load(Ordering::SeqCst)) {
             return Ok((Arc::clone(&live.session), live.generation));
         }
         let runtime = engine::http::runtime()?;
-        if let Some(old) = inner.live.take() {
+        let old = self.inner().live.take();
+        if let Some(old) = old {
             tracing::info!("the torrent session starts again for new settings");
+            self.generation.fetch_add(1, Ordering::SeqCst);
             runtime.block_on(old.session.stop());
         }
-        let session = runtime.block_on(self.build(route, &settings))?;
+        // The DHT's starting nodes, looked up here rather than on the
+        // runtime: a lookup through DNS over HTTPS blocks on it.
+        let bootstrap = match (&route.dns, settings.dht) {
+            (_, false) => None,
+            (Some(_), true) => Some(bootstrap_through(route)),
+            (None, true) => self.tuning.dht_bootstrap.clone(),
+        };
+        let session = runtime.block_on(self.build(route, &settings, bootstrap))?;
         let down = Arc::new(AtomicBool::new(false));
         let watch = match &route.binding {
             Some(binding) => Some(crate::route::Watch::start(binding, &down, &Arc::new(AtomicBool::new(false)))?),
             None => None,
         };
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        inner.live = Some(Live { session: Arc::clone(&session), key, generation, down, _watch: watch });
-        // The seeding torrents go on in the new session.
-        let seeds: Vec<(InfoHash, Seed)> = inner.seeding.drain().collect();
+        let seeds: Vec<(InfoHash, Seed)> = {
+            let mut inner = self.inner();
+            inner.live = Some(Live { session: Arc::clone(&session), key, generation, down, _watch: watch });
+            inner.idle_since = None;
+            inner.seeding.drain().collect()
+        };
+        // The seeding torrents go on in the new session, without the lock:
+        // their trackers may be looked up.
         for (hash, seed) in seeds {
             let Some(meta) = self.kept(hash) else { continue };
-            inner.uploads.entry(hash).or_default().new_run();
             let (bytes, trackers) = prepared(&meta, route);
-            let options = self.options(&seed.folder, seed.files.clone(), Vec::new(), None, &settings);
+            let options = self.options(&seed.folder, seed.files.clone(), Vec::new(), None, &settings, true);
             match runtime.block_on(add(&session, bytes, options)) {
                 Ok(handle) => {
-                    inner.seeding.insert(hash, Seed { handle, trackers, ..seed });
+                    let mut inner = self.inner();
+                    inner.uploads.entry(hash).or_default().new_run();
+                    inner.seeding.insert(hash, Seed { handle, trackers, checked: false, ..seed });
                 }
                 Err(e) => {
                     tracing::warn!(download_id = seed.id.get(), error = %e, "a torrent stopped seeding");
@@ -373,12 +471,17 @@ impl TorrentClient {
                 }
             }
         }
-        drop(inner);
         Ok((session, generation))
     }
 
-    /// A new session for `route` and `settings`.
-    async fn build(&self, route: &Route, settings: &TorrentSettings) -> Result<Arc<Session>, EngineError> {
+    /// A new session for `route` and `settings`, with the DHT's starting
+    /// nodes `bootstrap` (looked up already).
+    async fn build(
+        &self,
+        route: &Route,
+        settings: &TorrentSettings,
+        bootstrap: Option<Vec<String>>,
+    ) -> Result<Arc<Session>, EngineError> {
         let session_dir = self.session_dir();
         std::fs::create_dir_all(&session_dir)?;
         // The list decides what runs: the session starts with no torrents.
@@ -386,10 +489,6 @@ impl TorrentClient {
         let db = session_dir.join("session.json");
         std::fs::write(&db, br#"{"torrents":{}}"#)?;
         let bound = route.binding.is_some();
-        let bootstrap = match &route.dns {
-            Some(_) => Some(bootstrap_through(route)),
-            None => self.tuning.dht_bootstrap.clone(),
-        };
         let port = settings.listen_port();
         let (down, up) = *self.limits.lock_or_recover();
         // A system without IPv6 (Linux booted with ipv6.disable=1) listens
@@ -431,7 +530,8 @@ impl TorrentClient {
         Ok(session)
     }
 
-    /// The options to add a torrent with: into `folder`, only `files`.
+    /// The options to add a torrent with: into `folder`, only `files`,
+    /// paused when `paused` (to check its data first).
     fn options(
         &self,
         folder: &Path,
@@ -439,8 +539,10 @@ impl TorrentClient {
         peers: Vec<SocketAddr>,
         own_limit: Option<u64>,
         settings: &TorrentSettings,
+        paused: bool,
     ) -> AddTorrentOptions {
         AddTorrentOptions {
+            paused,
             only_files: Some(files),
             overwrite: true,
             output_folder: Some(folder.to_string_lossy().into_owned()),
@@ -468,7 +570,7 @@ impl TorrentClient {
         let asked = MagnetLink { trackers, web_seeds: Vec::new(), ..magnet.clone() }.to_uri();
         let options = AddTorrentOptions {
             list_only: true,
-            initial_peers: Some(initial_peers(magnet, route)),
+            initial_peers: Some(initial_peers(magnet)),
             ..AddTorrentOptions::default()
         };
         let runtime = engine::http::runtime()?;
@@ -513,6 +615,7 @@ impl TorrentClient {
         if let Some(kept) = self.kept(magnet.info_hash) {
             return Ok(kept);
         }
+        let _in_use = InUse::new(self, magnet.info_hash);
         let route = self.route();
         route.ready()?;
         let (session, _) = self.live(&route)?;
@@ -535,42 +638,59 @@ impl TorrentClient {
         let url = req.url.clone();
         let route = &req.net.route;
         let stopped = || token.load(Ordering::SeqCst);
-        let mut told = false;
+        let in_use = InUse::new(self, hash);
+        let (mut session, mut generation) = self.live(route)?;
+        if self.kept(hash).is_none() {
+            report(Progress::TorrentStats { id, url: url.clone(), stats: TorrentStats::default() });
+        }
+        let Some(meta) = self.metadata_for(&session, &magnet, route, RUN_METADATA_WAIT, &stopped)? else {
+            return Ok(Saved { path: PathBuf::new(), note: None, complete: false });
+        };
+        report(Progress::TorrentInfo { id, url: url.clone(), info: meta.info.clone() });
+        let files = selection(req.torrent_files.as_ref(), &meta.info);
+        let size = meta.info.files.selected_size(FileSelection::try_from(files.clone()).ok().as_ref());
+        // Where it goes, decided once: a download that goes on keeps it.
+        let fresh = req.reuse_path.is_none();
+        let root = match &req.reuse_path {
+            Some(path) => path.clone(),
+            None => free_root(named_root(req, &meta.info), &meta.info, req.file_exists, size)?,
+        };
+        let folder = if meta.info.single_file() { root.parent().map(Path::to_path_buf) } else { Some(root.clone()) }
+            .ok_or_else(|| EngineError::Torrent("the torrent has no folder to go in".into()))?;
+        engine::writable(&folder)?;
+        let (bytes, trackers) = prepared(&meta, route);
+        let peers = initial_peers(&magnet);
+        {
+            let mut inner = self.inner();
+            inner.seeding.remove(&hash);
+            let uploads = inner.uploads.entry(hash).or_default();
+            uploads.new_run();
+            if uploads.base == 0 {
+                uploads.base = req.torrent_uploaded.get();
+            }
+        }
+        let runtime = engine::http::runtime()?;
         loop {
-            let (session, generation) = self.live(route)?;
-            if self.kept(hash).is_none() {
-                report(Progress::TorrentStats { id, url: url.clone(), stats: TorrentStats::default() });
-            }
-            let Some(meta) = self.metadata_for(&session, &magnet, route, RUN_METADATA_WAIT, &stopped)? else {
-                return Ok(Saved { path: PathBuf::new(), note: None, complete: false });
-            };
-            if !told {
-                report(Progress::TorrentInfo { id, url: url.clone(), info: meta.info.clone() });
-                told = true;
-            }
-            let root = root_of(req, &meta.info);
-            let folder =
-                if meta.info.single_file() { root.parent().map(Path::to_path_buf) } else { Some(root.clone()) }
-                    .ok_or_else(|| EngineError::Torrent("the torrent has no folder to go in".into()))?;
-            engine::writable(&folder)?;
-            let files = selection(req.torrent_files.as_ref(), &meta.info);
-            let size = meta.info.files.selected_size(FileSelection::try_from(files.clone()).ok().as_ref());
-            let (bytes, trackers) = prepared(&meta, route);
-            let options =
-                self.options(&folder, files.clone(), initial_peers(&magnet, route), req.speed_limit, &self.settings());
-            let runtime = engine::http::runtime()?;
-            {
-                let mut inner = self.inner();
-                inner.seeding.remove(&hash);
-                let uploads = inner.uploads.entry(hash).or_default();
-                uploads.new_run();
-                if uploads.base == 0 {
-                    uploads.base = req.torrent_uploaded.get();
+            // One torrent is one download in the session: another copy of it
+            // there (seeding, stopped, in another folder, or one to download
+            // again) leaves first; one another download runs is not taken.
+            if let Some(other) = session.get(id20(hash).into()) {
+                if fresh || other.output_folder() != folder {
+                    if in_use.holders() > 1 {
+                        return Err(EngineError::Torrent(format!(
+                            "This torrent is already downloading into {}.",
+                            other.output_folder().display()
+                        )));
+                    }
+                    if let Err(e) = runtime.block_on(session.delete(id20(hash).into(), false)) {
+                        tracing::debug!(error = %format!("{e:#}"), "the torrent's other copy was gone");
+                    }
                 }
             }
-            let handle = runtime.block_on(add(&session, bytes, options)).map_err(EngineError::Torrent)?;
-            // Already in the session (seeding, or stopped before): it takes
-            // the files chosen now, and goes on.
+            let options = self.options(&folder, files.clone(), peers.clone(), req.speed_limit, &self.settings(), false);
+            let handle = runtime.block_on(add(&session, bytes.clone(), options))?;
+            // Already in the session (stopped before): it takes the files
+            // chosen now, and goes on.
             let wanted: HashSet<usize> = files.iter().copied().collect();
             if handle.only_files().is_some_and(|had| had.iter().copied().collect::<HashSet<_>>() != wanted) {
                 if let Err(e) = runtime.block_on(session.update_only_files(&handle, &wanted)) {
@@ -580,18 +700,20 @@ impl TorrentClient {
             if handle.is_paused() {
                 runtime.block_on(session.unpause(&handle)).map_err(failed)?;
             }
+            // `connections` 1: it has started, so it resumes into its own
+            // files rather than taking them for someone else's.
             report(Progress::Started {
                 id,
                 url: url.clone(),
                 path: root.clone(),
                 total: Some(size),
                 resumable: true,
-                connections: 0,
+                connections: 1,
                 partial: None,
                 validator: None,
                 country: None,
             });
-            let follow = Follow { id, url: &url, hash, handle: &handle, trackers: &trackers };
+            let follow = Follow { id, url: &url, hash, size, handle: &handle, trackers: &trackers };
             match self.follow(&follow, generation, token, report) {
                 Followed::Finished => {
                     let seed = Seed {
@@ -612,14 +734,19 @@ impl TorrentClient {
                     }
                     return Ok(Saved { path: root, note: None, complete: false });
                 }
-                Followed::Moved => continue,
-                Followed::Failed(error) => return Err(EngineError::Torrent(error)),
+                Followed::Moved => {
+                    (session, generation) = self.live(route)?;
+                }
+                Followed::Failed(e) => return Err(e),
             }
         }
     }
 
     /// Watch a running torrent until it finishes, stops or fails, or the
-    /// session is replaced.
+    /// session is replaced. Progress counts the chosen files only once the
+    /// torrent runs: while it checks its data (which librqbit counts over the
+    /// whole torrent) only its phase says so, so neither the list nor the
+    /// quota takes checked bytes for downloaded ones.
     fn follow(&self, f: &Follow<'_>, generation: u64, token: &AtomicBool, report: &dyn Fn(Progress)) -> Followed {
         let mut last_done = u64::MAX;
         let mut last_stats: Option<Instant> = None;
@@ -633,15 +760,19 @@ impl TorrentClient {
             }
             let st = f.handle.stats();
             if let Some(error) = st.error.clone() {
-                return Followed::Failed(error);
+                return Followed::Failed(EngineError::Torrent(error));
             }
-            if st.progress_bytes != last_done {
-                last_done = st.progress_bytes;
+            let counted = matches!(st.state, TorrentStatsState::Live | TorrentStatsState::Paused);
+            // librqbit counts whole pieces, which can reach into files not
+            // chosen: the chosen files' size is what is counted.
+            let done = st.progress_bytes.min(f.size.get());
+            if counted && done != last_done {
+                last_done = done;
                 report(Progress::Advanced {
                     id: f.id,
                     url: f.url.to_string(),
-                    done: ByteCount::new(st.progress_bytes),
-                    total: Some(ByteCount::new(st.total_bytes)),
+                    done: ByteCount::new(done),
+                    total: Some(f.size),
                     parts: None,
                     segments: None,
                 });
@@ -695,11 +826,17 @@ impl TorrentClient {
                 transport: p.conn_kind.map(|k| k.to_string()),
             }))
         });
-        let pieces = self.inner().live.as_ref().and_then(|live| {
-            let api = librqbit::Api::new(Arc::clone(&live.session), None);
+        let session = self.inner().live.as_ref().map(|live| Arc::clone(&live.session));
+        let pieces = session.and_then(|session| {
+            let api = librqbit::Api::new(session, None);
             let (have, count) = api.api_dump_haves(id20(hash).into()).ok()?;
             Some(PieceMap::of(count, |i| have.get(i as usize).is_some_and(|b| *b)))
         });
+        let file_done = if st.file_progress.len() <= MAX_STATS_FILES {
+            st.file_progress.iter().map(|b| ByteCount::new(*b)).collect()
+        } else {
+            Vec::new()
+        };
         TorrentStats {
             phase,
             done: ByteCount::new(st.progress_bytes),
@@ -711,9 +848,9 @@ impl TorrentClient {
             peers_connected,
             peers_known,
             peers: peers.unwrap_or_default(),
-            trackers: trackers.to_vec(),
+            trackers: trackers.iter().take(MAX_LISTED_TRACKERS).cloned().collect(),
             pieces: pieces.unwrap_or_default(),
-            file_done: st.file_progress.iter().map(|b| ByteCount::new(*b)).collect(),
+            file_done,
         }
     }
 
@@ -726,7 +863,11 @@ impl TorrentClient {
     }
 
     /// Seed finished download `id` from its files at `path` (the torrent's
-    /// folder, or its one file), with `files` of it.
+    /// folder, or its one file), with `files` of it. The files must all be
+    /// there, at their sizes; the torrent is then added paused and checked
+    /// before it uploads (`watch_seeding`), so nothing is written or
+    /// downloaded for it. While its network is not there (its adapter is
+    /// down, or bound on Windows), it waits, and seeds once it is.
     pub fn seed(
         &self,
         id: DownloadId,
@@ -737,24 +878,36 @@ impl TorrentClient {
     ) -> Result<(), EngineError> {
         let hash = magnet.info_hash;
         let meta = self.kept(hash).ok_or_else(|| EngineError::Torrent("its torrent file is gone".into()))?;
-        let folder = if meta.info.single_file() { path.parent().map(Path::to_path_buf) } else { Some(path.into()) }
-            .ok_or_else(|| EngineError::Torrent("it has no folder".into()))?;
-        if !path.exists() {
-            return Err(EngineError::Torrent(format!("{} is gone", path.display())));
+        let mut entry = udm_domain::torrent::TorrentEntry::new(hash);
+        entry.files = meta.info.files.clone();
+        entry.selection = files.cloned();
+        let sizes = meta.info.files.as_slice();
+        let wanted = selection(files, &meta.info);
+        for (file, written) in wanted.iter().filter_map(|i| sizes.get(*i)).zip(entry.written_files(path)) {
+            let size = std::fs::metadata(&written).map(|m| m.len()).ok();
+            if size != Some(file.size.get()) {
+                return Err(EngineError::Torrent(format!("{} is gone or changed", written.display())));
+            }
         }
         let route = self.route();
-        route.ready()?;
+        if route.ready().is_err() || (cfg!(windows) && route.binding.is_some()) {
+            tracing::info!(download_id = id.get(), "seeds once its network is there");
+            let pending =
+                PendingSeed { id, magnet: magnet.clone(), path: path.to_path_buf(), files: files.cloned(), uploaded };
+            self.inner().pending.insert(hash, pending);
+            return Ok(());
+        }
+        let folder = if meta.info.single_file() { path.parent().map(Path::to_path_buf) } else { Some(path.into()) }
+            .ok_or_else(|| EngineError::Torrent("it has no folder".into()))?;
         let (session, _) = self.live(&route)?;
-        let files = selection(files, &meta.info);
         let (bytes, trackers) = prepared(&meta, &route);
-        let options = self.options(&folder, files.clone(), Vec::new(), None, &self.settings());
-        let handle = engine::http::runtime()?.block_on(add(&session, bytes, options)).map_err(EngineError::Torrent)?;
+        let options = self.options(&folder, wanted.clone(), Vec::new(), None, &self.settings(), true);
+        let handle = engine::http::runtime()?.block_on(add(&session, bytes, options))?;
         let mut inner = self.inner();
-        let uploads = inner.uploads.entry(hash).or_default();
-        *uploads = Uploads { base: uploaded.get(), last: 0 };
+        inner.pending.remove(&hash);
+        inner.uploads.insert(hash, Uploads { base: uploaded.get(), last: 0 });
         let url = magnet.to_uri();
-        inner.seeding.insert(hash, Seed { id, url, handle, folder, files, trackers, checked: false });
-        drop(inner);
+        inner.seeding.insert(hash, Seed { id, url, handle, folder, files: wanted, trackers, checked: false });
         Ok(())
     }
 
@@ -807,13 +960,23 @@ impl TorrentClient {
             .collect()
     }
 
+    /// Whether any torrent seeds, or waits to.
+    pub fn active(&self) -> bool {
+        let inner = self.inner();
+        !inner.seeding.is_empty() || !inner.pending.is_empty()
+    }
+
     /// Stop seeding the torrent.
     pub fn stop_seeding(&self, hash: InfoHash) {
-        let (seed, session) = {
+        let (seed, pending, session) = {
             let mut inner = self.inner();
             let seed = inner.seeding.remove(&hash);
-            (seed, inner.live.as_ref().map(|l| Arc::clone(&l.session)))
+            let pending = inner.pending.remove(&hash);
+            (seed, pending, inner.live.as_ref().map(|l| Arc::clone(&l.session)))
         };
+        if let Some(p) = pending {
+            self.report_phase(p.id, &p.magnet.to_uri(), TorrentPhase::Complete);
+        }
         let Some(seed) = seed else { return };
         if let (Some(session), Ok(runtime)) = (session, engine::http::runtime()) {
             if let Err(e) = runtime.block_on(session.pause(&seed.handle)) {
@@ -842,6 +1005,7 @@ impl TorrentClient {
         let session = {
             let mut inner = self.inner();
             inner.seeding.remove(&hash);
+            inner.pending.remove(&hash);
             inner.uploads.remove(&hash);
             inner.live.as_ref().map(|l| Arc::clone(&l.session))
         };
@@ -862,9 +1026,12 @@ impl TorrentClient {
         }
     }
 
-    /// One look at the seeding torrents: stop them all if their adapter
-    /// went; one whose data turned out incomplete (seeded again after a
-    /// restart) stops; the others report how they are doing.
+    /// One look at the torrents outside the engine, every [`SEED_EVERY`]:
+    /// all seeding stops if their adapter went; those waiting for their
+    /// network seed once it is there; one added to seed starts uploading
+    /// once its data checks complete, and stops if it does not; the others
+    /// report how they are doing; and a session nothing has used for a
+    /// while closes.
     pub fn watch_seeding(&self) {
         let down = self.inner().live.as_ref().is_some_and(|l| l.down.load(Ordering::SeqCst));
         if down {
@@ -872,6 +1039,7 @@ impl TorrentClient {
             self.watch_down();
             return;
         }
+        self.seed_pending();
         let seeds: Vec<(InfoHash, SeedView)> = self
             .inner()
             .seeding
@@ -889,25 +1057,73 @@ impl TorrentClient {
             .collect();
         for (hash, SeedView { id, url, handle, trackers, checked }) in seeds {
             let st = handle.stats();
-            let broken = st.error.is_some()
-                || (!checked
-                    && matches!(st.state, TorrentStatsState::Live | TorrentStatsState::Paused)
-                    && !st.finished);
-            if broken {
+            if matches!(st.state, TorrentStatsState::Initializing { .. }) {
+                continue;
+            }
+            if st.error.is_some() || (!checked && !st.finished) {
                 tracing::warn!(download_id = id.get(), "its files are not all there; it does not seed");
                 self.stop_seeding(hash);
                 continue;
             }
-            if matches!(st.state, TorrentStatsState::Initializing { .. }) {
-                continue;
-            }
             if !checked {
+                let session = self.inner().live.as_ref().map(|l| Arc::clone(&l.session));
+                if let (Some(session), Ok(runtime)) = (session, engine::http::runtime()) {
+                    if let Err(e) = runtime.block_on(session.unpause(&handle)) {
+                        tracing::warn!(download_id = id.get(), error = %format!("{e:#}"), "it does not seed");
+                        self.stop_seeding(hash);
+                        continue;
+                    }
+                }
                 if let Some(seed) = self.inner().seeding.get_mut(&hash) {
                     seed.checked = true;
                 }
             }
+            let st = handle.stats();
             let stats = self.stats_of(hash, &handle, &st, &trackers, &mut PeerSpeeds::default());
             self.report(Progress::TorrentStats { id, url, stats });
+        }
+        self.close_if_idle();
+    }
+
+    /// Seed the torrents waiting for their network, once it is there.
+    fn seed_pending(&self) {
+        if self.inner().pending.is_empty() {
+            return;
+        }
+        let route = self.route();
+        if route.ready().is_err() || (cfg!(windows) && route.binding.is_some()) {
+            return;
+        }
+        let pending: Vec<PendingSeed> = self.inner().pending.drain().map(|(_, p)| p).collect();
+        for p in pending {
+            if let Err(e) = self.seed(p.id, &p.magnet, &p.path, p.files.as_ref(), p.uploaded) {
+                tracing::warn!(download_id = p.id.get(), error = %e, "does not seed");
+                self.report_phase(p.id, &p.magnet.to_uri(), TorrentPhase::Complete);
+            }
+        }
+    }
+
+    /// Close the session when nothing has used it for a while: no torrent
+    /// runs, seeds, waits to seed or is being read.
+    fn close_if_idle(&self) {
+        let live = {
+            let mut inner = self.inner();
+            let busy = !inner.seeding.is_empty() || !inner.pending.is_empty() || !inner.using.is_empty();
+            if inner.live.is_none() || busy {
+                inner.idle_since = None;
+                return;
+            }
+            let since = *inner.idle_since.get_or_insert_with(Instant::now);
+            if since.elapsed() < self.tuning.idle_session {
+                return;
+            }
+            inner.idle_since = None;
+            inner.live.take()
+        };
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        if let (Some(live), Ok(runtime)) = (live, engine::http::runtime()) {
+            tracing::info!("no torrent needs the session; it closes");
+            runtime.block_on(live.session.stop());
         }
     }
 }
@@ -934,7 +1150,7 @@ enum Followed {
     Stopped,
     /// The session was replaced: add it to the new one.
     Moved,
-    Failed(String),
+    Failed(EngineError),
 }
 
 /// A running torrent being followed.
@@ -942,6 +1158,8 @@ struct Follow<'a> {
     id: DownloadId,
     url: &'a str,
     hash: InfoHash,
+    /// The chosen files' size.
+    size: ByteCount,
     handle: &'a Arc<ManagedTorrent>,
     trackers: &'a [TrackerInfo],
 }
@@ -977,7 +1195,7 @@ impl PeerSpeeds {
                 self.last.insert(address.clone(), (down, up, now));
                 PeerInfo {
                     address,
-                    client: p.client,
+                    client: p.client.map(|c| c.chars().take(64).collect()),
                     down_speed,
                     up_speed,
                     downloaded: ByteCount::new(down),
@@ -1023,29 +1241,55 @@ async fn add(
     session: &Arc<Session>,
     bytes: Vec<u8>,
     options: AddTorrentOptions,
-) -> Result<Arc<ManagedTorrent>, String> {
-    let response =
-        session.add_torrent(AddTorrent::from_bytes(bytes), Some(options)).await.map_err(|e| format!("{e:#}"))?;
-    response.into_handle().ok_or_else(|| "the torrent was only read".to_string())
+) -> Result<Arc<ManagedTorrent>, EngineError> {
+    let response = session.add_torrent(AddTorrent::from_bytes(bytes), Some(options)).await.map_err(failed)?;
+    response.into_handle().ok_or_else(|| EngineError::Torrent("the torrent was only read".into()))
 }
 
-/// Where download `req` of the torrent `info` goes: where it went before,
-/// else its folder (for many files: named as chosen, else as the torrent)
-/// or its one file, in the folder for its category.
-fn root_of(req: &engine::DownloadRequest, info: &TorrentInfo) -> PathBuf {
-    if let Some(path) = &req.reuse_path {
-        return path.clone();
-    }
-    let name = if info.single_file() {
-        info.files.as_slice().first().and_then(|f| f.path.first()).cloned().unwrap_or_else(|| info.name.clone())
-    } else {
-        req.filename
+/// Where a new download `req` of the torrent `info` would go: a torrent of
+/// many files into a folder of its own (named as chosen, else as the
+/// torrent), one of one file under that file's name, in the folder for its
+/// category.
+fn named_root(req: &engine::DownloadRequest, info: &TorrentInfo) -> PathBuf {
+    let name = match info.files.single_name() {
+        Some(name) => name.to_string(),
+        None => req
+            .filename
             .as_deref()
             .and_then(udm_domain::filename::sanitize_filename)
             .map(|n| n.into_string())
-            .unwrap_or_else(|| info.name.clone())
+            .unwrap_or_else(|| info.name.clone()),
     };
     req.folders.for_name(&name).join(name)
+}
+
+/// `root`, or what the file-exists setting makes of it when something there
+/// already has its name: kept (overwrite: the torrent checks what is there,
+/// keeps what matches and writes the rest), a numbered name (a torrent of
+/// many files gets `Album (1)`; one of one file keeps its name, in a folder
+/// `name (1)` of its own, since the torrent names the file), or asked about
+/// (`NameTaken`, as for any download).
+fn free_root(root: PathBuf, info: &TorrentInfo, rule: FileExists, size: ByteCount) -> Result<PathBuf, EngineError> {
+    if !root.exists() {
+        return Ok(root);
+    }
+    match rule {
+        FileExists::Overwrite => return Ok(root),
+        FileExists::Ask => return Err(EngineError::NameTaken { path: root, total: Some(size.get()) }),
+        FileExists::Rename => {}
+    }
+    let (Some(dir), Some(name)) = (root.parent(), root.file_name().map(|n| n.to_string_lossy().into_owned())) else {
+        return Err(EngineError::Torrent("the torrent has no folder to go in".into()));
+    };
+    let single = info.files.single_name().is_some();
+    let stem = Path::new(&name).file_stem().map_or_else(|| name.clone(), |s| s.to_string_lossy().into_owned());
+    (1..=9999)
+        .map(|n| match single {
+            false => dir.join(udm_domain::filename::numbered_name(&name, n)),
+            true => dir.join(udm_domain::filename::numbered_name(&stem, n)).join(&name),
+        })
+        .find(|candidate| !candidate.exists() && !(single && candidate.parent().is_some_and(Path::exists)))
+        .ok_or_else(|| EngineError::Torrent(format!("no free name for {name} in {}", dir.display())))
 }
 
 /// The files to download, by number: those chosen that the torrent has,
@@ -1061,7 +1305,8 @@ fn selection(chosen: Option<&FileSelection>, info: &TorrentInfo) -> Vec<usize> {
 /// The trackers of `trackers` to announce to through `route`, as they go
 /// (a UDP tracker's name looked up through DNS over HTTPS becomes its
 /// address), and each one's state for the window. Without DNS over HTTPS
-/// every tracker is used as it is.
+/// every tracker is used as it is. It may look names up: not to be called on
+/// the runtime, nor while holding the client's lock.
 fn trackers_for(trackers: &[String], route: &Route) -> (Vec<String>, Vec<TrackerInfo>) {
     let mut used = Vec::new();
     let mut shown = Vec::new();
@@ -1083,13 +1328,14 @@ fn tracker_through(tracker: &str, route: &Route) -> Option<String> {
         return Some(tracker.to_string());
     }
     let mut url = url::Url::parse(tracker).ok()?;
+    // librqbit's HTTP client looks names up itself, with the system, and
+    // follows redirects to them: no HTTP tracker goes through it.
+    if url.scheme() != "udp" {
+        return None;
+    }
     let host = url.host_str()?.trim_start_matches('[').trim_end_matches(']').to_string();
     if host.parse::<IpAddr>().is_ok() {
         return Some(tracker.to_string());
-    }
-    // librqbit looks an HTTP tracker's name up itself, with the system.
-    if url.scheme() != "udp" {
-        return None;
     }
     let port = url.port()?;
     let ip = route.lookup(&host, port).ok()?.into_iter().map(|a| a.ip()).min_by_key(IpAddr::is_ipv6)?;
@@ -1109,18 +1355,10 @@ fn bootstrap_through(route: &Route) -> Vec<String> {
         .collect()
 }
 
-/// The magnet link's peers to try first, looked up through `route`.
-fn initial_peers(magnet: &MagnetLink, route: &Route) -> Vec<SocketAddr> {
-    magnet
-        .peers
-        .iter()
-        .filter_map(|p| p.rsplit_once(':'))
-        .filter_map(|(host, port)| {
-            route.lookup(host.trim_start_matches('[').trim_end_matches(']'), port.parse().ok()?).ok()
-        })
-        .flatten()
-        .take(MAX_INITIAL_PEERS)
-        .collect()
+/// The magnet link's peers to try first: those named by an address only
+/// (a name would be looked up), at most [`MAX_INITIAL_PEERS`].
+fn initial_peers(magnet: &MagnetLink) -> Vec<SocketAddr> {
+    magnet.peers.iter().filter_map(|p| p.parse::<SocketAddr>().ok()).take(MAX_INITIAL_PEERS).collect()
 }
 
 /// The torrent's file to add, with the trackers `route` lets it use, and
@@ -1168,8 +1406,16 @@ impl Torrents for TorrentDesk {
         self.client.select(info_hash, files).map_err(port_error)
     }
 
+    fn info(&self, info_hash: InfoHash) -> Option<TorrentInfo> {
+        self.client.info(info_hash)
+    }
+
     fn seeding(&self) -> Vec<Seeding> {
         self.client.seeding()
+    }
+
+    fn active(&self) -> bool {
+        self.client.active()
     }
 
     fn seed(

@@ -260,8 +260,19 @@ impl DownloadStore {
         }
         match msg {
             Outgoing::Done { id, url, path, .. } => {
-                let referrer = table.get(*id).and_then(|e| e.referrer.clone());
-                crate::platform::mark_from_internet(Path::new(path), url.as_str(), referrer.as_deref());
+                match table.get(*id).and_then(|e| e.torrent.as_ref()) {
+                    // A torrent marks each file it wrote, with no address:
+                    // a magnet link is none Windows takes.
+                    Some(torrent) => {
+                        for file in torrent.written_files(Path::new(path)) {
+                            crate::platform::mark_from_internet_unnamed(&file);
+                        }
+                    }
+                    None => {
+                        let referrer = table.get(*id).and_then(|e| e.referrer.clone());
+                        crate::platform::mark_from_internet(Path::new(path), url.as_str(), referrer.as_deref());
+                    }
+                }
                 lock(&self.requests).remove(id);
                 self.events.ended(Ended::Finished(*id));
             }

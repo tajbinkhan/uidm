@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "Dit is geen torrentbestand: {why}",
   "Choose at least one of the torrent's files.": "Kies ten minste één bestand van de torrent.",
   "The torrent has no file number {number}.": "De torrent heeft geen bestand nummer {number}.",
-  "{value} is not a share ratio between 0 and 100.": "{value} is geen deelverhouding tussen 0 en 100."
+  "{value} is not a share ratio between 0 and 100.": "{value} is geen deelverhouding tussen 0 en 100.",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "De bestandsnamen van de torrent beslaan meer dan {size}; UDM neemt alleen kortere lijsten.",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "Een torrent met één bestand houdt de naam van dat bestand, {name}; kies alleen de map."
 }

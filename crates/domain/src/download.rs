@@ -798,6 +798,13 @@ impl DownloadEntry {
         if !self.status.waits() {
             return Err(DownloadError::NotWaiting(self.id));
         }
+        // A torrent of one file writes it under the torrent's own name.
+        if let (Some(chosen), Some(fixed)) = (filename, self.torrent.as_ref().and_then(|t| t.files.single_name())) {
+            let chosen = crate::filename::sanitize_filename(chosen).map(FileName::into_string);
+            if chosen.is_some_and(|c| c != fixed) {
+                return Err(DownloadError::Torrent(crate::torrent::TorrentError::NameFixed(fixed.to_string())));
+            }
+        }
         let path = if filename.is_none() && folder.is_none() {
             // Keep whatever it already has: a chosen file, a partial file,
             // or nothing yet.
@@ -1102,7 +1109,7 @@ impl Download {
     /// its queue and its note stay.
     pub fn into_torrent(self, magnet: &crate::torrent::MagnetLink, name: &str) -> Download {
         Download {
-            url: Link::from(magnet.to_uri()),
+            url: Link::from(magnet.to_uri_within(crate::torrent::MAX_MADE_MAGNET)),
             filename: Some(name.to_string()),
             referrer: self.referrer,
             page: self.page,
@@ -1202,6 +1209,12 @@ impl Download {
     /// running download's file cannot be replaced under it, so overwriting
     /// one points at it instead.
     pub fn settle_duplicate(&mut self, old: &DownloadEntry, choice: Duplicate) -> DuplicateStep {
+        // One torrent is one download: the client holds it once, so another
+        // copy is never added, nor does it replace the one there (which would
+        // forget the torrent's kept file and resume data).
+        if self.url.address().is_some_and(Address::is_torrent) {
+            return DuplicateStep::UseExisting;
+        }
         match choice {
             Duplicate::Ask | Duplicate::NewName => {
                 self.file_exists = Some(FileExists::Rename);

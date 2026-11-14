@@ -419,10 +419,12 @@ fn torrent_file(word: &str, cwd: &Path) -> Result<GetRequest, UsageError> {
     }
     let bad = |why: String| UsageError::BadTorrent(word.to_string(), why);
     let size = std::fs::metadata(&path).map_err(|e| bad(e.to_string()))?.len();
-    if size > udm_domain::torrent::MAX_METAINFO_BYTES as u64 {
-        return Err(bad(
-            udm_domain::torrent::TorrentError::TooBig { max: udm_domain::torrent::MAX_METAINFO_BYTES }.to_string()
-        ));
+    // Sent base64-encoded in one message, which has a size limit.
+    if size > udm_domain::torrent::MAX_SENT_METAINFO_BYTES as u64 {
+        let max = udm_domain::bytes::ByteCount::new(udm_domain::torrent::MAX_SENT_METAINFO_BYTES as u64).megabytes();
+        return Err(bad(format!(
+            "it is larger than {max}, the most a .torrent file sent to UDM may be; add it from its web address instead"
+        )));
     }
     let bytes = std::fs::read(&path).map_err(|e| bad(e.to_string()))?;
     let meta = crate::torrent::metainfo::Metainfo::read(&bytes).map_err(|e| bad(e.to_string()))?;
@@ -780,8 +782,13 @@ mod tests {
         let Ok(Invocation::Get { request, .. }) = parse(&["get", "a.torrent"], &dir) else { panic!("taken") };
         assert!(request.url.is_torrent() && request.url.as_str().contains("&dn=a.iso"));
         assert_eq!(request.metainfo, Some(bytes));
+        std::fs::write(dir.join("big.torrent"), vec![b'd'; udm_domain::torrent::MAX_SENT_METAINFO_BYTES + 1]).unwrap();
+        assert!(
+            matches!(parse(&["get", "big.torrent"], &dir), Err(UsageError::BadTorrent(_, why)) if why.contains("web address"))
+        );
         std::fs::write(dir.join("b.torrent"), b"<html>").unwrap();
         assert!(matches!(parse(&["get", "b.torrent"], &dir), Err(UsageError::BadTorrent(..))));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

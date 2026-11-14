@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "Ce n'est pas un fichier torrent : {why}",
   "Choose at least one of the torrent's files.": "Choisissez au moins un des fichiers du torrent.",
   "The torrent has no file number {number}.": "Le torrent n'a pas de fichier numéro {number}.",
-  "{value} is not a share ratio between 0 and 100.": "{value} n'est pas un ratio de partage entre 0 et 100."
+  "{value} is not a share ratio between 0 and 100.": "{value} n'est pas un ratio de partage entre 0 et 100.",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "Les noms de fichiers du torrent dépassent {size} ; UDM accepte des listes plus courtes.",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "Un torrent d'un seul fichier garde le nom de ce fichier, {name} ; choisissez seulement son dossier."
 }

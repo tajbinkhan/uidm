@@ -88,6 +88,7 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "select_torrent_files", "id": 4, "files": [0, 2] }
 { "op": "set_seed_limits", "id": 4, "limits": { "ratio": 2.0, "minutes": 120 } }
 { "op": "stop_seeding", "id": 4 }
+{ "op": "torrent_files", "id": 4 }
 ```
 
 Daemon to clients:
@@ -161,15 +162,18 @@ file.torrent`), and the daemon keeps the file and makes the magnet link the down
 An `add` of an http or https address that is a `.torrent` file (by its `content_type` or its
 name) is fetched by the daemon, with the request's cookies and headers, and added as its torrent
 when **Options** takes torrent files. Once a torrent's metadata is known, every client hears
-`torrent_info` (its files, numbered from 0 in the torrent's order); a `confirming` torrent's
-entry carries them too (`torrent.files`), so the save-as dialog can list them, and the dialog's
-`confirm` takes `files`, the numbers chosen. `select_torrent_files` changes them later: a running
+`torrent_info` (its files, numbered from 0 in the torrent's order), as it does when the save-as
+dialog is about to ask about a torrent; a row never carries the file list, which can be long, so a
+client that joins later asks for it with `torrent_files` (answered with `torrent_info` to it
+alone, or `error`). The dialog's `confirm` takes `files`, the numbers chosen; for a torrent of one
+file it refuses a `filename` other than the file's own. `select_torrent_files` changes them later: a running
 torrent at once, a finished one given more files starts again. While a torrent downloads or seeds,
 `torrent_stats` comes about every second (every two while seeding): its `phase` (`metadata`,
-`checking`, `downloading`, `seeding` or `complete`), speeds in bytes per second, the busiest 200
-peers, its trackers (`used`, or `skipped` when DNS over HTTPS would have to send the name to the
+`checking`, `downloading`, `seeding` or `complete`; while checking, `done` and `total` are the
+bytes checked and the whole torrent's), speeds in bytes per second, the busiest 200 peers, its trackers (`used`, or `skipped` when DNS over HTTPS would have to send the name to the
 system), and `pieces`, a map of at most 512 cells, each the percentage of its share of the pieces
-that is here. An entry's `torrent` keeps its `info_hash`, `phase`, `files`, `selection`,
+that is here, and `file_done` for a torrent of at most 1,000 files. `udm-host` passes none of the torrent messages, nor rows' `torrent` part, on to the browser
+extension. An entry's `torrent` keeps its `info_hash`, `phase`, `selection`,
 `uploaded`, `seeding_since` and its own `seed_limits`, which `set_seed_limits` sets (none follows
 the settings').
 

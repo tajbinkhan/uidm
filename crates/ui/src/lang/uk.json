@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "Це не торент-файл: {why}",
   "Choose at least one of the torrent's files.": "Виберіть принаймні один файл торента.",
   "The torrent has no file number {number}.": "У торенті немає файлу з номером {number}.",
-  "{value} is not a share ratio between 0 and 100.": "{value} не є коефіцієнтом роздачі від 0 до 100."
+  "{value} is not a share ratio between 0 and 100.": "{value} не є коефіцієнтом роздачі від 0 до 100.",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "Імена файлів торента займають понад {size}; UDM приймає коротші списки.",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "Торент з одного файлу зберігає ім'я файлу, {name}; виберіть лише теку."
 }

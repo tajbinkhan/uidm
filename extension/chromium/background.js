@@ -541,7 +541,9 @@ function onContentMessage(msg, sender, sendResponse) {
     case "link:magnet":
       // A magnet link clicked (see content.js): UDM downloads its torrent,
       // unless capture is off, everywhere or in this tab.
-      if (!connected || !captureEnabled || !tabCaptures(tabId) || !isMagnet(msg.url)) {
+      // The page's site may be one UDM's settings leave to the browser.
+      const excluded = rules && (rules.capture_excluded_sites || []).some((site) => siteMatches(site, hostOf(sender.tab.url)));
+      if (!connected || !captureEnabled || !tabCaptures(tabId) || !isMagnet(msg.url) || excluded) {
         sendResponse({ ok: false });
         return false;
       }
@@ -1486,7 +1488,11 @@ async function takeDownload(item, url, filename, refreshId = null, guessPage = t
   const referrer = from || (item.referrer ? webReferrer(parent, page) : undefined);
   if (refreshId !== null) refreshWaiting = null;
   const origin = { tabId: record ? record.tabId : undefined, incognito: !!item.incognito, cookieStoreId: item.cookieStoreId };
-  const sent = await deliver(requestUrl, referrer, filename, post, refreshId, page, requestDetails(record), origin);
+  // The download's own type, when no request told it (UDM tells a .torrent
+  // file by its type or name).
+  const details = requestDetails(record);
+  if (!details.content_type && item.mime) details.content_type = item.mime;
+  const sent = await deliver(requestUrl, referrer, filename, post, refreshId, page, details, origin);
   if (record && record.type === "main_frame") closeIfOpenedFor(record.tabId, [url, item.url, ...record.redirects]);
   return sent;
 }

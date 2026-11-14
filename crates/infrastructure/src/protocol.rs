@@ -378,6 +378,11 @@ pub enum Incoming {
     StopSeeding {
         id: DownloadId,
     },
+    /// Send torrent download `id`'s files, as `torrent_info` to this client
+    /// only (rows carry no file list); `error` when none are known.
+    TorrentFiles {
+        id: DownloadId,
+    },
 }
 
 /// A message from the daemon to a client.

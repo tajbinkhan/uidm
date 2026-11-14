@@ -13,12 +13,29 @@ use crate::engine::{DownloadRequest, Engine};
 
 const PIECE: usize = 16 * 1024;
 
-/// A folder of its own under the temporary folder, empty.
-fn scratch(name: &str) -> PathBuf {
+/// A folder of its own under the temporary folder, empty, removed with
+/// what is in it when the test is done with it.
+struct Scratch(PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(name: &str) -> Scratch {
     let dir = std::env::temp_dir().join(format!("udm_torrent_{}_{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    Scratch(dir)
 }
 
 /// `len` bytes that differ from file to file.
@@ -76,14 +93,14 @@ fn make_torrent(dir: &Path, name: &str) -> Vec<u8> {
 
 /// A librqbit session seeding the test torrent from `dir`, on 127.0.0.1
 /// only. Returns it, the torrent's magnet link (with the seeder as its
-/// peer) and the torrent file.
-fn seeder(name: &str) -> (Arc<Session>, String, Vec<u8>, PathBuf) {
+/// peer), the torrent file and the folder its files are in.
+fn seeder(name: &str) -> (Arc<Session>, String, Vec<u8>, Scratch) {
     let dir = scratch(name);
     let bytes = make_torrent(&dir, "Album");
     let runtime = engine::http::runtime().unwrap();
     let session = runtime
         .block_on(Session::new_with_opts(
-            dir.clone(),
+            dir.to_path_buf(),
             SessionOptions {
                 dht: None,
                 disable_trackers: true,
@@ -121,18 +138,41 @@ fn quiet() -> TorrentSettings {
     TorrentSettings { dht: false, upnp: false, local_peers: false, ..TorrentSettings::default() }
 }
 
+/// The tuning tests use: 127.0.0.1, no DHT nodes to start from.
+fn local() -> Tuning {
+    Tuning { listen_ip: IpAddr::from([127, 0, 0, 1]), dht_bootstrap: Some(Vec::new()), ..Tuning::default() }
+}
+
 /// A client under `dir`, listening on 127.0.0.1, sending its events to the
 /// returned receiver.
 fn client(dir: &Path) -> (Arc<TorrentClient>, Receiver<Progress>, Sink) {
-    let tuning = Tuning { listen_ip: IpAddr::from([127, 0, 0, 1]), dht_bootstrap: Some(Vec::new()) };
+    client_with(dir, local(), Arc::new(Route::default), Arc::new(quiet))
+}
+
+fn client_with(
+    dir: &Path,
+    tuning: Tuning,
+    route: RouteSource,
+    settings: SettingsSource,
+) -> (Arc<TorrentClient>, Receiver<Progress>, Sink) {
     let client = Arc::new(TorrentClient::tuned(dir.to_path_buf(), tuning));
     let (tx, rx) = channel();
     let tx = Mutex::new(tx);
     let sink: Sink = Arc::new(move |p| {
         let _ = tx.lock_or_recover().send(p);
     });
-    client.connect(Arc::clone(&sink), Arc::new(Route::default), Arc::new(quiet));
+    client.connect(Arc::clone(&sink), route, settings);
     (client, rx, sink)
+}
+
+/// Look at the seeding torrents until `done` holds, for at most 30 s.
+fn watch_until(client: &TorrentClient, what: &str, done: impl Fn() -> bool) {
+    let waited = Instant::now();
+    while !done() {
+        client.watch_seeding();
+        assert!(waited.elapsed() < Duration::from_secs(30), "{what}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// An engine downloading through `client`.
@@ -241,6 +281,64 @@ fn only_the_chosen_files_are_downloaded() {
 }
 
 #[test]
+fn checked_data_never_counts_as_downloaded() {
+    // Every file is there already; one is chosen. While the torrent checks
+    // its data, librqbit counts the whole torrent: none of that may reach the
+    // list or the quota as downloaded bytes.
+    let (_seeder, magnet, _, _) = seeder("seed_checked");
+    let dir = scratch("leech_checked");
+    make_torrent(&dir.join("dl"), "Album");
+    let (client, rx, sink) = client(&dir.join("state"));
+    let engine = engine(&client, sink);
+    let mut req = request(&magnet, &dir.join("dl"));
+    req.torrent_files = Some(FileSelection::parse(&[1], 3).unwrap());
+    req.file_exists = FileExists::Overwrite;
+    let id = engine.enqueue(req);
+    let events = until_end(&rx, id);
+    assert!(matches!(events.last(), Some(Progress::Finished { .. })));
+    let chosen = (3 * PIECE) as u64;
+    for p in &events {
+        if let Progress::Advanced { done, total, .. } = p {
+            assert_eq!(total.map(|t| t.get()), Some(chosen));
+            assert!(done.get() <= chosen, "{done} of {chosen}");
+        }
+    }
+}
+
+#[test]
+fn a_taken_name_follows_the_file_exists_setting() {
+    let (_seeder, magnet, _, _) = seeder("seed_taken");
+    let dir = scratch("leech_taken");
+    std::fs::create_dir_all(dir.join("dl").join("Album")).unwrap();
+    std::fs::write(dir.join("dl").join("Album").join("a.bin"), b"somebody else's").unwrap();
+    let (client, rx, sink) = client(&dir.join("state"));
+    let engine = engine(&client, sink);
+    // Rename (the default): a numbered folder; the other file stays.
+    let id = engine.enqueue(request(&magnet, &dir.join("dl")));
+    match until_end(&rx, id).last() {
+        Some(Progress::Finished { path, .. }) => assert_eq!(path, &dir.join("dl").join("Album (1)")),
+        _ => panic!("finished"),
+    }
+    same_files(&dir.join("dl").join("Album (1)"), None);
+    assert_eq!(std::fs::read(dir.join("dl").join("Album").join("a.bin")).unwrap(), b"somebody else's");
+    // Ask: nothing is written, the dialog asks.
+    let mut req = request(&magnet, &dir.join("dl"));
+    req.file_exists = FileExists::Ask;
+    let id = engine.enqueue(req);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).expect("an answer") {
+            Progress::NameTaken { id: i, path, .. } if i == id => {
+                assert_eq!(path, dir.join("dl").join("Album"));
+                break;
+            }
+            Progress::Finished { id: i, .. } | Progress::Failed { id: i, .. } if i == id => panic!("it asks"),
+            _ => {}
+        }
+    }
+}
+
+#[test]
 fn a_paused_torrent_resumes_and_survives_a_restart() {
     let (_seeder, magnet, _, _) = seeder("seed_pause");
     let dir = scratch("leech_pause");
@@ -262,7 +360,10 @@ fn a_paused_torrent_resumes_and_survives_a_restart() {
     assert!(matches!(until_end(&rx, id).last(), Some(Progress::Canceled { .. })));
     // Started again, by the same client.
     client.set_limits(None, None);
-    engine.enqueue_as(id, request(&magnet, &dir.join("dl")));
+    // Started again, as a resume does: into its own folder.
+    let mut again = request(&magnet, &dir.join("dl"));
+    again.reuse_path = Some(dir.join("dl").join("Album"));
+    engine.enqueue_as(id, again);
     assert!(matches!(until_end(&rx, id).last(), Some(Progress::Finished { .. })));
     same_files(&dir.join("dl").join("Album"), None);
     drop(engine);
@@ -290,12 +391,8 @@ fn a_finished_torrent_seeds_again_after_a_restart_and_is_forgotten() {
     // of it left them.
     client.add_file(&bytes).unwrap();
     client.seed(DownloadId::new(7), &link, &seed_dir.join("Album"), None, ByteCount::new(42)).unwrap();
-    let waited = Instant::now();
-    while client.seeding().is_empty() {
-        client.watch_seeding();
-        assert!(waited.elapsed() < Duration::from_secs(30), "it checks its files, then seeds");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    assert!(client.seeding().is_empty() && client.active(), "checked before it uploads");
+    watch_until(&client, "it checks its files, then seeds", || !client.seeding().is_empty());
     assert_eq!(client.seeding()[0].uploaded, ByteCount::new(42), "what it uploaded before counts");
     assert!(rx.try_iter().any(|p| matches!(p, Progress::TorrentStats { id, stats, .. }
         if id == DownloadId::new(7) && stats.phase == TorrentPhase::Seeding)));
@@ -304,18 +401,25 @@ fn a_finished_torrent_seeds_again_after_a_restart_and_is_forgotten() {
     assert!(client.seeding().is_empty());
     assert!(!client.kept_path(link.info_hash).exists(), "its torrent file goes");
 
-    // Files that are not all there do not seed (nor download).
+    // Files that are not all there, or not at their size, do not seed: no
+    // file is made or written for them.
     let broken = scratch("broken_again");
     std::fs::create_dir_all(broken.join("Album")).unwrap();
     std::fs::write(broken.join("Album").join("a.bin"), b"short").unwrap();
     client.add_file(&bytes).unwrap();
-    client.seed(DownloadId::new(8), &link, &broken.join("Album"), None, ByteCount::ZERO).unwrap();
-    let waited = Instant::now();
-    while client.inner().seeding.contains_key(&link.info_hash) {
-        client.watch_seeding();
-        assert!(waited.elapsed() < Duration::from_secs(30), "it stops once checked");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    assert!(client.seed(DownloadId::new(8), &link, &broken.join("Album"), None, ByteCount::ZERO).is_err());
+    assert!(!broken.join("Album").join("b.bin").exists());
+    assert_eq!(std::fs::read(broken.join("Album").join("a.bin")).unwrap(), b"short");
+    assert!(client.seeding().is_empty() && !client.active());
+
+    // Files changed inside (same sizes) are found by the check: it stops
+    // rather than download.
+    let changed = scratch("changed_again");
+    make_torrent(&changed, "Album");
+    std::fs::write(changed.join("Album").join("b.bin"), vec![0u8; 3 * PIECE]).unwrap();
+    client.seed(DownloadId::new(9), &link, &changed.join("Album"), None, ByteCount::ZERO).unwrap();
+    watch_until(&client, "it stops once checked", || !client.inner().seeding.contains_key(&link.info_hash));
+    assert_eq!(std::fs::read(changed.join("Album").join("b.bin")).unwrap(), vec![0u8; 3 * PIECE], "nothing written");
     assert!(client.seeding().is_empty());
 }
 
@@ -360,10 +464,12 @@ fn with_dns_over_https_no_tracker_name_goes_to_the_system() {
     .map(|t| t.to_string())
     .collect();
     let (used, shown) = trackers_for(&trackers, &doh);
-    assert_eq!(used, ["udp://127.0.0.1:6969/announce", "http://10.0.0.1:8080/announce", "udp://[::1]:6969"]);
+    assert_eq!(used, ["udp://127.0.0.1:6969/announce", "udp://[::1]:6969"]);
     let states: Vec<TrackerState> = shown.iter().map(|t| t.state).collect();
     use TrackerState::{Skipped, Used};
-    assert_eq!(states, [Used, Skipped, Skipped, Used, Used], "a name the resolver cannot give is left out");
+    // A name the resolver cannot give is left out, and so is every HTTP
+    // tracker: librqbit's client would follow a redirect to a name.
+    assert_eq!(states, [Used, Skipped, Skipped, Skipped, Used]);
     // The system's resolver: every tracker as it is.
     assert_eq!(trackers_for(&trackers, &Route::default()).0, trackers);
 }
@@ -372,17 +478,52 @@ fn with_dns_over_https_no_tracker_name_goes_to_the_system() {
 #[test]
 fn torrents_refuse_to_run_bound_on_windows() {
     let (route, _) = crate::route::tests::bound_to_loopback();
-    let (client, _rx, _) = client(&scratch("windows_bound"));
+    let dir = scratch("windows_bound");
+    let (client, _rx, _) = client(&dir);
     assert!(matches!(client.live(&route), Err(EngineError::Torrent(text)) if text == WINDOWS_BOUND));
+}
+
+/// The device a socket is bound to (`SO_BINDTODEVICE`), for each of this
+/// process's IPv4 sockets on `port`.
+#[cfg(target_os = "linux")]
+fn devices_on_port(port: u16) -> Vec<String> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc/self/fd").unwrap().flatten() {
+        let Ok(fd) = entry.file_name().to_string_lossy().parse::<i32>() else { continue };
+        // SAFETY: getsockname and getsockopt only write into the buffers
+        // given, with their lengths; a descriptor that is no socket (or was
+        // closed since) makes them fail, which is skipped.
+        unsafe {
+            let mut addr: libc::sockaddr_in = std::mem::zeroed();
+            let mut len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+            if libc::getsockname(fd, (&raw mut addr).cast(), &mut len) != 0
+                || i32::from(addr.sin_family) != libc::AF_INET
+                || u16::from_be(addr.sin_port) != port
+            {
+                continue;
+            }
+            let mut name = [0u8; 32];
+            let mut len = name.len() as libc::socklen_t;
+            if libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_BINDTODEVICE, name.as_mut_ptr().cast(), &mut len) == 0 {
+                let end = name.iter().position(|b| *b == 0).unwrap_or(len as usize);
+                found.push(String::from_utf8_lossy(&name[..end]).into_owned());
+            }
+        }
+    }
+    found
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn a_session_bound_to_an_adapter_binds_its_sockets_and_stops_with_it() {
     let (route, stand_in) = crate::route::tests::bound_to_loopback();
-    let (client, _rx, _) = client(&scratch("bound"));
+    let device = stand_in.adapter.lock().unwrap().id.as_str().to_string();
+    let dir = scratch("bound");
+    let (client, _rx, _) = client(&dir);
     let (session, generation) = client.live(&route).unwrap();
-    assert!(session.listen_addr().is_some());
+    let port = session.listen_addr().unwrap().port();
+    let devices = devices_on_port(port);
+    assert!(!devices.is_empty() && devices.iter().all(|d| *d == device), "the listener is bound: {devices:?}");
     // The same settings keep the session.
     assert_eq!(client.live(&route).unwrap().1, generation);
     stand_in.gone.store(true, Ordering::SeqCst);
@@ -394,6 +535,71 @@ fn a_session_bound_to_an_adapter_binds_its_sockets_and_stops_with_it() {
     client.watch_seeding();
     assert!(client.inner().live.is_none(), "the session stops");
     assert!(client.live(&route).is_err(), "and does not start while the adapter is down");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_torrent_waits_to_seed_until_its_adapter_is_up() {
+    let (_seeder, magnet, bytes, seed_dir) = seeder("seed_wait");
+    let (route, stand_in) = crate::route::tests::bound_to_loopback();
+    stand_in.gone.store(true, Ordering::SeqCst);
+    let dir = scratch("wait_for_adapter");
+    let live = route.clone();
+    let (client, _rx, _) = client_with(&dir, local(), Arc::new(move || live.clone()), Arc::new(quiet));
+    let link = MagnetLink::parse(&magnet).unwrap();
+    client.add_file(&bytes).unwrap();
+    client.seed(DownloadId::new(3), &link, &seed_dir.join("Album"), None, ByteCount::ZERO).unwrap();
+    client.watch_seeding();
+    assert!(client.active() && client.seeding().is_empty() && client.inner().live.is_none(), "it waits");
+    stand_in.gone.store(false, Ordering::SeqCst);
+    watch_until(&client, "it seeds once the adapter is up", || !client.seeding().is_empty());
+}
+
+#[test]
+fn dns_over_https_builds_a_session_without_asking_the_system() {
+    let endpoint = udm_domain::network::DohEndpoint {
+        url: "https://127.0.0.1:9/dns-query".into(),
+        host: "127.0.0.1".into(),
+        bootstrap: Vec::new(),
+    };
+    let doh = Route { binding: None, dns: Some(Arc::new(crate::doh::Doh::new(endpoint, None))) };
+    let dir = scratch("doh_session");
+    let with_dht = || TorrentSettings { dht: true, ..quiet() };
+    // librqbit's own bootstrap names, looked up through the resolver (which
+    // does not answer here): the DHT starts with none, and nothing panics.
+    let tuning = Tuning { dht_bootstrap: None, ..local() };
+    let route = doh.clone();
+    let (client, _rx, _) = client_with(&dir, tuning, Arc::new(move || route.clone()), Arc::new(with_dht));
+    let (session, _) = client.live(&doh).unwrap();
+    assert!(session.listen_addr().is_some());
+    assert!(client.metadata(&MagnetLink::new(InfoHash::from_bytes([3; 20])), Duration::from_secs(1)).is_err());
+}
+
+#[test]
+fn a_change_of_settings_moves_seeding_to_a_new_session_and_an_idle_one_closes() {
+    let (_seeder, magnet, bytes, seed_dir) = seeder("seed_refresh");
+    let dir = scratch("refresh");
+    let settings = Arc::new(Mutex::new(quiet()));
+    let source = Arc::clone(&settings);
+    let tuning = Tuning { idle_session: Duration::ZERO, ..local() };
+    let (client, _rx, _) =
+        client_with(&dir, tuning, Arc::new(Route::default), Arc::new(move || source.lock().unwrap().clone()));
+    let link = MagnetLink::parse(&magnet).unwrap();
+    client.add_file(&bytes).unwrap();
+    client.seed(DownloadId::new(4), &link, &seed_dir.join("Album"), None, ByteCount::ZERO).unwrap();
+    watch_until(&client, "it seeds", || !client.seeding().is_empty());
+    let before = client.generation.load(Ordering::SeqCst);
+    settings.lock().unwrap().max_peers = Some(10);
+    client.refresh();
+    let generation = client.generation.load(Ordering::SeqCst);
+    assert!(client.listen_addr().is_some());
+    assert!(generation > before, "a new session");
+    watch_until(&client, "it seeds there, checked again", || !client.seeding().is_empty());
+    assert!(client.listen_addr().is_some(), "a seeding torrent keeps the session up");
+    client.stop_seeding(link.info_hash);
+    client.watch_seeding();
+    client.watch_seeding();
+    assert_eq!(client.listen_addr(), None, "nothing needs it: it closes");
 }
 
 /// The daemon's side: `.torrent` files fetched from the web, and the
@@ -419,7 +625,9 @@ fn torrent_files_are_fetched_and_magnet_links_proposed() {
     let (store, _, next_id) = DownloadStore::open(StoreFiles::default(), Arc::clone(&events));
     let settings = Settings { download_dir: Some(dir.join("dl").display().to_string()), ..Settings::default() };
     let live = Arc::new(LiveSettings::new(settings, None));
-    let transfers = Arc::new(crate::transfers::Transfers::new(Arc::new(store), events, live, Arc::default(), next_id));
+    let transfers_store = Arc::new(store);
+    let transfers =
+        Arc::new(crate::transfers::Transfers::new(Arc::clone(&transfers_store), events, live, Arc::default(), next_id));
     let (client, _rx, _) = client(&dir.join("state"));
     transfers.torrents_with(Arc::clone(&client));
     let desk = TorrentDesk { client: Arc::clone(&client), transfers: Arc::clone(&transfers) };
@@ -438,6 +646,39 @@ fn torrent_files_are_fetched_and_magnet_links_proposed() {
     assert!(facts.path.ends_with("Album"));
     assert_eq!(facts.torrent.map(|t| t.files.len()), Some(3));
     assert_eq!(facts.total, Some(info.files.selected_size(None)));
+
+    // The scheduler's seeding limits against the real client: a torrent
+    // seeding (from its files) for longer than its own limit stops.
+    use udm_application::torrents::ApplySeedLimits;
+    use udm_domain::ports::DownloadList as _;
+    let row_id = DownloadId::new(1);
+    let mut row: udm_domain::download::DownloadEntry = serde_json::from_value(serde_json::json!({
+        "id": 1, "url": magnet.to_uri(), "status": "done", "connections": 1, "done": 0, "resumable": true,
+        "path": dir.join("source").join("Album"),
+    }))
+    .unwrap();
+    row.set_torrent_info(&info);
+    if let Some(t) = row.torrent.as_mut() {
+        t.phase = TorrentPhase::Seeding;
+        t.seeding_since = Some(1_000);
+        t.seed_limits = Some(udm_domain::torrent::SeedLimits { ratio: None, minutes: Some(1) });
+    }
+    transfers_store.publish(&crate::protocol::Outgoing::Updated { item: row });
+    client.seed(row_id, &magnet, &dir.join("source").join("Album"), None, ByteCount::ZERO).unwrap();
+    watch_until(&client, "it seeds", || !client.seeding().is_empty());
+    struct At(u64);
+    impl udm_domain::ports::Timestamps for At {
+        fn unix_now(&self) -> u64 {
+            self.0
+        }
+    }
+    let early = ApplySeedLimits::new(&*transfers_store, &desk, &*transfers, &At(1_030)).run();
+    assert!(early.is_empty(), "half a minute: it seeds on");
+    let stopped = ApplySeedLimits::new(&*transfers_store, &desk, &*transfers, &At(1_060)).run();
+    assert_eq!(stopped, [row_id]);
+    assert!(client.seeding().is_empty());
+    let phase = transfers_store.entry(row_id).and_then(|e| e.torrent).map(|t| t.phase);
+    assert_eq!(phase, Some(TorrentPhase::Complete));
 
     // A page that is no torrent file.
     let page = TestServer::start(b"<html>not a torrent</html>".to_vec());

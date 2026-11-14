@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "这不是种子文件：{why}",
   "Choose at least one of the torrent's files.": "请至少选择种子中的一个文件。",
   "The torrent has no file number {number}.": "该种子没有编号为 {number} 的文件。",
-  "{value} is not a share ratio between 0 and 100.": "{value} 不是 0 到 100 之间的分享率。"
+  "{value} is not a share ratio between 0 and 100.": "{value} 不是 0 到 100 之间的分享率。",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "该种子的文件名总长超过 {size}；UDM 只接受更短的列表。",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "单文件种子保留其文件名 {name}；请只选择文件夹。"
 }

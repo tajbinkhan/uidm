@@ -31,6 +31,20 @@ pub const MAX_TORRENT_FILES: usize = 10_000;
 /// The largest `.torrent` file (or metadata from peers) UDM takes.
 pub const MAX_METAINFO_BYTES: usize = 16 * 1024 * 1024;
 
+/// The largest `.torrent` file a client may send the daemon itself
+/// (`udm-cli get file.torrent`, the window's Open): base64 makes it a
+/// third bigger, and the message must stay under the 4 MiB frame limit.
+/// The daemon fetches larger ones from the web itself.
+pub const MAX_SENT_METAINFO_BYTES: usize = 2816 * 1024;
+
+/// The most bytes of file names a torrent's list may hold (every part of
+/// every path), so the list fits in one message to the window.
+pub const MAX_FILE_NAME_BYTES: usize = 1536 * 1024;
+
+/// The longest magnet link UDM makes from a `.torrent` file: trackers that
+/// do not fit are left to the kept file.
+pub const MAX_MADE_MAGNET: usize = 4 * 1024;
+
 /// The most trackers, web seeds or peers a magnet link may name; the rest
 /// are left out.
 pub const MAX_MAGNET_ENTRIES: usize = 200;
@@ -68,6 +82,12 @@ pub enum TorrentError {
     NoSuchFile(usize),
     #[error("{0} is not a share ratio between 0 and 100.")]
     BadRatio(String),
+    /// Its file list's names, and the most UDM takes, in bytes.
+    #[error("The torrent's file names take more than {}; UDM takes shorter lists.", ByteCount::new(*max as u64).megabytes())]
+    FileListTooBig { max: usize },
+    /// A torrent of one file saves it under the torrent's own name.
+    #[error("A torrent of one file keeps its file's name, {0}; choose only its folder.")]
+    NameFixed(String),
 }
 
 /// A torrent's BitTorrent v1 info hash: the SHA-1 of its info dictionary.
@@ -253,6 +273,74 @@ impl MagnetLink {
     }
 }
 
+impl MagnetLink {
+    /// The link as text, at most `max` bytes long when its hash and name
+    /// fit: trackers, then peers and web seeds, are left out from the end
+    /// until it does.
+    pub fn to_uri_within(&self, max: usize) -> String {
+        let mut link = self.clone();
+        loop {
+            let uri = link.to_uri();
+            if uri.len() <= max {
+                return uri;
+            }
+            if link.web_seeds.pop().is_none() && link.peers.pop().is_none() && link.trackers.pop().is_none() {
+                return uri;
+            }
+        }
+    }
+
+    /// The link as logs may show it: its hash and name, without trackers
+    /// (whose addresses may carry a private tracker's passkey) or peers.
+    pub fn for_log(&self) -> String {
+        MagnetLink { trackers: Vec::new(), web_seeds: Vec::new(), peers: Vec::new(), ..self.clone() }.to_uri()
+    }
+}
+
+/// `text` as logs may show it: a magnet link without its trackers and peers
+/// (`MagnetLink::for_log`), anything else as it is.
+pub fn loggable(text: &str) -> String {
+    match starts_like_magnet(text).then(|| MagnetLink::parse(text).ok()).flatten() {
+        Some(m) => m.for_log(),
+        None if starts_like_magnet(text) => {
+            let lower = text.to_ascii_lowercase();
+            let hash = lower
+                .find("urn:btih:")
+                .and_then(|at| text.get(at + 9..))
+                .map(|rest| rest.split('&').next().unwrap_or(""));
+            match hash {
+                Some(hash) => format!("magnet:?xt=urn:btih:{hash}"),
+                None => "magnet:?".to_string(),
+            }
+        }
+        None => text.to_string(),
+    }
+}
+
+/// `text` with every magnet link in it as `loggable` shows it: no trackers
+/// (a private tracker's address carries the user's passkey) and no peers.
+pub fn scrub_magnets(text: &str) -> std::borrow::Cow<'_, str> {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("magnet:?") {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut done = 0;
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("magnet:?") {
+        let start = from + at;
+        let end = text[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | ')' | ']' | ','))
+            .map_or(text.len(), |e| start + e);
+        out.push_str(&text[done..start]);
+        out.push_str(&loggable(&text[start..end]));
+        done = end;
+        from = end;
+    }
+    out.push_str(&text[done..]);
+    std::borrow::Cow::Owned(out)
+}
+
 impl fmt::Display for MagnetLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_uri())
@@ -284,15 +372,17 @@ fn encode(value: &str) -> String {
     percent_encoding::utf8_percent_encode(value, KEEP).to_string()
 }
 
-/// Whether a download from `url`, sent with `content_type`, is a `.torrent`
-/// file: its type says so (`application/x-bittorrent`) or its path ends in
-/// `.torrent`.
-pub fn is_torrent_file(url: &str, content_type: Option<&str>) -> bool {
+/// Whether a download from `url`, sent with `content_type` and named
+/// `filename` (the browser's name for it, from the server's
+/// Content-Disposition), is a `.torrent` file: its type says so
+/// (`application/x-bittorrent`), or its name or path ends in `.torrent`.
+pub fn is_torrent_file(url: &str, content_type: Option<&str>, filename: Option<&str>) -> bool {
     let typed = content_type
         .and_then(|t| t.split(';').next())
         .is_some_and(|t| t.trim().eq_ignore_ascii_case("application/x-bittorrent"));
     let path = url.split(['?', '#']).next().unwrap_or(url);
-    typed || path.to_ascii_lowercase().ends_with(".torrent")
+    let named = |name: &str| name.trim().to_ascii_lowercase().ends_with(".torrent");
+    typed || named(path) || filename.is_some_and(named)
 }
 
 /// One file of a torrent: its path inside the torrent's folder, each part a
@@ -327,9 +417,11 @@ impl TorrentFiles {
     /// Windows forbids, a device name such as `CON`, a trailing dot or space)
     /// refuses the torrent, since the client writes the names as the torrent
     /// gives them. So do a path with no parts, two paths that differ only in
-    /// case (one file on Windows and macOS), and more than
-    /// [`MAX_TORRENT_FILES`] files. Padding files are never written, so their
-    /// names are not looked at.
+    /// case (one file on Windows and macOS), a file whose path is another
+    /// file's folder, more than [`MAX_TORRENT_FILES`] files, and names that
+    /// take more than [`MAX_FILE_NAME_BYTES`] in all. Padding files are never
+    /// written, so their names are not looked at. (Names that differ only in
+    /// their Unicode normalization are not told apart.)
     pub fn parse(raw: Vec<(Vec<String>, u64, bool)>) -> Result<TorrentFiles, TorrentError> {
         if raw.is_empty() {
             return Err(TorrentError::NoFiles);
@@ -337,7 +429,12 @@ impl TorrentFiles {
         if raw.len() > MAX_TORRENT_FILES {
             return Err(TorrentError::TooManyFiles { count: raw.len(), max: MAX_TORRENT_FILES });
         }
+        let names: usize = raw.iter().flat_map(|(path, _, _)| path.iter()).map(|p| p.len() + 1).sum();
+        if names > MAX_FILE_NAME_BYTES {
+            return Err(TorrentError::FileListTooBig { max: MAX_FILE_NAME_BYTES });
+        }
         let mut taken: HashSet<String> = HashSet::new();
+        let mut folders: HashSet<String> = HashSet::new();
         let mut files = Vec::with_capacity(raw.len());
         for (path, size, padding) in raw {
             let shown = path.join("/");
@@ -347,14 +444,30 @@ impl TorrentFiles {
                 if !clean || !taken.insert(shown.to_lowercase()) {
                     return Err(TorrentError::UnsafePath(shown));
                 }
+                for end in 1..path.len() {
+                    folders.insert(path[..end].join("/").to_lowercase());
+                }
             }
             files.push(TorrentFile { path, size: ByteCount::new(size), padding });
+        }
+        if let Some(both) = files.iter().find(|f| !f.padding && folders.contains(&f.display_path().to_lowercase())) {
+            return Err(TorrentError::UnsafePath(both.display_path()));
         }
         Ok(TorrentFiles(files))
     }
 
     pub fn as_slice(&self) -> &[TorrentFile] {
         &self.0
+    }
+
+    /// The file's name, when the torrent is one file (saved under it, not
+    /// in a folder).
+    pub fn single_name(&self) -> Option<&str> {
+        let mut real = self.0.iter().filter(|f| !f.padding);
+        match (real.next(), real.next()) {
+            (Some(f), None) if f.path.len() == 1 => f.path.first().map(String::as_str),
+            _ => None,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -580,8 +693,11 @@ pub struct TorrentEntry {
     pub info_hash: InfoHash,
     #[serde(default)]
     pub phase: TorrentPhase,
-    /// Its files, once its metadata is known.
-    #[serde(default, skip_serializing_if = "TorrentFiles::is_empty")]
+    /// Its files, once its metadata is known. Never written down or sent
+    /// with the row: a list can be long, and the daemon keeps the torrent's
+    /// file, from which it fills this in (`Event::TorrentInfo`, which a
+    /// window asks for with `Command::TorrentFiles`).
+    #[serde(skip)]
     pub files: TorrentFiles,
     /// The files chosen to download; `None` is every file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -620,6 +736,21 @@ impl TorrentEntry {
     /// The limits that stop its seeding: its own, else `settings`'.
     pub fn limits(&self, settings: &SeedLimits) -> SeedLimits {
         self.seed_limits.unwrap_or(*settings)
+    }
+
+    /// The files written under `root`, the download's path (its folder, or
+    /// its one file): the chosen ones, padding left out.
+    pub fn written_files(&self, root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        if self.files.single_name().is_some() {
+            return vec![root.to_path_buf()];
+        }
+        self.files
+            .as_slice()
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| !f.padding && self.selection.as_ref().is_none_or(|s| s.contains(*i)))
+            .map(|(_, f)| f.path.iter().fold(root.to_path_buf(), |p, part| p.join(part)))
+            .collect()
     }
 
     /// Bytes of the chosen files.
@@ -669,8 +800,7 @@ impl TorrentInfo {
     /// Whether it is one file, saved under its own name rather than in a
     /// folder.
     pub fn single_file(&self) -> bool {
-        self.files.as_slice().iter().filter(|f| !f.padding).count() == 1
-            && self.files.as_slice().first().is_some_and(|f| f.path.len() == 1)
+        self.files.single_name().is_some()
     }
 }
 
@@ -832,11 +962,12 @@ mod tests {
 
     #[test]
     fn torrent_file_addresses_are_told_by_type_or_name() {
-        assert!(is_torrent_file("https://x/a.torrent", None));
-        assert!(is_torrent_file("https://x/A.TORRENT?k=1", None));
-        assert!(is_torrent_file("https://x/get?id=3", Some("application/x-bittorrent; charset=binary")));
-        assert!(!is_torrent_file("https://x/a.torrent.html", Some("text/html")));
-        assert!(!is_torrent_file("https://x/a.zip", None));
+        assert!(is_torrent_file("https://x/a.torrent", None, None));
+        assert!(is_torrent_file("https://x/A.TORRENT?k=1", None, None));
+        assert!(is_torrent_file("https://x/get?id=3", Some("application/x-bittorrent; charset=binary"), None));
+        assert!(is_torrent_file("https://x/download.php?id=3", Some("application/octet-stream"), Some("x.torrent")));
+        assert!(!is_torrent_file("https://x/a.torrent.html", Some("text/html"), None));
+        assert!(!is_torrent_file("https://x/a.zip", None, Some("a.zip")));
     }
 
     fn raw(paths: &[&str]) -> Vec<(Vec<String>, u64, bool)> {
@@ -859,6 +990,8 @@ mod tests {
             &["what?.txt"],
             &["x. "],
             &["a/b.txt", "A/B.txt"],
+            &["a", "A/b"],
+            &["x/y/z", "x/Y"],
         ] {
             assert!(matches!(TorrentFiles::parse(raw(bad)), Err(TorrentError::UnsafePath(_))), "{bad:?}");
         }
@@ -870,6 +1003,81 @@ mod tests {
         assert_eq!(TorrentFiles::parse(vec![]), Err(TorrentError::NoFiles));
         let many = (0..=MAX_TORRENT_FILES).map(|i| (vec![format!("{i}")], 1, false)).collect();
         assert!(matches!(TorrentFiles::parse(many), Err(TorrentError::TooManyFiles { .. })));
+    }
+
+    #[test]
+    fn a_long_file_list_is_refused() {
+        let long = "n".repeat(200);
+        let list = (0..MAX_FILE_NAME_BYTES / 200).map(|i| (vec![format!("{i}{long}")], 1, false)).collect();
+        assert_eq!(TorrentFiles::parse(list), Err(TorrentError::FileListTooBig { max: MAX_FILE_NAME_BYTES }));
+    }
+
+    #[test]
+    fn made_links_stay_short_and_logs_lose_trackers() {
+        let mut m = MagnetLink::new(InfoHash::parse(HEX).unwrap());
+        m.name = Some("Album".into());
+        m.trackers = (0..500).map(|i| format!("udp://t{i}.example:6969/announce?passkey=secret{i}")).collect();
+        let short = m.to_uri_within(MAX_MADE_MAGNET);
+        assert!(short.len() <= MAX_MADE_MAGNET && short.contains("&tr=udp") && short.contains("dn=Album"));
+        assert_eq!(MagnetLink::parse(&short).unwrap().info_hash, m.info_hash);
+        let logged = loggable(&m.to_uri());
+        assert!(!logged.contains("secret") && logged.contains(HEX), "{logged}");
+        assert_eq!(loggable("https://x/a?b"), "https://x/a?b");
+        let line = format!(r#"add url="{}" ok"#, m.to_uri());
+        let scrubbed = scrub_magnets(&line);
+        assert!(
+            !scrubbed.contains("secret")
+                && scrubbed.starts_with("add url=\"magnet:?xt=urn:btih:")
+                && scrubbed.ends_with("\" ok")
+        );
+        assert_eq!(scrub_magnets("nothing here"), "nothing here");
+        assert!(!loggable("magnet:?tr=udp://t/passkey").contains("passkey"));
+    }
+
+    #[test]
+    fn a_rows_written_files_are_its_chosen_ones() {
+        let mut e = TorrentEntry::for_link(&format!("magnet:?xt=urn:btih:{HEX}")).unwrap();
+        e.files = TorrentFiles::parse(raw(&["a/x", "b", "c"])).unwrap();
+        e.selection = FileSelection::parse(&[0, 2], 3).ok();
+        let root = std::path::Path::new("/dl/Album");
+        assert_eq!(e.written_files(root), [root.join("a").join("x"), root.join("c")]);
+        e.files = TorrentFiles::parse(raw(&["one.iso"])).unwrap();
+        e.selection = None;
+        assert_eq!(e.written_files(std::path::Path::new("/dl/one.iso")), [std::path::Path::new("/dl/one.iso")]);
+    }
+
+    #[test]
+    fn a_torrent_in_the_list_is_never_added_twice() {
+        use crate::download::{Download, DownloadEntry, DuplicateStep};
+        use crate::settings::Duplicate;
+        let link = format!("magnet:?xt=urn:btih:{HEX}&dn=a");
+        let old: DownloadEntry = serde_json::from_value(serde_json::json!({
+            "id": 1, "url": format!("magnet:?xt=urn:btih:{}", HEX.to_uppercase()), "status": "done",
+            "connections": 1, "done": 0, "resumable": true,
+        }))
+        .unwrap();
+        assert!(crate::download::same_address(&old.url, &link.as_str().into()), "the same hash");
+        for choice in [Duplicate::Ask, Duplicate::NewName, Duplicate::Overwrite, Duplicate::Existing] {
+            let mut d = Download { url: link.as_str().into(), ..Download::default() };
+            assert_eq!(d.settle_duplicate(&old, choice), DuplicateStep::UseExisting, "{choice:?}");
+        }
+    }
+
+    #[test]
+    fn a_one_file_torrent_keeps_its_name() {
+        use crate::download::{DownloadEntry, DownloadError};
+        let mut e: DownloadEntry = serde_json::from_value(serde_json::json!({
+            "id": 1, "url": format!("magnet:?xt=urn:btih:{HEX}"), "status": "confirming",
+            "connections": 0, "done": 0, "resumable": true, "path": "/dl/a.iso",
+        }))
+        .unwrap();
+        let mut t = TorrentEntry::new(InfoHash::parse(HEX).unwrap());
+        t.files = TorrentFiles::parse(raw(&["a.iso"])).unwrap();
+        e.torrent = Some(t);
+        let refused = e.clone().apply_answer(Some("b.iso"), None, None, None);
+        assert_eq!(refused, Err(DownloadError::Torrent(TorrentError::NameFixed("a.iso".into()))));
+        assert!(e.apply_answer(Some("a.iso"), Some("/other"), None, None).is_ok());
+        assert_eq!(e.path.as_deref(), Some(std::path::Path::new("/other").join("a.iso").to_str().unwrap()));
     }
 
     #[test]

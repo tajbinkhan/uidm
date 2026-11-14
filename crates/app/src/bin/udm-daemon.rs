@@ -501,6 +501,7 @@ fn run(seat: Seat) -> anyhow::Result<()> {
         }
     }
     daemon.start_up();
+    daemon.resume_seeding();
     {
         let daemon = Arc::clone(&daemon);
         background::spawn_awake_keeper(move || daemon.wants_awake());

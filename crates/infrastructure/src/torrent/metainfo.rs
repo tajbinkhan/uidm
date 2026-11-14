@@ -4,7 +4,9 @@
 use librqbit_core::torrent_metainfo::torrent_from_bytes;
 use udm_domain::bytes::ByteCount;
 use udm_domain::filename::sanitize_filename;
-use udm_domain::torrent::{InfoHash, MagnetLink, TorrentError, TorrentFiles, TorrentInfo, MAX_METAINFO_BYTES};
+use udm_domain::torrent::{
+    InfoHash, MagnetLink, TorrentError, TorrentFiles, TorrentInfo, MAX_MADE_MAGNET, MAX_METAINFO_BYTES,
+};
 
 /// A `.torrent` file, read.
 #[derive(Debug, Clone)]
@@ -61,14 +63,24 @@ impl Metainfo {
     }
 
     /// The magnet link for it: its hash, name and trackers.
+    /// Its trackers that fit in [`MAX_MADE_MAGNET`] bytes, and its name cut
+    /// to 200 characters: the kept file holds the rest.
     pub fn magnet(&self) -> MagnetLink {
-        MagnetLink {
+        let mut link = MagnetLink {
             info_hash: self.info.info_hash,
-            name: Some(self.info.name.clone()),
-            trackers: self.trackers.iter().take(udm_domain::torrent::MAX_MAGNET_ENTRIES).cloned().collect(),
+            name: Some(self.info.name.chars().take(200).collect()),
+            trackers: Vec::new(),
             web_seeds: Vec::new(),
             peers: Vec::new(),
+        };
+        for tracker in self.trackers.iter().take(udm_domain::torrent::MAX_MAGNET_ENTRIES) {
+            link.trackers.push(tracker.clone());
+            if link.to_uri().len() > MAX_MADE_MAGNET {
+                link.trackers.pop();
+                break;
+            }
         }
+        link
     }
 }
 
@@ -132,6 +144,12 @@ mod tests {
         assert_eq!(Metainfo::read(&build(&raw, &[])).unwrap().info.info_hash, read.info.info_hash);
         let magnet = read.magnet();
         assert_eq!((magnet.name.as_deref(), magnet.trackers.len()), (Some("a.iso"), 2));
+        // Many trackers: the link stays short, the kept file has them all.
+        let many: Vec<String> = (0..400).map(|i| format!("udp://tracker{i}.example:6969/announce")).collect();
+        let read = Metainfo::read(&build(&raw, &many)).unwrap();
+        let uri = read.magnet().to_uri();
+        assert!(uri.len() <= MAX_MADE_MAGNET && read.trackers.len() == 400, "{}", uri.len());
+        assert!(udm_domain::address::Address::parse(&uri).is_ok());
     }
 
     #[test]

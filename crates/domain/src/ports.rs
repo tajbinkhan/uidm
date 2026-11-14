@@ -906,11 +906,21 @@ pub trait Torrents: Send + Sync {
         files: &crate::torrent::FileSelection,
     ) -> Result<(), TorrentsError>;
 
+    /// What the torrent with `info_hash` holds, from its kept file; `None`
+    /// when UDM keeps no file for it. Asks no one.
+    fn info(&self, info_hash: crate::torrent::InfoHash) -> Option<crate::torrent::TorrentInfo>;
+
     /// The finished torrents that seed now.
     fn seeding(&self) -> Vec<Seeding>;
 
+    /// Whether any torrent seeds, or waits to seed (until its network adapter
+    /// is up): the daemon has work.
+    fn active(&self) -> bool;
+
     /// Seed finished download `id` again (after UDM started), from its files
-    /// at `path`, having uploaded `uploaded` before.
+    /// at `path`, having uploaded `uploaded` before. Its files are checked
+    /// first; nothing is written to them. While the network it would go out
+    /// by is not there (its adapter is down), it waits and seeds once it is.
     fn seed(
         &self,
         id: DownloadId,

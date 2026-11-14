@@ -204,6 +204,20 @@ pub fn mark_from_internet(path: &std::path::Path, url: &str, referrer: Option<&s
     let _ = (path, url, referrer);
 }
 
+/// Mark `path` as downloaded from the internet with no address to name, as
+/// a torrent's files are: only `ZoneId=3` in its `Zone.Identifier` stream on
+/// Windows. Elsewhere this does nothing.
+pub fn mark_from_internet_unnamed(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        let _ = std::fs::write(stream, "[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
 /// `url` as a Zone.Identifier records it: web and FTP addresses only, with
 /// any user name and password taken out.
 #[cfg(windows)]
@@ -334,6 +348,12 @@ mod tests {
         let file = dir.join("a.exe");
         std::fs::write(&file, b"x").unwrap();
         mark_from_internet(&file, "https://user:pw@example.com/a.exe", Some("https://example.com/page"));
+        let unnamed = file.with_extension("torrent-file");
+        std::fs::write(&unnamed, b"x").unwrap();
+        mark_from_internet_unnamed(&unnamed);
+        let mut zone = unnamed.as_os_str().to_owned();
+        zone.push(":Zone.Identifier");
+        assert_eq!(std::fs::read_to_string(zone).unwrap(), "[ZoneTransfer]\r\nZoneId=3\r\n");
         let mut stream = file.as_os_str().to_owned();
         stream.push(":Zone.Identifier");
         let zone = std::fs::read_to_string(stream).unwrap();

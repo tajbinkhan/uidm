@@ -160,6 +160,11 @@ pub enum Command {
     StopSeeding {
         id: DownloadId,
     },
+    /// Send torrent download `id`'s files: answered with `TorrentInfo`, to
+    /// this client only (rows carry no file list), or `Error`.
+    TorrentFiles {
+        id: DownloadId,
+    },
     /// Many downloads at once, each added to wait in `queue` (the main
     /// queue when `None`) without starting, and kept as packages as
     /// `packaging` says. Answered with `AddedMany`.
@@ -433,7 +438,9 @@ pub enum Event {
     Removed {
         id: DownloadId,
     },
-    /// A torrent download's metadata is known: its name and files.
+    /// A torrent download's metadata is known: its name and files. Sent to
+    /// every client when it becomes known, and to one that asks with
+    /// `TorrentFiles`.
     TorrentInfo {
         id: DownloadId,
         url: Link,

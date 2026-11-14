@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "トレントファイルではありません: {why}",
   "Choose at least one of the torrent's files.": "トレントのファイルを少なくとも 1 つ選んでください。",
   "The torrent has no file number {number}.": "トレントにファイル番号 {number} はありません。",
-  "{value} is not a share ratio between 0 and 100.": "{value} は 0 から 100 までの共有比ではありません。"
+  "{value} is not a share ratio between 0 and 100.": "{value} は 0 から 100 までの共有比ではありません。",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "トレントのファイル名の合計が {size} を超えています。UDM はより短い一覧のみ扱えます。",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "ファイルが 1 つのトレントはファイル名 {name} のまま保存されます。フォルダーだけを選んでください。"
 }

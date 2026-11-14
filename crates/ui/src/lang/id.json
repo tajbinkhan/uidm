@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "Ini bukan berkas torrent: {why}",
   "Choose at least one of the torrent's files.": "Pilih setidaknya satu berkas torrent.",
   "The torrent has no file number {number}.": "Torrent tidak memiliki berkas nomor {number}.",
-  "{value} is not a share ratio between 0 and 100.": "{value} bukan rasio berbagi antara 0 dan 100."
+  "{value} is not a share ratio between 0 and 100.": "{value} bukan rasio berbagi antara 0 dan 100.",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "Nama berkas torrent memakan lebih dari {size}; UDM menerima daftar yang lebih pendek.",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "Torrent satu berkas mempertahankan nama berkasnya, {name}; pilih foldernya saja."
 }

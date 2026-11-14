@@ -11,3 +11,6 @@ IPv6 (Linux booted with `ipv6.disable=1`), it binds `0.0.0.0:0` instead. The
 published crate fails there, and with it the whole BitTorrent session, so no
 torrent could run on such a system. Drop this copy once a librqbit release
 does the same.
+
+`LICENSE` is the Apache License 2.0 the crate is published under (the
+published package carries no copy of its own).

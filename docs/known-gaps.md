@@ -19,8 +19,11 @@
   IP blocklists, web seeds, protocol encryption or BitTorrent v2-only torrents; incoming
   connections are TCP only. On Windows torrents do not run while a network adapter is chosen,
   because librqbit cannot bind its sockets there. A torrent's own speed limit takes effect when it
-  starts, not while it runs. Torrents ignore the proxy settings. They were tested against a local
-  swarm (a second BitTorrent client on `127.0.0.1`), not public trackers or the DHT.
+  starts, not while it runs. Torrents ignore the proxy settings, but librqbit's HTTP tracker client
+  may take one from `HTTP_PROXY`-style environment variables. A torrent of one file cannot be saved
+  under another name. File names that differ only in Unicode normalization are not told apart
+  (that needs a normalization library UDM does not carry). They were tested against a local swarm
+  (a second BitTorrent client on `127.0.0.1`), not public trackers or the DHT.
 
 - Debrid accounts (#259, [Debrid accounts](debrid.md)) are experimental:
   they were tested against stand-ins for Real-Debrid's, AllDebrid's and

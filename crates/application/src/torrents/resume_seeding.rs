@@ -2,8 +2,8 @@ use std::path::Path;
 
 use udm_domain::download::Status;
 use udm_domain::id::DownloadId;
-use udm_domain::ports::{DownloadList, Torrents};
-use udm_domain::torrent::TorrentPhase;
+use udm_domain::ports::{DownloadList, Torrents, TorrentsError};
+use udm_domain::torrent::{TorrentError, TorrentPhase};
 
 /// When UDM starts: the finished torrents that were seeding when it last
 /// stopped seed again, from their files. One that cannot (its file is gone,
@@ -28,11 +28,10 @@ impl<'a, D: DownloadList, T: Torrents + ?Sized> ResumeSeeding<'a, D, T> {
             };
             let magnet = entry.url.address().and_then(|a| a.magnet());
             let result = match (magnet, entry.path.as_deref()) {
-                (Some(magnet), Some(path)) => self
-                    .torrents
-                    .seed(id, &magnet, Path::new(path), torrent.selection.as_ref(), torrent.uploaded)
-                    .map_err(|e| e.to_string()),
-                _ => Err("it has no magnet link or no files".to_string()),
+                (Some(magnet), Some(path)) => {
+                    self.torrents.seed(id, &magnet, Path::new(path), torrent.selection.as_ref(), torrent.uploaded)
+                }
+                _ => Err(TorrentsError::Torrent(TorrentError::NoFiles)),
             };
             match result {
                 Ok(()) => seeding.push(id),

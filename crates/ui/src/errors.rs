@@ -728,6 +728,14 @@ pub mod text {
             T::NothingSelected => lang.tr("Choose at least one of the torrent's files.").to_string(),
             T::NoSuchFile(n) => trf!(lang, "The torrent has no file number {number}.", number = n),
             T::BadRatio(value) => trf!(lang, "{value} is not a share ratio between 0 and 100.", value = value),
+            T::FileListTooBig { max } => trf!(
+                lang,
+                "The torrent's file names take more than {size}; UDM takes shorter lists.",
+                size = udm_domain::bytes::ByteCount::new(*max as u64).megabytes()
+            ),
+            T::NameFixed(name) => {
+                trf!(lang, "A torrent of one file keeps its file's name, {name}; choose only its folder.", name = name)
+            }
         }
     }
 

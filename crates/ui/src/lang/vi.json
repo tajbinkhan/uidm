@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "Đây không phải là tệp torrent: {why}",
   "Choose at least one of the torrent's files.": "Hãy chọn ít nhất một tệp của torrent.",
   "The torrent has no file number {number}.": "Torrent không có tệp số {number}.",
-  "{value} is not a share ratio between 0 and 100.": "{value} không phải là tỷ lệ chia sẻ từ 0 đến 100."
+  "{value} is not a share ratio between 0 and 100.": "{value} không phải là tỷ lệ chia sẻ từ 0 đến 100.",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "Tên tệp của torrent chiếm hơn {size}; UDM chỉ nhận danh sách ngắn hơn.",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "Torrent có một tệp giữ nguyên tên tệp, {name}; chỉ chọn thư mục."
 }

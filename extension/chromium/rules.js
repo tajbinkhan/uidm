@@ -282,7 +282,21 @@ function forceLeavesLink(rules, url) {
 // with a BitTorrent info hash (40 hexadecimal or 32 base32 characters).
 function isMagnet(url) {
   const s = String(url || "");
-  return /^magnet:\?/i.test(s) && /[?&]xt=urn:btih:([0-9a-f]{40}|[a-z2-7]{32})(&|$)/i.test(s);
+  if (!/^magnet:\?/i.test(s)) return false;
+  return s
+    .slice(8)
+    .split("&")
+    .some((pair) => {
+      const [key, value = ""] = pair.split("=");
+      if (!/^xt(\.\d+)?$/i.test(key)) return false;
+      let decoded;
+      try {
+        decoded = decodeURIComponent(value.replace(/\+/g, " "));
+      } catch (_) {
+        return false;
+      }
+      return /^urn:btih:([0-9a-f]{40}|[a-z2-7]{32})$/i.test(decoded);
+    });
 }
 
 // Whether UDM's settings take `.torrent` files as torrents (its

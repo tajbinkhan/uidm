@@ -1067,5 +1067,7 @@
   "This is not a torrent file: {why}": "Bu bir torrent dosyası değil: {why}",
   "Choose at least one of the torrent's files.": "Torrent dosyalarından en az birini seçin.",
   "The torrent has no file number {number}.": "Torrentte {number} numaralı dosya yok.",
-  "{value} is not a share ratio between 0 and 100.": "{value}, 0 ile 100 arasında bir paylaşım oranı değil."
+  "{value} is not a share ratio between 0 and 100.": "{value}, 0 ile 100 arasında bir paylaşım oranı değil.",
+  "The torrent's file names take more than {size}; UDM takes shorter lists.": "Torrentin dosya adları {size} boyutunu aşıyor; UDM daha kısa listeler alır.",
+  "A torrent of one file keeps its file's name, {name}; choose only its folder.": "Tek dosyalı bir torrent dosyanın adını korur, {name}; yalnızca klasörünü seçin."
 }

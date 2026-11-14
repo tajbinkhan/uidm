@@ -87,8 +87,16 @@ pub(crate) mod testing {
             Ok(())
         }
 
+        fn info(&self, _: InfoHash) -> Option<TorrentInfo> {
+            Some(info(&["a.flac", "b.flac"]))
+        }
+
         fn seeding(&self) -> Vec<Seeding> {
             self.seeding.lock().unwrap().clone()
+        }
+
+        fn active(&self) -> bool {
+            !self.seeding.lock().unwrap().is_empty()
         }
 
         fn seed(

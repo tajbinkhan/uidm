@@ -454,10 +454,52 @@ impl<W: Wiring> DaemonService<W> {
         if self.settings_now().resume_at_startup {
             self.resume_interrupted();
         }
-        let seeding = ResumeSeeding::new(&*self.store, &*self.torrents).run();
-        if !seeding.is_empty() {
-            info!(count = seeding.len(), "torrents seed again");
+        self.fill_torrent_files();
+    }
+
+    /// Give each torrent row its files again, from the torrent's kept file:
+    /// the list is never written down with the row.
+    pub fn fill_torrent_files(&self) {
+        let ids = self.store.ids_where(|_, _| true);
+        for id in ids {
+            let Some(hash) =
+                self.store.entry(id).and_then(|e| e.torrent).filter(|t| t.files.is_empty()).map(|t| t.info_hash)
+            else {
+                continue;
+            };
+            let Some(info) = self.torrents.info(hash) else { continue };
+            self.store.update(id, |e| match e.torrent.as_mut() {
+                Some(t) => {
+                    t.files = info.files;
+                    true
+                }
+                None => false,
+            });
         }
+    }
+
+    /// Torrent download `id`'s files, from its kept file, as the event that
+    /// answers `TorrentFiles`.
+    pub fn torrent_files(&self, id: DownloadId) -> Result<Event, ServiceError> {
+        use udm_domain::download::DownloadError;
+        let entry = self.store.entry(id).ok_or(DownloadError::NoDownload(id))?;
+        let no_files = || ServiceError::from(DownloadError::Torrent(udm_domain::torrent::TorrentError::NoFiles));
+        let hash = entry.torrent.map(|t| t.info_hash).ok_or_else(no_files)?;
+        let info = self.torrents.info(hash).ok_or_else(no_files)?;
+        Ok(Event::TorrentInfo { id, url: entry.url, info })
+    }
+
+    /// The torrents that were seeding when UDM last stopped seed again, on a
+    /// thread of their own: checking their files, or a network that is not
+    /// there, never holds up the rest of the start.
+    pub fn resume_seeding(self: &Arc<Self>) {
+        let daemon = Arc::clone(self);
+        thread::spawn(move || {
+            let seeding = ResumeSeeding::new(&*daemon.store, &*daemon.torrents).run();
+            if !seeding.is_empty() {
+                info!(count = seeding.len(), "torrents seed again");
+            }
+        });
     }
 
     /// One scheduler pass: queues and their schedules, then the grabber's
@@ -477,11 +519,13 @@ impl<W: Wiring> DaemonService<W> {
     }
 
     /// Whether the daemon has nothing to do: no clients, no downloads, no
-    /// queue that needs it, and remote control off (a phone may ask for
-    /// something at any time while it is on).
+    /// torrent seeding (or waiting to), no queue that needs it, and remote
+    /// control off (a phone may ask for something at any time while it is
+    /// on).
     pub fn idle(&self) -> bool {
         self.clients.is_empty()
             && self.transfers.active_count() == 0
+            && !self.torrents.active()
             && !self.queues_need_daemon()
             && !self.settings_now().remote_enabled
     }
@@ -920,7 +964,12 @@ impl<W: Wiring> DaemonService<W> {
             download.filename = download.url.address().and_then(|a| a.magnet()).and_then(|m| m.name);
         }
         if let Some(old) = self.duplicate_of(&download) {
-            let choice = download.duplicate.unwrap_or(self.settings_now().if_duplicate);
+            let mut choice = download.duplicate.unwrap_or(self.settings_now().if_duplicate);
+            // A torrent in the list is the one download of it (see
+            // `Download::settle_duplicate`): nothing to ask.
+            if download.url.address().is_some_and(udm_domain::address::Address::is_torrent) {
+                choice = Duplicate::Existing;
+            }
             info!(url = %download.url, download_id = old.id.get(), choice = ?choice, "already in the list");
             if choice == Duplicate::Ask {
                 return self.ask(download, Some(old.id));
@@ -1506,6 +1555,11 @@ impl<W: Wiring> DaemonService<W> {
                     return;
                 }
             };
+            // The dialog's window hears the torrent's files: the row does not
+            // carry them.
+            if let Some(info) = found.torrent.clone() {
+                daemon.store.announce(Event::TorrentInfo { id, url: download.url.clone(), info });
+            }
             let probed = Probed {
                 filename: found.filename,
                 path: found.path,
@@ -1685,11 +1739,11 @@ impl<W: Wiring> DaemonService<W> {
             match AddTorrent::new(&*daemon.torrents).run(source, download) {
                 Ok(torrent) => {
                     let (id, url) = daemon.add(torrent);
-                    info!(download_id = id.get(), url = %url, "add a torrent");
+                    info!(download_id = id.get(), url = %udm_domain::torrent::loggable(url.as_str()), "add a torrent");
                     reply.send(Event::Ack { id, url, status: "accepted".to_string() });
                 }
                 Err(e) => {
-                    warn!(url = %url, error = %e, "refused a torrent");
+                    warn!(url = %udm_domain::torrent::loggable(url.as_str()), error = %e, "refused a torrent");
                     reply.send(Event::Rejected { url, error: Failure::Probe(e.to_string()) });
                 }
             }
@@ -1707,7 +1761,11 @@ impl<W: Wiring> DaemonService<W> {
         download.url.address().is_some_and(|a| a.is_web())
             && !download.is_post()
             && self.settings_now().torrents.catch_torrent_files
-            && udm_domain::torrent::is_torrent_file(download.url.as_str(), download.content_type.as_deref())
+            && udm_domain::torrent::is_torrent_file(
+                download.url.as_str(),
+                download.content_type.as_deref(),
+                download.filename.as_deref(),
+            )
     }
 
     /// Choose torrent download `id`'s files (see `PickFiles`).
@@ -1881,7 +1939,7 @@ pub fn dispatch<W: Wiring>(incoming: Command, daemon: &Arc<DaemonService<W>>, cl
         Command::Add(mut download) => {
             download.limit_browser_request();
             if let Err(message) = daemon.check_download(&download) {
-                warn!(url = %download.url, error = %message, "refused a download");
+                warn!(url = %udm_domain::torrent::loggable(download.url.as_str()), error = %message, "refused a download");
                 send(Event::Rejected { url: download.url, error: message.into() });
                 return;
             }
@@ -1890,7 +1948,7 @@ pub fn dispatch<W: Wiring>(incoming: Command, daemon: &Arc<DaemonService<W>>, cl
                 return;
             }
             let (id, url) = daemon.add(download);
-            info!(download_id = id.get(), url = %url, "add");
+            info!(download_id = id.get(), url = %udm_domain::torrent::loggable(url.as_str()), "add");
             send(Event::Ack { id, url, status: "accepted".to_string() });
         }
         Command::AddTorrentFile { metainfo, download } => daemon.add_torrent(Some(metainfo), download, reply.clone()),
@@ -1908,6 +1966,10 @@ pub fn dispatch<W: Wiring>(incoming: Command, daemon: &Arc<DaemonService<W>>, cl
                 send(Event::Error { error: e.into() });
             }
         }
+        Command::TorrentFiles { id } => match daemon.torrent_files(id) {
+            Ok(event) => send(event),
+            Err(e) => send(Event::Error { error: e.into() }),
+        },
         Command::AddMany { items, queue, packaging } => {
             let (ids, skipped) = daemon.add_packaged(items, queue, &packaging);
             info!(count = ids.len(), skipped, "added downloads to wait");
