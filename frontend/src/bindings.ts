@@ -268,9 +268,36 @@ export type AboutView = {
  *  A network adapter as Options keeps it: its id, and the name to say
  *  which one is down once it is gone.
  */
-export type AdapterDraft = {
+export type AdapterDraft = AdapterDraft_Serialize | AdapterDraft_Deserialize;
+
+/**
+ *  A network adapter as Options keeps it: its id, and the name to say
+ *  which one is down once it is gone.
+ */
+export type AdapterDraft_Deserialize = {
 	id: string,
 	name: string,
+	/**
+	 *  The user chose it again, now that another connection has its name
+	 *  (`AdapterRow::renewable`): it is the connection to go through from
+	 *  now on.
+	 */
+	renew?: boolean,
+};
+
+/**
+ *  A network adapter as Options keeps it: its id, and the name to say
+ *  which one is down once it is gone.
+ */
+export type AdapterDraft_Serialize = {
+	id: string,
+	name: string,
+	/**
+	 *  The user chose it again, now that another connection has its name
+	 *  (`AdapterRow::renewable`): it is the connection to go through from
+	 *  now on.
+	 */
+	renew: boolean,
 };
 
 /**  A network adapter as Options lists it. */
@@ -284,6 +311,11 @@ export type AdapterRow = {
 	label: string,
 	/**  Connections can go through it now. */
 	up: boolean,
+	/**
+	 *  The chosen adapter's numbered name (`utun3`) is another connection
+	 *  now: it can be chosen again, to go through that one.
+	 */
+	renewable: boolean,
 };
 
 /**  Add URL ("Enter new address to download"). */
@@ -713,7 +745,7 @@ export type ExtrasDraft_Deserialize = {
 	 *  The network adapter every connection is bound to; `None` lets the
 	 *  system choose.
 	 */
-	adapter?: AdapterDraft | null,
+	adapter?: AdapterDraft_Deserialize | null,
 	dns: DnsDraft,
 	/**  The custom DNS over HTTPS resolver's address. */
 	dnsUrl: string,
@@ -780,7 +812,7 @@ export type ExtrasDraft_Serialize = {
 	 *  The network adapter every connection is bound to; `None` lets the
 	 *  system choose.
 	 */
-	adapter: AdapterDraft | null,
+	adapter: AdapterDraft_Serialize | null,
 	dns: DnsDraft,
 	/**  The custom DNS over HTTPS resolver's address. */
 	dnsUrl: string,

@@ -403,7 +403,7 @@ pub(super) fn run(
     };
     let _ = fs::remove_dir_all(&parts);
     drop(claim);
-    Ok(Saved { path: output, note })
+    Ok(Saved { path: output, note, complete: true })
 }
 
 /// A subtitle track joined into one WebVTT file.

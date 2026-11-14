@@ -12,8 +12,9 @@ lists the adapters with their addresses; with one chosen, every connection is bo
 check, tool installs, debrid accounts), and when it is down nothing connects: downloads stop with
 "The network adapter … is down" instead of going out another way, and a running download stops
 within two seconds of the adapter going. Changing the adapter or the resolver reaches queued and
-running downloads at once (running ones go on from where they are), a `utun3` or `tun0` that is
-another tunnel after a reconnect counts as down, and a new address on Windows binds again. yt-dlp
+running downloads at once (running ones go on from where they are; a form's download stops rather
+than send the form again), a `utun3` or `tun0` that is another tunnel after a reconnect counts as
+down until **Use this connection** in Options, and a new address on Windows binds again. yt-dlp
 and gallery-dl get the adapter's address with `--source-address` and are not run while it is down.
 Host names can be looked up with DNS over HTTPS at Cloudflare, Google, Quad9 or a server you name,
 failing closed. A new **Country** column and the download window show the server's country (with

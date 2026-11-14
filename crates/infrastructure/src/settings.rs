@@ -450,6 +450,19 @@ mod tests {
     }
 
     #[test]
+    fn an_adapter_no_system_has_keeps_the_file_and_the_binding() {
+        let path = temp_path("bad_adapter.json");
+        fs::write(&path, br#"{"max_concurrent":3,"network_adapter":{"id":"wg\u00000","name":"Work VPN"}}"#).unwrap();
+        let s = load(&path).expect("the rest of the settings still load");
+        assert_eq!(s.max_concurrent, 3);
+        let choice = s.network_adapter.expect("still bound: downloads stop rather than go out unbound");
+        assert_eq!(choice.label(), "Work VPN");
+        let all = udm_domain::ports::NetworkAdapters::list(&crate::adapters::SystemAdapters).unwrap();
+        assert!(udm_domain::network::bound_adapter(&choice, &all).is_err());
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn invalid_file_is_an_error() {
         let path = temp_path("invalid.json");
         fs::write(&path, b"{ not json").unwrap();

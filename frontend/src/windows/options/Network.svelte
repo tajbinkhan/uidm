@@ -15,7 +15,13 @@
 
   function pick(id: string) {
     const row = n.adapters?.find((a) => a.id === id);
-    e.adapter = row ? { id: row.id, name: row.name } : null;
+    e.adapter = row ? { id: row.id, name: row.name, renew: false } : null;
+  }
+
+  // Another connection has the chosen adapter's name now: going through it
+  // takes the user's say.
+  function renew() {
+    if (e.adapter) e.adapter = { ...e.adapter, renew: true };
   }
 </script>
 
@@ -37,8 +43,14 @@
   </div>
   {#if !n.adapters}<p class="opt-note">{t('Reading the network adapters…')}</p>{/if}
   {#if n.adaptersError}<p class="error-text" role="alert">{n.adaptersError}</p>{/if}
-  {#if e.adapter && chosen && !chosen.up}
+  {#if e.adapter?.renew}
+    <p class="opt-note" role="status">{t('Downloads will go through this adapter as it is connected now.')}</p>
+  {:else if e.adapter && chosen && !chosen.up}
     <p class="error-text" role="status">{t('This adapter is not connected now: downloads will not start until it is.')}</p>
+    {#if chosen.renewable}
+      <p class="opt-note">{t('Another connection has its name now, such as the VPN connecting again on another network.')}</p>
+      <button class="btn renew" onclick={renew}>{t('Use this connection')}</button>
+    {/if}
   {/if}
   <fieldset class="group opt-col">
     <legend>{t('Look up host names with')}</legend>
@@ -70,5 +82,9 @@
   p {
     margin: 0;
     overflow-wrap: anywhere;
+  }
+
+  .renew {
+    align-self: flex-start;
   }
 </style>

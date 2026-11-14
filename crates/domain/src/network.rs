@@ -64,6 +64,12 @@ impl AdapterId {
         &self.0
     }
 
+    /// The id a settings file's unusable one reads as: no adapter has it,
+    /// so connections bound to it never go out (`AdapterChoice`).
+    fn unusable() -> AdapterId {
+        AdapterId(String::new())
+    }
+
     /// Whether the system hands this name out by number (`utun3`, `tun0`),
     /// so it may name another connection later.
     pub fn is_numbered(&self) -> bool {
@@ -149,8 +155,12 @@ impl fmt::Display for AdapterId {
 
 /// The adapter downloads go through, as the settings keep it: its id, and
 /// the name it showed when it was chosen, for saying which one is down
-/// once it is gone from the system's list.
+/// once it is gone from the system's list. A settings file whose id no
+/// system could give (edited by hand, say) still loads, with an adapter no
+/// system has: downloads stay bound to it, and so do not start, rather than
+/// the whole file being dropped and downloads going out any way.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "ChoiceRead")]
 pub struct AdapterChoice {
     pub id: AdapterId,
     #[serde(default)]
@@ -160,6 +170,47 @@ pub struct AdapterChoice {
     /// name on none of them is another connection, and counts as down.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subnets: Vec<Subnet>,
+}
+
+/// An adapter choice as a settings file holds it, read leniently.
+#[derive(Deserialize)]
+struct ChoiceRead {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    subnets: Vec<SubnetRead>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SubnetRead {
+    Text(String),
+    Other(serde::de::IgnoredAny),
+}
+
+impl From<ChoiceRead> for AdapterChoice {
+    fn from(read: ChoiceRead) -> AdapterChoice {
+        let (id, name) = match AdapterId::parse(&read.id) {
+            Ok(id) => (id, read.name),
+            Err(_) => {
+                // Named by what it said, so the user can tell which.
+                let said: String = read.id.escape_debug().take(64).collect();
+                let name = if read.name.trim().is_empty() { said } else { read.name };
+                (AdapterId::unusable(), name)
+            }
+        };
+        let subnets = read
+            .subnets
+            .into_iter()
+            .filter_map(|s| match s {
+                SubnetRead::Text(text) => Subnet::try_from(text).ok(),
+                SubnetRead::Other(_) => None,
+            })
+            .collect();
+        AdapterChoice { id, name, subnets }
+    }
 }
 
 impl AdapterChoice {
@@ -186,10 +237,14 @@ impl AdapterChoice {
     }
 
     /// The networks to keep with this choice, as the settings are saved:
-    /// those it had before when it is the same adapter (so another
+    /// those it comes with (the user chose its current connection again),
+    /// else those it had before when it is the same adapter (so another
     /// connection that took its name is still not taken for it), else those
     /// the adapter is on now when its name is numbered, if it is there.
     pub fn remember(&mut self, before: Option<&AdapterChoice>, adapters: &[NetworkAdapter]) {
+        if !self.subnets.is_empty() {
+            return;
+        }
         if let Some(before) = before.filter(|b| b.id == self.id && !b.subnets.is_empty()) {
             self.subnets = before.subnets.clone();
             return;
@@ -304,6 +359,23 @@ pub fn bound_adapter<'a>(
     adapters: &'a [NetworkAdapter],
 ) -> Result<&'a NetworkAdapter, AdapterDown> {
     adapters.iter().find(|a| choice.is(a) && a.usable()).ok_or_else(|| AdapterDown::new(choice))
+}
+
+/// Why a download that sends a form stopped when the network setting
+/// changed (or the adapter's address did): sending the form again by itself
+/// could do twice what it does, so the user starts it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{RESTART_NEEDED}")]
+pub struct RestartNeeded;
+
+const RESTART_NEEDED: &str =
+    "The network setting changed while this form's answer was downloading. Start it again to use the new setting.";
+
+impl RestartNeeded {
+    /// Whether a download's error text is this one.
+    pub fn read(error: &str) -> Option<RestartNeeded> {
+        (error == RESTART_NEEDED).then_some(RestartNeeded)
+    }
 }
 
 /// Why no connection could be bound to the adapter: the system refused it
@@ -576,8 +648,19 @@ mod tests {
             }
         }
         assert_eq!(AdapterId::parse(&format!("{{{}}}", "x".repeat(70))), Err(NetworkError::BadAdapter));
-        // A settings file is held to the same rules.
-        assert!(serde_json::from_str::<AdapterChoice>(r#"{"id":"wg\u00000","name":"x"}"#).is_err());
+        // A settings file is held to the same rules, but loads: an id no
+        // system gives is an adapter that is never there, so downloads stay
+        // stopped rather than go out unbound.
+        let odd: AdapterChoice =
+            serde_json::from_str(r#"{"id":"wg\u00000","name":"Work VPN","subnets":[5,"x"]}"#).unwrap();
+        assert_eq!((odd.id.as_str(), odd.name.as_str(), odd.subnets.len()), ("", "Work VPN", 0));
+        let lo = adapter("lo", &["127.0.0.1"], true);
+        assert_eq!(bound_adapter(&odd, &[lo]), Err(AdapterDown { adapter: "Work VPN".into() }));
+        let unnamed: AdapterChoice = serde_json::from_str(r#"{"id":"eth\n0"}"#).unwrap();
+        assert!(unnamed.id.as_str().is_empty() && unnamed.label() == "eth\\n0", "{unnamed:?}");
+        // Written and read again, it stays one.
+        let again: AdapterChoice = serde_json::from_str(&serde_json::to_string(&odd).unwrap()).unwrap();
+        assert_eq!(again, odd);
         assert!(serde_json::from_str::<AdapterChoice>(r#"{"id":"wg0"}"#).is_ok());
     }
 
@@ -605,6 +688,10 @@ mod tests {
         let mut sent = AdapterChoice { subnets: Vec::new(), ..chosen.clone() };
         sent.remember(Some(&chosen), &[adapter("utun3", &["172.20.1.2"], true)]);
         assert_eq!(sent.subnets, chosen.subnets);
+        // Chosen again by the user as it is now: its new networks stay.
+        let mut renewed = AdapterChoice::of(&adapter("utun3", &["172.20.1.2"], true));
+        renewed.remember(Some(&chosen), &[]);
+        assert_eq!(renewed.subnets, vec![Subnet::new("172.20.1.0".parse().unwrap(), 24).unwrap()]);
         let mut new = AdapterChoice { id: id("tun0"), name: "tun0".into(), subnets: Vec::new() };
         new.remember(Some(&chosen), &[adapter("tun0", &["10.9.0.2"], true)]);
         assert_eq!(new.subnets, vec![Subnet::new("10.9.0.0".parse().unwrap(), 24).unwrap()]);

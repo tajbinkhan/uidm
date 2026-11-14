@@ -344,6 +344,11 @@ pub struct ExtrasDraft {
 pub struct AdapterDraft {
     pub id: String,
     pub name: String,
+    /// The user chose it again, now that another connection has its name
+    /// (`AdapterRow::renewable`): it is the connection to go through from
+    /// now on.
+    #[serde(default)]
+    pub renew: bool,
 }
 
 /// Where host names are looked up.
@@ -368,6 +373,9 @@ pub struct AdapterRow {
     pub label: String,
     /// Connections can go through it now.
     pub up: bool,
+    /// The chosen adapter's numbered name (`utun3`) is another connection
+    /// now: it can be chosen again, to go through that one.
+    pub renewable: bool,
 }
 
 /// A resolver Options offers.

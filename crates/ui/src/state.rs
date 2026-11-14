@@ -540,6 +540,12 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
 }
 
 fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
+    // A download that starts again while running (a change of network)
+    // says `Started` again; its window is not opened again for it.
+    let running_before = match &event {
+        Event::Started { id, .. } => state.table.get(*id).is_some_and(|e| e.status == Status::Downloading),
+        _ => false,
+    };
     daemon::apply(&mut state.table, &event, unix);
     crate::extras::take(state, &event, at);
     crate::services::take(state, &event);
@@ -567,7 +573,7 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
         Event::Started { id, .. } => {
             state.speeds.remove(&id);
             state.done.remove(&id);
-            if state.settings.as_ref().is_some_and(|s| s.progress_on_start) {
+            if !running_before && state.settings.as_ref().is_some_and(|s| s.progress_on_start) {
                 state.progress.insert(id);
             }
         }
@@ -600,6 +606,8 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
                     ),
                     &[("adapter", &down.adapter)],
                 ))
+            } else if udm_domain::network::RestartNeeded::read(&error).is_some() {
+                Some(lang.tr("The network setting changed while this form's answer was downloading. Start it again to use the new setting.").to_string())
             } else {
                 udm_domain::network::BindRefused::read(&error).map(|refused| {
                     crate::i18n::fill(
@@ -688,6 +696,31 @@ mod tests {
             notice.text,
             "The network adapter wg0 is down, so downloads stopped instead of using another network."
         );
+    }
+
+    #[test]
+    fn a_download_started_again_does_not_open_its_window_again() {
+        let mut s = AppState::default();
+        event(&mut s, Event::Settings { settings: Settings { progress_on_start: true, ..Settings::default() } });
+        added(&mut s, 1);
+        let started = || Event::Started {
+            id: DownloadId::new(1),
+            url: "https://e.com/1.zip".into(),
+            path: "/d/1.zip".into(),
+            total: None,
+            resumable: true,
+            connections: 4,
+            partial: None,
+            validator: None,
+            country: None,
+        };
+        event(&mut s, started());
+        assert!(s.progress.contains(&DownloadId::new(1)), "opened as it starts");
+        // The user closes it; the network setting changes and the download
+        // starts again from where it was.
+        s.progress.remove(&DownloadId::new(1));
+        event(&mut s, started());
+        assert!(!s.progress.contains(&DownloadId::new(1)), "not opened again");
     }
 
     #[test]

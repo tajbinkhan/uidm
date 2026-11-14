@@ -1340,7 +1340,10 @@ impl Actor {
                 let result = match self.state.settings.as_ref().map(|s| crate::options::settings(&draft, s)) {
                     None => Err(crate::errors::offline(lang)),
                     Some(Err(e)) => Err(crate::errors::options(lang, &e)),
-                    Some(Ok(settings)) => {
+                    Some(Ok(mut settings)) => {
+                        if let Some(Ok(adapters)) = &self.state.services.adapters {
+                            crate::options::renew_adapter(&draft, &mut settings, adapters);
+                        }
                         // The debrid key goes on its own, after the
                         // settings, and only when it changes.
                         let key = crate::options::debrid_key(&draft);

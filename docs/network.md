@@ -28,7 +28,11 @@ With an adapter chosen:
   second, and stops them within two seconds of the adapter going; the main window says why.
 - **Changing the setting** (the adapter, or how names are looked up) reaches every download at
   once: those waiting take the new setting when they start, and running ones start again from where
-  they are, so none goes on the old way.
+  they are, so none goes on the old way. A download that sends a form (a POST) is not sent again on
+  its own, since that could do twice what the form does: it stops, saying the network setting
+  changed, and you start it again. A running site grabber crawl takes the new setting with its next
+  request. An update or a tool (yt-dlp, ffmpeg, gallery-dl) already downloading when the setting
+  changes finishes that one file the way it started; the next request goes the new way.
 - **When the adapter comes back**, stopped downloads stay stopped. Start them again (they resume
   where they were); a running queue puts them back to waiting while they have retries left, as it
   does with any failed download, and they start once the adapter is up. Otherwise UDM does not
@@ -64,9 +68,14 @@ Linux `tun0` or `ppp0`, so after a VPN reconnects, its old name may belong to an
 Private Relay and other VPNs use `utun` names too). For such a name UDM remembers the networks the
 adapter was on when you chose it, and an adapter of that name on none of them counts as down: the
 downloads stop rather than go through the other tunnel. A VPN that comes back on the same network
-(as WireGuard and most VPNs do) is recognized again. If yours comes back on another network, choose
-**Any network**, choose **OK**, then choose its adapter again. Names you give adapters yourself
-(`wg0`) and Windows' adapters, which keep their id, are not checked this way.
+(as WireGuard and most VPNs do) is recognized again. If yours comes back on another network,
+**Options > Network** shows the adapter as not connected, with **Use this connection**: choose it
+and **OK**, and downloads go through the adapter as it is connected now. Names you give adapters
+yourself (`wg0`) and Windows' adapters, which keep their id, are not checked this way.
+
+A settings file whose adapter is not one any system could name (edited by hand, say) still loads,
+with downloads bound to an adapter that is never there: they do not start until you choose an
+adapter in Options.
 
 ### Programs UDM runs
 

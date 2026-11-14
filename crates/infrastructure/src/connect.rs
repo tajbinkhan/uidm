@@ -65,8 +65,9 @@ pub struct Network {
 }
 
 /// A DNS over HTTPS resolver, with the choice and the adapter it was made
-/// for.
-type KeptResolver = (DnsChoice, Option<udm_domain::network::AdapterId>, Arc<Doh>);
+/// for (with the networks a numbered adapter was on, so one made before
+/// they were noted is not kept).
+type KeptResolver = (DnsChoice, Option<udm_domain::network::AdapterChoice>, Arc<Doh>);
 
 impl Default for Network {
     fn default() -> Self {
@@ -93,7 +94,7 @@ impl Network {
     pub fn route(&self, s: &Settings) -> Route {
         let binding = s.network_adapter.clone().map(|choice| Binding::new(choice, Arc::clone(&self.adapters)));
         let dns = s.dns.endpoint().map(|endpoint| {
-            let bound = s.network_adapter.as_ref().map(|c| c.id.clone());
+            let bound = s.network_adapter.clone();
             let mut kept = self.doh.lock_or_recover();
             match kept.as_ref() {
                 Some((dns, id, doh)) if *dns == s.dns && *id == bound => Arc::clone(doh),

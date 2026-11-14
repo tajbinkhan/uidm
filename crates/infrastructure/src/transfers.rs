@@ -247,6 +247,12 @@ impl Transfers {
         config_for(download, s, &self.retries)
     }
 
+    /// How connections go out now, under the current settings: for work
+    /// that runs a while (a crawl) and takes it per request.
+    pub fn live_route(&self) -> crate::route::Route {
+        self.retries.network.route(&self.settings.get())
+    }
+
     /// Note that `url` is retried through the browser's proxy. Returns false
     /// when it already was.
     pub fn note_browser_proxy_retry(&self, url: String) -> bool {

@@ -388,7 +388,11 @@ fn extras(s: &Settings) -> ExtrasDraft {
         debrid_service: s.debrid.service.map(debrid_choice),
         debrid_key: String::new(),
         debrid_forget: false,
-        adapter: s.network_adapter.as_ref().map(|a| AdapterDraft { id: a.id.to_string(), name: a.name.clone() }),
+        adapter: s.network_adapter.as_ref().map(|a| AdapterDraft {
+            id: a.id.to_string(),
+            name: a.name.clone(),
+            renew: false,
+        }),
         dns: dns_draft(&s.dns),
         dns_url: match &s.dns {
             DnsChoice::Custom(url) => url.as_str().to_string(),
@@ -518,6 +522,21 @@ fn apply_extras(e: &ExtrasDraft, done_dialog: bool, current: &Settings, s: &mut 
         DnsDraft::Custom => DnsChoice::Custom(DohUrl::parse(&e.dns_url)?),
     };
     Ok(())
+}
+
+/// `s` with the adapter the user chose again (`AdapterDraft::renew`) taken
+/// as it is connected now, among `adapters`: the networks it is on are the
+/// ones to keep from now on.
+pub fn renew_adapter(d: &OptionsDraft, s: &mut Settings, adapters: &[udm_domain::network::NetworkAdapter]) {
+    let Some(drafted) = d.extras.adapter.as_ref().filter(|a| a.renew) else {
+        return;
+    };
+    let Some(choice) = s.network_adapter.as_mut().filter(|c| c.id.as_str() == drafted.id.trim()) else {
+        return;
+    };
+    if let Some(adapter) = adapters.iter().find(|a| a.id == choice.id) {
+        choice.subnets = AdapterChoice::of(adapter).subnets;
+    }
 }
 
 /// The Options window's view.
@@ -798,7 +817,7 @@ mod tests {
         let s = Settings::default();
         let mut d = draft(&s);
         assert_eq!((d.extras.adapter.clone(), d.extras.dns), (None, DnsDraft::System));
-        d.extras.adapter = Some(AdapterDraft { id: " wg0 ".into(), name: "Work VPN".into() });
+        d.extras.adapter = Some(AdapterDraft { id: " wg0 ".into(), name: "Work VPN".into(), renew: false });
         d.extras.dns = DnsDraft::Custom;
         d.extras.dns_url = "http://doh.example/q".into();
         assert_eq!(settings(&d, &s), Err(OptionsError::Network(udm_domain::network::NetworkError::DohAddress)));
@@ -811,7 +830,7 @@ mod tests {
         assert_eq!(back.extras.dns, DnsDraft::Custom);
         assert_eq!(back.extras.dns_url, "https://doh.example/q");
         assert_eq!(settings(&back, &out).unwrap(), out);
-        d.extras.adapter = Some(AdapterDraft { id: "  ".into(), name: String::new() });
+        d.extras.adapter = Some(AdapterDraft { id: "  ".into(), name: String::new(), renew: false });
         assert!(settings(&d, &s).is_err(), "no adapter without an id");
         d.extras.adapter = None;
         d.extras.dns = DnsDraft::Quad9;
@@ -821,6 +840,33 @@ mod tests {
         let labels: Vec<&str> = view.network.resolvers.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(labels[0], "The system's (not encrypted)");
         assert_eq!(labels.len(), 5);
+    }
+
+    #[test]
+    fn an_adapter_chosen_again_takes_its_networks_now() {
+        use udm_domain::network::{NetworkAdapter, Subnet};
+        let ip = |a: &str| a.parse().unwrap();
+        let old = AdapterChoice {
+            id: AdapterId::parse("utun3").unwrap(),
+            name: "utun3".into(),
+            subnets: vec![Subnet::new(ip("10.8.0.0"), 24).unwrap()],
+        };
+        let current = Settings { network_adapter: Some(old), ..Settings::default() };
+        let now = NetworkAdapter {
+            id: AdapterId::parse("utun3").unwrap(),
+            name: "utun3".into(),
+            addresses: vec![ip("172.20.1.2")],
+            subnets: vec![Subnet::new(ip("172.20.1.2"), 24).unwrap()],
+            up: true,
+        };
+        let mut d = draft(&current);
+        let mut s = settings(&d, &current).unwrap();
+        renew_adapter(&d, &mut s, std::slice::from_ref(&now));
+        assert!(s.network_adapter.as_ref().unwrap().subnets.is_empty(), "the daemon keeps the old ones");
+        d.extras.adapter.as_mut().unwrap().renew = true;
+        let mut s = settings(&d, &current).unwrap();
+        renew_adapter(&d, &mut s, &[now]);
+        assert_eq!(s.network_adapter.unwrap().subnets, vec![Subnet::new(ip("172.20.1.0"), 24).unwrap()]);
     }
 
     #[test]

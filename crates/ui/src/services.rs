@@ -315,12 +315,14 @@ fn adapter_rows(
         .map(|a| {
             // Another connection that took the chosen adapter's name is not
             // it: downloads treat it as down, and so does the list.
-            let up = a.usable() && chosen.is_none_or(|c| c.id != a.id || c.is(a));
+            let other = chosen.is_some_and(|c| c.id == a.id && !c.is(a));
+            let up = a.usable() && !other;
             AdapterRow {
                 id: a.id.to_string(),
                 name: a.name.clone(),
                 label: if up { format!("{} ({})", a.name, a.addresses_text()) } else { not_connected(&a.name) },
                 up,
+                renewable: other && a.usable(),
             }
         })
         .collect();
@@ -332,6 +334,7 @@ fn adapter_rows(
                 name: c.label().to_string(),
                 label: not_connected(c.label()),
                 up: false,
+                renewable: false,
             },
         );
     }
@@ -437,6 +440,31 @@ mod tests {
         fill_view(&ctx(), &s, &mut view);
         assert_eq!(view.network.adapters.map(|r| r.len()), Some(1), "the chosen one stays listed");
         assert_eq!(view.network.adapters_error.as_deref(), Some("The network adapters could not be read: no access"));
+    }
+
+    #[test]
+    fn another_connection_with_the_chosen_name_can_be_chosen_again() {
+        use udm_domain::network::{AdapterChoice, AdapterId, NetworkAdapter, Subnet};
+        let ip = |a: &str| a.parse().unwrap();
+        let chosen = AdapterChoice {
+            id: AdapterId::parse("utun3").unwrap(),
+            name: "utun3".into(),
+            subnets: vec![Subnet::new(ip("10.8.0.0"), 24).unwrap()],
+        };
+        let now = NetworkAdapter {
+            id: AdapterId::parse("utun3").unwrap(),
+            name: "utun3".into(),
+            addresses: vec![ip("172.20.1.2")],
+            subnets: vec![Subnet::new(ip("172.20.1.2"), 24).unwrap()],
+            up: true,
+        };
+        let rows = adapter_rows(ctx().lang, std::slice::from_ref(&now), Some(&chosen));
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].up && rows[0].renewable, "{:?}", rows[0]);
+        assert_eq!(rows[0].label, "utun3 (not connected)");
+        let same = AdapterChoice::of(&now);
+        let rows = adapter_rows(ctx().lang, &[now], Some(&same));
+        assert!(rows[0].up && !rows[0].renewable);
     }
 
     #[test]

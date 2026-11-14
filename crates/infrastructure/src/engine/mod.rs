@@ -770,24 +770,38 @@ fn run(id: DownloadId, flags: &RunFlags, req: DownloadRequest, reporter: Reporte
         } else {
             run_inner(id, token, &req, &reporter, shared)
         };
-        // A stopped download returns its file too: whether it was stopped is
-        // what tells. After `finish`, the watcher no longer stops it, so a
-        // download that ran to its end is finished whatever the adapter did
-        // after.
+        // A download whose network part ran to its end is done, whatever
+        // stopped it after (the adapter going or a restart while the UAC
+        // prompt waits): finished, or why the file could not be moved.
+        let done =
+            matches!(&result, Ok(saved) if saved.complete) || matches!(&result, Err(EngineError::NotMoved { .. }));
         let stopped = token.load(Ordering::SeqCst);
         let down = watch.and_then(crate::route::Watch::finish);
-        if stopped {
+        if stopped && !done {
             // The user's cancel or pause is theirs, whatever the adapter did.
             if flags.canceled.load(Ordering::SeqCst) {
                 reporter.send(Progress::Canceled { id, url });
                 return;
             }
             if flags.restart.swap(false, Ordering::SeqCst) {
+                // A form's answer is not asked for again on its own: the
+                // form would be sent twice.
+                if req.post_body.is_some() {
+                    let error = udm_domain::network::RestartNeeded.to_string();
+                    reporter.send(Progress::Failed { id, url, error });
+                    return;
+                }
                 if let Some((path, partial)) = written.lock_or_recover().take() {
                     req.reuse_path = Some(path);
                     req.reuse_partial = partial;
                 }
                 token.store(false, Ordering::SeqCst);
+                // A cancel that came between the look above and this is
+                // the user's, and is kept.
+                if flags.canceled.load(Ordering::SeqCst) {
+                    reporter.send(Progress::Canceled { id, url });
+                    return;
+                }
                 tracing::info!(download_id = id.get(), "starting again: the network changed");
                 continue;
             }
@@ -801,7 +815,7 @@ fn run(id: DownloadId, flags: &RunFlags, req: DownloadRequest, reporter: Reporte
             return;
         }
         match result {
-            Ok(Saved { path, note }) => reporter.send(Progress::Finished { id, url, path, note }),
+            Ok(Saved { path, note, .. }) => reporter.send(Progress::Finished { id, url, path, note }),
             Err(EngineError::NameTaken { path, total }) => {
                 reporter.send(Progress::NameTaken { id, url, path, total: total.map(ByteCount::new) })
             }
@@ -902,7 +916,7 @@ fn run_elevated(
             let result = run_inner(id, token, req, reporter, shared);
             req.folders = folders;
             let saved = result?;
-            if token.load(Ordering::Relaxed) {
+            if !saved.complete {
                 return Ok(saved);
             }
             if let Some(name) = saved.path.file_name() {
@@ -922,7 +936,7 @@ fn run_elevated(
         Ok(()) if target.is_file() => {
             let _ = fs::remove_file(&marker);
             let _ = fs::remove_dir(&staging);
-            Ok(Saved { path: target, note: saved.note })
+            Ok(Saved { path: target, note: saved.note, complete: true })
         }
         Ok(()) => Err(not_moved(Some("the file did not arrive".into()))),
         Err(crate::elevate::MoveError::Refused) => Err(not_moved(None)),
@@ -930,15 +944,27 @@ fn run_elevated(
     }
 }
 
-/// Where a finished download was saved, and anything to say about it.
+/// Where a download was saved, and anything to say about it. A stopped
+/// download returns its file too: `complete` says whether it got all of it,
+/// decided when its network part ended, so nothing that stops it later (a
+/// change of network, the adapter going while the UAC prompt waits) undoes
+/// that.
 pub(crate) struct Saved {
     pub path: PathBuf,
     pub note: Option<String>,
+    pub complete: bool,
 }
 
 impl From<PathBuf> for Saved {
     fn from(path: PathBuf) -> Self {
-        Saved { path, note: None }
+        Saved { path, note: None, complete: true }
+    }
+}
+
+impl Saved {
+    /// The same, complete unless it was stopped.
+    fn stopped_if(self, stopped: bool) -> Saved {
+        Saved { complete: !stopped, ..self }
     }
 }
 
@@ -951,13 +977,15 @@ fn run_inner(
 ) -> Result<Saved, EngineError> {
     let agent = http::Client::new(&req.net, &req.url)?;
     if let Some(choice) = req.media.as_ref().filter(|c| c.kind == Some(udm_domain::media::MediaKind::Page)) {
-        return page::run(id, token, req, choice, reporter, shared);
+        return page::run(id, token, req, choice, reporter, shared).map(|s| s.stopped_if(token.load(Ordering::SeqCst)));
     }
     if let Some(choice) = &req.media {
-        return stream::run(id, token, &agent, req, choice, reporter, shared);
+        return stream::run(id, token, &agent, req, choice, reporter, shared)
+            .map(|s| s.stopped_if(token.load(Ordering::SeqCst)));
     }
     if let Some(body) = &req.post_body {
-        return run_post(id, token, &agent, req, body, reporter, shared).map(Saved::from);
+        return run_post(id, token, &agent, req, body, reporter, shared)
+            .map(|path| Saved::from(path).stopped_if(token.load(Ordering::SeqCst)));
     }
     let probe = http::probe(&agent, &req.url, &req.headers)?;
     let filename = pick_filename(req.filename.as_deref(), &probe).into_string();
@@ -998,24 +1026,24 @@ fn run_inner(
     } else {
         run_single(id, token, &agent, req, work.clone(), &probe, reporter, limiter, &gate)
     };
+    // Whether it got the whole file, decided once, as the transfer ends.
+    let complete = result.is_ok() && !token.load(Ordering::SeqCst);
     // A finished file written in the temporary folder moves into place.
     let result = match result {
-        Ok(_) if work != output && !token.load(Ordering::Relaxed) => {
-            move_into_place(&work, &output).map(|()| output.clone())
-        }
+        Ok(_) if work != output && complete => move_into_place(&work, &output).map(|()| output.clone()),
         other => other,
     };
     drop(claim);
     // A canceled download also returns its path; only a finished one gets
     // the server's date.
     if let Ok(path) = &result {
-        if (req.server_date || req.server_date_created) && !token.load(Ordering::Relaxed) {
+        if (req.server_date || req.server_date_created) && complete {
             if let Some(date) = probe.last_modified.as_deref().and_then(http_date) {
                 let _ = set_file_date(path, date, req.server_date, req.server_date_created);
             }
         }
     }
-    result.map(Saved::from)
+    result.map(|path| Saved::from(path).stopped_if(!complete))
 }
 
 /// Give the file at `path` the time `date` as its modified time, its
@@ -3099,6 +3127,38 @@ mod tests {
             assert_eq!(fs::read(&path).unwrap(), body(LEN));
             let served = server.served.load(Ordering::SeqCst);
             assert!(served < LEN as u64 * 3 / 2, "resumed, not downloaded twice: {served} bytes");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_form_download_is_not_sent_again_when_the_network_changes() {
+            let form = b"session=abc&file=report".to_vec();
+            let behavior =
+                Behavior { post_only_body: Some(form.clone()), bytes_per_sec: Some(256 * 1024), ..Behavior::default() };
+            let server = TestServer::start_with(body(LEN), behavior);
+            let dir = temp_dir("post_restart");
+            let source = Arc::new(Mutex::new(crate::route::Route::default()));
+            let (engine, rx) = routed_engine(Arc::clone(&source), 1);
+            let mut req = request(&server.url, &dir, FileExists::Rename);
+            req.post_body = Some(form);
+            engine.enqueue(req);
+            let mut restarted = false;
+            let error = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
+                    Progress::Advanced { done, .. } if !restarted && done.get() > 64 * 1024 => {
+                        *source.lock().unwrap() = crate::route::tests::bound_to_loopback().0;
+                        engine.restart_running();
+                        restarted = true;
+                    }
+                    Progress::Failed { error, .. } => break error,
+                    Progress::Finished { .. } => panic!("it went on on the old route"),
+                    Progress::Canceled { .. } => panic!("not a cancel"),
+                    _ => {}
+                }
+            };
+            assert_eq!(error, udm_domain::network::RestartNeeded.to_string());
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(server.connections.load(Ordering::SeqCst), 1, "the form was sent once");
             fs::remove_dir_all(&dir).ok();
         }
 

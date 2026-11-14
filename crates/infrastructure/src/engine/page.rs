@@ -209,7 +209,7 @@ pub(super) fn run(
             .to_string()
     });
     drop(claim);
-    Ok(Saved { path, note })
+    Ok(Saved { path, note, complete: true })
 }
 
 /// The name yt-dlp works under for download `id`, without an extension:
