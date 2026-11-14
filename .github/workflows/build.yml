@@ -117,11 +117,8 @@ jobs:
       # The Safari extension's app extension, with its Swift handler, built
       # and signed as package.sh does, into a stand-in UDM.app holding this
       # build's udm-host (macos-15 has Xcode, so its converter must be there).
-      # It has not passed yet, so it does not fail the run until it has
-      # (docs/building.md).
       - name: Build the Safari extension
         if: runner.os == 'macOS'
-        continue-on-error: true
         env:
           UDM_SAFARI: require
         run: |

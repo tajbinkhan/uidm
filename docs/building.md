@@ -123,12 +123,9 @@ With Xcode installed (not only its Command Line Tools), `package.sh` also
 builds the Safari extension into `UDM.app` (`installer/macos/safari/build.sh`,
 through Xcode's `safari-web-extension-converter`); without Xcode it warns and
 leaves it out, as it does when that build fails, unless `UDM_SAFARI=require`.
-That build has not run yet: until it has passed once on CI's macOS runner,
-the build workflow's **Build the Safari extension** step may fail
-(`continue-on-error`) and the release builds the disk image without
-`UDM_SAFARI=require`. After the first green run, drop `continue-on-error`
-from that step and set `UDM_SAFARI: require` on the release's **Build the
-disk image** step, so a broken Safari build stops a release again.
+CI sets `UDM_SAFARI=require` on the build workflow's **Build the Safari
+extension** step and on the release's **Build the disk image** step, so a
+broken Safari build fails the run and stops a release.
 
 Rust on Windows needs a linker. This project builds with the
 `stable-x86_64-pc-windows-gnu` toolchain plus MinGW-w64 (WinLibs) on `PATH`.

@@ -151,10 +151,11 @@ jobs:
           pnpm --dir frontend install --frozen-lockfile
           pnpm --dir frontend build
 
-      # The runner has Xcode, so UDM.app gets its Safari extension. Until its
-      # build has passed once, a failure only leaves it out (docs/building.md
-      # says when to set UDM_SAFARI: require here).
+      # The runner has Xcode, so UDM.app gets its Safari extension, and a
+      # broken Safari build stops the release (docs/building.md).
       - name: Build the disk image
+        env:
+          UDM_SAFARI: require
         run: installer/macos/package.sh
 
       - uses: actions/upload-artifact@v5
