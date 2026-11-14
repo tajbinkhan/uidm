@@ -24,7 +24,15 @@ pub fn incoming(command: Command) -> Incoming {
     match command {
         Command::Hello { version, client } => Incoming::Hello { version, client },
         Command::Ping => Incoming::Ping,
-        Command::CommandLine(c) => Incoming::CommandLine(c),
+        Command::CommandLine(mut c) => {
+            // A `.torrent` file given on the command line travels base64-encoded
+            // as its download's `torrent_file`, as `udm-cli` sends one.
+            if let (Some(metainfo), Some(d)) = (c.metainfo.take(), c.download.as_mut()) {
+                use base64::Engine as _;
+                d.torrent_file = Some(base64::engine::general_purpose::STANDARD.encode(metainfo));
+            }
+            Incoming::CommandLine(c)
+        }
         Command::ProbeMedia { request, download } => Incoming::ProbeMedia { request, download },
         Command::PickLinks { page, links, user_agent } => Incoming::PickLinks { page, links, user_agent },
         Command::PickVideos { page, playlist, user_agent } => Incoming::PickVideos { page, playlist, user_agent },
@@ -107,7 +115,14 @@ pub fn command(msg: Incoming) -> Command {
     match msg {
         Incoming::Hello { version, client } => Command::Hello { version, client },
         Incoming::Ping => Command::Ping,
-        Incoming::CommandLine(c) => Command::CommandLine(c),
+        Incoming::CommandLine(mut c) => {
+            if let Some(file) = c.download.as_mut().and_then(|d| d.torrent_file.take()) {
+                use base64::Engine as _;
+                // A file that is not base64 is no torrent: adding it says so.
+                c.metainfo = Some(base64::engine::general_purpose::STANDARD.decode(file.trim()).unwrap_or_default());
+            }
+            Command::CommandLine(c)
+        }
         Incoming::ProbeMedia { request, download } => Command::ProbeMedia { request, download },
         Incoming::PickLinks { page, links, user_agent } => Command::PickLinks { page, links, user_agent },
         Incoming::PickVideos { page, playlist, user_agent } => Command::PickVideos { page, playlist, user_agent },
@@ -663,7 +678,18 @@ mod tests {
         let garbled: Incoming =
             serde_json::from_value(serde_json::json!({"op": "add", "url": "x", "torrent_file": "!"})).unwrap();
         assert!(matches!(command(garbled), Command::AddTorrentFile { metainfo, .. } if metainfo.is_empty()));
-        assert!(matches!(command(incoming(Command::Add(download))), Command::Add(_)), "a plain add stays one");
+        assert!(matches!(command(incoming(Command::Add(download.clone()))), Command::Add(_)), "a plain add stays one");
+        // So does one given on udm-gui's command line, inside `command_line`.
+        let cmd = udm_domain::download::CommandLine {
+            download: Some(download.clone()),
+            metainfo: Some(b"d4:infoe".to_vec()),
+            ..Default::default()
+        };
+        let sent = incoming(Command::CommandLine(cmd));
+        assert_eq!(json(&sent)["download"]["torrent_file"].as_str(), Some("ZDQ6aW5mb2U="));
+        let Command::CommandLine(back) = command(sent) else { panic!("a command line") };
+        assert_eq!(back.metainfo.as_deref(), Some(&b"d4:infoe"[..]));
+        assert_eq!(back.download.and_then(|d| d.torrent_file), None);
 
         let id = DownloadId::new(4);
         let select = incoming(Command::SelectTorrentFiles { id, files: FileSelection::parse(&[2, 0], 3).unwrap() });

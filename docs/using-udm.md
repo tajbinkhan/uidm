@@ -202,6 +202,10 @@
   buttons themselves, and choose the tab the window opens on and whether it
   opens with its details shown. The window closes when the download
   finishes.
+- **A torrent's** save-as dialog lists its files to tick, its row says when it
+  seeds and with what share ratio, and its download window has tabs for its
+  files, peers, trackers, pieces and seeding limits
+  ([Torrents and magnet links](torrents.md#in-the-window)).
 - **When a download ends**, UDM shows a Windows notification: **Open** and
   **Show in folder** for a finished file, **Retry** for a failed one. Options
   can show an IDM-style dialog in the window instead (a notification still

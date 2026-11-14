@@ -3,5 +3,5 @@
   "identifier": "save-as",
   "description": "Download File Info, one window per download waiting for its answer.",
   "windows": ["save-as-*"],
-  "permissions": ["allow-subscribe", "allow-report-frontend-error", "allow-heartbeat", "allow-close-window", "allow-answer-download", "allow-check-save-folder", "allow-pick-save-folder", "allow-preview-zip", "core:window:allow-set-size"]
+  "permissions": ["allow-subscribe", "allow-report-frontend-error", "allow-heartbeat", "allow-close-window", "allow-answer-download", "allow-check-save-folder", "allow-pick-save-folder", "allow-preview-zip", "allow-pick-torrent-files", "core:window:allow-set-size"]
 }

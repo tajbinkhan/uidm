@@ -1248,6 +1248,10 @@ pub struct CommandLine {
     /// that starts UDM does this; one that finds it running does not.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quit_after: bool,
+    /// The `.torrent` file given on the command line, read whole: `download`
+    /// is its torrent. It travels as `download`'s `torrent_file`.
+    #[serde(skip)]
+    pub metainfo: Option<Vec<u8>>,
 }
 
 impl CommandLine {

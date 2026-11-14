@@ -98,6 +98,13 @@ pub struct AppState {
     /// speeds, peers, trackers and pieces, for its download window. Its row
     /// keeps the rest (`DownloadEntry::torrent`).
     pub torrents: HashMap<DownloadId, udm_domain::torrent::TorrentStats>,
+    /// Each torrent download's files, once the daemon sent them
+    /// (`Event::TorrentInfo`): rows carry no file list, and an `Updated`
+    /// row would drop one kept on it.
+    pub torrent_info: HashMap<DownloadId, udm_domain::torrent::TorrentInfo>,
+    /// The files ticked in a torrent's Download File Info, until it is
+    /// answered; a torrent missing here has every file ticked.
+    pub torrent_picks: HashMap<DownloadId, BTreeSet<usize>>,
     pub daemon_version: Option<String>,
     /// The rows selected in the main window, in the order picked.
     pub selected: Vec<DownloadId>,
@@ -181,6 +188,8 @@ impl Default for AppState {
             speeds: HashMap::new(),
             segments: HashMap::new(),
             torrents: HashMap::new(),
+            torrent_info: HashMap::new(),
+            torrent_picks: HashMap::new(),
             daemon_version: None,
             selected: Vec::new(),
             node: Node::default(),
@@ -341,6 +350,13 @@ pub enum UiMessage {
         ext: String,
         name: Option<String>,
     },
+    /// Tick (`chosen`) or untick torrent download `id`'s files `indexes` in
+    /// its Download File Info.
+    PickTorrentFiles {
+        id: DownloadId,
+        indexes: Vec<usize>,
+        chosen: bool,
+    },
 }
 
 impl AppState {
@@ -417,7 +433,8 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
         }
         UiMessage::RemoveClosed => state.to_remove.clear(),
         UiMessage::ShowProgress(id) => {
-            if state.table.get(id).is_some_and(|e| e.status != Status::Done) {
+            // A finished torrent's window shows its seeding.
+            if state.table.get(id).is_some_and(|e| e.status != Status::Done || e.torrent.is_some()) {
                 state.progress.insert(id);
             }
         }
@@ -536,6 +553,13 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
         UiMessage::TypeNameRead { ext, name } => {
             state.type_names.insert(ext, name);
         }
+        UiMessage::PickTorrentFiles { id, indexes, chosen } => {
+            let waiting = state.table.get(id).is_some_and(|e| e.status == Status::Confirming);
+            if let Some(info) = state.torrent_info.get(&id).filter(|_| waiting) {
+                let picked = crate::torrents::pick(info, state.torrent_picks.get(&id), &indexes, chosen);
+                state.torrent_picks.insert(id, picked);
+            }
+        }
         UiMessage::Columns(columns) => {
             if !columns.is_empty() {
                 state.columns = columns;
@@ -631,10 +655,15 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
         Event::TorrentStats { id, stats, .. } => {
             state.torrents.insert(id, stats);
         }
+        Event::TorrentInfo { id, info, .. } => {
+            state.torrent_info.insert(id, info);
+        }
         Event::Removed { id } => {
             state.speeds.remove(&id);
             state.segments.remove(&id);
             state.torrents.remove(&id);
+            state.torrent_info.remove(&id);
+            state.torrent_picks.remove(&id);
             state.selected.retain(|s| *s != id);
             state.to_remove.retain(|s| *s != id);
             state.progress.remove(&id);
@@ -672,6 +701,10 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
     // dialog, so a later dialog for it can open again.
     let table = &state.table;
     state.answered.retain(|id| table.get(*id).is_some_and(|e| e.status == Status::Confirming));
+    state.torrent_picks.retain(|id, _| table.get(*id).is_some_and(|e| e.status == Status::Confirming));
+    // A list replaced whole forgets the torrents it no longer holds.
+    state.torrent_info.retain(|id, _| table.get(*id).is_some());
+    state.torrents.retain(|id, _| table.get(*id).is_some());
 }
 
 #[cfg(test)]

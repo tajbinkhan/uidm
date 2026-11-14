@@ -46,6 +46,9 @@ pub fn options(lang: &'static Language, e: &crate::options::OptionsError) -> Inv
         E::Port => lang.tr("Type a port from 1 to 65535.").to_string(),
         E::DebridService => lang.tr("Choose the debrid service the account is with.").to_string(),
         E::Network(n) => text::network(lang, n),
+        E::TorrentPeers => lang.tr("Type a number of peers from 1 to 1000.").to_string(),
+        E::UploadLimit => lang.tr("Type an upload limit from 1 KB/s up.").to_string(),
+        E::Torrent(t) => text::torrent(lang, t),
     };
     error(ErrorKind::Invalid, message)
 }

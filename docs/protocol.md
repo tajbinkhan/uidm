@@ -186,7 +186,8 @@ kept for its retries. `udm-cli` names itself `client: "udm-cli"`, and
 `command_line` is what `udm-gui` sends for its switches. With a window
 open the daemon runs it at once and answers `window_open: true`; otherwise
 it holds it for up to a minute and runs it when the next window says
-`hello`.
+`hello`. A `.torrent` file given on the command line travels in its
+`download`'s `torrent_file`, base64-encoded, as in `add`.
 
 `remote_status`, `start_pairing`, `cancel_pairing` and `remove_device` are
 Options' remote-control page (see [Remote control](remote-control.md)); each is

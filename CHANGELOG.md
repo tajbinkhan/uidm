@@ -23,9 +23,17 @@ local discovery are off), and on Windows, where that cannot be done, torrents do
 over HTTPS no tracker or DHT name goes to the system's resolver. Torrents whose file names could
 not be saved safely, with more than 10,000 files or a `.torrent` file over 16 MB are refused; a
 taken folder or file name follows **If the file exists**, and the same torrent is never added
-twice. On Windows, a torrent's files get the Mark of the Web. The
-window's dialog and the download window's torrent tabs come next; the daemon's `torrent_info` and
-`torrent_stats` messages carry what they show ([Torrents and magnet links](docs/torrents.md)).
+twice. On Windows, a torrent's files get the Mark of the Web. In the window, the save-as dialog
+lists a torrent's files to tick (only the folder for a torrent of one file), the list says
+**Seeding (ratio …)**, **Checking** or **Getting file list**, its menu has **Torrent details** and
+**Stop seeding**, and a torrent's download window has tabs for its files (ticked or unticked while
+it runs), peers, trackers, a piece map and its seeding limits, sent to the window row by row.
+**Options > Torrents** sets the port, the DHT, UPnP, local peers, peers per torrent, the upload
+limit, the default seeding limits and whether `.torrent` files from the browser are taken.
+**Tasks > Open torrent file...** adds a `.torrent` file from the computer, `udm-gui` takes a magnet
+link or a `.torrent` file alone on its command line (and a magnet link after `/d`), and the
+clipboard monitor offers copied magnet links and `.torrent` addresses
+([Torrents and magnet links](docs/torrents.md)).
 
 Downloads can go through one network adapter only, such as a VPN's (#261). **Options > Network**
 lists the adapters with their addresses; with one chosen, every connection is bound to it

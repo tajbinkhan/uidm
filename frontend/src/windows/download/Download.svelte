@@ -1,6 +1,7 @@
 <!-- A download's progress window: its status, speed limiter and what
      happens when it is done, the progress bar, and with its details the
-     connections' ranges. -->
+     connections' ranges. A torrent's adds its files, peers, trackers,
+     pieces and seeding, and has no connections to show. -->
 <script lang="ts">
   import { closeWindow, controlDownload, fitHeight, messageOf, setDownloadLimit, setDownloadOnDone } from '../../ipc';
   import type { DownloadView, Then } from '../../ipc/types';
@@ -9,12 +10,14 @@
   import Window from '../../components/Window.svelte';
   import Tabs from '../../components/Tabs.svelte';
   import ProgressBar from '../../components/ProgressBar.svelte';
+  import TorrentPage from './TorrentPage.svelte';
 
   const WIDTH = 552;
   const SHORT = 244;
   const TALL = 413;
 
   const view: DownloadView | null = $derived(projection.view?.window === 'download' ? projection.view.view : null);
+  const torrent = $derived(view?.torrent ?? null);
 
   let tab = $state('status');
   let details: boolean | null = $state(null);
@@ -31,8 +34,8 @@
       limit = { on: view.limit.on, kb: view.limit.kbPerSec, remember: view.limit.remember };
       onDone = { ...view.onDone };
       if (view.onDone.then === 'sleep' || view.onDone.then === 'hibernate') off = view.onDone.then;
-      details = view.details;
-      if (view.details) void fitHeight(WIDTH, TALL);
+      details = view.details && !view.torrent;
+      if (details) void fitHeight(WIDTH, TALL);
       loaded = true;
     }
   });
@@ -40,6 +43,15 @@
   const tabs = $derived(
     [
       { key: 'status', label: t('Download status') },
+      ...(torrent
+        ? [
+            { key: 'files', label: t('Files') },
+            { key: 'peers', label: t('Peers') },
+            { key: 'trackers', label: t('Trackers') },
+            { key: 'pieces', label: t('Pieces') },
+            { key: 'seeding', label: t('Seeding') },
+          ]
+        : []),
       ...(view?.speedTab ? [{ key: 'speed', label: t('Speed Limiter') }] : []),
       ...(view?.doneTab ? [{ key: 'done', label: t('Options on completion') }] : []),
     ].filter((x) => !hidden.includes(x.key)),
@@ -71,10 +83,34 @@
 
 <Window onescape={() => void closeWindow()}>
   {#if view}
-    <div class="dialog">
+    <div class="dialog" class:torrent={!!torrent}>
       <Tabs {tabs} bind:current={tab}>
         <div class="page">
-          {#if tab === 'status'}
+          {#if tab === 'status' && torrent}
+            <p class="address" title={view.address}>{view.address}</p>
+            <dl class="pairs torrent-pairs">
+              <dt>{t('Status')}</dt>
+              <dd>{view.status}</dd>
+              <dt class="gap">{t('File size')}</dt>
+              <dd class="gap">{view.size}</dd>
+              <dt>{t('Downloaded')}</dt>
+              <dd>{view.downloaded}</dd>
+              <dt>{t('Download speed')}</dt>
+              <dd>{torrent.downSpeed}</dd>
+              <dt>{t('Upload speed')}</dt>
+              <dd>{torrent.upSpeed}</dd>
+              <dt>{t('Time left')}</dt>
+              <dd>{torrent.timeLeft}</dd>
+              <dt class="gap">{t('Uploaded')}</dt>
+              <dd class="gap">{torrent.uploaded}</dd>
+              <dt>{t('Share ratio')}</dt>
+              <dd>{torrent.ratio}</dd>
+              <dt>{t('Peers')}</dt>
+              <dd>{torrent.peersLine}</dd>
+            </dl>
+          {:else if torrent && ['files', 'peers', 'trackers', 'pieces', 'seeding'].includes(tab)}
+            <TorrentPage {torrent} {tab} />
+          {:else if tab === 'status'}
             <!-- The server's country goes before the address: the page has
                  no room for another row. -->
             <p class="address" title={view.address}>
@@ -173,7 +209,9 @@
       </Tabs>
       <ProgressBar fraction={view.fraction} />
       <div class="row controls">
-        <button class="btn wide" onclick={toggleDetails}>{details ? t('<< Hide details') : t('Show details >>')}</button>
+        {#if !torrent}
+          <button class="btn wide" onclick={toggleDetails}>{details ? t('<< Hide details') : t('Show details >>')}</button>
+        {/if}
         <span class="grow"></span>
         {#if view.canResume}
           <button class="btn mid" onclick={() => void run(controlDownload('resume'))}>{t('Resume')}</button>
@@ -223,6 +261,15 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+
+  /* A torrent's tabs hold lists: the window opens taller for them. */
+  .torrent .page {
+    height: 276px;
+  }
+
+  .torrent-pairs {
+    row-gap: 2px;
   }
 
   p {

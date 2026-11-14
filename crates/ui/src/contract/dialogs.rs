@@ -48,6 +48,8 @@ pub struct SaveAsView {
     /// The system can ask for administrator rights to save in a folder UDM
     /// may not write to.
     pub can_elevate: bool,
+    /// A torrent's files to choose from.
+    pub torrent: Option<super::SaveAsTorrent>,
 }
 
 /// The Duplicate download link question.
@@ -74,6 +76,8 @@ pub struct AnswerInput {
     /// Save there with administrator rights, when UDM may not write to the
     /// folder.
     pub elevate: bool,
+    /// `save_as` is the folder alone: a torrent of one file keeps its name.
+    pub folder_only: bool,
 }
 
 /// Whether UDM may save files in a folder Download File Info names.
@@ -152,6 +156,8 @@ pub struct DownloadView {
     pub speed_tab: bool,
     pub done_tab: bool,
     pub details: bool,
+    /// A torrent's files, peers, trackers, pieces and seeding.
+    pub torrent: Option<Box<super::TorrentView>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Type)]

@@ -20,9 +20,14 @@ quota, pauses, resumes, and carries on after UDM starts again. Once it has finis
   downloads, a link to a `.torrent` file is taken as it is clicked. A torrent file is taken
   whatever its size and the captured file types, unless its site or address is excluded; with
   **Take .torrent files as torrents** off, it is a file like any other.
+- **Open torrent file**: **Tasks > Open torrent file...** in the main window picks a `.torrent`
+  file on your computer and adds its torrent.
 - **The command line**: `udm-cli get "magnet:?xt=urn:btih:..."`, or `udm-cli get file.torrent`
-  ([Command line](command-line.md#get)). A `.torrent` file sent this way may be at most 2.75 MB,
-  since it travels in one message to UDM; add a larger one from its web address.
+  ([Command line](command-line.md#get)); `udm-gui` takes a magnet link or a `.torrent` file alone
+  (`udm-gui album.torrent`), or a magnet link after `/d` ([IDM's switches](command-line.md#idms-switches)).
+  A `.torrent` file opened in the window or sent this way may be at most 2.75 MB, since it travels
+  in one message to UDM; add a larger one from its web address. UDM's installers do not make it
+  the system's program for magnet links or `.torrent` files.
 - **AI assistants**: `udm-mcp`'s `add_download` takes magnet links ([AI assistants](ai-assistants.md)).
 
 UDM needs the torrent's *metadata*, the list of its files, before it can save anything. A
@@ -46,6 +51,44 @@ finished torrent's files against it from the start, under the same rule.
 You can change which files a torrent downloads later. A running torrent takes the new choice at
 once; a finished one given more files starts again for them; a stopped one takes it when it
 starts.
+
+## In the window
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/torrent-dark.webp">
+  <img src="images/torrent-light.webp" alt="A torrent's download window on its Files tab: each file ticked, with its size and a progress bar, beside tabs for its peers, trackers, pieces and seeding" width="700">
+</picture>
+
+- **The save-as dialog** lists a torrent's files under the usual folder and category, sorted by
+  path, with a box to tick each, **Select all** and **Select none**, and what the ticked files add
+  up to. Start is greyed out while nothing is ticked. For a torrent of one file the dialog asks
+  only for the folder and shows the file's name, which the torrent fixes. If the file list has not
+  come yet, the dialog says it is getting it from the peers, and starting then downloads every
+  file.
+- **The list** shows a torrent's progress as any download's, says **Getting file list** while a
+  magnet link's metadata comes and **Checking** (with how far) while it checks its data, and
+  **Seeding (ratio 0.42)** while it seeds. A seeding torrent counts as finished in the categories.
+  Its menu has **Torrent details**, which opens its download window even once it has finished, and
+  **Stop seeding**.
+- **The download window** of a torrent is larger, with tabs of its own besides the status,
+  **Speed Limiter** and **Options on completion**:
+  - **Download status**: its size, how much is in, its download and upload speeds, the time left,
+    what it uploaded, its share ratio and its peers (connected and known).
+  - **Files**: each file with its size and progress; ticking or unticking one changes what the
+    torrent downloads at once (at least one stays ticked). Torrents of more than 1,000 files show
+    no progress for each file.
+  - **Peers**: the busiest 200 peers, with their address, program, speeds, what they sent and
+    got, and how they are connected.
+  - **Trackers**: each tracker, used or skipped (as DNS over HTTPS skips HTTP trackers).
+  - **Pieces**: a map of the pieces that are here.
+  - **Seeding**: the limits from Options, or the torrent's own (a share ratio, a number of
+    minutes, or both, whichever comes first), with **Apply**, how long it has seeded, and **Stop
+    seeding**.
+- **Options > Torrents** holds the settings below: the port (a free one each start, or a fixed
+  one), the DHT, UPnP, finding peers on the local network, the most peers per torrent, the upload
+  limit, the default seeding limits, and whether `.torrent` files from the browser are taken as
+  torrents. With a network adapter chosen in **Options > Network**, the page says that torrents go
+  through it too, without UPnP or the local network search.
 
 ## Downloading
 

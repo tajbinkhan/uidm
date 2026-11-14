@@ -16,6 +16,7 @@ node tools/screenshots/shoot.js --out /tmp/shots  # somewhere else, to compare
 | `main-{light,dark}.webp` | The main window | 1100 × 640 |
 | `save-as-{light,dark}.webp` | Download File Info | 576 × 206 |
 | `download-{light,dark}.webp` | The download window, with **Show details >>** clicked | 552 × 413 |
+| `torrent-{light,dark}.webp` | A torrent's download window, on its **Files** tab | 700 × 400 |
 | `options-{light,dark}.webp` | Options, on its General page | 436 × 505 |
 | `scheduler-{light,dark}.webp` | The Scheduler, with **Start download at** and **Turn off computer when done** ticked | 657 × 464 |
 | `video-{light,dark}.webp` | The extension's **Download this video** button and its menu on a sample page | 960 × 660 |
@@ -42,7 +43,7 @@ No image library is needed: Chromium encodes the WebP files itself.
   `frontend/test/fixtures/views.json`, which the frontend's tests draw too. To change the sample (the files, their states, the column
   widths), edit `crates/ui/src/fixtures.rs` and run
   `UDM_WRITE_FIXTURES=1 cargo test -p udm-ui fixtures`, then check that `pnpm --dir frontend test`
-  still passes. Where a shot needs a click (the download window's details, the Scheduler's ticks),
+  still passes. Where a shot needs a click (the download window's details, a torrent's Files tab, the Scheduler's ticks),
   the script clicks as a user would.
 - **The video button** is the extension's own content scripts (`rules.js`, `links.js`,
   `content.js`, as the manifest loads them) on a sample page the script serves to the browser

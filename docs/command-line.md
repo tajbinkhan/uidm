@@ -44,7 +44,7 @@ udm-gui /s
 
 | Switch | Long form | What it does |
 |---|---|---|
-| `/d URL` | `--download` | Add URL (http, https, ftp or ftps) to the list and show the usual download dialog |
+| `/d URL` | `--download` | Add URL (http, https, ftp or ftps, or a torrent's magnet link) to the list and show the usual download dialog |
 | `/p folder` | `--path` | Save in this folder (relative to the current one) |
 | `/f file_name` | `--file` | Save under this name |
 | `/c checksum` | `--checksum` | Compare the finished file with this checksum (`sha256:...` and the like, or a bare hex digest); a mismatch fails it. UDM's own, not IDM's |
@@ -53,6 +53,10 @@ udm-gui /s
 | `/q` | `--quit` | Exit UDM once that download finishes, but only when the call started UDM, as in IDM |
 | `/h` | `--hang-up` | Hang up a dial-up connection; accepted and does nothing |
 | `/s` | `--start-queue` | Start the main queue |
+
+A magnet link or a `.torrent` file given alone (`udm-gui "magnet:?xt=urn:btih:..."`,
+`udm-gui album.torrent`) is downloaded as `/d` would; `udm-gui` reads the `.torrent` file (at most
+2.75 MB) and hands it to UDM ([Torrents](torrents.md)).
 
 `/p`, `/f`, `/c`, `/a`, `/n`, `/q` and `/h` need `/d`; without it they are ignored, as in IDM. Each
 switch also works as `-d` and the like, and the slash forms take either case. With UDM already

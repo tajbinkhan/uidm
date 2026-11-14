@@ -30,6 +30,7 @@ mod testing;
 mod theme;
 mod tips;
 mod tools;
+mod torrents;
 mod tray;
 mod watchdog;
 mod windows;

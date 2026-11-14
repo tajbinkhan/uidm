@@ -4,6 +4,7 @@
 pub mod dialogs;
 pub mod format;
 pub mod main;
+pub mod torrent;
 
 use udm_domain::theme::appearance;
 

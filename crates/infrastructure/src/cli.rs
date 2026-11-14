@@ -13,6 +13,10 @@
 //! dial-up connection) is accepted and does nothing. As in IDM, `/p`, `/f`,
 //! `/c`, `/q`, `/h`, `/n` and `/a` need `/d`; without it they are ignored.
 //!
+//! `/d` takes magnet links too. A magnet link or a `.torrent` file given
+//! alone, as a system hands a program the links and files it opens,
+//! downloads that torrent as `/d` does.
+//!
 //! Each switch also has a `-x` and a long form (`--download`, `--path`,
 //! `--file`, `--checksum`, `--quit`, `--hang-up`, `--silent`, `--add`, `--start-queue`), and
 //! the slash forms take either case.
@@ -63,6 +67,9 @@ pub enum CliError {
     BadChecksum(String, #[source] ChecksumError),
     #[error("too many links: {0}, at most {max}", max = udm_domain::batch::MAX_BATCH)]
     TooManyLinks(usize),
+    /// The `.torrent` file, and why it cannot be used.
+    #[error("{0} is not a torrent UDM can add: {1}")]
+    BadTorrent(String, String),
 }
 
 /// Read `args` (without the program name). `Ok(None)` means no switch asks
@@ -74,6 +81,7 @@ where
     S: AsRef<str>,
 {
     let mut url = None;
+    let mut metainfo = None;
     let mut folder = None;
     let mut filename = None;
     let mut checksum = None;
@@ -99,6 +107,12 @@ where
             Some('a') => add = true,
             Some('s') => start_queue = true,
             Some('m' | 't') => {}
+            None if url.is_none() && udm_domain::torrent::starts_like_magnet(arg) => url = Some(arg.to_string()),
+            None if url.is_none() && is_torrent_path(arg) => {
+                let (link, bytes) = torrent_file(arg, cwd)?;
+                url = Some(link);
+                metainfo = Some(bytes);
+            }
             _ => return Err(CliError::Unknown(arg.to_string())),
         }
     }
@@ -115,7 +129,30 @@ where
     if download.is_none() && !start_queue {
         return Ok(None);
     }
-    Ok(Some(CommandLine { download, start_queue, quit_after }))
+    Ok(Some(CommandLine { download, start_queue, quit_after, metainfo }))
+}
+
+/// Whether `arg` names a `.torrent` file rather than a switch.
+fn is_torrent_path(arg: &str) -> bool {
+    Path::new(arg).extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent"))
+}
+
+/// The `.torrent` file at `arg` (under `cwd` when relative): its torrent's
+/// magnet link and the file's bytes, which go to UDM, which keeps them.
+fn torrent_file(arg: &str, cwd: &Path) -> Result<(String, Vec<u8>), CliError> {
+    use std::io::Read;
+    let bad = |why: String| CliError::BadTorrent(arg.to_string(), why);
+    let max = udm_domain::torrent::MAX_SENT_METAINFO_BYTES as u64;
+    let file = std::fs::File::open(cwd.join(arg)).map_err(|e| bad(e.to_string()))?;
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes).map_err(|e| bad(e.to_string()))?;
+    // It travels to UDM in one message, which has a size limit.
+    if bytes.len() as u64 > max {
+        let size = udm_domain::bytes::ByteCount::new(max).megabytes();
+        return Err(bad(format!("it is larger than {size}; add it from its web address instead")));
+    }
+    let meta = crate::torrent::metainfo::Metainfo::read(&bytes).map_err(|e| bad(e.to_string()))?;
+    Ok((meta.magnet().to_uri(), bytes))
 }
 
 /// The checksum a caller gave, which must be one UDM can check.
@@ -357,6 +394,9 @@ fn switch(arg: &str) -> Option<char> {
 }
 
 fn is_download_url(s: &str) -> bool {
+    if udm_domain::torrent::is_magnet(s) {
+        return true;
+    }
     let Ok(u) = url::Url::parse(s) else {
         return false;
     };
@@ -373,6 +413,32 @@ mod tests {
 
     fn run(args: &[&str]) -> Result<Option<CommandLine>, CliError> {
         parse(args, &cwd())
+    }
+
+    #[test]
+    fn a_magnet_link_or_torrent_file_alone_is_downloaded() {
+        let magnet = "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=x";
+        let c = run(&[magnet]).unwrap().unwrap();
+        assert_eq!((c.download.unwrap().url.as_str(), c.metainfo), (magnet, None));
+        let dir = std::env::temp_dir().join(format!("udm_gui_torrent_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut info = b"d6:lengthi10e4:name5:a.iso12:piece lengthi16384e6:pieces20:".to_vec();
+        info.extend_from_slice(&[1; 20]);
+        info.push(b'e');
+        let bytes = crate::torrent::metainfo::build(&info, &[]);
+        std::fs::write(dir.join("a.torrent"), &bytes).unwrap();
+        let c = parse(["a.torrent", "/n"], &dir).unwrap().unwrap();
+        let d = c.download.unwrap();
+        assert!(d.url.as_str().starts_with("magnet:?xt=urn:btih:") && d.ask == Some(false));
+        assert_eq!(c.metainfo, Some(bytes));
+        std::fs::write(dir.join("big.torrent"), vec![b'd'; udm_domain::torrent::MAX_SENT_METAINFO_BYTES + 1]).unwrap();
+        assert!(
+            matches!(parse(["big.torrent"], &dir), Err(CliError::BadTorrent(_, why)) if why.contains("web address"))
+        );
+        std::fs::write(dir.join("b.torrent"), b"<html>").unwrap();
+        assert!(matches!(parse(["b.torrent"], &dir), Err(CliError::BadTorrent(..))));
+        assert!(matches!(run(&["notes.txt"]), Err(CliError::Unknown(_))), "only torrents are taken alone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

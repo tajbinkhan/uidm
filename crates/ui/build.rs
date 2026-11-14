@@ -110,6 +110,10 @@ const COMMANDS: &[&str] = &[
     "drag_file",
     "answer_exception",
     "show_download",
+    "pick_torrent_files",
+    "set_seed_limits",
+    "stop_seeding",
+    "open_torrent_file",
 ];
 
 fn main() -> io::Result<()> {

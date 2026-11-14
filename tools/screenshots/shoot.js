@@ -44,6 +44,9 @@ const WINDOWS = {
   main: { size: [1100, 640] },
   "save-as": { size: [576, 206] },
   download: { size: [552, 413], prepare: showDetails },
+  // A torrent's download window (its view is the fixtures' download-torrent),
+  // on its Files tab.
+  torrent: { view: "download-torrent", size: [700, 400], prepare: showFiles },
   options: { size: [436, 505] },
   scheduler: { size: [657, 464], prepare: planOvernight },
 };
@@ -122,6 +125,10 @@ async function showDetails(page) {
   await page.getByRole("button", { name: "Show details >>" }).click();
 }
 
+async function showFiles(page) {
+  await page.getByRole("tab", { name: "Files" }).click();
+}
+
 async function planOvernight(page) {
   await page.getByRole("checkbox", { name: "Start download at", exact: true }).check();
   await page.getByRole("checkbox", { name: "Turn off computer when done", exact: true }).check();
@@ -154,7 +161,7 @@ async function save(encoder, name, png, opts) {
 }
 
 async function shootWindow(browser, encoder, base, kind, look, opts) {
-  const { size, prepare } = WINDOWS[kind];
+  const { size, prepare, view } = WINDOWS[kind];
   const context = await browser.newContext({
     viewport: { width: size[0], height: size[1] },
     deviceScaleFactor: opts.scale,
@@ -164,7 +171,7 @@ async function shootWindow(browser, encoder, base, kind, look, opts) {
   const page = await context.newPage();
   const problems = [];
   page.on("pageerror", (e) => problems.push(String(e)));
-  await page.goto(`${base}/dev/index.html?window=${kind}&look=${look}`);
+  await page.goto(`${base}/dev/index.html?window=${view ?? kind}&look=${look}`);
   // The snapshot arrives just after the page loads; wait for the window to
   // draw it and for its fonts.
   await page.waitForFunction(() => (document.querySelector("#app")?.childElementCount ?? 0) > 0);

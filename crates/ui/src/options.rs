@@ -11,7 +11,9 @@ use udm_domain::settings::{
     ProxyMode, Scanner, ServerLimit, Settings, SiteLogin, SocksVersion, Theme, BROWSER_MENU_ITEMS, CONNECTIONS_RANGE,
     GENERAL, SERVER_CONNECTIONS_RANGE,
 };
+use udm_domain::settings::{TorrentSettings, MAX_TORRENT_PEERS};
 use udm_domain::theme::ThemeName;
+use udm_domain::torrent::{Ratio, SeedLimits, DEFAULT_SEED_MINUTES, DEFAULT_SEED_RATIO};
 
 use crate::contract::SystemProxyView;
 use crate::contract::{AdapterDraft, DnsDraft, DnsRow, NetworkView};
@@ -41,6 +43,13 @@ pub enum OptionsError {
     /// The custom DNS over HTTPS address, or the adapter, is not one.
     #[error(transparent)]
     Network(#[from] udm_domain::network::NetworkError),
+    #[error("Type a number of peers from 1 to 1000.")]
+    TorrentPeers,
+    #[error("Type an upload limit from 1 KB/s up.")]
+    UploadLimit,
+    /// The seeding ratio is not one.
+    #[error(transparent)]
+    Torrent(#[from] udm_domain::torrent::TorrentError),
 }
 
 /// The debrid service a choice names.
@@ -324,6 +333,7 @@ fn kb(n: u64) -> u32 {
 }
 
 fn extras(s: &Settings) -> ExtrasDraft {
+    let t = &s.torrents;
     ExtrasDraft {
         max_concurrent: s.max_concurrent as u32,
         limit_on: s.speed_limit_enabled,
@@ -398,7 +408,54 @@ fn extras(s: &Settings) -> ExtrasDraft {
             DnsChoice::Custom(url) => url.as_str().to_string(),
             _ => String::new(),
         },
+        torrent_port_fixed: t.listen_port().is_some(),
+        torrent_port: u32::from(t.listen_port().unwrap_or(DEFAULT_TORRENT_PORT)),
+        torrent_dht: t.dht,
+        torrent_upnp: t.upnp,
+        torrent_local_peers: t.local_peers,
+        torrent_peers_on: t.max_peers.is_some(),
+        torrent_peers: t.peers().unwrap_or(DEFAULT_TORRENT_PEERS),
+        torrent_upload_on: t.upload_limit().is_some(),
+        torrent_upload_kb: t.upload_limit_kbps.filter(|k| *k > 0).map_or(100, |k| u32::try_from(k).unwrap_or(u32::MAX)),
+        seed_ratio_on: t.seed_limits.ratio.is_some(),
+        seed_ratio: t.seed_limits.ratio.unwrap_or(DEFAULT_SEED_RATIO).get(),
+        seed_minutes_on: t.seed_limits.minutes.is_some(),
+        seed_minutes: t.seed_limits.minutes.unwrap_or(DEFAULT_SEED_MINUTES),
+        catch_torrent_files: t.catch_torrent_files,
     }
+}
+
+/// The port Options offers when the torrents' port is first fixed: the
+/// one BitTorrent clients have long used.
+const DEFAULT_TORRENT_PORT: u16 = 6881;
+/// The peers per torrent Options offers when the limit is first set:
+/// librqbit's own.
+const DEFAULT_TORRENT_PEERS: u32 = 128;
+
+/// The torrent settings the extras give, checked.
+fn torrent_settings(e: &ExtrasDraft) -> Result<TorrentSettings, OptionsError> {
+    let port = if e.torrent_port_fixed {
+        Some(u16::try_from(e.torrent_port).ok().filter(|p| *p > 0).ok_or(OptionsError::Port)?)
+    } else {
+        None
+    };
+    if e.torrent_peers_on && !(1..=MAX_TORRENT_PEERS).contains(&e.torrent_peers) {
+        return Err(OptionsError::TorrentPeers);
+    }
+    if e.torrent_upload_on && e.torrent_upload_kb == 0 {
+        return Err(OptionsError::UploadLimit);
+    }
+    let ratio = if e.seed_ratio_on { Some(Ratio::new(e.seed_ratio)?) } else { None };
+    Ok(TorrentSettings {
+        port,
+        dht: e.torrent_dht,
+        upnp: e.torrent_upnp,
+        local_peers: e.torrent_local_peers,
+        max_peers: e.torrent_peers_on.then_some(e.torrent_peers),
+        upload_limit_kbps: e.torrent_upload_on.then_some(u64::from(e.torrent_upload_kb)),
+        seed_limits: SeedLimits { ratio, minutes: e.seed_minutes_on.then_some(e.seed_minutes) },
+        catch_torrent_files: e.catch_torrent_files,
+    })
 }
 
 fn dns_draft(d: &DnsChoice) -> DnsDraft {
@@ -521,6 +578,7 @@ fn apply_extras(e: &ExtrasDraft, done_dialog: bool, current: &Settings, s: &mut 
         DnsDraft::Quad9 => DnsChoice::Quad9,
         DnsDraft::Custom => DnsChoice::Custom(DohUrl::parse(&e.dns_url)?),
     };
+    s.torrents = torrent_settings(e)?;
     Ok(())
 }
 
@@ -810,6 +868,43 @@ mod tests {
         assert_eq!(out.remote_addresses, ["192.168.1.5", "10.0.0.2"]);
         d.extras.remote_port = 70_000;
         assert_eq!(settings(&d, &s), Err(OptionsError::Port));
+    }
+
+    #[test]
+    fn the_torrent_settings_reach_the_settings_and_come_back() {
+        let s = Settings::default();
+        let mut d = draft(&s);
+        let e = &d.extras;
+        assert!(!e.torrent_port_fixed && e.torrent_dht && e.torrent_upnp && e.catch_torrent_files);
+        assert_eq!((e.seed_ratio, e.seed_minutes), (1.0, 60));
+        assert_eq!(settings(&d, &s).unwrap(), s, "nothing changed");
+        d.extras.torrent_port_fixed = true;
+        d.extras.torrent_port = 51413;
+        d.extras.torrent_dht = false;
+        d.extras.torrent_peers_on = true;
+        d.extras.torrent_peers = 50;
+        d.extras.torrent_upload_on = true;
+        d.extras.torrent_upload_kb = 300;
+        d.extras.seed_ratio = 2.5;
+        d.extras.seed_minutes_on = false;
+        d.extras.catch_torrent_files = false;
+        let out = settings(&d, &s).unwrap();
+        let t = &out.torrents;
+        assert_eq!((t.port, t.dht, t.max_peers, t.upload_limit_kbps), (Some(51413), false, Some(50), Some(300)));
+        assert_eq!(t.seed_limits, udm_domain::torrent::SeedLimits { ratio: Ratio::new(2.5).ok(), minutes: None });
+        assert!(!t.catch_torrent_files);
+        assert_eq!(settings(&draft(&out), &out).unwrap(), out, "what was saved comes back as it was");
+        for (change, error) in [
+            ((|d: &mut OptionsDraft| d.extras.torrent_port = 70_000) as fn(&mut OptionsDraft), OptionsError::Port),
+            (|d| d.extras.torrent_peers = 1001, OptionsError::TorrentPeers),
+            (|d| d.extras.torrent_upload_kb = 0, OptionsError::UploadLimit),
+        ] {
+            let mut bad = d.clone();
+            change(&mut bad);
+            assert_eq!(settings(&bad, &s), Err(error));
+        }
+        d.extras.seed_ratio = 101.0;
+        assert!(matches!(settings(&d, &s), Err(OptionsError::Torrent(udm_domain::torrent::TorrentError::BadRatio(_)))));
     }
 
     #[test]

@@ -14,6 +14,10 @@ use udm_domain::download::{SegmentInfo, SegmentState, Status};
 use udm_domain::id::{DownloadId, QueueId};
 use udm_domain::queue::Queue;
 use udm_domain::settings::{Notify, Settings, Theme};
+use udm_domain::torrent::{
+    InfoHash, PeerInfo, PieceMap, TorrentEntry, TorrentFiles, TorrentInfo, TorrentPhase, TorrentStats, TrackerInfo,
+    TrackerState,
+};
 
 use crate::i18n::resolve;
 use crate::projection::{self, Ctx};
@@ -126,6 +130,7 @@ fn sample() -> AppState {
             send(&mut s, event, at + Duration::from_secs(k as u64 * 4));
         }
     }
+    torrents(&mut s, at);
     apply(&mut s, UiMessage::Select(vec![DownloadId::new(2)]));
     apply(&mut s, UiMessage::Sort(crate::contract::ColumnKey::LastTry));
     // Columns wide enough for the names, as a user leaves them.
@@ -146,6 +151,141 @@ fn sample() -> AppState {
     let windows = crate::state::SystemFacts { can_elevate: true, creation_time: true, portable: false };
     apply(&mut s, UiMessage::SystemRead(windows));
     s
+}
+
+/// A torrent's files, as `(path, size)`; a size of 0 is a padding file.
+fn torrent_info(byte: u8, name: &str, files: &[(&str, u64)], piece_size: u64) -> TorrentInfo {
+    let raw = files
+        .iter()
+        .map(|(path, size)| match size {
+            0 => (vec![".pad".to_string(), "12345".to_string()], 12_345, true),
+            _ => (path.split('/').map(str::to_string).collect(), *size, false),
+        })
+        .collect();
+    let files = TorrentFiles::parse(raw).unwrap();
+    let total = files.selected_size(None).get();
+    TorrentInfo {
+        info_hash: InfoHash::from_bytes([byte; 20]),
+        name: name.into(),
+        files,
+        piece_size: ByteCount::new(piece_size),
+        pieces: u32::try_from(total.div_ceil(piece_size)).unwrap(),
+        private: false,
+    }
+}
+
+/// Three torrents: one downloading, with its peers and pieces; one seeding;
+/// and one waiting for Download File Info, with a file unticked.
+fn torrents(s: &mut AppState, at: Instant) {
+    let send = |s: &mut AppState, event: Event| apply(s, UiMessage::Daemon { event: Box::new(event), at, unix: 0 });
+    let movies = torrent_info(
+        0xa1,
+        "Open Movies Collection",
+        &[
+            ("Big Buck Bunny (2008)/big-buck-bunny-1080p.mkv", 928_670_754),
+            ("", 0),
+            ("Sintel (2010)/sintel-1080p.mkv", 1_241_513_984),
+            ("Tears of Steel (2012)/tears-of-steel-1080p.mkv", 1_502_412_345),
+            ("README.txt", 4_096),
+        ],
+        4 * 1024 * 1024,
+    );
+    let distro = torrent_info(
+        0xb2,
+        "linux-distro-26.04-desktop-amd64.iso",
+        &[("linux-distro-26.04-desktop-amd64.iso", 5_368_709_120)],
+        8 * 1024 * 1024,
+    );
+    let album = torrent_info(
+        0xc3,
+        "Free Music Album",
+        &[
+            ("01 - Opening.flac", 31_457_280),
+            ("02 - Morning Light.flac", 28_311_552),
+            ("03 - Long Road.flac", 40_894_464),
+            ("04 - Closing.flac", 25_165_824),
+            ("cover.jpg", 1_048_576),
+        ],
+        1024 * 1024,
+    );
+    let row = |id: u64, info: &TorrentInfo, status: Status, done: u64, phase: TorrentPhase, uploaded: u64| {
+        let total = info.files.selected_size(None).get();
+        let mut e = entry(id, &info.name, status, total, done);
+        let mut link = udm_domain::torrent::MagnetLink::new(info.info_hash);
+        link.name = Some(info.name.clone());
+        e.url = link.to_uri().as_str().into();
+        e.last_try = Some(START + DAY * 9 + 3600 * 20 + 60 * id);
+        let mut t = TorrentEntry::new(info.info_hash);
+        t.phase = phase;
+        t.uploaded = ByteCount::new(uploaded);
+        // Seeding for the last 25 minutes of the fixtures' clock.
+        t.seeding_since = (phase == TorrentPhase::Seeding).then_some(1_700_000_000 - 1_500);
+        e.torrent = Some(t);
+        e
+    };
+    let total = movies.files.selected_size(None).get();
+    let done = total * 41 / 100;
+    let mut downloading = row(18, &movies, Status::Downloading, done, TorrentPhase::Downloading, 157_286_400);
+    downloading.connections = 0;
+    let distro_size = distro.files.selected_size(None).get();
+    let seeding = row(19, &distro, Status::Done, distro_size, TorrentPhase::Seeding, 2_254_857_830);
+    let mut waiting = row(20, &album, Status::Confirming, 0, TorrentPhase::Checking, 0);
+    waiting.last_try = None;
+    for item in [downloading.clone(), seeding.clone(), waiting.clone()] {
+        send(s, Event::Updated { item });
+    }
+    for (e, info) in [(&downloading, &movies), (&seeding, &distro), (&waiting, &album)] {
+        send(s, Event::TorrentInfo { id: e.id, url: e.url.clone(), info: info.clone() });
+    }
+    let peer = |address: &str, client: &str, down: u64, up: u64, got: u64, sent: u64, transport: &str| PeerInfo {
+        address: address.into(),
+        client: Some(client.into()),
+        down_speed: down,
+        up_speed: up,
+        downloaded: ByteCount::new(got),
+        uploaded: ByteCount::new(sent),
+        transport: Some(transport.into()),
+    };
+    let tracker = |url: &str, state| TrackerInfo { url: url.into(), state };
+    let file_done = [928_670_754, 12_345, 744_908_390, 0, 4_096].map(ByteCount::new).to_vec();
+    let stats = TorrentStats {
+        phase: TorrentPhase::Downloading,
+        done: ByteCount::new(done),
+        total: ByteCount::new(total),
+        down_speed: 4_718_592,
+        up_speed: 524_288,
+        uploaded: ByteCount::new(157_286_400),
+        eta_seconds: Some((total - done) / 4_718_592),
+        peers_connected: 3,
+        peers_known: 87,
+        peers: vec![
+            peer("203.0.113.24:51413", "Transmission 4.0.6", 2_621_440, 131_072, 412_090_368, 20_971_520, "tcp"),
+            peer("198.51.100.7:6881", "qBittorrent 5.0.2", 1_572_864, 262_144, 301_989_888, 62_914_560, "utp"),
+            peer("[2001:db8::42]:6889", "rqbit 9.1.0", 524_288, 131_072, 88_080_384, 73_400_320, "tcp"),
+        ],
+        trackers: vec![
+            tracker("udp://tracker.example.org:6969/announce", TrackerState::Used),
+            tracker("https://tracker.example.net/announce", TrackerState::Skipped),
+        ],
+        pieces: PieceMap::of(movies.pieces, |i| i < 222 || (300..420).contains(&i) || i % 7 == 0),
+        file_done,
+    };
+    send(s, Event::TorrentStats { id: downloading.id, url: downloading.url.clone(), stats });
+    let stats = TorrentStats {
+        phase: TorrentPhase::Seeding,
+        done: ByteCount::new(distro_size),
+        total: ByteCount::new(distro_size),
+        up_speed: 1_258_291,
+        uploaded: ByteCount::new(2_254_857_830),
+        peers_connected: 5,
+        peers_known: 40,
+        peers: vec![peer("192.0.2.80:51413", "Deluge 2.1.1", 0, 1_258_291, 0, 734_003_200, "tcp")],
+        trackers: vec![tracker("udp://tracker.example.org:6969/announce", TrackerState::Used)],
+        pieces: PieceMap::of(distro.pieces, |_| true),
+        ..TorrentStats::default()
+    };
+    send(s, Event::TorrentStats { id: seeding.id, url: seeding.url.clone(), stats });
+    apply(s, UiMessage::PickTorrentFiles { id: waiting.id, indexes: vec![4], chosen: false });
 }
 
 fn fixtures() -> serde_json::Value {
@@ -409,6 +549,8 @@ fn fixtures() -> serde_json::Value {
             "add-url": view(Label::AddUrl),
             "save-as": view(Label::SaveAs(DownloadId::new(17))),
             "download": view(Label::Download(DownloadId::new(12))),
+            "download-torrent": view(Label::Download(DownloadId::new(18))),
+            "save-as-torrent": view(Label::SaveAs(DownloadId::new(20))),
             "done": done,
             "remove": view(Label::Remove),
             "about": view(Label::About),

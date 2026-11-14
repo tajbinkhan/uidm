@@ -335,6 +335,23 @@ pub struct ExtrasDraft {
     pub dns: DnsDraft,
     /// The custom DNS over HTTPS resolver's address.
     pub dns_url: String,
+    // Torrents.
+    /// Listen on `torrent_port`, rather than a free port each start.
+    pub torrent_port_fixed: bool,
+    pub torrent_port: u32,
+    pub torrent_dht: bool,
+    pub torrent_upnp: bool,
+    pub torrent_local_peers: bool,
+    pub torrent_peers_on: bool,
+    pub torrent_peers: u32,
+    pub torrent_upload_on: bool,
+    pub torrent_upload_kb: u32,
+    pub seed_ratio_on: bool,
+    #[specta(type = specta_typescript::Number)]
+    pub seed_ratio: f64,
+    pub seed_minutes_on: bool,
+    pub seed_minutes: u32,
+    pub catch_torrent_files: bool,
 }
 
 /// A network adapter as Options keeps it: its id, and the name to say

@@ -21,7 +21,8 @@
   because librqbit cannot bind its sockets there. A torrent's own speed limit takes effect when it
   starts, not while it runs. Torrents ignore the proxy settings, but librqbit's HTTP tracker client
   may take one from `HTTP_PROXY`-style environment variables. A torrent of one file cannot be saved
-  under another name. File names that differ only in Unicode normalization are not told apart
+  under another name. UDM's installers do not register it for `magnet:` links or `.torrent` files,
+  so the system does not open them with UDM by itself (`udm-gui` takes either on its command line). File names that differ only in Unicode normalization are not told apart
   (that needs a normalization library UDM does not carry). They were tested against a local swarm
   (a second BitTorrent client on `127.0.0.1`), not public trackers or the DHT.
 

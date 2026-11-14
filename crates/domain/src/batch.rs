@@ -331,18 +331,21 @@ pub fn parse_list(text: &str) -> Result<(Vec<Address>, usize), BatchError> {
 
 /// The download link in copied `text` worth offering: one http(s) or ftp(s) address,
 /// alone on the clipboard, whose file type is one of `types` (any file type
-/// when `types` is empty).
+/// when `types` is empty) or a `.torrent` file, or a torrent's magnet link.
 pub fn clipboard_link(text: &str, types: &[String]) -> Option<Address> {
     let url = text.trim();
     if url.contains(char::is_whitespace) || url.len() > 4096 {
         return None;
     }
     let address = Address::parse(url).ok()?;
+    if crate::torrent::starts_like_magnet(url) {
+        return Some(address);
+    }
     let parsed = url::Url::parse(url).ok()?;
     let last = parsed.path_segments()?.next_back()?;
     let (_, ext) = last.rsplit_once('.')?;
     let ext = ext.to_ascii_lowercase();
-    let wanted = !ext.is_empty() && (types.is_empty() || types.contains(&ext));
+    let wanted = !ext.is_empty() && (types.is_empty() || types.contains(&ext) || ext == "torrent");
     wanted.then_some(address)
 }
 
@@ -601,6 +604,15 @@ mod tests {
             Some("https://x.com/a.html")
         );
         assert_eq!(clipboard_link("https://x.com/download", &[]), None);
+        // A torrent is offered whatever the types: its magnet link, or its
+        // `.torrent` file.
+        let magnet = "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=Album";
+        assert_eq!(clipboard_link(magnet, &types).as_ref().map(Address::as_str), Some(magnet));
+        assert_eq!(clipboard_link("magnet:?dn=no-hash", &types), None);
+        assert_eq!(
+            clipboard_link("https://x.com/a.torrent", &types).as_ref().map(Address::as_str),
+            Some("https://x.com/a.torrent")
+        );
     }
 
     #[test]

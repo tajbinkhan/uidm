@@ -791,6 +791,31 @@ mod tests {
     }
 
     #[test]
+    fn a_torrent_file_on_the_command_line_is_added_as_its_torrent() {
+        let t = setup("command_line_torrent", Duplicate::NewName);
+        let mut info = b"d6:lengthi10e4:name5:a.iso12:piece lengthi16384e6:pieces20:".to_vec();
+        info.extend_from_slice(&[1; 20]);
+        info.push(b'e');
+        let cmd = udm_domain::download::CommandLine {
+            download: Some(Download { url: "a.torrent".into(), start: Some(false), ..Download::default() }),
+            metainfo: Some(udm_infrastructure::torrent::metainfo::build(&info, &[])),
+            quit_after: true,
+            ..Default::default()
+        };
+        // As udm-gui sends it: the file inside the download, base64-encoded.
+        let msg =
+            serde_json::to_vec(&udm_infrastructure::wire::incoming(udm_application::daemon::Command::CommandLine(cmd)))
+                .unwrap();
+        let (tx, _rx) = server::reply_channel();
+        send(&msg, &t, 9, &tx);
+        let added =
+            t.daemon.store.table().entries().find(|e| e.url.as_str().starts_with("magnet:?xt=urn:btih:")).cloned();
+        let added = added.expect("its torrent is in the list");
+        assert!(added.url.as_str().contains("dn=a.iso") && added.torrent.is_some());
+        assert_eq!(added.on_done, None, "/q counts only when the call started UDM");
+    }
+
+    #[test]
     fn a_server_daemon_runs_on_when_it_has_nothing_to_do() {
         let built = |seat| {
             new_daemon(Paths { settings: None, store: StoreFiles::default(), remote: None, torrents: None }, seat)

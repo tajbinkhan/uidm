@@ -17,6 +17,7 @@ mod main;
 mod options;
 mod scheduler;
 mod tools;
+mod torrent;
 
 pub use common::Heart;
 pub use dialogs::Files;
@@ -136,6 +137,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         extras::open_with,
         extras::drag_file,
         extras::answer_exception,
+        torrent::pick_torrent_files,
+        torrent::set_seed_limits,
+        torrent::stop_seeding,
+        torrent::open_torrent_file,
     ])
 }
 

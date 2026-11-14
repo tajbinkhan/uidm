@@ -81,6 +81,13 @@ pub enum Inbox {
         bytes_per_sec: Option<u64>,
         remember: bool,
     },
+    /// Tick or untick a torrent download's files in its download window.
+    ChooseTorrentFiles {
+        id: DownloadId,
+        indexes: Vec<usize>,
+        chosen: bool,
+        reply: Sender<Result<(), contract::InvokeError>>,
+    },
     /// A progress window's Options on completion.
     OnDone {
         id: DownloadId,
@@ -1140,6 +1147,14 @@ impl Actor {
                 if let Label::Properties(id) = label {
                     self.read_type_name(id);
                 }
+                // A torrent's windows list its files, which rows do not carry.
+                if let Label::SaveAs(id) | Label::Download(id) = label {
+                    let torrent = self.state.table.get(id).and_then(|e| e.torrent.as_ref());
+                    let known = torrent.is_some_and(|t| t.phase != udm_domain::torrent::TorrentPhase::Metadata);
+                    if known && !self.state.torrent_info.contains_key(&id) {
+                        self.send(Command::TorrentFiles { id });
+                    }
+                }
                 self.subscribers.insert(label, Subscriber { channel, seq: 0, last: None, look: None });
                 self.update_wake_watch();
             }
@@ -1196,8 +1211,18 @@ impl Actor {
                     let _ = r.send(sent);
                 }
             }
-            Inbox::Answer { answer, reply } => {
+            Inbox::Answer { mut answer, reply } => {
                 let id = answer.id;
+                // A torrent's ticked files; none ticked sends nothing.
+                if let Some(info) = self.state.torrent_info.get(&id) {
+                    match crate::torrents::answer_files(info, self.state.torrent_picks.get(&id)) {
+                        Ok(files) => answer.files = files,
+                        Err(_) => {
+                            let _ = reply.send(false);
+                            return;
+                        }
+                    }
+                }
                 let sent = self.send(udm_application::daemon::Command::Confirm(*answer));
                 if sent {
                     apply(&mut self.state, UiMessage::Answered(id));
@@ -1242,6 +1267,27 @@ impl Actor {
             }
             Inbox::OnDone { id, on_done } => {
                 self.send(Command::SetOnDone { id, on_done });
+            }
+            Inbox::ChooseTorrentFiles { id, indexes, chosen, reply } => {
+                let lang = self.lang();
+                let entry = self.state.table.get(id);
+                let current = entry.and_then(|e| e.torrent.as_ref()).and_then(|t| t.selection.as_ref());
+                let files = self.state.torrent_info.get(&id).map(|i| &i.files);
+                let picked = match files {
+                    Some(files) => crate::torrents::reselect(files, current, &indexes, chosen),
+                    None => Err(udm_domain::torrent::TorrentError::NoFiles),
+                };
+                let result = match picked {
+                    Ok(files) => {
+                        if self.send(Command::SelectTorrentFiles { id, files }) {
+                            Ok(())
+                        } else {
+                            Err(crate::errors::offline(lang))
+                        }
+                    }
+                    Err(e) => Err(crate::errors::invalid_text(crate::errors::text::torrent(lang, &e))),
+                };
+                let _ = reply.send(result);
             }
             Inbox::OpenWindow(kind) => {
                 let label = match kind {
@@ -1605,7 +1651,7 @@ impl Actor {
         let wanted = windows::wanted(&self.state);
         let lang = self.lang();
         for label in wanted.difference(&self.opened.clone()) {
-            match windows::open(&self.app, *label, lang) {
+            match windows::open_sized(&self.app, *label, lang, windows::size(&self.state, *label)) {
                 Ok(_) => {
                     self.opened.insert(*label);
                 }
@@ -1668,6 +1714,12 @@ impl Actor {
                     let new_look = (sub.look.as_ref() != Some(&look)).then(|| look.clone());
                     let patch = match (before, &view) {
                         (View::Main(a), View::Main(b)) => main::diff(a, b).map(Patch::Main),
+                        (View::Download(a), View::Download(b)) => {
+                            projection::torrent::diff_download(a, b).map(|p| Patch::Download(Box::new(p)))
+                        }
+                        (View::SaveAs(a), View::SaveAs(b)) => {
+                            projection::torrent::diff_save_as(a, b).map(|p| Patch::SaveAs(Box::new(p)))
+                        }
                         (a, b) if a != b => Some(Patch::Whole(b.clone())),
                         _ => None,
                     };

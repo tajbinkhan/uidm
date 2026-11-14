@@ -82,9 +82,10 @@ pub fn save_as(ctx: &Ctx, state: &AppState, id: DownloadId) -> Option<SaveAsView
             break;
         }
     }
+    let torrent = super::torrent::save_as_part(ctx, state, e, &save_as);
     Some(SaveAsView {
         id: Id(id.get()),
-        can_preview: e.resumable && name.to_ascii_lowercase().ends_with(".zip"),
+        can_preview: e.resumable && torrent.is_none() && name.to_ascii_lowercase().ends_with(".zip"),
         url: e.url.to_string(),
         categories,
         remember_folder: settings.remembers_folder(&category),
@@ -104,6 +105,7 @@ pub fn save_as(ctx: &Ctx, state: &AppState, id: DownloadId) -> Option<SaveAsView
             .map(|q| QueueItem { id: Id(q.id.get()), name: ctx.lang.tr(&q.name).to_string(), running: q.running })
             .collect(),
         can_elevate: state.system.can_elevate,
+        torrent,
     })
 }
 
@@ -171,7 +173,7 @@ pub fn download(ctx: &Ctx, state: &AppState, id: DownloadId) -> Option<DownloadV
         id: Id(id.get()),
         title: format!("{}% {}", lang.number(f64::from(fraction) * 100.0, 0), name),
         address: e.url.to_string(),
-        status: format::status_line(lang, e).to_string(),
+        status: super::torrent::status_line(lang, e).unwrap_or_else(|| format::status_line(lang, e)).to_string(),
         size: e.total.map(|t| format::bytes(lang, t, 3)).unwrap_or_else(|| unknown.clone()),
         downloaded,
         speed: speed.map(|s| format::rate(lang, s, 3)).unwrap_or_default(),
@@ -198,6 +200,7 @@ pub fn download(ctx: &Ctx, state: &AppState, id: DownloadId) -> Option<DownloadV
         speed_tab: settings.progress_speed_tab,
         done_tab: settings.progress_done_tab,
         details: settings.progress_start_details,
+        torrent: super::torrent::download_part(ctx, state, e).map(Box::new),
     })
 }
 

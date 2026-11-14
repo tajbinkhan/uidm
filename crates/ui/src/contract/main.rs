@@ -234,6 +234,11 @@ pub struct Can {
     pub open_with: bool,
     /// A finished row's file can be dragged out of the window (Windows).
     pub drag_out: bool,
+    /// One torrent is selected, whose download window shows its files,
+    /// peers and seeding.
+    pub torrent: bool,
+    /// A seeding torrent is selected.
+    pub stop_seeding: bool,
     pub connected: bool,
 }
 
@@ -316,6 +321,8 @@ pub enum ListAction {
     },
     /// Select every row shown.
     SelectAll,
+    /// Stop the selected torrents' seeding.
+    StopSeeding,
 }
 
 /// How to open a finished download.

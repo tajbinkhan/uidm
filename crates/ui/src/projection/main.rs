@@ -190,9 +190,12 @@ pub fn row(ctx: &Ctx, state: &AppState, queued: &HashMap<DownloadId, ()>, e: &Do
     let speed = state.speed(e.id).filter(|_| e.status == Status::Downloading);
     let fraction = format::fraction(e);
     let percent = fraction.map(|f| format!("{}%", lang.number(f64::from(f) * 100.0, 2)));
-    let status = match e.status {
-        Status::Downloading => percent.clone().unwrap_or_else(|| format::status_word(lang, e.status).to_string()),
-        s => format::status_word(lang, s).to_string(),
+    let status = match super::torrent::row_status(lang, e, state.torrents.get(&e.id)) {
+        Some(torrent) => torrent,
+        None => match e.status {
+            Status::Downloading => percent.clone().unwrap_or_else(|| format::status_word(lang, e.status).to_string()),
+            s => format::status_word(lang, s).to_string(),
+        },
     };
     let tone = match e.status {
         Status::Downloading => Tone::Running,
@@ -378,6 +381,8 @@ pub fn can(state: &AppState) -> Can {
         verify: one.is_some_and(|e| e.status == Status::Done && e.path.is_some()),
         open_with: open_with && one.is_some_and(|e| e.status == Status::Done && e.path.is_some()),
         drag_out: crate::drag::CAN_DRAG,
+        torrent: one.is_some_and(|e| e.torrent.is_some() && e.status != Status::Confirming),
+        stop_seeding: connected && selected.iter().any(|e| super::torrent::is_seeding(e)),
         connected,
     }
 }

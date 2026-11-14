@@ -38,6 +38,7 @@ import type {
   ConvertTarget,
   ExceptionChoice,
   Update,
+  SeedLimitsInput,
 } from './types';
 import { receive } from '../stores/projection.svelte';
 import { zoom } from '../theme';
@@ -94,8 +95,8 @@ export const showDownload = (id: Id) => commands.showDownload(id);
 export const addDownload = (address: string, login: { user: string; password: string } | null) =>
   commands.addDownload(address, login);
 export const answerDownload = (answer: AnswerInput) => commands.answerDownload(answer);
-export const checkSaveFolder = (saveAs: string) => commands.checkSaveFolder(saveAs);
-export const pickSaveFolder = (saveAs: string) => commands.pickSaveFolder(saveAs);
+export const checkSaveFolder = (saveAs: string, folderOnly = false) => commands.checkSaveFolder(saveAs, folderOnly);
+export const pickSaveFolder = (saveAs: string, folderOnly = false) => commands.pickSaveFolder(saveAs, folderOnly);
 export const removeDownloads = (deleteFiles: boolean, dontAsk: boolean) => commands.removeDownloads(deleteFiles, dontAsk);
 export const hideDoneDialogs = () => commands.hideDoneDialogs();
 export const controlDownload = (action: DownloadControl) => commands.controlDownload(action);
@@ -204,3 +205,7 @@ export const verifyChecksum = (id: Id, checksum: string) => commands.verifyCheck
 export const openWith = (id: Id) => commands.openWith(id);
 export const dragFile = (id: Id) => commands.dragFile(id);
 export const answerException = (choice: ExceptionChoice, dontShow: boolean) => commands.answerException(choice, dontShow);
+export const pickTorrentFiles = (indexes: number[], chosen: boolean) => commands.pickTorrentFiles(indexes, chosen);
+export const setSeedLimits = (limits: SeedLimitsInput) => commands.setSeedLimits(limits);
+export const stopSeeding = () => commands.stopSeeding();
+export const openTorrentFile = () => commands.openTorrentFile();

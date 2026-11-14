@@ -38,6 +38,7 @@ describe('the dialogs', () => {
         duplicate: null,
         rememberDuplicate: false,
         elevate: false,
+        folderOnly: false,
       },
     });
   });
@@ -50,7 +51,7 @@ describe('the dialogs', () => {
     });
     render(SaveAs);
     expect(await screen.findByText('UDM may not save files in this folder. Saving there needs administrator rights.')).toBeTruthy();
-    expect(sent(calls, 'check_save_folder').at(-1)?.args).toEqual({ saveAs: '/home/u/Downloads/summer-photos.zip' });
+    expect(sent(calls, 'check_save_folder').at(-1)?.args).toEqual({ saveAs: '/home/u/Downloads/summer-photos.zip', folderOnly: false });
     const start = screen.getByRole('button', { name: 'Start Download' }) as HTMLButtonElement;
     expect(start.disabled).toBe(true);
     await fireEvent.click(screen.getByLabelText('Save there with administrator rights'));

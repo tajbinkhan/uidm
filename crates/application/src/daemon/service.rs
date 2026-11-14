@@ -709,7 +709,28 @@ impl<W: Wiring> DaemonService<W> {
     /// for the first copy. Problems go to the windows, since the caller may
     /// be gone.
     pub fn run_command_line(self: &Arc<Self>, cmd: CommandLine, started: bool) {
-        if let Some(mut download) = cmd.download {
+        if let (Some(mut download), Some(metainfo)) = (cmd.download.clone(), cmd.metainfo) {
+            // A `.torrent` file: added as the window's Open adds one, and
+            // what went wrong goes to the windows.
+            download.limit_browser_request();
+            let daemon = Arc::clone(self);
+            let quit = cmd.quit_after && started;
+            let reply = Reply::new(move |event| {
+                match event {
+                    Event::Ack { id, .. } if quit => {
+                        let exit = OnDone { then: WhenDone::Exit, ..OnDone::default() };
+                        if let Err(e) = daemon.set_on_done(id, Some(exit)) {
+                            warn!(download_id = id.get(), error = %e, "could not set /q");
+                        }
+                    }
+                    Event::Rejected { .. } => daemon.clients.to_windows(event),
+                    _ => {}
+                }
+                true
+            });
+            info!("add a torrent file from the command line");
+            self.add_torrent(Some(metainfo), download, reply);
+        } else if let Some(mut download) = cmd.download {
             download.limit_browser_request();
             let (id, url) = self.add(download);
             info!(download_id = id.get(), url = %url, "add from the command line");
