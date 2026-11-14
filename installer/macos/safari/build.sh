@@ -80,7 +80,21 @@ if [ -z "$project" ]; then
   echo "error: the converter made no Xcode project" >&2
   exit 1
 fi
-xcodebuild -quiet -project "$project" -alltargets -configuration Release \
+# Only the app and its extension: the converter also makes test targets
+# (UDMTests, UDMUITests) whose `@testable import` does not build in Release.
+targets=()
+while IFS= read -r t; do
+  case "$t" in
+    *Tests) ;;
+    *) targets+=(-target "$t") ;;
+  esac
+done < <(xcodebuild -list -project "$project" |
+  awk '/^[[:space:]]*Targets:/ { f = 1; next } /^[[:space:]]*$/ { f = 0 } f { sub(/^[[:space:]]+/, ""); print }')
+if [ "${#targets[@]}" -eq 0 ]; then
+  echo "error: the converter's Xcode project lists no targets" >&2
+  exit 1
+fi
+xcodebuild -quiet -project "$project" "${targets[@]}" -configuration Release \
   SYMROOT="$work/build" \
   ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
   MACOSX_DEPLOYMENT_TARGET=11.0 \
