@@ -84,7 +84,7 @@
 <Window onescape={() => void closeWindow()}>
   {#if view}
     <div class="dialog" class:torrent={!!torrent}>
-      <Tabs {tabs} bind:current={tab}>
+      <Tabs {tabs} bind:current={tab} wrap={!!torrent}>
         <div class="page">
           {#if tab === 'status' && torrent}
             <p class="address" title={view.address}>{view.address}</p>
@@ -263,9 +263,23 @@
     gap: 4px;
   }
 
-  /* A torrent's tabs hold lists: the window opens taller for them. */
+  /* A torrent's tabs hold lists: the window opens taller for them, and
+     the page takes what the tabs leave, in one row of them or two. */
+  .torrent :global(.tabs) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .torrent :global(.tabs > [role='tabpanel']) {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
   .torrent .page {
-    height: 276px;
+    flex: 1;
+    min-height: 0;
+    height: auto;
   }
 
   .torrent-pairs {

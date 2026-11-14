@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "파일 {total}개 중 {count}개, {all} 중 {size}",
   "{have} of {pieces} pieces, {size} each": "조각 {pieces}개 중 {have}개, 각 {size}",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "토렌트는 옵션 > 네트워크에서 고른 어댑터를 거치며, UPnP와 로컬 네트워크 검색은 쓰지 않습니다.",
-  "Seeding: stop at the first limit reached": "시드: 처음 도달한 한도에서 중지"
+  "Seeding: stop at the first limit reached": "시드: 처음 도달한 한도에서 중지",
+  "UDM's background service could not read this torrent's file list.": "UDM 백그라운드 서비스가 이 토렌트의 파일 목록을 읽지 못했습니다.",
+  "{pieces} pieces, {size} each": "조각 {pieces}개, 각 {size}",
+  "Type a share ratio from 0 to 100.": "공유 비율을 0에서 100 사이로 입력하세요.",
+  "Type a number of minutes from 1 up.": "1분 이상으로 입력하세요."
 }

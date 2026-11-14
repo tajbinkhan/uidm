@@ -173,6 +173,22 @@ async fn ask(
     }
 }
 
+/// Hand the actor a message with a reply, and wait for the reply off the
+/// main thread.
+async fn reply_of<T: Send + 'static>(
+    outbox: &State<'_, Outbox>,
+    current: &State<'_, CurrentLanguage>,
+    make: impl FnOnce(mpsc::Sender<T>) -> Inbox,
+) -> Result<T, InvokeError> {
+    let (tx, rx) = mpsc::channel();
+    post(outbox, current, make(tx))?;
+    tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(5)))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or_else(|| errors::offline(lang(current)))
+}
+
 /// The label of the window that called, parsed.
 fn label_of(window: &tauri::WebviewWindow, current: &State<'_, CurrentLanguage>) -> Result<Label, InvokeError> {
     Label::parse(window.label()).ok_or_else(|| errors::gone(lang(current)))

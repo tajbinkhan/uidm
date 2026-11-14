@@ -816,6 +816,24 @@ mod tests {
     }
 
     #[test]
+    fn a_torrent_files_address_on_the_command_line_is_taken_as_its_torrent() {
+        let t = setup("command_line_torrent_web", Duplicate::NewName);
+        // Nothing listens there: fetching the file fails, which the windows
+        // hear, and no plain download of the file is added.
+        let msg = br#"{"op":"command_line","download":{"url":"http://127.0.0.1:1/album.torrent","start":false}}"#;
+        let (tx, _rx) = server::reply_channel();
+        send(msg, &t, 9, &tx);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut told = false;
+        while !told && Instant::now() < deadline {
+            told = t.window_got(|m| matches!(m, Outgoing::Rejected { .. }));
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(told, "the window hears why it was not added");
+        assert!(t.daemon.store.table().entries().all(|e| !e.url.as_str().ends_with("album.torrent")));
+    }
+
+    #[test]
     fn a_server_daemon_runs_on_when_it_has_nothing_to_do() {
         let built = |seat| {
             new_daemon(Paths { settings: None, store: StoreFiles::default(), remote: None, torrents: None }, seat)

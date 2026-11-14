@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "{total} 个文件中的 {count} 个，{all} 中的 {size}",
   "{have} of {pieces} pieces, {size} each": "{pieces} 个分块中的 {have} 个，每块 {size}",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "种子经由选项 > 网络中选择的适配器，不使用 UPnP 和本地网络搜索。",
-  "Seeding: stop at the first limit reached": "做种：达到第一个限制时停止"
+  "Seeding: stop at the first limit reached": "做种：达到第一个限制时停止",
+  "UDM's background service could not read this torrent's file list.": "UDM 后台服务无法读取此种子的文件列表。",
+  "{pieces} pieces, {size} each": "{pieces} 个分块，每块 {size}",
+  "Type a share ratio from 0 to 100.": "请输入 0 到 100 之间的分享率。",
+  "Type a number of minutes from 1 up.": "请输入不少于 1 的分钟数。"
 }

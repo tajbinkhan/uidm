@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "{count}/{total} tệp, {size}/{all}",
   "{have} of {pieces} pieces, {size} each": "{have}/{pieces} mảnh, mỗi mảnh {size}",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "Torrent đi qua bộ điều hợp đã chọn trong Tùy chọn > Mạng, không dùng UPnP hay tìm kiếm mạng cục bộ.",
-  "Seeding: stop at the first limit reached": "Seed: dừng ở giới hạn đầu tiên đạt tới"
+  "Seeding: stop at the first limit reached": "Seed: dừng ở giới hạn đầu tiên đạt tới",
+  "UDM's background service could not read this torrent's file list.": "Dịch vụ nền của UDM không đọc được danh sách tệp của torrent này.",
+  "{pieces} pieces, {size} each": "{pieces} mảnh, mỗi mảnh {size}",
+  "Type a share ratio from 0 to 100.": "Nhập tỷ lệ chia sẻ từ 0 đến 100.",
+  "Type a number of minutes from 1 up.": "Nhập số phút từ 1 trở lên."
 }

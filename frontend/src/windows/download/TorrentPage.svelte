@@ -9,7 +9,7 @@
   let { torrent, tab }: { torrent: TorrentView; tab: string } = $props();
 
   /** The seeding limits as the user edits them, taken from the view once. */
-  let limits = $state({ own: false, ratioOn: true, ratio: 1, minutesOn: true, minutes: 60 });
+  let limits = $state({ own: false, ratioOn: true, ratio: '1.00', minutesOn: true, minutes: '60' });
   let loaded = $state(false);
   let error = $state('');
   let saved = $state(false);
@@ -33,17 +33,15 @@
     }
   }
 
-  async function apply() {
+  // A change after Apply is not saved yet.
+  $effect(() => {
+    void [limits.own, limits.ratioOn, limits.ratio, limits.minutesOn, limits.minutes];
     saved = false;
-    saved = await run(
-      setSeedLimits({
-        own: limits.own,
-        ratioOn: limits.ratioOn,
-        ratio: Number(limits.ratio) || 0,
-        minutesOn: limits.minutesOn,
-        minutes: Math.max(0, Math.round(Number(limits.minutes) || 0)),
-      }),
-    );
+  });
+
+  /** Send what was typed; the shell reads it and says what is wrong. */
+  async function apply() {
+    saved = await run(setSeedLimits($state.snapshot(limits)));
   }
 </script>
 
@@ -151,10 +149,8 @@
     <label class="check"><input type="checkbox" bind:checked={limits.ratioOn} disabled={!limits.own} />{t('Stop at a share ratio of')}</label>
     <input
       class="text small-num"
-      type="number"
-      min="0"
-      max="100"
-      step="0.1"
+      type="text"
+      inputmode="decimal"
       bind:value={limits.ratio}
       disabled={!limits.own || !limits.ratioOn}
       aria-label={t('Stop at a share ratio of')}
@@ -162,9 +158,8 @@
     <label class="check"><input type="checkbox" bind:checked={limits.minutesOn} disabled={!limits.own} />{t('Stop after this many minutes')}</label>
     <input
       class="text small-num"
-      type="number"
-      min="0"
-      step="1"
+      type="text"
+      inputmode="numeric"
       bind:value={limits.minutes}
       disabled={!limits.own || !limits.minutesOn}
       aria-label={t('Stop after this many minutes')}

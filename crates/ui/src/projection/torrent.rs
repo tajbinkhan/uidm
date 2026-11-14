@@ -8,8 +8,8 @@ use std::path::Path;
 use udm_domain::bytes::ByteCount;
 use udm_domain::download::{DownloadEntry, Status};
 use udm_domain::torrent::{
-    Ratio, SeedLimits, TorrentEntry, TorrentInfo, TorrentPhase, TorrentStats, TrackerState, DEFAULT_SEED_MINUTES,
-    DEFAULT_SEED_RATIO,
+    FileSelection, Ratio, SeedLimits, TorrentEntry, TorrentPhase, TorrentStats, TrackerState, DEFAULT_SEED_MINUTES,
+    DEFAULT_SEED_RATIO, MAX_STATS_FILES,
 };
 
 use super::format;
@@ -20,6 +20,7 @@ use crate::contract::{
 };
 use crate::i18n::{fill, Language};
 use crate::state::AppState;
+use crate::torrents::KnownFiles;
 
 /// The phase in words, for the download window.
 fn phase_text(lang: &'static Language, phase: TorrentPhase) -> &'static str {
@@ -97,27 +98,12 @@ fn limits_text(lang: &'static Language, l: &SeedLimits) -> String {
     }
 }
 
-/// The files a torrent lists, sorted by path, padding left out: each with
-/// its number in the torrent.
-fn sorted_files(info: &TorrentInfo) -> Vec<(usize, String)> {
-    let mut files: Vec<(usize, String)> = info
-        .files
-        .as_slice()
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| !f.padding)
-        .map(|(i, f)| (i, f.display_path()))
-        .collect();
-    files.sort_by_cached_key(|(i, path)| (path.to_lowercase(), *i));
-    files
-}
-
 /// Download File Info's part for a torrent download: its files to tick,
 /// or that they have not come yet.
 pub fn save_as_part(ctx: &Ctx, state: &AppState, e: &DownloadEntry, save_as: &str) -> Option<SaveAsTorrent> {
     e.torrent.as_ref()?;
     let lang = ctx.lang;
-    let Some(info) = state.torrent_info.get(&e.id) else {
+    let Some(known) = state.torrent_info.get(&e.id) else {
         return Some(SaveAsTorrent {
             waiting: true,
             files: Vec::new(),
@@ -128,13 +114,16 @@ pub fn save_as_part(ctx: &Ctx, state: &AppState, e: &DownloadEntry, save_as: &st
             private: false,
         });
     };
-    let picks = state.torrent_picks.get(&e.id);
-    let chosen = |i: usize| picks.is_none_or(|p| p.contains(&i));
-    let files: Vec<TorrentFileRow> = sorted_files(info)
-        .into_iter()
+    let info = &known.info;
+    let picks = crate::torrents::picks_of(state, e.id);
+    let chosen = |i: usize| picks.as_ref().is_none_or(|p| p.contains(&i));
+    let files: Vec<TorrentFileRow> = known
+        .sorted
+        .iter()
+        .map(|(i, path)| (*i, path))
         .map(|(i, path)| TorrentFileRow {
             index: u32::try_from(i).unwrap_or(u32::MAX),
-            path,
+            path: path.clone(),
             size: info.files.as_slice().get(i).map(|f| format::bytes(lang, f.size, 2)).unwrap_or_default(),
             chosen: chosen(i),
             progress: String::new(),
@@ -142,7 +131,7 @@ pub fn save_as_part(ctx: &Ctx, state: &AppState, e: &DownloadEntry, save_as: &st
         })
         .collect();
     let count = files.iter().filter(|f| f.chosen).count();
-    let selection = picks.map(|p| {
+    let selection = picks.as_ref().map(|p| {
         let indexes: Vec<usize> = p.iter().copied().collect();
         udm_domain::torrent::FileSelection::try_from(indexes).ok()
     });
@@ -177,44 +166,48 @@ pub fn download_part(ctx: &Ctx, state: &AppState, e: &DownloadEntry) -> Option<T
     let lang = ctx.lang;
     let running = e.status == Status::Downloading || is_seeding(e);
     let stats = state.torrents.get(&e.id).filter(|_| running);
-    let info = state.torrent_info.get(&e.id);
+    let known = state.torrent_info.get(&e.id);
+    let info = known.map(|k| &k.info);
+    let selection = state.torrent_chosen.get(&e.id).or(t.selection.as_ref());
     let settings = state.settings.as_ref().map(|s| s.torrents.seed_limits).unwrap_or_default();
     let ratio = ratio_of(e, t, stats);
-    let files = match info {
-        Some(info) => file_rows(lang, e, t, info, stats),
+    let files = match known {
+        Some(known) => file_rows(lang, e, selection, known, stats),
         None => Vec::new(),
     };
-    let files_note = match (info, stats) {
-        (None, _) if t.phase == TorrentPhase::Metadata => phase_text(lang, t.phase).to_string(),
-        (None, _) => lang.tr("The file list has not come from UDM's background service yet.").to_string(),
-        (Some(info), Some(s)) if s.file_done.is_empty() && info.files.len() > 1 && e.status == Status::Downloading => {
+    let files_note = match info {
+        None if state.files_missing.contains(&e.id) => {
+            lang.tr("UDM's background service could not read this torrent's file list.").to_string()
+        }
+        None if t.phase == TorrentPhase::Metadata => phase_text(lang, t.phase).to_string(),
+        None => lang.tr("The file list has not come from UDM's background service yet.").to_string(),
+        Some(info) if info.files.len() > MAX_STATS_FILES => {
             lang.tr("This torrent has too many files to show the progress of each.").to_string()
         }
-        _ => String::new(),
+        Some(_) => String::new(),
     };
-    let pieces = match (stats, info) {
-        (Some(s), _) if !s.pieces.cells.is_empty() => s.pieces.cells.clone(),
-        // A finished torrent has every piece.
-        (_, Some(info)) if e.status == Status::Done => vec![100; (info.pieces as usize).clamp(1, 512)],
-        _ => Vec::new(),
+    // Every piece is here only for a finished torrent of every file; with
+    // some files left out, only its stats tell.
+    let complete = e.status == Status::Done && selection.is_none();
+    let (pieces, have) = match (stats, info) {
+        (Some(s), _) if !s.pieces.cells.is_empty() => (s.pieces.cells.clone(), Some(s.pieces.have)),
+        (_, Some(info)) if complete => (vec![100; (info.pieces as usize).clamp(1, 512)], Some(info.pieces)),
+        _ => (Vec::new(), None),
     };
-    let pieces_line = match info {
-        Some(info) => {
-            let have = match stats {
-                Some(s) if !s.pieces.cells.is_empty() => s.pieces.have,
-                _ if e.status == Status::Done => info.pieces,
-                _ => 0,
-            };
-            fill(
-                lang.tr("{have} of {pieces} pieces, {size} each"),
-                &[
-                    ("have", &lang.number(f64::from(have), 0)),
-                    ("pieces", &lang.number(f64::from(info.pieces), 0)),
-                    ("size", &format::bytes(lang, info.piece_size, 0)),
-                ],
-            )
-        }
-        None => String::new(),
+    let pieces_line = match (info, have) {
+        (Some(info), Some(have)) => fill(
+            lang.tr("{have} of {pieces} pieces, {size} each"),
+            &[
+                ("have", &lang.number(f64::from(have), 0)),
+                ("pieces", &lang.number(f64::from(info.pieces), 0)),
+                ("size", &format::bytes(lang, info.piece_size, 0)),
+            ],
+        ),
+        (Some(info), None) => fill(
+            lang.tr("{pieces} pieces, {size} each"),
+            &[("pieces", &lang.number(f64::from(info.pieces), 0)), ("size", &format::bytes(lang, info.piece_size, 0))],
+        ),
+        (None, _) => String::new(),
     };
     let shown = t.limits(&settings);
     let progress = match t.seeding_since {
@@ -275,9 +268,9 @@ pub fn download_part(ctx: &Ctx, state: &AppState, e: &DownloadEntry) -> Option<T
         limits: SeedLimitsView {
             own: t.seed_limits.is_some(),
             ratio_on: shown.ratio.is_some(),
-            ratio: shown.ratio.unwrap_or(DEFAULT_SEED_RATIO).get(),
+            ratio: ratio_text(lang, shown.ratio.unwrap_or(DEFAULT_SEED_RATIO)),
             minutes_on: shown.minutes.is_some(),
-            minutes: shown.minutes.unwrap_or(DEFAULT_SEED_MINUTES),
+            minutes: shown.minutes.unwrap_or(DEFAULT_SEED_MINUTES).to_string(),
             defaults: limits_text(lang, &settings),
             progress,
         },
@@ -287,16 +280,18 @@ pub fn download_part(ctx: &Ctx, state: &AppState, e: &DownloadEntry) -> Option<T
 fn file_rows(
     lang: &'static Language,
     e: &DownloadEntry,
-    t: &TorrentEntry,
-    info: &TorrentInfo,
+    selection: Option<&FileSelection>,
+    known: &KnownFiles,
     stats: Option<&TorrentStats>,
 ) -> Vec<TorrentFileRow> {
-    let all = info.files.as_slice();
-    sorted_files(info)
-        .into_iter()
+    let all = known.info.files.as_slice();
+    known
+        .sorted
+        .iter()
         .map(|(i, path)| {
+            let (i, path) = (*i, path.clone());
             let size = all.get(i).map(|f| f.size).unwrap_or_default();
-            let chosen = t.selection.as_ref().is_none_or(|s| s.contains(i));
+            let chosen = selection.is_none_or(|s| s.contains(i));
             let here = match stats.and_then(|s| s.file_done.get(i)) {
                 Some(done) => Some(*done),
                 None if e.status == Status::Done && chosen => Some(size),
@@ -427,7 +422,7 @@ mod tests {
     use std::time::Instant;
     use udm_application::daemon::Event;
     use udm_domain::id::DownloadId;
-    use udm_domain::torrent::{InfoHash, PeerInfo, PieceMap, TorrentFiles, TrackerInfo};
+    use udm_domain::torrent::{InfoHash, PeerInfo, PieceMap, TorrentFiles, TorrentInfo, TrackerInfo};
 
     fn ctx() -> Ctx {
         Ctx {
@@ -529,7 +524,7 @@ mod tests {
         // The answer carries the ticks, and they go once it is answered.
         let picks = s.torrent_picks.get(&DownloadId::new(1));
         assert_eq!(
-            crate::torrents::answer_files(s.torrent_info.get(&DownloadId::new(1)).unwrap(), picks),
+            crate::torrents::answer_files(&s.torrent_info.get(&DownloadId::new(1)).unwrap().info, picks),
             Err(udm_domain::torrent::TorrentError::NothingSelected)
         );
         let mut started = entry(&s).clone();
@@ -612,10 +607,41 @@ mod tests {
         t.seeding_since = Some(1_700_000_000 - 90);
         send(&mut s, Event::Updated { item: e });
         let v = download_part(&ctx(), &s, entry(&s)).unwrap();
-        assert!(v.seeding && v.limits.own && !v.limits.ratio_on && v.limits.minutes == 5);
+        assert!(v.seeding && v.limits.own && !v.limits.ratio_on && v.limits.minutes == "5");
         assert_eq!(v.limits.progress, "Seeding for 1m 30s, share ratio 0.50");
         assert_eq!((v.pieces, v.pieces_line.as_str()), (vec![100; 40], "40 of 40 pieces, 1 KB each"));
         assert!(v.files.iter().all(|f| f.fraction == Some(1.0)), "a finished torrent has its chosen files");
+    }
+
+    #[test]
+    fn the_window_claims_only_the_pieces_and_progress_it_knows() {
+        // A finished torrent with a file left out: no stats, so no map.
+        let mut s = with(Status::Done, TorrentPhase::Complete, &album());
+        let mut e = entry(&s).clone();
+        e.torrent.as_mut().unwrap().selection = udm_domain::torrent::FileSelection::parse(&[0], 4).ok();
+        send(&mut s, Event::Updated { item: e });
+        let v = download_part(&ctx(), &s, entry(&s)).unwrap();
+        assert!(v.pieces.is_empty());
+        assert_eq!(v.pieces_line, "40 pieces, 1 KB each");
+        assert_eq!(v.files_note, "", "a small torrent's files have their progress");
+        // Before any stats, a torrent of few files says nothing of too many.
+        let s = with(Status::Downloading, TorrentPhase::Checking, &album());
+        assert_eq!(download_part(&ctx(), &s, entry(&s)).unwrap().files_note, "");
+        let many: Vec<(String, u64, bool)> = (0..=MAX_STATS_FILES).map(|i| (format!("f{i}"), 1, false)).collect();
+        let many: Vec<(&str, u64, bool)> = many.iter().map(|(p, n, b)| (p.as_str(), *n, *b)).collect();
+        let s = with(Status::Downloading, TorrentPhase::Downloading, &info(&many));
+        assert_eq!(
+            download_part(&ctx(), &s, entry(&s)).unwrap().files_note,
+            "This torrent has too many files to show the progress of each."
+        );
+        // A file list the daemon did not have is said in the window.
+        let mut s = with(Status::Downloading, TorrentPhase::Downloading, &album());
+        s.torrent_info.clear();
+        s.files_missing.insert(DownloadId::new(1));
+        assert_eq!(
+            download_part(&ctx(), &s, entry(&s)).unwrap().files_note,
+            "UDM's background service could not read this torrent's file list."
+        );
     }
 
     #[test]

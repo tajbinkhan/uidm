@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "{count} van {total} bestanden, {size} van {all}",
   "{have} of {pieces} pieces, {size} each": "{have} van {pieces} stukken, elk {size}",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "Torrents gaan via de adapter die in Opties > Netwerk is gekozen, zonder UPnP of zoeken in het lokale netwerk.",
-  "Seeding: stop at the first limit reached": "Seeden: stoppen bij de eerste bereikte limiet"
+  "Seeding: stop at the first limit reached": "Seeden: stoppen bij de eerste bereikte limiet",
+  "UDM's background service could not read this torrent's file list.": "De achtergronddienst van UDM kon de bestandslijst van deze torrent niet lezen.",
+  "{pieces} pieces, {size} each": "{pieces} stukken, elk {size}",
+  "Type a share ratio from 0 to 100.": "Typ een deelverhouding van 0 tot 100.",
+  "Type a number of minutes from 1 up.": "Typ een aantal minuten vanaf 1."
 }

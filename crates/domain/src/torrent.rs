@@ -52,6 +52,10 @@ pub const MAX_MAGNET_ENTRIES: usize = 200;
 /// The most peers a torrent's window lists; the busiest come first.
 pub const MAX_LISTED_PEERS: usize = 200;
 
+/// The most files a torrent may have for its stats to carry each file's
+/// progress; a larger one's window shows none.
+pub const MAX_STATS_FILES: usize = 1000;
+
 /// The most cells the piece map has: each holds how much of its share of
 /// the pieces is here.
 pub const PIECE_MAP_CELLS: usize = 512;

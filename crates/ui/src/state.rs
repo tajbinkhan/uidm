@@ -101,7 +101,15 @@ pub struct AppState {
     /// Each torrent download's files, once the daemon sent them
     /// (`Event::TorrentInfo`): rows carry no file list, and an `Updated`
     /// row would drop one kept on it.
-    pub torrent_info: HashMap<DownloadId, udm_domain::torrent::TorrentInfo>,
+    pub torrent_info: HashMap<DownloadId, crate::torrents::KnownFiles>,
+    /// The files a torrent's download window last asked the daemon to
+    /// download, until its row shows them: the next tick starts from these,
+    /// so quick ticks do not undo each other.
+    pub torrent_chosen: HashMap<DownloadId, udm_domain::torrent::FileSelection>,
+    /// Torrents whose file list was asked for (`Command::TorrentFiles`),
+    /// and those for which the daemon had none to send.
+    pub files_asked: BTreeSet<DownloadId>,
+    pub files_missing: BTreeSet<DownloadId>,
     /// The files ticked in a torrent's Download File Info, until it is
     /// answered; a torrent missing here has every file ticked.
     pub torrent_picks: HashMap<DownloadId, BTreeSet<usize>>,
@@ -189,6 +197,9 @@ impl Default for AppState {
             segments: HashMap::new(),
             torrents: HashMap::new(),
             torrent_info: HashMap::new(),
+            torrent_chosen: HashMap::new(),
+            files_asked: BTreeSet::new(),
+            files_missing: BTreeSet::new(),
             torrent_picks: HashMap::new(),
             daemon_version: None,
             selected: Vec::new(),
@@ -357,6 +368,13 @@ pub enum UiMessage {
         indexes: Vec<usize>,
         chosen: bool,
     },
+    /// A torrent download's window sent the daemon these files to download.
+    TorrentChosen {
+        id: DownloadId,
+        files: udm_domain::torrent::FileSelection,
+    },
+    /// A torrent's file list was asked of the daemon.
+    FilesAsked(DownloadId),
 }
 
 impl AppState {
@@ -555,10 +573,17 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
         }
         UiMessage::PickTorrentFiles { id, indexes, chosen } => {
             let waiting = state.table.get(id).is_some_and(|e| e.status == Status::Confirming);
-            if let Some(info) = state.torrent_info.get(&id).filter(|_| waiting) {
-                let picked = crate::torrents::pick(info, state.torrent_picks.get(&id), &indexes, chosen);
+            if let Some(known) = state.torrent_info.get(&id).filter(|_| waiting) {
+                let start = crate::torrents::picks_of(state, id);
+                let picked = crate::torrents::pick(&known.info, start.as_ref(), &indexes, chosen);
                 state.torrent_picks.insert(id, picked);
             }
+        }
+        UiMessage::TorrentChosen { id, files } => {
+            state.torrent_chosen.insert(id, files);
+        }
+        UiMessage::FilesAsked(id) => {
+            state.files_asked.insert(id);
         }
         UiMessage::Columns(columns) => {
             if !columns.is_empty() {
@@ -656,7 +681,9 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
             state.torrents.insert(id, stats);
         }
         Event::TorrentInfo { id, info, .. } => {
-            state.torrent_info.insert(id, info);
+            state.files_asked.remove(&id);
+            state.files_missing.remove(&id);
+            state.torrent_info.insert(id, crate::torrents::KnownFiles::new(info));
         }
         Event::Removed { id } => {
             state.speeds.remove(&id);
@@ -664,6 +691,9 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
             state.torrents.remove(&id);
             state.torrent_info.remove(&id);
             state.torrent_picks.remove(&id);
+            state.torrent_chosen.remove(&id);
+            state.files_asked.remove(&id);
+            state.files_missing.remove(&id);
             state.selected.retain(|s| *s != id);
             state.to_remove.retain(|s| *s != id);
             state.progress.remove(&id);
@@ -691,7 +721,15 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
             );
             state.notice = Some(Notice { text, error: true });
         }
+        // The daemon had no file list for a torrent a window asked about:
+        // that window says so, not the main window's banner.
+        Event::Error { error } if !state.files_asked.is_empty() && crate::torrents::no_file_list(&error) => {
+            let asked = std::mem::take(&mut state.files_asked);
+            state.files_missing.extend(asked);
+        }
         Event::Error { error } | Event::Rejected { error, .. } => {
+            // A refused file choice leaves the rows as they were.
+            state.torrent_chosen.clear();
             state.notice =
                 Some(Notice { text: crate::errors::failure(crate::projection::language(state), &error), error: true });
         }
@@ -705,6 +743,10 @@ fn apply_event(state: &mut AppState, event: Event, at: Instant, unix: u64) {
     // A list replaced whole forgets the torrents it no longer holds.
     state.torrent_info.retain(|id, _| table.get(*id).is_some());
     state.torrents.retain(|id, _| table.get(*id).is_some());
+    // A choice the row shows now is the row's.
+    state.torrent_chosen.retain(|id, files| {
+        table.get(*id).and_then(|e| e.torrent.as_ref()).is_some_and(|t| t.selection.as_ref() != Some(files))
+    });
 }
 
 #[cfg(test)]

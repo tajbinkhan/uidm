@@ -331,8 +331,10 @@ pub fn parse_list(text: &str) -> Result<(Vec<Address>, usize), BatchError> {
 
 /// The download link in copied `text` worth offering: one http(s) or ftp(s) address,
 /// alone on the clipboard, whose file type is one of `types` (any file type
-/// when `types` is empty) or a `.torrent` file, or a torrent's magnet link.
-pub fn clipboard_link(text: &str, types: &[String]) -> Option<Address> {
+/// when `types` is empty), or a torrent's magnet link. A `.torrent` file's
+/// address is offered whatever the types when `torrents` (the settings take
+/// `.torrent` files as torrents), and as any file otherwise.
+pub fn clipboard_link(text: &str, types: &[String], torrents: bool) -> Option<Address> {
     let url = text.trim();
     if url.contains(char::is_whitespace) || url.len() > 4096 {
         return None;
@@ -345,7 +347,7 @@ pub fn clipboard_link(text: &str, types: &[String]) -> Option<Address> {
     let last = parsed.path_segments()?.next_back()?;
     let (_, ext) = last.rsplit_once('.')?;
     let ext = ext.to_ascii_lowercase();
-    let wanted = !ext.is_empty() && (types.is_empty() || types.contains(&ext) || ext == "torrent");
+    let wanted = !ext.is_empty() && (types.is_empty() || types.contains(&ext) || (torrents && ext == "torrent"));
     wanted.then_some(address)
 }
 
@@ -583,36 +585,37 @@ mod tests {
     fn clipboard_links() {
         let types = vec!["zip".to_string(), "mp4".to_string()];
         assert_eq!(
-            clipboard_link("  https://x.com/a/file.ZIP?sig=1 \n", &types).as_ref().map(Address::as_str),
+            clipboard_link("  https://x.com/a/file.ZIP?sig=1 \n", &types, true).as_ref().map(Address::as_str),
             Some("https://x.com/a/file.ZIP?sig=1")
         );
-        assert_eq!(clipboard_link("https://x.com/page.html", &types), None);
-        assert_eq!(clipboard_link("https://x.com/", &types), None);
-        assert_eq!(clipboard_link("see https://x.com/a.zip", &types), None);
-        assert_eq!(clipboard_link("https://x.com/a.zip https://x.com/b.zip", &types), None);
+        assert_eq!(clipboard_link("https://x.com/page.html", &types, true), None);
+        assert_eq!(clipboard_link("https://x.com/", &types, true), None);
+        assert_eq!(clipboard_link("see https://x.com/a.zip", &types, true), None);
+        assert_eq!(clipboard_link("https://x.com/a.zip https://x.com/b.zip", &types, true), None);
         assert_eq!(
-            clipboard_link("ftp://x.com/a.zip", &types).as_ref().map(Address::as_str),
+            clipboard_link("ftp://x.com/a.zip", &types, true).as_ref().map(Address::as_str),
             Some("ftp://x.com/a.zip")
         );
         assert_eq!(
-            clipboard_link("ftps://x.com/a.zip", &types).as_ref().map(Address::as_str),
+            clipboard_link("ftps://x.com/a.zip", &types, true).as_ref().map(Address::as_str),
             Some("ftps://x.com/a.zip")
         );
-        assert_eq!(clipboard_link("file://x.com/a.zip", &types), None);
+        assert_eq!(clipboard_link("file://x.com/a.zip", &types, true), None);
         assert_eq!(
-            clipboard_link("https://x.com/a.html", &[]).as_ref().map(Address::as_str),
+            clipboard_link("https://x.com/a.html", &[], true).as_ref().map(Address::as_str),
             Some("https://x.com/a.html")
         );
-        assert_eq!(clipboard_link("https://x.com/download", &[]), None);
+        assert_eq!(clipboard_link("https://x.com/download", &[], true), None);
         // A torrent is offered whatever the types: its magnet link, or its
         // `.torrent` file.
         let magnet = "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=Album";
-        assert_eq!(clipboard_link(magnet, &types).as_ref().map(Address::as_str), Some(magnet));
-        assert_eq!(clipboard_link("magnet:?dn=no-hash", &types), None);
+        assert_eq!(clipboard_link(magnet, &types, true).as_ref().map(Address::as_str), Some(magnet));
+        assert_eq!(clipboard_link("magnet:?dn=no-hash", &types, true), None);
         assert_eq!(
-            clipboard_link("https://x.com/a.torrent", &types).as_ref().map(Address::as_str),
+            clipboard_link("https://x.com/a.torrent", &types, true).as_ref().map(Address::as_str),
             Some("https://x.com/a.torrent")
         );
+        assert_eq!(clipboard_link("https://x.com/a.torrent", &types, false), None, "a file of a type not offered");
     }
 
     #[test]

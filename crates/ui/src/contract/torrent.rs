@@ -77,10 +77,10 @@ pub struct SeedLimitsView {
     /// Its own limits, rather than the settings'.
     pub own: bool,
     pub ratio_on: bool,
-    #[specta(type = specta_typescript::Number)]
-    pub ratio: f64,
+    /// The ratio and the minutes as the fields start with them.
+    pub ratio: String,
     pub minutes_on: bool,
-    pub minutes: u32,
+    pub minutes: String,
     /// The settings' limits, in words.
     pub defaults: String,
     /// How far it has seeded, in words; empty before it seeds.
@@ -126,10 +126,10 @@ pub struct TorrentView {
 pub struct SeedLimitsInput {
     pub own: bool,
     pub ratio_on: bool,
-    #[specta(type = specta_typescript::Number)]
-    pub ratio: f64,
+    /// The ratio and the minutes as typed; the shell reads them.
+    pub ratio: String,
     pub minutes_on: bool,
-    pub minutes: u32,
+    pub minutes: String,
 }
 
 /// A change to the lists of a torrent's download window: the rows that

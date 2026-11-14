@@ -33,7 +33,7 @@ describe("a torrent's Download File Info", () => {
     expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['File', 'Size']);
     await fireEvent.click(screen.getByRole('button', { name: 'Start Download' }));
     expect(sent(calls, 'answer_download').at(-1)?.args).toMatchObject({
-      answer: { saveAs: '/home/u/Downloads/Free Music Album', folderOnly: false, start: true },
+      answer: { saveAs: '/home/u/Downloads/Free Music Album', start: true },
     });
   });
 
@@ -61,7 +61,7 @@ describe("a torrent's Download File Info", () => {
     expect(screen.getByText('a.iso', { selector: '.fixed' })).toBeTruthy();
     await fireEvent.input(folder, { target: { value: '/srv/iso' } });
     await fireEvent.click(screen.getByRole('button', { name: 'Start Download' }));
-    expect(sent(calls, 'answer_download').at(-1)?.args).toMatchObject({ answer: { saveAs: '/srv/iso', folderOnly: true } });
+    expect(sent(calls, 'answer_download').at(-1)?.args).toMatchObject({ answer: { saveAs: '/srv/iso' } });
   });
 
   it('waits for a magnet link’s file list, and can start with every file', () => {
@@ -117,8 +117,12 @@ describe("a torrent's download window", () => {
     await fireEvent.input(screen.getAllByLabelText('Stop at a share ratio of')[1], { target: { value: '2.5' } });
     await fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
     expect(sent(calls, 'set_seed_limits').at(-1)?.args).toEqual({
-      limits: { own: true, ratioOn: true, ratio: 2.5, minutesOn: false, minutes: 60 },
+      limits: { own: true, ratioOn: true, ratio: '2.5', minutesOn: false, minutes: '60' },
     });
+    expect(await screen.findByText('Saved')).toBeTruthy();
+    // A change after Apply is not saved yet.
+    await fireEvent.input(screen.getAllByLabelText('Stop at a share ratio of')[1], { target: { value: '3' } });
+    expect(screen.queryByText('Saved')).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: 'Stop seeding' }));
     expect(sent(calls, 'stop_seeding').length).toBe(1);
   });

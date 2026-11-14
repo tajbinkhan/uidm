@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "{count} dari {total} berkas, {size} dari {all}",
   "{have} of {pieces} pieces, {size} each": "{have} dari {pieces} potongan, masing-masing {size}",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "Torrent melewati adaptor yang dipilih di Opsi > Jaringan, tanpa UPnP atau pencarian jaringan lokal.",
-  "Seeding: stop at the first limit reached": "Seeding: berhenti pada batas pertama yang dicapai"
+  "Seeding: stop at the first limit reached": "Seeding: berhenti pada batas pertama yang dicapai",
+  "UDM's background service could not read this torrent's file list.": "Layanan latar UDM tidak dapat membaca daftar berkas torrent ini.",
+  "{pieces} pieces, {size} each": "{pieces} potongan, masing-masing {size}",
+  "Type a share ratio from 0 to 100.": "Ketik rasio berbagi dari 0 sampai 100.",
+  "Type a number of minutes from 1 up.": "Ketik jumlah menit mulai 1."
 }

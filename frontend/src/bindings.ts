@@ -52,16 +52,16 @@ export const commands = {
 	answerDownload: (answer: AnswerInput_Deserialize) => __TAURI_INVOKE<null>("answer_download", { answer }),
 	/**
 	 *  Whether UDM may save in the folder Download File Info's Save As names
-	 *  (or, with `folder_only`, the folder it holds), checked on a worker since
-	 *  it writes a probe file there.
+	 *  (for a torrent of one file, the folder it holds), checked on a worker
+	 *  since it writes a probe file there.
 	 */
-	checkSaveFolder: (saveAs: string, folderOnly: boolean) => __TAURI_INVOKE<FolderAccess>("check_save_folder", { saveAs, folderOnly }),
+	checkSaveFolder: (saveAs: string) => __TAURI_INVOKE<FolderAccess>("check_save_folder", { saveAs }),
 	/**
 	 *  Download File Info's Browse: another folder for the file, keeping its
-	 *  name; with `folder_only`, the folder alone. `None` when the user
+	 *  name; for a torrent of one file, the folder alone. `None` when the user
 	 *  cancels.
 	 */
-	pickSaveFolder: (saveAs: string, folderOnly: boolean) => __TAURI_INVOKE<string | null>("pick_save_folder", { saveAs, folderOnly }),
+	pickSaveFolder: (saveAs: string) => __TAURI_INVOKE<string | null>("pick_save_folder", { saveAs }),
 	/**  Confirm deletion's Yes. */
 	removeDownloads: (deleteFiles: boolean, dontAsk: boolean) => __TAURI_INVOKE<null>("remove_downloads", { deleteFiles, dontAsk }),
 	/**  Download complete's "Don't show this dialog again". */
@@ -375,8 +375,6 @@ export type AnswerInput_Deserialize = {
 	 *  folder.
 	 */
 	elevate: boolean,
-	/**  `save_as` is the folder alone: a torrent of one file keeps its name. */
-	folderOnly: boolean,
 };
 
 /**  The Download File Info dialog's answer. */
@@ -395,8 +393,6 @@ export type AnswerInput_Serialize = {
 	 *  folder.
 	 */
 	elevate: boolean,
-	/**  `save_as` is the folder alone: a torrent of one file keeps its name. */
-	folderOnly: boolean,
 };
 
 export type Banner = {
@@ -2322,7 +2318,10 @@ export type SaveAsView_Deserialize = {
 	url: string,
 	categories: string[],
 	category: string,
-	/**  The file's folder and name, joined. */
+	/**
+	 *  The file's folder and name, joined; for a torrent of one file
+	 *  (`torrent.fixed_name`), Save As holds and sends its folder alone.
+	 */
 	saveAs: string,
 	/**  The folders the list remembers, for the Save As box's list. */
 	folders: string[],
@@ -2352,7 +2351,10 @@ export type SaveAsView_Serialize = {
 	url: string,
 	categories: string[],
 	category: string,
-	/**  The file's folder and name, joined. */
+	/**
+	 *  The file's folder and name, joined; for a torrent of one file
+	 *  (`torrent.fixed_name`), Save As holds and sends its folder alone.
+	 */
 	saveAs: string,
 	/**  The folders the list remembers, for the Save As box's list. */
 	folders: string[],
@@ -2423,9 +2425,10 @@ export type SchedulerView_Serialize = {
 export type SeedLimitsInput = {
 	own: boolean,
 	ratioOn: boolean,
-	ratio: number,
+	/**  The ratio and the minutes as typed; the shell reads them. */
+	ratio: string,
 	minutesOn: boolean,
-	minutes: number,
+	minutes: string,
 };
 
 /**  When a finished torrent stops seeding, as the download window edits it. */
@@ -2433,9 +2436,10 @@ export type SeedLimitsView = {
 	/**  Its own limits, rather than the settings'. */
 	own: boolean,
 	ratioOn: boolean,
-	ratio: number,
+	/**  The ratio and the minutes as the fields start with them. */
+	ratio: string,
 	minutesOn: boolean,
-	minutes: number,
+	minutes: string,
 	/**  The settings' limits, in words. */
 	defaults: string,
 	/**  How far it has seeded, in words; empty before it seeds. */

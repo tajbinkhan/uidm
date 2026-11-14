@@ -10,7 +10,9 @@ quota, pauses, resumes, and carries on after UDM starts again. Once it has finis
 
 - **Add URL**: paste a magnet link (`magnet:?xt=urn:btih:...`) as you would an address.
 - **The clipboard**: with **Monitor the clipboard** on, a copied magnet link is offered like a
-  copied address.
+  copied address, and so is a copied address of a `.torrent` file while **Take .torrent files as
+  torrents** is on (with it off, such an address is a file like any other, offered only when its
+  type is one the monitor watches).
 - **The browser**: the extension hands UDM the magnet links you click, and the `.torrent` files
   the browser downloads (by their type, `application/x-bittorrent`, or their name). UDM fetches a
   `.torrent` file itself, with the page's cookies, as it does any download the browser hands over.
@@ -60,7 +62,7 @@ starts.
 </picture>
 
 - **The save-as dialog** lists a torrent's files under the usual folder and category, sorted by
-  path, with a box to tick each, **Select all** and **Select none**, and what the ticked files add
+  path, with a box to tick each (starting from the files it was added with, or every file), **Select all** and **Select none**, and what the ticked files add
   up to. Start is greyed out while nothing is ticked. For a torrent of one file the dialog asks
   only for the folder and shows the file's name, which the torrent fixes. If the file list has not
   come yet, the dialog says it is getting it from the peers, and starting then downloads every
@@ -81,9 +83,9 @@ starts.
     got, and how they are connected.
   - **Trackers**: each tracker, used or skipped (as DNS over HTTPS skips HTTP trackers).
   - **Pieces**: a map of the pieces that are here.
-  - **Seeding**: the limits from Options, or the torrent's own (a share ratio, a number of
-    minutes, or both, whichever comes first), with **Apply**, how long it has seeded, and **Stop
-    seeding**.
+  - **Seeding**: the limits from Options, or the torrent's own (a share ratio from 0 to 100, a
+    number of minutes from 1 up, or both, whichever comes first), with **Apply**, how long it has
+    seeded, and **Stop seeding**.
 - **Options > Torrents** holds the settings below: the port (a free one each start, or a fixed
   one), the DHT, UPnP, finding peers on the local network, the most peers per torrent, the upload
   limit, the default seeding limits, and whether `.torrent` files from the browser are taken as

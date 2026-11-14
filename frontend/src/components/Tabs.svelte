@@ -6,8 +6,9 @@
   let {
     tabs,
     current = $bindable(),
+    wrap = false,
     children,
-  }: { tabs: { key: string; label: string }[]; current: string; children: Snippet } = $props();
+  }: { tabs: { key: string; label: string }[]; current: string; wrap?: boolean; children: Snippet } = $props();
 
   let buttons: HTMLButtonElement[] = $state([]);
 
@@ -22,7 +23,7 @@
 </script>
 
 <div class="tabs">
-  <div class="strip" role="tablist">
+  <div class="strip" class:wrap role="tablist">
     {#each tabs as tab, i (tab.key)}
       <button
         bind:this={buttons[i]}
@@ -49,23 +50,31 @@
     flex-direction: column;
   }
 
-  /* Many tabs (a torrent's download window) scroll rather than wrap. */
   .strip {
     display: flex;
     align-items: stretch;
     gap: 2px;
     height: 24px;
     margin-bottom: 4px;
-    overflow-x: auto;
-    scrollbar-width: none;
+  }
+
+  /* Many tabs (a torrent's download window) go on in a second row rather
+     than off the edge. */
+  .strip.wrap {
+    flex-wrap: wrap;
+    height: auto;
+    row-gap: 2px;
+  }
+
+  .strip.wrap .tab {
+    height: 24px;
+    white-space: nowrap;
   }
 
   /* Tabs as Windows 11 draws a pivot: plain text, the current one bold
      with the accent's short bar under it. */
   .tab {
     position: relative;
-    flex-shrink: 0;
-    white-space: nowrap;
     padding: 0 10px;
     background: none;
     border: 0;

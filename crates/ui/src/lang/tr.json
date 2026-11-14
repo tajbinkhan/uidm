@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "{total} dosyadan {count}, {all} içinden {size}",
   "{have} of {pieces} pieces, {size} each": "{pieces} parçadan {have}, her biri {size}",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "Torrentler Seçenekler > Ağ'da seçilen bağdaştırıcıdan geçer; UPnP ve yerel ağ araması kullanılmaz.",
-  "Seeding: stop at the first limit reached": "Paylaşım: ulaşılan ilk sınırda durdur"
+  "Seeding: stop at the first limit reached": "Paylaşım: ulaşılan ilk sınırda durdur",
+  "UDM's background service could not read this torrent's file list.": "UDM'nin arka plan hizmeti bu torrentin dosya listesini okuyamadı.",
+  "{pieces} pieces, {size} each": "{pieces} parça, her biri {size}",
+  "Type a share ratio from 0 to 100.": "0 ile 100 arasında bir paylaşım oranı yazın.",
+  "Type a number of minutes from 1 up.": "1 veya daha fazla dakika yazın."
 }

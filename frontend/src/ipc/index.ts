@@ -95,8 +95,8 @@ export const showDownload = (id: Id) => commands.showDownload(id);
 export const addDownload = (address: string, login: { user: string; password: string } | null) =>
   commands.addDownload(address, login);
 export const answerDownload = (answer: AnswerInput) => commands.answerDownload(answer);
-export const checkSaveFolder = (saveAs: string, folderOnly = false) => commands.checkSaveFolder(saveAs, folderOnly);
-export const pickSaveFolder = (saveAs: string, folderOnly = false) => commands.pickSaveFolder(saveAs, folderOnly);
+export const checkSaveFolder = (saveAs: string) => commands.checkSaveFolder(saveAs);
+export const pickSaveFolder = (saveAs: string) => commands.pickSaveFolder(saveAs);
 export const removeDownloads = (deleteFiles: boolean, dontAsk: boolean) => commands.removeDownloads(deleteFiles, dontAsk);
 export const hideDoneDialogs = () => commands.hideDoneDialogs();
 export const controlDownload = (action: DownloadControl) => commands.controlDownload(action);

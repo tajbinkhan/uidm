@@ -60,6 +60,12 @@ pub enum Inbox {
     /// The Download File Info dialog's answer.
     Answer {
         answer: Box<udm_domain::download::Answer>,
+        reply: Sender<Result<(), contract::InvokeError>>,
+    },
+    /// Whether Download File Info of download `id` gives a folder alone,
+    /// for a torrent of one file.
+    FolderOnly {
+        id: DownloadId,
         reply: Sender<bool>,
     },
     /// Remove the downloads Confirm deletion asked about, and with
@@ -750,7 +756,11 @@ impl Actor {
     /// offered in Add URL.
     fn clipboard_text(&mut self, text: &str) {
         let Some(settings) = self.state.settings.as_ref().filter(|s| s.clipboard_monitor) else { return };
-        let Some(url) = udm_domain::batch::clipboard_link(text, &settings.capture_types) else { return };
+        let Some(url) =
+            udm_domain::batch::clipboard_link(text, &settings.capture_types, settings.torrents.catch_torrent_files)
+        else {
+            return;
+        };
         let url = url.to_string();
         if self.clipboard_last.as_deref() == Some(url.as_str()) {
             return;
@@ -1151,8 +1161,13 @@ impl Actor {
                 if let Label::SaveAs(id) | Label::Download(id) = label {
                     let torrent = self.state.table.get(id).and_then(|e| e.torrent.as_ref());
                     let known = torrent.is_some_and(|t| t.phase != udm_domain::torrent::TorrentPhase::Metadata);
-                    if known && !self.state.torrent_info.contains_key(&id) {
-                        self.send(Command::TorrentFiles { id });
+                    let asked = self.state.files_asked.contains(&id) || self.state.files_missing.contains(&id);
+                    if known
+                        && !asked
+                        && !self.state.torrent_info.contains_key(&id)
+                        && self.send(Command::TorrentFiles { id })
+                    {
+                        apply(&mut self.state, UiMessage::FilesAsked(id));
                     }
                 }
                 self.subscribers.insert(label, Subscriber { channel, seq: 0, last: None, look: None });
@@ -1214,11 +1229,13 @@ impl Actor {
             Inbox::Answer { mut answer, reply } => {
                 let id = answer.id;
                 // A torrent's ticked files; none ticked sends nothing.
-                if let Some(info) = self.state.torrent_info.get(&id) {
-                    match crate::torrents::answer_files(info, self.state.torrent_picks.get(&id)) {
+                if let Some(known) = self.state.torrent_info.get(&id) {
+                    let picks = crate::torrents::picks_of(&self.state, id);
+                    match crate::torrents::answer_files(&known.info, picks.as_ref()) {
                         Ok(files) => answer.files = files,
-                        Err(_) => {
-                            let _ = reply.send(false);
+                        Err(e) => {
+                            let text = crate::errors::text::torrent(self.lang(), &e);
+                            let _ = reply.send(Err(crate::errors::invalid_text(text)));
                             return;
                         }
                     }
@@ -1227,7 +1244,7 @@ impl Actor {
                 if sent {
                     apply(&mut self.state, UiMessage::Answered(id));
                 }
-                let _ = reply.send(sent);
+                let _ = reply.send(if sent { Ok(()) } else { Err(crate::errors::offline(self.lang())) });
             }
             Inbox::Remove { delete_files, dont_ask } => {
                 for c in actions::remove(&self.state, delete_files) {
@@ -1268,18 +1285,15 @@ impl Actor {
             Inbox::OnDone { id, on_done } => {
                 self.send(Command::SetOnDone { id, on_done });
             }
+            Inbox::FolderOnly { id, reply } => {
+                let _ = reply.send(crate::torrents::folder_only(&self.state, id));
+            }
             Inbox::ChooseTorrentFiles { id, indexes, chosen, reply } => {
                 let lang = self.lang();
-                let entry = self.state.table.get(id);
-                let current = entry.and_then(|e| e.torrent.as_ref()).and_then(|t| t.selection.as_ref());
-                let files = self.state.torrent_info.get(&id).map(|i| &i.files);
-                let picked = match files {
-                    Some(files) => crate::torrents::reselect(files, current, &indexes, chosen),
-                    None => Err(udm_domain::torrent::TorrentError::NoFiles),
-                };
-                let result = match picked {
+                let result = match crate::torrents::choose(&self.state, id, &indexes, chosen) {
                     Ok(files) => {
-                        if self.send(Command::SelectTorrentFiles { id, files }) {
+                        if self.send(Command::SelectTorrentFiles { id, files: files.clone() }) {
+                            apply(&mut self.state, UiMessage::TorrentChosen { id, files });
                             Ok(())
                         } else {
                             Err(crate::errors::offline(lang))

@@ -3181,10 +3181,14 @@ mod tests {
             let mut req = request(&server.url, &dir, FileExists::Rename);
             req.post_body = Some(form);
             engine.enqueue(req);
+            // The form's answer comes at 256 KB/s (the test server once sent
+            // it at once, which a slow wakeup on Windows let finish before
+            // the restart), and the restart comes with its first progress, at
+            // 1 MB of 2: a second still to go.
             let mut restarted = false;
             let error = loop {
                 match rx.recv_timeout(Duration::from_secs(30)).expect("timed out") {
-                    Progress::Advanced { done, .. } if !restarted && done.get() > 64 * 1024 => {
+                    Progress::Advanced { .. } if !restarted => {
                         *source.lock().unwrap() = crate::route::tests::bound_to_loopback().0;
                         engine.restart_running();
                         restarted = true;

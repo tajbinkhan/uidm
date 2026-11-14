@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "{count} з {total} файлів, {size} з {all}",
   "{have} of {pieces} pieces, {size} each": "{have} з {pieces} частин по {size}",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "Торенти йдуть через адаптер, вибраний у Параметри > Мережа, без UPnP і пошуку в локальній мережі.",
-  "Seeding: stop at the first limit reached": "Роздача: зупинити за першого досягнутого обмеження"
+  "Seeding: stop at the first limit reached": "Роздача: зупинити за першого досягнутого обмеження",
+  "UDM's background service could not read this torrent's file list.": "Фонова служба UDM не змогла прочитати список файлів цього торента.",
+  "{pieces} pieces, {size} each": "{pieces} частин по {size}",
+  "Type a share ratio from 0 to 100.": "Введіть рейтинг від 0 до 100.",
+  "Type a number of minutes from 1 up.": "Введіть кількість хвилин від 1."
 }

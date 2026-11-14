@@ -93,7 +93,7 @@ const MAX_INITIAL_PEERS: usize = 50;
 const MAX_LISTED_TRACKERS: usize = 100;
 /// A torrent's stats carry each file's progress only up to this many files,
 /// so they stay small enough to send every second.
-pub const MAX_STATS_FILES: usize = 1000;
+pub use udm_domain::torrent::MAX_STATS_FILES;
 
 /// What a download of a torrent says when it cannot be bound on this system.
 pub const WINDOWS_BOUND: &str = "Torrents cannot be bound to a network adapter on Windows, so they do not run while \

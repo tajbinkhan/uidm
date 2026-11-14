@@ -32,7 +32,8 @@
   const WIDTH = 576;
   const HEIGHT = $derived(view?.torrent ? 432 : 206);
   const WARNING = 40;
-  /** A torrent of one file keeps its name: Save As then holds its folder. */
+  /** A torrent of one file keeps its name: Save As then holds its folder,
+   * which the shell knows to take as one. */
   let folderOnly = $state(false);
   const torrent = $derived(view?.torrent ?? null);
 
@@ -40,9 +41,8 @@
   $effect(() => {
     if (!loaded) return;
     const saveAs = draft.saveAs;
-    const onlyFolder = folderOnly;
     const timer = setTimeout(() => {
-      checkSaveFolder(saveAs, onlyFolder)
+      checkSaveFolder(saveAs)
         .then((access) => {
           if (draft.saveAs !== saveAs || access.denied === denied) return;
           denied = access.denied;
@@ -56,7 +56,7 @@
   async function browse() {
     error = '';
     try {
-      const picked = await pickSaveFolder(draft.saveAs, folderOnly);
+      const picked = await pickSaveFolder(draft.saveAs);
       if (picked) draft.saveAs = picked;
     } catch (e) {
       error = messageOf(e);
@@ -105,7 +105,6 @@
         duplicate,
         rememberDuplicate,
         elevate: denied && elevate,
-        folderOnly,
       });
     } catch (e) {
       error = messageOf(e);

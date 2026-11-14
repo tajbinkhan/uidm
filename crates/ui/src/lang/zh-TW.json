@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "{total} 個檔案中的 {count} 個，{all} 中的 {size}",
   "{have} of {pieces} pieces, {size} each": "{pieces} 個區塊中的 {have} 個，每塊 {size}",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "種子經由選項 > 網路中選擇的介面卡，不使用 UPnP 與區域網路搜尋。",
-  "Seeding: stop at the first limit reached": "做種：達到第一個限制時停止"
+  "Seeding: stop at the first limit reached": "做種：達到第一個限制時停止",
+  "UDM's background service could not read this torrent's file list.": "UDM 背景服務無法讀取此種子的檔案清單。",
+  "{pieces} pieces, {size} each": "{pieces} 個區塊，每塊 {size}",
+  "Type a share ratio from 0 to 100.": "請輸入 0 到 100 之間的分享率。",
+  "Type a number of minutes from 1 up.": "請輸入不少於 1 的分鐘數。"
 }

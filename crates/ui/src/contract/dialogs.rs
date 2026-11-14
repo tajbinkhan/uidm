@@ -32,7 +32,8 @@ pub struct SaveAsView {
     pub url: String,
     pub categories: Vec<String>,
     pub category: String,
-    /// The file's folder and name, joined.
+    /// The file's folder and name, joined; for a torrent of one file
+    /// (`torrent.fixed_name`), Save As holds and sends its folder alone.
     pub save_as: String,
     /// The folders the list remembers, for the Save As box's list.
     pub folders: Vec<String>,
@@ -76,8 +77,6 @@ pub struct AnswerInput {
     /// Save there with administrator rights, when UDM may not write to the
     /// folder.
     pub elevate: bool,
-    /// `save_as` is the folder alone: a torrent of one file keeps its name.
-    pub folder_only: bool,
 }
 
 /// Whether UDM may save files in a folder Download File Info names.

@@ -32,8 +32,8 @@ it runs), peers, trackers, a piece map and its seeding limits, sent to the windo
 limit, the default seeding limits and whether `.torrent` files from the browser are taken.
 **Tasks > Open torrent file...** adds a `.torrent` file from the computer, `udm-gui` takes a magnet
 link or a `.torrent` file alone on its command line (and a magnet link after `/d`), and the
-clipboard monitor offers copied magnet links and `.torrent` addresses
-([Torrents and magnet links](docs/torrents.md)).
+clipboard monitor offers copied magnet links, and `.torrent` addresses while UDM takes `.torrent`
+files as torrents ([Torrents and magnet links](docs/torrents.md)).
 
 Downloads can go through one network adapter only, such as a VPN's (#261). **Options > Network**
 lists the adapters with their addresses; with one chosen, every connection is bound to it

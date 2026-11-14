@@ -49,8 +49,19 @@ pub fn options(lang: &'static Language, e: &crate::options::OptionsError) -> Inv
         E::TorrentPeers => lang.tr("Type a number of peers from 1 to 1000.").to_string(),
         E::UploadLimit => lang.tr("Type an upload limit from 1 KB/s up.").to_string(),
         E::Torrent(t) => text::torrent(lang, t),
+        E::SeedMinutes => lang.tr("Type a number of minutes from 1 up.").to_string(),
     };
     error(ErrorKind::Invalid, message)
+}
+
+/// Why a torrent's own seeding limits cannot be set.
+pub fn limits(lang: &'static Language, e: &crate::torrents::LimitsError) -> InvokeError {
+    use crate::torrents::LimitsError as E;
+    let message = match e {
+        E::Ratio => lang.tr("Type a share ratio from 0 to 100."),
+        E::Minutes => lang.tr("Type a number of minutes from 1 up."),
+    };
+    error(ErrorKind::Invalid, message.to_string())
 }
 
 /// Why a queue cannot be saved.

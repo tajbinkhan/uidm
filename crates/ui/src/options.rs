@@ -50,6 +50,8 @@ pub enum OptionsError {
     /// The seeding ratio is not one.
     #[error(transparent)]
     Torrent(#[from] udm_domain::torrent::TorrentError),
+    #[error("Type a number of minutes from 1 up.")]
+    SeedMinutes,
 }
 
 /// The debrid service a choice names.
@@ -446,6 +448,9 @@ fn torrent_settings(e: &ExtrasDraft) -> Result<TorrentSettings, OptionsError> {
         return Err(OptionsError::UploadLimit);
     }
     let ratio = if e.seed_ratio_on { Some(Ratio::new(e.seed_ratio)?) } else { None };
+    if e.seed_minutes_on && e.seed_minutes == 0 {
+        return Err(OptionsError::SeedMinutes);
+    }
     Ok(TorrentSettings {
         port,
         dht: e.torrent_dht,
@@ -898,6 +903,13 @@ mod tests {
             ((|d: &mut OptionsDraft| d.extras.torrent_port = 70_000) as fn(&mut OptionsDraft), OptionsError::Port),
             (|d| d.extras.torrent_peers = 1001, OptionsError::TorrentPeers),
             (|d| d.extras.torrent_upload_kb = 0, OptionsError::UploadLimit),
+            (
+                |d| {
+                    d.extras.seed_minutes_on = true;
+                    d.extras.seed_minutes = 0;
+                },
+                OptionsError::SeedMinutes,
+            ),
         ] {
             let mut bad = d.clone();
             change(&mut bad);

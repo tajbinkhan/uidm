@@ -1142,11 +1142,11 @@
           "filesNote": "",
           "limits": {
             "defaults": "Until a share ratio of 1.00 or 60 minutes, whichever comes first",
-            "minutes": 60,
+            "minutes": "60",
             "minutesOn": true,
             "own": false,
             "progress": "",
-            "ratio": 1.0,
+            "ratio": "1.00",
             "ratioOn": true
           },
           "peers": [

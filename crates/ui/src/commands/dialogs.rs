@@ -12,7 +12,7 @@ use udm_domain::filename::FileName;
 use udm_domain::ports::DownloadFiles;
 
 use super::options::Pickers;
-use super::{ask, label_of, lang, post};
+use super::{ask, label_of, lang, post, reply_of};
 use crate::actor::{CurrentLanguage, Inbox, Outbox};
 use crate::contract::{AnswerInput, DuplicateChoice, FolderAccess, InvokeError, LoginInput};
 use crate::errors;
@@ -46,17 +46,33 @@ pub async fn add_download(
 /// is saved in (a managed type).
 pub type Files = Arc<dyn DownloadFiles>;
 
+/// Whether the calling Download File Info gives a folder alone: its
+/// download is a torrent of one file, which keeps its name. The shell
+/// decides, from the torrent's files.
+async fn folder_only(
+    window: &tauri::WebviewWindow,
+    outbox: &State<'_, Outbox>,
+    current: &State<'_, CurrentLanguage>,
+) -> Result<bool, InvokeError> {
+    match label_of(window, current)? {
+        Label::SaveAs(id) => reply_of(outbox, current, |reply| Inbox::FolderOnly { id, reply }).await,
+        _ => Ok(false),
+    }
+}
+
 /// Whether UDM may save in the folder Download File Info's Save As names
-/// (or, with `folder_only`, the folder it holds), checked on a worker since
-/// it writes a probe file there.
+/// (for a torrent of one file, the folder it holds), checked on a worker
+/// since it writes a probe file there.
 #[tauri::command]
 #[specta::specta]
 pub async fn check_save_folder(
+    window: tauri::WebviewWindow,
+    outbox: State<'_, Outbox>,
     files: State<'_, Files>,
     current: State<'_, CurrentLanguage>,
     save_as: String,
-    folder_only: bool,
 ) -> Result<FolderAccess, InvokeError> {
+    let folder_only = folder_only(&window, &outbox, &current).await?;
     let files = Arc::clone(&files);
     let denied = tauri::async_runtime::spawn_blocking(move || denied(&save_as, folder_only, |f| files.can_write(f)))
         .await
@@ -76,16 +92,18 @@ fn denied(save_as: &str, folder_only: bool, can_write: impl Fn(&Path) -> bool) -
 }
 
 /// Download File Info's Browse: another folder for the file, keeping its
-/// name; with `folder_only`, the folder alone. `None` when the user
+/// name; for a torrent of one file, the folder alone. `None` when the user
 /// cancels.
 #[tauri::command]
 #[specta::specta]
 pub async fn pick_save_folder(
+    window: tauri::WebviewWindow,
+    outbox: State<'_, Outbox>,
     pickers: State<'_, Pickers>,
     current: State<'_, CurrentLanguage>,
     save_as: String,
-    folder_only: bool,
 ) -> Result<Option<String>, InvokeError> {
+    let folder_only = folder_only(&window, &outbox, &current).await?;
     let lang = lang(&current);
     let pickers = Arc::clone(&pickers);
     let title = lang.tr("Save to").to_string();
@@ -122,7 +140,7 @@ pub async fn answer_download(
     };
     // Administrator rights only for a folder that needs them, checked
     // again here on a worker: the webview's word is not taken for it.
-    let folder_only = answer.folder_only;
+    let folder_only = folder_only(&window, &outbox, &current).await?;
     let elevate = answer.elevate && {
         let (files, save_as) = (Arc::clone(&files), answer.save_as.clone());
         tauri::async_runtime::spawn_blocking(move || denied(&save_as, folder_only, |f| files.can_write(f)))
@@ -161,7 +179,7 @@ pub async fn answer_download(
         elevate,
         ..Answer::start(id)
     };
-    ask(&outbox, &current, |reply| Inbox::Answer { answer: Box::new(answer), reply }).await
+    reply_of(&outbox, &current, |reply| Inbox::Answer { answer: Box::new(answer), reply }).await?
 }
 
 /// Confirm deletion's Yes.

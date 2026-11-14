@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "{total} 個中 {count} 個のファイル、{all} 中 {size}",
   "{have} of {pieces} pieces, {size} each": "{pieces} 個中 {have} 個のピース (各 {size})",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "トレントはオプション > ネットワークで選んだアダプターを通り、UPnP とローカルネットワークの検索は使いません。",
-  "Seeding: stop at the first limit reached": "シード: 最初に達した上限で停止"
+  "Seeding: stop at the first limit reached": "シード: 最初に達した上限で停止",
+  "UDM's background service could not read this torrent's file list.": "UDM のバックグラウンドサービスはこのトレントのファイル一覧を読み取れませんでした。",
+  "{pieces} pieces, {size} each": "{pieces} 個のピース (各 {size})",
+  "Type a share ratio from 0 to 100.": "共有比率を 0 から 100 の間で入力してください。",
+  "Type a number of minutes from 1 up.": "分数を 1 以上で入力してください。"
 }

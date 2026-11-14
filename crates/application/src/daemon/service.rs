@@ -709,35 +709,30 @@ impl<W: Wiring> DaemonService<W> {
     /// for the first copy. Problems go to the windows, since the caller may
     /// be gone.
     pub fn run_command_line(self: &Arc<Self>, cmd: CommandLine, started: bool) {
-        if let (Some(mut download), Some(metainfo)) = (cmd.download.clone(), cmd.metainfo) {
-            // A `.torrent` file: added as the window's Open adds one, and
-            // what went wrong goes to the windows.
+        let quit = cmd.quit_after && started;
+        if let Some(mut download) = cmd.download {
             download.limit_browser_request();
-            let daemon = Arc::clone(self);
-            let quit = cmd.quit_after && started;
-            let reply = Reply::new(move |event| {
-                match event {
-                    Event::Ack { id, .. } if quit => {
-                        let exit = OnDone { then: WhenDone::Exit, ..OnDone::default() };
-                        if let Err(e) = daemon.set_on_done(id, Some(exit)) {
-                            warn!(download_id = id.get(), error = %e, "could not set /q");
-                        }
+            // A torrent, from a `.torrent` file given on the command line or
+            // a web address of one, is added as the window's Open adds one,
+            // and what went wrong goes to the windows.
+            let torrent = cmd.metainfo.is_some() || self.is_torrent_file(&download);
+            if torrent {
+                info!(url = %udm_domain::torrent::loggable(download.url.as_str()), "add a torrent from the command line");
+                let daemon = Arc::clone(self);
+                let reply = Reply::new(move |event| {
+                    match event {
+                        Event::Ack { id, .. } if quit => daemon.quit_after(id),
+                        Event::Rejected { .. } => daemon.clients.to_windows(event),
+                        _ => {}
                     }
-                    Event::Rejected { .. } => daemon.clients.to_windows(event),
-                    _ => {}
-                }
-                true
-            });
-            info!("add a torrent file from the command line");
-            self.add_torrent(Some(metainfo), download, reply);
-        } else if let Some(mut download) = cmd.download {
-            download.limit_browser_request();
-            let (id, url) = self.add(download);
-            info!(download_id = id.get(), url = %url, "add from the command line");
-            if cmd.quit_after && started {
-                let exit = OnDone { then: WhenDone::Exit, ..OnDone::default() };
-                if let Err(e) = self.set_on_done(id, Some(exit)) {
-                    warn!(download_id = id.get(), error = %e, "could not set /q");
+                    true
+                });
+                self.add_torrent(cmd.metainfo, download, reply);
+            } else {
+                let (id, url) = self.add(download);
+                info!(download_id = id.get(), url = %url, "add from the command line");
+                if quit {
+                    self.quit_after(id);
                 }
             }
         }
@@ -749,6 +744,14 @@ impl<W: Wiring> DaemonService<W> {
                 }
                 Err(e) => self.clients.to_windows(Event::Error { error: e.into() }),
             }
+        }
+    }
+
+    /// `/q`: exit UDM once download `id` finishes.
+    fn quit_after(&self, id: DownloadId) {
+        let exit = OnDone { then: WhenDone::Exit, ..OnDone::default() };
+        if let Err(e) = self.set_on_done(id, Some(exit)) {
+            warn!(download_id = id.get(), error = %e, "could not set /q");
         }
     }
 

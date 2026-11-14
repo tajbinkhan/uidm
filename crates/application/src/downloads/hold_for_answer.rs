@@ -82,6 +82,13 @@ where
             let held = e.hold_for_answer(start_now, &probed.path, probed.total, probed.resumable, duplicate_of);
             if let (true, Some(info)) = (held, &probed.torrent) {
                 e.set_torrent_info(info);
+                // The files the download was added with are the dialog's
+                // ticks to start from.
+                let picked = download.torrent_files.as_ref().and_then(|s| s.within(info.files.len()));
+                if let (Some(picked), Some(t)) = (picked, e.torrent.as_mut()) {
+                    t.selection = Some(picked);
+                    e.total = Some(t.selected_size());
+                }
             }
             held
         });
@@ -180,6 +187,33 @@ mod tests {
         let w = World { files: Files::read_only("/dl"), ..World::new(settings) };
         assert_eq!(w.hold("a.zip", None), Held::Asked { early: false });
         assert!(w.control.dispatched().is_empty());
+    }
+
+    #[test]
+    fn a_torrent_added_with_some_files_offers_those_ticked() {
+        use udm_domain::torrent::{FileSelection, InfoHash, TorrentFiles, TorrentInfo};
+        let w = World::new(Settings::default());
+        let raw = ["a", "b", "c"].iter().map(|n| (vec![n.to_string()], 10, false)).collect();
+        let info = TorrentInfo {
+            info_hash: InfoHash::from_bytes([3; 20]),
+            name: "t".into(),
+            files: TorrentFiles::parse(raw).unwrap(),
+            piece_size: ByteCount::new(16_384),
+            pieces: 1,
+            private: false,
+        };
+        let download = Download { torrent_files: FileSelection::parse(&[0, 2], 3).ok(), ..Download::default() };
+        let probed = Probed { torrent: Some(info), ..probed("t") };
+        let held = HoldForAnswer::new(&w.downloads, &w.control, &w.files, &w.prefs, &w.early, &w.waiting).run(
+            DownloadId::new(1),
+            &download,
+            probed,
+            None,
+        );
+        assert_eq!(held, Held::Asked { early: false });
+        let e = w.downloads.entry(DownloadId::new(1)).unwrap();
+        assert_eq!(e.torrent.and_then(|t| t.selection), FileSelection::parse(&[0, 2], 3).ok());
+        assert_eq!(e.total, Some(ByteCount::new(20)));
     }
 
     #[test]

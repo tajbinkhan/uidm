@@ -70,8 +70,7 @@ pub async fn set_seed_limits(
     limits: SeedLimitsInput,
 ) -> Result<(), InvokeError> {
     let id = torrent_window(&window, &current)?;
-    let limits = crate::torrents::seed_limits(&limits)
-        .map_err(|e| errors::invalid_text(errors::text::torrent(lang(&current), &e)))?;
+    let limits = crate::torrents::seed_limits(&limits).map_err(|e| errors::limits(lang(&current), &e))?;
     ask(&outbox, &current, |reply| Inbox::Send {
         command: Box::new(Command::SetSeedLimits { id, limits }),
         reply: Some(reply),

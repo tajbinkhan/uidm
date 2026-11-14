@@ -1131,5 +1131,9 @@
   "{count} of {total} files, {size} of {all}": "{count} de {total} archivos, {size} de {all}",
   "{have} of {pieces} pieces, {size} each": "{have} de {pieces} piezas, de {size} cada una",
   "Torrents go through the adapter chosen in Options > Network, without UPnP or the local network search.": "Los torrents pasan por el adaptador elegido en Opciones > Red, sin UPnP ni búsqueda en la red local.",
-  "Seeding: stop at the first limit reached": "Compartir: detener al alcanzar el primer límite"
+  "Seeding: stop at the first limit reached": "Compartir: detener al alcanzar el primer límite",
+  "UDM's background service could not read this torrent's file list.": "El servicio en segundo plano de UDM no pudo leer la lista de archivos de este torrent.",
+  "{pieces} pieces, {size} each": "{pieces} piezas, de {size} cada una",
+  "Type a share ratio from 0 to 100.": "Escriba un ratio de 0 a 100.",
+  "Type a number of minutes from 1 up.": "Escriba un número de minutos desde 1."
 }
