@@ -1076,8 +1076,10 @@ mod tests {
         e.torrent = Some(t);
         let refused = e.clone().apply_answer(Some("b.iso"), None, None, None);
         assert_eq!(refused, Err(DownloadError::Torrent(TorrentError::NameFixed("a.iso".into()))));
-        assert!(e.apply_answer(Some("a.iso"), Some("/other"), None, None).is_ok());
-        assert_eq!(e.path.as_deref(), Some(std::path::Path::new("/other").join("a.iso").to_str().unwrap()));
+        // An absolute folder on each system: "/other" is relative on Windows.
+        let other = if cfg!(windows) { r"C:\other" } else { "/other" };
+        assert!(e.apply_answer(Some("a.iso"), Some(other), None, None).is_ok());
+        assert_eq!(e.path.as_deref(), Some(std::path::Path::new(other).join("a.iso").to_str().unwrap()));
     }
 
     #[test]
