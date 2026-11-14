@@ -1026,5 +1026,10 @@
   "No key is stored.": "未保存密钥。",
   "Remove the stored key when saving": "保存时删除已保存的密钥",
   "Checking…": "正在检查…",
-  "Check account": "检查账户"
+  "Check account": "检查账户",
+  "UDM's background service did not answer. Try again.": "UDM 后台服务没有响应。请重试。",
+  "{service}: {error}": "{service}：{error}",
+  "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "该服务不允许此计算机的 IP 地址。原因通常是 VPN 或代理。",
+  "The file host is unavailable for now. Try again later.": "该网盘暂时不可用。请稍后再试。",
+  "The stored key is for {service}. Type a key for this service.": "已保存的密钥属于 {service}。请输入此服务的密钥。"
 }

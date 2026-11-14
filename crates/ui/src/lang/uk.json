@@ -1026,5 +1026,10 @@
   "No key is stored.": "Ключ не збережено.",
   "Remove the stored key when saving": "Вилучити збережений ключ під час збереження",
   "Checking…": "Перевірка…",
-  "Check account": "Перевірити обліковий запис"
+  "Check account": "Перевірити обліковий запис",
+  "UDM's background service did not answer. Try again.": "Фонова служба UDM не відповіла. Спробуйте ще раз.",
+  "{service}: {error}": "{service}: {error}",
+  "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Сервіс не дозволяє IP-адресу цього комп'ютера. Часто причиною є VPN або проксі.",
+  "The file host is unavailable for now. Try again later.": "Файлообмінник зараз недоступний. Спробуйте пізніше.",
+  "The stored key is for {service}. Type a key for this service.": "Збережений ключ належить {service}. Введіть ключ для цього сервісу."
 }

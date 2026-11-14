@@ -2,6 +2,7 @@
 //! settings when the window is saved. Settings the window does not show
 //! keep their values. Plain functions, tested without Tauri.
 
+use udm_application::daemon::Command;
 use udm_domain::debrid::{DebridKey, DebridService};
 use udm_domain::id::QueueId;
 use udm_domain::settings::{
@@ -54,13 +55,16 @@ fn debrid_choice(s: DebridService) -> DebridChoice {
     }
 }
 
-/// What OK does with the debrid key: `Some(Some(key))` stores a new one,
-/// `Some(None)` removes the stored one, `None` leaves it.
-pub fn debrid_key(d: &OptionsDraft) -> Option<Option<DebridKey>> {
-    match DebridKey::new(&d.extras.debrid_key) {
-        Some(key) => Some(Some(key)),
-        None if d.extras.debrid_forget => Some(None),
-        None => None,
+/// What OK sends the daemon for the debrid key, after the settings: a key
+/// typed is stored for the chosen service (`settings` refuses one without
+/// a service), the remove box removes the stored key, and otherwise the
+/// key is left alone.
+pub fn debrid_key(d: &OptionsDraft) -> Option<Command> {
+    let e = &d.extras;
+    match (DebridKey::new(&e.debrid_key), e.debrid_service) {
+        (Some(key), Some(service)) => Some(Command::SetDebridKey { service: debrid_service(service), key }),
+        _ if e.debrid_forget => Some(Command::RemoveDebridKey),
+        _ => None,
     }
 }
 
@@ -75,7 +79,7 @@ fn debrid_view(s: &Settings) -> DebridView {
                 key_page: service.key_page().to_string(),
             })
             .collect(),
-        key_stored: s.debrid.key_stored,
+        key_service: s.debrid.key_service.map(debrid_choice),
         checking: false,
         check: None,
     }
@@ -464,7 +468,8 @@ fn apply_extras(e: &ExtrasDraft, done_dialog: bool, current: &Settings, s: &mut 
     // Whether a key is stored stays the daemon's to say.
     s.debrid.enabled = e.debrid_on;
     s.debrid.service = e.debrid_service.map(debrid_service);
-    if s.debrid.enabled && s.debrid.service.is_none() {
+    let typed = DebridKey::new(&e.debrid_key).is_some();
+    if (s.debrid.enabled || typed) && s.debrid.service.is_none() {
         return Err(OptionsError::DebridService);
     }
     Ok(())
@@ -746,24 +751,32 @@ mod tests {
     fn the_debrid_account_reaches_the_settings_but_its_key_goes_apart() {
         let s = Settings::default();
         let mut d = draft(&s);
-        assert_eq!(debrid_key(&d), None, "an empty key keeps the stored one");
+        assert!(debrid_key(&d).is_none(), "an empty key keeps the stored one");
+        d.extras.debrid_key = "  KEY  ".into();
+        assert_eq!(settings(&d, &s), Err(OptionsError::DebridService), "a key needs its service");
+        d.extras.debrid_key.clear();
         d.extras.debrid_on = true;
         assert_eq!(settings(&d, &s), Err(OptionsError::DebridService));
         d.extras.debrid_service = Some(DebridChoice::AllDebrid);
         d.extras.debrid_key = "  KEY  ".into();
         let out = settings(&d, &s).unwrap();
-        assert!(out.debrid.enabled && !out.debrid.key_stored);
+        assert!(out.debrid.enabled && out.debrid.key_service.is_none(), "only the daemon says a key is stored");
         assert_eq!(out.debrid.service, Some(DebridService::AllDebrid));
-        assert_eq!(debrid_key(&d), Some(DebridKey::new("KEY")));
+        assert!(matches!(
+            debrid_key(&d),
+            Some(Command::SetDebridKey { service: DebridService::AllDebrid, key }) if key.expose() == "KEY"
+        ));
         assert!(!serde_json::to_string(&out).unwrap().contains("KEY"));
         d.extras.debrid_key.clear();
         d.extras.debrid_forget = true;
-        assert_eq!(debrid_key(&d), Some(None));
-        // A stored key shows as stored, never as its text.
+        assert!(matches!(debrid_key(&d), Some(Command::RemoveDebridKey)), "removing is its own command");
+        // A stored key shows the service it is for, never its text.
         let mut stored = Settings::default();
-        stored.debrid.key_stored = true;
+        stored.debrid.service = Some(DebridService::RealDebrid);
+        stored.debrid.key_service = Some(DebridService::RealDebrid);
         let v = view(resolve("en", &[]), &stored);
-        assert!(v.debrid.key_stored && v.draft.extras.debrid_key.is_empty());
+        assert_eq!(v.debrid.key_service, Some(DebridChoice::RealDebrid));
+        assert!(v.draft.extras.debrid_key.is_empty());
         assert_eq!(v.debrid.services.len(), 3);
         assert_eq!(settings(&draft(&stored), &stored).unwrap(), stored);
     }

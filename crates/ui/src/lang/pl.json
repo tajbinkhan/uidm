@@ -1026,5 +1026,10 @@
   "No key is stored.": "Żaden klucz nie jest zapisany.",
   "Remove the stored key when saving": "Usuń zapisany klucz przy zapisywaniu",
   "Checking…": "Sprawdzanie…",
-  "Check account": "Sprawdź konto"
+  "Check account": "Sprawdź konto",
+  "UDM's background service did not answer. Try again.": "Usługa UDM działająca w tle nie odpowiedziała. Spróbuj ponownie.",
+  "{service}: {error}": "{service}: {error}",
+  "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Usługa nie dopuszcza adresu IP tego komputera. Często przyczyną jest VPN lub serwer proxy.",
+  "The file host is unavailable for now. Try again later.": "Hosting plików jest obecnie niedostępny. Spróbuj ponownie później.",
+  "The stored key is for {service}. Type a key for this service.": "Zapisany klucz należy do {service}. Wpisz klucz dla tej usługi."
 }

@@ -27,7 +27,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use udm_domain::address::Address;
 use udm_domain::bytes::ByteCount;
+use udm_domain::debrid::{Refused, Unrestricted};
 use udm_domain::filename::name_from_url;
 use udm_domain::filename::{numbered_name, proposed_name, sanitize_filename, FileName};
 use udm_domain::id::DownloadId;
@@ -125,19 +127,12 @@ pub struct DownloadRequest {
     pub resolve: Option<Resolver>,
 }
 
-/// What a `Resolver` made of a download's address: the address to download
-/// from instead, and the file's name when it is known.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resolved {
-    pub url: String,
-    pub filename: Option<String>,
-}
-
 /// Turns a download's address into the one to download from, just before
-/// the engine connects: `Ok(None)` keeps it, and an error fails the
-/// download with its text. It may ask a web service, so it runs on the
-/// download's own thread.
-pub type Resolver = Arc<dyn Fn(&str) -> Result<Option<Resolved>, String> + Send + Sync>;
+/// the engine connects: the debrid account's direct link for a file host's
+/// link (`ResolveLink`), `Ok(None)` to keep it, or why the download cannot
+/// go on. It may ask a web service, so it runs on the download's own
+/// thread.
+pub type Resolver = Arc<dyn Fn(&Address) -> Result<Option<Unrestricted>, Refused> + Send + Sync>;
 
 impl DownloadRequest {
     /// Ask the request's resolver, once, for the address to download from.
@@ -153,17 +148,19 @@ impl DownloadRequest {
         if self.media.is_some() || self.post_body.is_some() {
             return Ok(false);
         }
-        match resolve(&self.url) {
-            Ok(None) => Ok(false),
-            Ok(Some(found)) => {
-                self.url = found.url;
+        let Ok(address) = Address::parse(&self.url) else {
+            return Ok(false);
+        };
+        match resolve(&address)? {
+            None => Ok(false),
+            Some(found) => {
+                self.url = found.address.into_string();
                 if self.filename.is_none() {
                     self.filename = found.filename;
                 }
                 self.headers.retain(|(name, _)| name.eq_ignore_ascii_case("user-agent"));
                 Ok(true)
             }
-            Err(text) => Err(EngineError::Refused(text)),
         }
     }
 }
@@ -265,6 +262,10 @@ pub enum EngineError {
     /// administrator rights.
     #[error("{NEEDS_ADMIN}{}", .0.display())]
     NeedsAdmin(PathBuf),
+    /// The download's resolver would not give an address to download from:
+    /// the debrid service refused the link.
+    #[error(transparent)]
+    Unresolved(#[from] Refused),
     /// The finished file could not be moved into the folder with
     /// administrator rights; it waits at `file`. `refused` is a No to the
     /// UAC prompt, else the helper failed and `why` says how.
@@ -294,6 +295,7 @@ impl EngineError {
                 | EngineError::NameTaken { .. }
                 | EngineError::NeedsAdmin(_)
                 | EngineError::NotMoved { .. }
+                | EngineError::Unresolved(_)
         )
     }
 }
@@ -2789,9 +2791,13 @@ mod tests {
             ];
             let asked = Arc::new(Mutex::new(Vec::new()));
             let (seen, to) = (Arc::clone(&asked), direct.clone());
-            req.resolve = Some(Arc::new(move |url: &str| {
-                seen.lock().unwrap().push(url.to_string());
-                Ok(Some(Resolved { url: to.clone(), filename: Some("unlocked.zip".into()) }))
+            req.resolve = Some(Arc::new(move |url: &Address| {
+                seen.lock().unwrap().push(url.as_str().to_string());
+                Ok(Some(Unrestricted {
+                    address: Address::parse(&to).unwrap(),
+                    filename: Some("unlocked.zip".into()),
+                    size: None,
+                }))
             }));
             let (tx, rx) = mpsc::channel();
             let tx = Mutex::new(tx);
@@ -2817,10 +2823,16 @@ mod tests {
 
         #[test]
         fn a_resolver_that_refuses_fails_the_download_with_its_words() {
+            use udm_domain::debrid::{DebridError, DebridService};
             let dir = temp_dir("refused");
             let mut req = request("https://files.example/abc.html", &dir, FileExists::Rename);
-            req.resolve = Some(Arc::new(|_: &str| Err("Real-Debrid could not unlock this link: no.".to_string())));
-            assert_eq!(download_err(req), "Real-Debrid could not unlock this link: no.");
+            req.resolve = Some(Arc::new(|_: &Address| {
+                Err(Refused { service: DebridService::RealDebrid, error: DebridError::LinkDead })
+            }));
+            assert_eq!(
+                download_err(req),
+                "Real-Debrid could not unlock this link: the file is not available on the host."
+            );
             fs::remove_dir_all(&dir).ok();
         }
 

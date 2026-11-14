@@ -13,7 +13,9 @@
   const e = $derived(editing.draft!.extras);
   const d = $derived(view.debrid);
   const chosen = $derived(d.services.find((s) => s.service === e.debridService));
-  const stored = $derived(d.keyStored && !e.debridForget);
+  // A key is stored for one service, and goes to no other.
+  const keyFor = $derived(e.debridForget ? undefined : d.services.find((s) => s.service === d.keyService));
+  const stored = $derived(keyFor !== undefined && keyFor.service === e.debridService);
   let error = $state('');
 
   async function check() {
@@ -54,8 +56,10 @@
     />
   </div>
   {#if chosen}<p class="opt-note">{t('Find the key at {page}', { page: chosen.keyPage })}</p>{/if}
-  <p class="opt-note">{stored ? t('A key is stored.') : t('No key is stored.')}</p>
-  {#if d.keyStored}
+  <p class="opt-note">
+    {stored ? t('A key is stored.') : keyFor ? t('The stored key is for {service}. Type a key for this service.', { service: keyFor.name }) : t('No key is stored.')}
+  </p>
+  {#if d.keyService}
     <label class="check opt-indent"><input type="checkbox" bind:checked={e.debridForget} />{t('Remove the stored key when saving')}</label>
   {/if}
   <div class="row">

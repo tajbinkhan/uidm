@@ -570,6 +570,13 @@ pub mod text {
             E::HostNotSupported => lang.tr("The service does not support this host.").to_string(),
             E::LinkDead => lang.tr("The file is not available on the host.").to_string(),
             E::Limit => lang.tr("A limit of the account or the host was reached. Try again later.").to_string(),
+            E::IpNotAllowed => lang
+                .tr("The service does not allow this computer's IP address. A VPN or a proxy is often the reason.")
+                .to_string(),
+            E::HostUnavailable => lang.tr("The file host is unavailable for now. Try again later.").to_string(),
+            E::KeyForOther(other) => {
+                trf!(lang, "The stored key is for {service}. Type a key for this service.", service = other.name())
+            }
             E::Service(said) => trf!(lang, "The service said: {message}", message = said),
             E::Network(why) => trf!(lang, "Could not reach the service: {why}", why = why),
         }

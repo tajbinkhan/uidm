@@ -1026,5 +1026,10 @@
   "No key is stored.": "Aucune clé n'est enregistrée.",
   "Remove the stored key when saving": "Supprimer la clé enregistrée à l'enregistrement",
   "Checking…": "Vérification…",
-  "Check account": "Vérifier le compte"
+  "Check account": "Vérifier le compte",
+  "UDM's background service did not answer. Try again.": "Le service d'arrière-plan d'UDM n'a pas répondu. Réessayez.",
+  "{service}: {error}": "{service} : {error}",
+  "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Le service n'accepte pas l'adresse IP de cet ordinateur. Un VPN ou un proxy en est souvent la cause.",
+  "The file host is unavailable for now. Try again later.": "L'hébergeur de fichiers est indisponible pour le moment. Réessayez plus tard.",
+  "The stored key is for {service}. Type a key for this service.": "La clé enregistrée est celle de {service}. Saisissez une clé pour ce service."
 }

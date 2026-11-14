@@ -15,7 +15,7 @@ use udm_domain::ports::{ControlError, SettingsError};
 use udm_domain::queue::QueueError;
 use udm_domain::update::UpdateError;
 
-use crate::protocol::{Incoming, NewPackage, Outgoing, Secret};
+use crate::protocol::{Incoming, NewPackage, Outgoing, Secret, WireKey};
 use udm_domain::id::PackageId;
 use udm_domain::package::{Packaging, Password};
 
@@ -88,7 +88,8 @@ pub fn incoming(command: Command) -> Incoming {
         Command::CheckDebrid { service, key } => {
             Incoming::CheckDebrid { service, key: key.map(|k| Secret(k.expose().to_string())) }
         }
-        Command::SetDebridKey { key } => Incoming::SetDebridKey { key: key.map(|k| Secret(k.expose().to_string())) },
+        Command::SetDebridKey { service, key } => Incoming::SetDebridKey { service, key: WireKey(key) },
+        Command::RemoveDebridKey => Incoming::RemoveDebridKey,
     }
 }
 
@@ -161,7 +162,8 @@ pub fn command(msg: Incoming) -> Command {
         Incoming::CheckDebrid { service, key } => {
             Command::CheckDebrid { service, key: key.and_then(|Secret(k)| DebridKey::new(&k)) }
         }
-        Incoming::SetDebridKey { key } => Command::SetDebridKey { key: key.and_then(|Secret(k)| DebridKey::new(&k)) },
+        Incoming::SetDebridKey { service, key: WireKey(key) } => Command::SetDebridKey { service, key },
+        Incoming::RemoveDebridKey => Command::RemoveDebridKey,
     }
 }
 
@@ -589,12 +591,19 @@ mod tests {
         assert!(matches!(command(check), Command::CheckDebrid { key: Some(k), .. } if k.expose() == "KEY123"));
         let stored = incoming(Command::CheckDebrid { service: DebridService::Premiumize, key: None });
         assert_eq!(json(&stored), serde_json::json!({"op": "check_debrid", "service": "premiumize"}));
-        let set = incoming(Command::SetDebridKey { key });
-        assert_eq!(json(&set), serde_json::json!({"op": "set_debrid_key", "key": "KEY123"}));
-        let clear: Incoming = serde_json::from_str(r#"{"op":"set_debrid_key"}"#).unwrap();
-        assert!(matches!(command(clear), Command::SetDebridKey { key: None }));
-        let blank: Incoming = serde_json::from_str(r#"{"op":"set_debrid_key","key":"  "}"#).unwrap();
-        assert!(matches!(command(blank), Command::SetDebridKey { key: None }), "a blank key is none");
+        let set = incoming(Command::SetDebridKey { service: DebridService::AllDebrid, key: key.unwrap() });
+        assert_eq!(json(&set), serde_json::json!({"op": "set_debrid_key", "service": "all_debrid", "key": "KEY123"}));
+        assert!(!format!("{set:?}").contains("KEY123"), "{set:?}");
+        assert!(
+            matches!(command(set), Command::SetDebridKey { service: DebridService::AllDebrid, key } if key.expose() == "KEY123")
+        );
+        let remove = incoming(Command::RemoveDebridKey);
+        assert_eq!(json(&remove), serde_json::json!({"op": "remove_debrid_key"}));
+        assert!(matches!(command(remove), Command::RemoveDebridKey));
+        let blank = r#"{"op":"set_debrid_key","service":"real_debrid","key":"  "}"#;
+        assert!(serde_json::from_str::<Incoming>(blank).is_err(), "a blank key never means remove");
+        let missing = r#"{"op":"set_debrid_key","service":"real_debrid"}"#;
+        assert!(serde_json::from_str::<Incoming>(missing).is_err());
 
         for outcome in [
             Ok(DebridAccount { username: Some("ann".into()), premium: true, premium_until: Some(9) }),

@@ -1026,5 +1026,10 @@
   "No key is stored.": "Kayıtlı anahtar yok.",
   "Remove the stored key when saving": "Kaydederken kayıtlı anahtarı kaldır",
   "Checking…": "Denetleniyor…",
-  "Check account": "Hesabı denetle"
+  "Check account": "Hesabı denetle",
+  "UDM's background service did not answer. Try again.": "UDM arka plan hizmeti yanıt vermedi. Yeniden deneyin.",
+  "{service}: {error}": "{service}: {error}",
+  "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Hizmet bu bilgisayarın IP adresine izin vermiyor. Bunun nedeni çoğu zaman bir VPN veya proxy'dir.",
+  "The file host is unavailable for now. Try again later.": "Dosya barındırıcısı şu anda kullanılamıyor. Daha sonra yeniden deneyin.",
+  "The stored key is for {service}. Type a key for this service.": "Kayıtlı anahtar {service} için. Bu hizmet için bir anahtar yazın."
 }

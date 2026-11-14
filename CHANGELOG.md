@@ -39,7 +39,8 @@ to a host the service supports is unlocked into a fast direct link through the s
 API each time the download starts, so a resumed download or a **New link** gets a fresh one when
 the old one expires. If the service refuses a link, the download fails and says why instead of
 falling back to the slow host. **Check account** shows whether the key works and until when the
-account is premium. The API key is stored sealed like the proxies' passwords, never in
+account is premium. The API key is stored sealed like the proxies' passwords, together with the
+service it is for, so it never goes to another service, and never in
 `settings.json`, the window or the logs; [Debrid accounts](docs/debrid.md) says which links go to
 the service.
 

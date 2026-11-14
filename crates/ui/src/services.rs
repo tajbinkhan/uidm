@@ -6,7 +6,7 @@
 use udm_application::daemon::{Event, Failure};
 use udm_application::themes::ThemesRead;
 use udm_application::window::BrowserSlot;
-use udm_domain::debrid::DebridCheck;
+use udm_domain::debrid::{DebridCheck, DebridService};
 use udm_domain::pairing::RemoteState;
 use udm_domain::settings::{AddedBrowser, Theme};
 use udm_domain::tools::{Tool, ToolState};
@@ -55,10 +55,22 @@ pub struct Services {
     pub browser_note: Option<Banner>,
     /// The theme files, and the system's contrast colors.
     pub themes: ThemesRead,
-    /// Check account is waiting for the debrid service.
-    pub debrid_checking: bool,
-    /// What the last check of the debrid account said.
-    pub debrid: Option<DebridCheck>,
+    /// Check account, and what it found.
+    pub debrid: DebridState,
+}
+
+/// Where Options' Check account stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum DebridState {
+    /// Not asked since Options opened.
+    #[default]
+    Idle,
+    /// Waiting for the daemon's answer about this service's account.
+    Checking(DebridService),
+    /// What the service said.
+    Checked(DebridCheck),
+    /// The daemon went, or answered with an error, before it answered.
+    Unanswered,
 }
 
 /// Take what the daemon said of the tools and of remote control.
@@ -73,9 +85,10 @@ pub fn take(state: &mut AppState, event: &Event) {
             }
         }
         Event::Remote { state } => s.remote = Some(state.clone()),
-        Event::Debrid { check } => {
-            s.debrid_checking = false;
-            s.debrid = Some(check.clone());
+        Event::Debrid { check } => s.debrid = DebridState::Checked(check.clone()),
+        // A check the daemon will not answer does not wait for ever.
+        Event::Lost(_) | Event::Error { .. } if matches!(s.debrid, DebridState::Checking(_)) => {
+            s.debrid = DebridState::Unanswered
         }
         _ => {}
     }
@@ -135,7 +148,14 @@ fn tool_rows(lang: &'static Language, s: &Services) -> Vec<ToolRow> {
 /// What the last check of the debrid account said.
 fn debrid_note(ctx: &Ctx, s: &Services) -> Option<Banner> {
     let lang = ctx.lang;
-    let check = s.debrid.as_ref()?;
+    let check = match &s.debrid {
+        DebridState::Checked(check) => check,
+        DebridState::Unanswered => {
+            let text = lang.tr("UDM's background service did not answer. Try again.").to_string();
+            return Some(Banner { text, error: true });
+        }
+        DebridState::Idle | DebridState::Checking(_) => return None,
+    };
     let service = check.service.name();
     Some(match &check.outcome {
         Ok(account) => {
@@ -150,7 +170,13 @@ fn debrid_note(ctx: &Ctx, s: &Services) -> Option<Banner> {
             };
             Banner { text, error: !account.premium }
         }
-        Err(e) => Banner { text: format!("{service}: {}", crate::errors::text::debrid(lang, e)), error: true },
+        Err(e) => Banner {
+            text: fill(
+                lang.tr("{service}: {error}"),
+                &[("service", service), ("error", &crate::errors::text::debrid(lang, e))],
+            ),
+            error: true,
+        },
     })
 }
 
@@ -273,7 +299,7 @@ pub fn fill_view(ctx: &Ctx, state: &AppState, view: &mut OptionsView) {
     let s = &state.services;
     view.tools = tool_rows(lang, s);
     view.tool_note = tool_note(lang, s);
-    view.debrid.checking = s.debrid_checking;
+    view.debrid.checking = matches!(s.debrid, DebridState::Checking(_));
     view.debrid.check = debrid_note(ctx, s);
     view.remote = remote_view(ctx, state);
     view.browsers = s.browsers.as_ref().map(|b| browser_rows(lang, b));
@@ -338,6 +364,41 @@ mod tests {
         assert_eq!(view.tools[0].status, "Installed by UDM (2026.11.01): /t/yt-dlp");
         assert_eq!(view.tools[0].action, "Update yt-dlp");
         assert_eq!(view.tool_note.map(|n| n.text).as_deref(), Some("yt-dlp is installed."));
+    }
+
+    #[test]
+    fn check_account_never_waits_for_a_daemon_that_went() {
+        use udm_domain::debrid::{DebridError, DebridService};
+        let daemon = |s: &mut AppState, event: Event| {
+            apply(s, UiMessage::Daemon { event: Box::new(event), at: Instant::now(), unix: 0 })
+        };
+        let shown = |s: &AppState| {
+            let mut view = crate::options::view(ctx().lang, &udm_domain::settings::Settings::default());
+            fill_view(&ctx(), s, &mut view);
+            (view.debrid.checking, view.debrid.check.map(|b| (b.text, b.error)))
+        };
+        let mut s = AppState::default();
+        apply(&mut s, UiMessage::DebridChecking(DebridService::AllDebrid));
+        assert_eq!(shown(&s), (true, None));
+        daemon(&mut s, Event::Lost(udm_application::daemon::Lost::Closed));
+        let unanswered = "UDM's background service did not answer. Try again.".to_string();
+        assert_eq!(shown(&s), (false, Some((unanswered.clone(), true))));
+        apply(&mut s, UiMessage::DebridChecking(DebridService::AllDebrid));
+        daemon(&mut s, Event::Error { error: Failure::InvalidMessage("expected value".into()) });
+        assert_eq!(shown(&s), (false, Some((unanswered, true))));
+        let check = DebridCheck {
+            service: DebridService::AllDebrid,
+            outcome: Err(DebridError::KeyForOther(DebridService::RealDebrid)),
+        };
+        daemon(&mut s, Event::Debrid { check });
+        let refused = "AllDebrid: The stored key is for Real-Debrid. Type a key for this service.".to_string();
+        assert_eq!(shown(&s), (false, Some((refused, true))));
+        // An error that is not about a check leaves the answer alone.
+        daemon(&mut s, Event::Error { error: Failure::Other("x".into()) });
+        assert!(shown(&s).1.is_some());
+        // Options opened again starts without the old answer.
+        apply(&mut s, UiMessage::OptionsOpened);
+        assert_eq!(shown(&s), (false, None));
     }
 
     #[test]

@@ -1026,5 +1026,10 @@
   "No key is stored.": "Tidak ada kunci yang tersimpan.",
   "Remove the stored key when saving": "Hapus kunci tersimpan saat menyimpan",
   "Checking…": "Memeriksa…",
-  "Check account": "Periksa akun"
+  "Check account": "Periksa akun",
+  "UDM's background service did not answer. Try again.": "Layanan latar belakang UDM tidak menjawab. Coba lagi.",
+  "{service}: {error}": "{service}: {error}",
+  "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Layanan tidak mengizinkan alamat IP komputer ini. VPN atau proxy sering menjadi penyebabnya.",
+  "The file host is unavailable for now. Try again later.": "Host berkas sedang tidak tersedia. Coba lagi nanti.",
+  "The stored key is for {service}. Type a key for this service.": "Kunci yang tersimpan milik {service}. Ketik kunci untuk layanan ini."
 }

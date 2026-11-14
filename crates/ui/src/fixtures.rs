@@ -171,7 +171,7 @@ fn fixtures() -> serde_json::Value {
         settings.debrid = udm_domain::debrid::DebridSettings {
             enabled: true,
             service: Some(udm_domain::debrid::DebridService::RealDebrid),
-            key_stored: true,
+            key_service: Some(udm_domain::debrid::DebridService::RealDebrid),
         };
     }
     let tool = |tool, path: Option<&str>, installed: Option<&str>| udm_domain::tools::ToolState {

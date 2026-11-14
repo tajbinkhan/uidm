@@ -1026,5 +1026,10 @@
   "No key is stored.": "キーは保存されていません。",
   "Remove the stored key when saving": "保存時に保存済みのキーを削除する",
   "Checking…": "確認中…",
-  "Check account": "アカウントを確認"
+  "Check account": "アカウントを確認",
+  "UDM's background service did not answer. Try again.": "UDM のバックグラウンドサービスが応答しませんでした。もう一度お試しください。",
+  "{service}: {error}": "{service}: {error}",
+  "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "サービスはこのコンピューターの IP アドレスを許可していません。VPN やプロキシが原因であることがよくあります。",
+  "The file host is unavailable for now. Try again later.": "ファイルホストは現在利用できません。後でもう一度お試しください。",
+  "The stored key is for {service}. Type a key for this service.": "保存されているキーは {service} のものです。このサービスのキーを入力してください。"
 }

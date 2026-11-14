@@ -103,6 +103,9 @@ describe("Options' own pages", () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Check account' }));
     expect(sent(calls, 'check_debrid').at(-1)?.args).toEqual({ service: 'realDebrid', key: '' });
     await fireEvent.click(screen.getByLabelText('AllDebrid'));
+    // Real-Debrid's key is not AllDebrid's: checking needs a key typed.
+    expect(screen.getByText('The stored key is for Real-Debrid. Type a key for this service.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Check account' }) as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.input(key, { target: { value: 'NEWKEY' } });
     await fireEvent.click(screen.getByRole('button', { name: 'Check account' }));
     expect(sent(calls, 'check_debrid').at(-1)?.args).toEqual({ service: 'allDebrid', key: 'NEWKEY' });

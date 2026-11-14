@@ -81,7 +81,8 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "cancel_pairing" }
 { "op": "remove_device", "id": 2 }
 { "op": "check_debrid", "service": "real_debrid", "key": "..." }
-{ "op": "set_debrid_key", "key": "..." }
+{ "op": "set_debrid_key", "service": "real_debrid", "key": "..." }
+{ "op": "remove_debrid_key" }
 ```
 
 Daemon to clients:
@@ -157,15 +158,19 @@ paired devices (never their secrets), and the pairing code shown, if any.
 `start_pairing` is refused with `error` while the page is not served. The
 phone page itself speaks HTTPS, not these messages.
 
-`check_debrid` and `set_debrid_key` are Options' Debrid page (see [Debrid
-accounts](debrid.md)). `check_debrid` asks the service about the account with
-the key given, or the stored key without one, and is answered with `debrid`:
-the account, or `{"Err": {"kind": "bad_key"}}` and the other kinds
-(`not_premium`, `host_not_supported`, `link_dead`, `limit`, `service` and
-`network` with the `message`). `set_debrid_key` stores the key, or removes it
-without one, and the daemon sends every client `settings`, whose `debrid`
-says whether a key is stored. The key goes no further than the daemon: no
-message from it carries the key.
+`check_debrid`, `set_debrid_key` and `remove_debrid_key` are Options' Debrid
+page (see [Debrid accounts](debrid.md)). `check_debrid` asks the service about
+the account with the key given, or the key stored for that service without
+one, and is answered with `debrid`: the account, or `{"Err": {"kind":
+"bad_key"}}` and the other kinds (`not_premium`, `host_not_supported`,
+`link_dead`, `limit`, `ip_not_allowed`, `host_unavailable`, `key_for_other`
+with the service the stored key is for, and `service` and `network` with the
+`message`). `set_debrid_key` stores the key for `service` in place of any
+other (a blank key is not a message the daemon reads), `remove_debrid_key`
+removes it, and the daemon then sends every client `settings`, whose
+`debrid.key_service` names the service a key is stored for. The key goes no
+further than the daemon: no message from it carries the key, and a key is
+only ever sent to its own service.
 
 `ack`, `downloads`, `remote`, `debrid` and `error` go only to the client that asked, as does
 `settings` when it answers `get_settings`; everything else goes to every

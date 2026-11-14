@@ -1026,5 +1026,10 @@
   "No key is stored.": "Chưa lưu khóa nào.",
   "Remove the stored key when saving": "Xóa khóa đã lưu khi lưu",
   "Checking…": "Đang kiểm tra…",
-  "Check account": "Kiểm tra tài khoản"
+  "Check account": "Kiểm tra tài khoản",
+  "UDM's background service did not answer. Try again.": "Dịch vụ nền của UDM không phản hồi. Hãy thử lại.",
+  "{service}: {error}": "{service}: {error}",
+  "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "Dịch vụ không cho phép địa chỉ IP của máy tính này. Nguyên nhân thường là VPN hoặc proxy.",
+  "The file host is unavailable for now. Try again later.": "Máy chủ tệp hiện không khả dụng. Hãy thử lại sau.",
+  "The stored key is for {service}. Type a key for this service.": "Khóa đã lưu là của {service}. Hãy nhập khóa cho dịch vụ này."
 }

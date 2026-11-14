@@ -294,12 +294,16 @@ pub enum Command {
         service: DebridService,
         key: Option<DebridKey>,
     },
-    /// Store the debrid account's API key, or remove it with `None`; the
-    /// settings then say whether one is stored. Answered with `Settings`
-    /// to every client, or `Error`.
+    /// Store the debrid account's API key for `service`, in place of any
+    /// other; the settings then say which service a key is stored for.
+    /// Answered with `Settings` to every client, or `Error`.
     SetDebridKey {
-        key: Option<DebridKey>,
+        service: DebridService,
+        key: DebridKey,
     },
+    /// Remove the stored debrid key. Answered with `Settings` to every
+    /// client, or `Error`.
+    RemoveDebridKey,
 }
 
 /// Why the connection to the daemon went.

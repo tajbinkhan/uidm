@@ -2328,7 +2328,7 @@
             "text": "The key works: ann, premium until 2023-12-14 22:13."
           },
           "checking": false,
-          "keyStored": true,
+          "keyService": "realDebrid",
           "services": [
             {
               "keyPage": "https://real-debrid.com/apitoken",

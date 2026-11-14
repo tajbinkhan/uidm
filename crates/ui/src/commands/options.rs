@@ -95,12 +95,10 @@ pub async fn check_debrid(
     service: DebridChoice,
     key: String,
 ) -> Result<(), InvokeError> {
-    let command = Command::CheckDebrid {
-        service: crate::options::debrid_service(service),
-        key: udm_domain::debrid::DebridKey::new(&key),
-    };
+    let service = crate::options::debrid_service(service);
+    let command = Command::CheckDebrid { service, key: udm_domain::debrid::DebridKey::new(&key) };
     post(&outbox, &current, Inbox::Send { command: Box::new(command), reply: None })?;
-    post(&outbox, &current, Inbox::Ui(UiMessage::DebridChecking))
+    post(&outbox, &current, Inbox::Ui(UiMessage::DebridChecking(service)))
 }
 
 /// Ask how remote control stands, as Options' Remote page does while it

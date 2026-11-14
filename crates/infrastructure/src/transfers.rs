@@ -390,7 +390,9 @@ impl Transfers {
         if entry.parts.is_some() || download.media.is_some() || download.body.is_some() {
             return Err(TransferError::NotCheckable);
         }
-        let req = self.request_for(download);
+        // The file a debrid account unlocks the link into, as the download
+        // got it, or the host's page would always look changed.
+        let req = self.resolved_request(download).map_err(|e| TransferError::Probe(e.to_string()))?;
         let found =
             engine::inspect(&req.url, None, &req.headers, &req.net).map_err(|e| TransferError::Probe(e.to_string()))?;
         Ok(Validator { size: found.total, etag: found.etag, last_modified: found.last_modified })
@@ -606,8 +608,8 @@ impl Transfers {
                     .map_err(|source| SaveError::LoginPassword { site: l.site.clone(), source })?;
             }
         }
-        // Only the daemon knows whether a debrid key is stored.
-        new.debrid.key_stored = crate::debrid::key_stored();
+        // Only the daemon knows which service a debrid key is stored for.
+        new.debrid.key_service = crate::debrid::stored_service();
         let old = self.settings.lock().site_logins.clone();
         for gone in old.iter().filter(|o| !new.site_logins.iter().any(|n| n.site.eq_ignore_ascii_case(&o.site))) {
             if let Err(e) = net::delete_login_password(&gone.site) {

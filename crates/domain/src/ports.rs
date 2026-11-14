@@ -818,12 +818,24 @@ pub trait Debrid: Send + Sync {
     ) -> Result<crate::debrid::DebridAccount, crate::debrid::DebridError>;
 }
 
-/// Where the debrid account's API key is kept: sealed, beside the settings.
+/// Where the debrid account's API key is kept: sealed, beside the settings,
+/// together with the service it is for, so it only ever goes to that one.
 pub trait DebridKeys: Send + Sync {
-    /// The stored key, if there is one.
-    fn key(&self) -> Option<crate::debrid::DebridKey>;
+    /// The service a key is stored for, if any.
+    fn stored(&self) -> Option<crate::debrid::DebridService>;
 
-    /// Store `key`, or remove the stored one with `None`. A key that cannot
-    /// be stored fails as `SettingsError::Refused`, with why.
-    fn set_key(&self, key: Option<&crate::debrid::DebridKey>) -> Result<(), SettingsError>;
+    /// The key stored for `service`; `None` when none is, or the stored key
+    /// is another service's.
+    fn key(&self, service: crate::debrid::DebridService) -> Option<crate::debrid::DebridKey>;
+
+    /// Store `key` for `service`, in place of any stored key. A key that
+    /// cannot be stored fails as `SettingsError::Refused`, with why.
+    fn set_key(
+        &self,
+        service: crate::debrid::DebridService,
+        key: &crate::debrid::DebridKey,
+    ) -> Result<(), SettingsError>;
+
+    /// Remove the stored key; none stored is not an error.
+    fn remove_key(&self) -> Result<(), SettingsError>;
 }

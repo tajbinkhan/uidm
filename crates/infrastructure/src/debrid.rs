@@ -100,6 +100,8 @@ impl DebridApi {
             Ok(json) => Ok((status, json)),
             // A 204 or an empty answer reads as nothing said.
             Err(_) if answer.is_empty() && status < 400 => Ok((status, Value::Null)),
+            // A gateway's or a load balancer's error page: the API is down.
+            Err(_) if status >= 500 => Err(DebridError::Network(format!("the service answered HTTP {status}"))),
             Err(_) => Err(DebridError::Service(format!("an answer that is not the API's (HTTP {status})"))),
         }
     }
@@ -154,7 +156,9 @@ impl DebridApi {
             _ => (Self::address(&self.endpoints.premiumize, path, &all), None),
         };
         let (status, json) = self.send(Call { method, url, bearer: None, form })?;
-        if json.get("status").and_then(Value::as_str) != Some("success") {
+        // Some answers (`services/list`) carry no status; only an error says
+        // so.
+        if json.get("status").and_then(Value::as_str) == Some("error") || status >= 400 {
             return Err(premiumize_error(status, &json));
         }
         Ok(json)
@@ -186,10 +190,27 @@ fn direct(link: Option<&str>) -> Result<Address, DebridError> {
         .ok_or_else(|| DebridError::Service("no download link in the answer".into()))
 }
 
-/// Real-Debrid's errors: `{"error": "...", "error_code": n}`.
+/// Real-Debrid's errors: `{"error": "...", "error_code": n}`. The `error`
+/// is an identifier such as `hoster_in_maintenance`; the ones a user can
+/// meet get words of their own.
 fn real_debrid_error(status: u16, json: &Value) -> DebridError {
-    let message = text(json, "error").unwrap_or_else(|| format!("HTTP {status}"));
+    let message = match text(json, "error") {
+        Some(id) => match id.as_str() {
+            "internal_error" => "the service had an internal error".to_string(),
+            "bad_parameter_value" | "missing_parameter" => "the service did not take the link".to_string(),
+            "service_unavailable" => "the service is unavailable for now".to_string(),
+            "action_already_done" => "the service did this already".to_string(),
+            _ => id.replace('_', " "),
+        },
+        None => format!("HTTP {status}"),
+    };
     match json.get("error_code").and_then(Value::as_i64) {
+        // IP address not allowed: a VPN, a proxy or a data center.
+        Some(22) => DebridError::IpNotAllowed,
+        // Hoster in maintenance, or out of order for now.
+        Some(17 | 19) => DebridError::HostUnavailable,
+        // Service unavailable.
+        Some(25) => DebridError::Network("the service is unavailable for now".into()),
         // Bad token, invalid login or password, account locked or not
         // activated.
         Some(8 | 12 | 13 | 14 | 15) => DebridError::BadKey,
@@ -223,12 +244,14 @@ fn all_debrid_error(status: u16, json: &Value) -> DebridError {
         | "AUTH_BAD_AGENT" => DebridError::BadKey,
         "MUST_BE_PREMIUM" | "FREE_TRIAL_LIMIT_REACHED" | "LINK_HOST_NOT_AVAILABLE_FREE" => DebridError::NotPremium,
         "LINK_HOST_NOT_SUPPORTED" | "LINK_NOT_SUPPORTED" => DebridError::HostNotSupported,
-        "LINK_DOWN" | "LINK_IS_MISSING" | "LINK_ERROR" | "LINK_PASS_PROTECTED" => DebridError::LinkDead,
-        "LINK_HOST_LIMIT_REACHED"
-        | "LINK_TOO_MANY_DOWNLOADS"
-        | "LINK_HOST_FULL"
-        | "LINK_LIMIT_REACHED"
-        | "LINK_TEMPORARY_UNAVAILABLE" => DebridError::Limit,
+        "LINK_DOWN" | "LINK_IS_MISSING" | "LINK_ERROR" => DebridError::LinkDead,
+        "LINK_PASS_PROTECTED" => {
+            DebridError::Service("the link is password-protected, which the service cannot unlock".into())
+        }
+        "LINK_HOST_LIMIT_REACHED" | "LINK_TOO_MANY_DOWNLOADS" | "LINK_HOST_FULL" | "LINK_LIMIT_REACHED" => {
+            DebridError::Limit
+        }
+        "LINK_TEMPORARY_UNAVAILABLE" | "LINK_HOST_UNAVAILABLE" => DebridError::HostUnavailable,
         _ if status == 401 => DebridError::BadKey,
         _ => DebridError::Service(message),
     }
@@ -240,14 +263,18 @@ fn premiumize_error(status: u16, json: &Value) -> DebridError {
     let message = text(json, "message").unwrap_or_else(|| format!("HTTP {status}"));
     let lower = message.to_ascii_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
-    if status == 401 || has(&["not logged in", "apikey", "api key", "auth", "customer_id"]) {
+    // "Fair use limit" before "premium": a premium account's limit names
+    // its premium.
+    if status == 401
+        || has(&["not logged in", "invalid api key", "invalid apikey", "unauthorized", "authentication failed"])
+    {
         DebridError::BadKey
+    } else if has(&["limit", "fair use", "too many"]) {
+        DebridError::Limit
     } else if has(&["premium"]) {
         DebridError::NotPremium
     } else if has(&["not supported", "unsupported"]) {
         DebridError::HostNotSupported
-    } else if has(&["limit", "fair use", "too many"]) {
-        DebridError::Limit
     } else if has(&["not found", "offline", "removed", "deleted", "does not exist"]) {
         DebridError::LinkDead
     } else {
@@ -381,14 +408,22 @@ pub fn key_path() -> io::Result<PathBuf> {
     Ok(crate::history::history_path()?.with_file_name("debrid.bin"))
 }
 
-/// Whether a debrid key is stored.
-pub fn key_stored() -> bool {
-    key_path().is_ok_and(|p| p.is_file())
+/// The service a debrid key is stored for, if any.
+pub fn stored_service() -> Option<DebridService> {
+    KeyFile::new().stored()
 }
 
-/// The account's key, sealed in a file of its own.
+/// The account's key and the service it is for, sealed together in a file
+/// of their own, so a key is only ever sent to its own service.
 pub struct KeyFile {
     path: Option<PathBuf>,
+}
+
+/// What `KeyFile` seals.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Sealed {
+    service: DebridService,
+    key: String,
 }
 
 impl KeyFile {
@@ -401,6 +436,19 @@ impl KeyFile {
     pub fn at(path: PathBuf) -> Self {
         KeyFile { path: Some(path) }
     }
+
+    /// The service and key stored. A file that does not open, or an older
+    /// one without its service, holds none.
+    fn read(&self) -> Option<(DebridService, DebridKey)> {
+        let sealed = fs::read(self.path.as_ref()?).ok()?;
+        let plain = crate::dpapi::unprotect(&sealed).ok()?;
+        let read: Sealed = serde_json::from_slice(&plain).ok()?;
+        Some((read.service, DebridKey::new(&read.key)?))
+    }
+
+    fn path(&self) -> Result<&PathBuf, SettingsError> {
+        self.path.as_ref().ok_or_else(|| refused(io::Error::other("no data folder")))
+    }
 }
 
 impl Default for KeyFile {
@@ -409,28 +457,34 @@ impl Default for KeyFile {
     }
 }
 
+fn refused(e: io::Error) -> SettingsError {
+    SettingsError::Refused(format!("could not store the debrid key: {e}"))
+}
+
 impl DebridKeys for KeyFile {
-    fn key(&self) -> Option<DebridKey> {
-        let sealed = fs::read(self.path.as_ref()?).ok()?;
-        let plain = crate::dpapi::unprotect(&sealed).ok()?;
-        DebridKey::new(&String::from_utf8(plain).ok()?)
+    fn stored(&self) -> Option<DebridService> {
+        self.read().map(|(service, _)| service)
     }
 
-    fn set_key(&self, key: Option<&DebridKey>) -> Result<(), SettingsError> {
-        let refused = |e: io::Error| SettingsError::Refused(format!("could not store the debrid key: {e}"));
-        let path = self.path.as_ref().ok_or_else(|| refused(io::Error::other("no data folder")))?;
-        match key {
-            Some(key) => {
-                let sealed = crate::dpapi::protect(key.expose().as_bytes()).map_err(refused)?;
-                if let Some(dir) = path.parent() {
-                    fs::create_dir_all(dir).map_err(refused)?;
-                }
-                crate::settings::write_atomic(path, &sealed).map_err(refused)
-            }
-            None => match fs::remove_file(path) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => Err(refused(e)),
-                _ => Ok(()),
-            },
+    fn key(&self, service: DebridService) -> Option<DebridKey> {
+        self.read().filter(|(stored, _)| *stored == service).map(|(_, key)| key)
+    }
+
+    fn set_key(&self, service: DebridService, key: &DebridKey) -> Result<(), SettingsError> {
+        let path = self.path()?;
+        let plain = serde_json::to_vec(&Sealed { service, key: key.expose().to_string() })
+            .map_err(|e| refused(io::Error::other(e)))?;
+        let sealed = crate::dpapi::protect(&plain).map_err(refused)?;
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(refused)?;
+        }
+        crate::settings::write_atomic(path, &sealed).map_err(refused)
+    }
+
+    fn remove_key(&self) -> Result<(), SettingsError> {
+        match fs::remove_file(self.path()?) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(refused(e)),
+            _ => Ok(()),
         }
     }
 }
@@ -564,10 +618,13 @@ mod tests {
             (403, r#"{"error":"permission_denied","error_code":9}"#, DebridError::NotPremium),
             (503, r#"{"error":"hoster_unsupported","error_code":16}"#, DebridError::HostNotSupported),
             (503, r#"{"error":"traffic_exhausted","error_code":23}"#, DebridError::Limit),
+            (503, r#"{"error":"hoster_in_maintenance","error_code":17}"#, DebridError::HostUnavailable),
+            (403, r#"{"error":"ip_not_allowed","error_code":22}"#, DebridError::IpNotAllowed),
+            (503, r#"{"error":"some_new_thing","error_code":99}"#, DebridError::Service("some new thing".into())),
             (
-                503,
-                r#"{"error":"hoster_in_maintenance","error_code":17}"#,
-                DebridError::Service("hoster_in_maintenance".into()),
+                500,
+                r#"{"error":"internal_error","error_code":-1}"#,
+                DebridError::Service("the service had an internal error".into()),
             ),
             (401, "{}", DebridError::BadKey),
         ];
@@ -635,7 +692,11 @@ mod tests {
         assert_eq!(all_debrid_error(200, &error("MUST_BE_PREMIUM")), DebridError::NotPremium);
         assert_eq!(all_debrid_error(200, &error("LINK_HOST_NOT_SUPPORTED")), DebridError::HostNotSupported);
         assert_eq!(all_debrid_error(200, &error("LINK_HOST_LIMIT_REACHED")), DebridError::Limit);
-        assert_eq!(all_debrid_error(200, &error("LINK_HOST_UNAVAILABLE")), DebridError::Service("m".into()));
+        assert_eq!(all_debrid_error(200, &error("LINK_HOST_UNAVAILABLE")), DebridError::HostUnavailable);
+        assert!(
+            matches!(all_debrid_error(200, &error("LINK_PASS_PROTECTED")), DebridError::Service(m) if m.contains("password"))
+        );
+        assert_eq!(all_debrid_error(200, &error("SOMETHING_NEW")), DebridError::Service("m".into()));
     }
 
     #[test]
@@ -645,7 +706,8 @@ mod tests {
             match path {
                 "/api/services/list" => (
                     200,
-                    r#"{"status":"success","directdl":["rapidgator.net","nitroflare.com"],"cache":["x.com"],"aliases":{"rapidgator.net":["rg.to"]}}"#
+                    // As documented: no status.
+                    r#"{"directdl":["rapidgator.net","nitroflare.com"],"cache":["x.com"],"aliases":{"rapidgator.net":["rg.to"]},"regexpatterns":{},"fairusefactor":{}}"#
                         .into(),
                 ),
                 "/api/transfer/directdl" if asked.body.contains("dead") => {
@@ -687,6 +749,12 @@ mod tests {
         assert_eq!(premiumize_error(200, &error("You need a premium membership")), DebridError::NotPremium);
         assert_eq!(premiumize_error(200, &error("This hoster is not supported")), DebridError::HostNotSupported);
         assert_eq!(premiumize_error(200, &error("Fair use limit reached")), DebridError::Limit);
+        assert_eq!(premiumize_error(200, &error("Premium fair use limit reached")), DebridError::Limit);
+        assert_eq!(premiumize_error(200, &error("Invalid API key.")), DebridError::BadKey);
+        assert_eq!(
+            premiumize_error(200, &error("Host authorisation pending")),
+            DebridError::Service("Host authorisation pending".into())
+        );
         assert_eq!(premiumize_error(200, &error("Something else")), DebridError::Service("Something else".into()));
     }
 
@@ -700,6 +768,8 @@ mod tests {
         let got = api(&url).account(DebridService::Premiumize, &key());
         assert!(matches!(&got, Err(DebridError::Network(why)) if !why.contains("SECRETKEY")), "{got:?}");
         let (url, _) = stand_in(Box::new(|_| (502, "<html>bad gateway</html>".into())));
+        assert!(matches!(api(&url).account(DebridService::RealDebrid, &key()), Err(DebridError::Network(_))));
+        let (url, _) = stand_in(Box::new(|_| (200, "<html>a page</html>".into())));
         assert!(matches!(api(&url).account(DebridService::RealDebrid, &key()), Err(DebridError::Service(_))));
     }
 
@@ -708,14 +778,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("udm_debrid_key_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let file = KeyFile::at(dir.join("debrid.bin"));
-        assert!(file.key().is_none());
-        file.set_key(Some(&key())).unwrap();
+        assert!(file.key(DebridService::RealDebrid).is_none() && file.stored().is_none());
+        file.set_key(DebridService::RealDebrid, &key()).unwrap();
         let sealed = fs::read(dir.join("debrid.bin")).unwrap();
         assert!(!sealed.windows(9).any(|w| w == b"SECRETKEY"));
-        assert_eq!(file.key(), Some(key()));
-        file.set_key(None).unwrap();
-        assert!(file.key().is_none() && !dir.join("debrid.bin").exists());
-        file.set_key(None).unwrap();
+        assert_eq!(file.key(DebridService::RealDebrid), Some(key()));
+        assert_eq!(file.stored(), Some(DebridService::RealDebrid));
+        // The key is Real-Debrid's: another service never gets it.
+        assert_eq!(file.key(DebridService::AllDebrid), None);
+        assert_eq!(file.key(DebridService::Premiumize), None);
+        file.remove_key().unwrap();
+        assert!(file.stored().is_none() && !dir.join("debrid.bin").exists());
+        file.remove_key().unwrap();
+        // A file sealed with a bare key, without its service, holds none.
+        let bare = crate::dpapi::protect(b"SECRETKEY").unwrap();
+        crate::settings::write_atomic(&dir.join("debrid.bin"), &bare).unwrap();
+        assert!(file.stored().is_none() && file.key(DebridService::RealDebrid).is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 }

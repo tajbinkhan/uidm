@@ -42,6 +42,26 @@ impl std::fmt::Debug for Secret {
     }
 }
 
+/// A debrid key as a message carries it: never blank, and hidden from
+/// `Debug` like `Secret`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct WireKey(pub udm_domain::debrid::DebridKey);
+
+impl TryFrom<String> for WireKey {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        udm_domain::debrid::DebridKey::new(&text).map(WireKey).ok_or("a debrid key cannot be blank")
+    }
+}
+
+impl From<WireKey> for String {
+    fn from(key: WireKey) -> Self {
+        key.0.expose().to_string()
+    }
+}
+
 /// A request from a client (the browser via the host, or the desktop window)
 /// to the daemon.
 ///
@@ -331,12 +351,16 @@ pub enum Incoming {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<Secret>,
     },
-    /// Store the debrid account's API key, or remove it without one;
-    /// answered with `settings` to every client, or `error`. The window's.
+    /// Store the debrid account's API key for `service`, in place of any
+    /// other; answered with `settings` to every client, or `error`. A blank
+    /// key is not a message the daemon reads. The window's.
     SetDebridKey {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<Secret>,
+        service: udm_domain::debrid::DebridService,
+        key: WireKey,
     },
+    /// Remove the stored debrid key; answered with `settings` to every
+    /// client, or `error`. The window's.
+    RemoveDebridKey,
 }
 
 /// A message from the daemon to a client.

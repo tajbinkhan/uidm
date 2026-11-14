@@ -354,8 +354,9 @@ pub struct DebridServiceRow {
 #[serde(rename_all = "camelCase")]
 pub struct DebridView {
     pub services: Vec<DebridServiceRow>,
-    /// A key is stored; the key itself is never sent.
-    pub key_stored: bool,
+    /// The service a key is stored for; the key itself is never sent. A key
+    /// is stored for one service and goes to no other.
+    pub key_service: Option<DebridChoice>,
     /// Check account is waiting for the service.
     pub checking: bool,
     /// What the last check said.

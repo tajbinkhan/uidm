@@ -1026,5 +1026,10 @@
   "No key is stored.": "Nenhuma chave está salva.",
   "Remove the stored key when saving": "Remover a chave salva ao salvar",
   "Checking…": "Verificando…",
-  "Check account": "Verificar conta"
+  "Check account": "Verificar conta",
+  "UDM's background service did not answer. Try again.": "O serviço em segundo plano do UDM não respondeu. Tente novamente.",
+  "{service}: {error}": "{service}: {error}",
+  "The service does not allow this computer's IP address. A VPN or a proxy is often the reason.": "O serviço não permite o endereço IP deste computador. Uma VPN ou um proxy costuma ser a causa.",
+  "The file host is unavailable for now. Try again later.": "O servidor de arquivos está indisponível no momento. Tente novamente mais tarde.",
+  "The stored key is for {service}. Type a key for this service.": "A chave salva é do {service}. Digite uma chave para este serviço."
 }

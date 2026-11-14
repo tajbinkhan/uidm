@@ -1159,10 +1159,15 @@ impl<W: Wiring> DaemonService<W> {
         });
     }
 
-    /// Store or remove the debrid account's key (see `SetKey`); the links
-    /// and hosts kept for the old key are forgotten.
-    pub fn set_debrid_key(&self, key: Option<DebridKey>) -> Result<(), SettingsError> {
-        let done = SetKey::new(&*self.debrid_keys, &*self.transfers).run(key);
+    /// Store the debrid account's key for `service`, or remove it with
+    /// `None` (see `SetKey`); the links and hosts kept for the old key are
+    /// forgotten.
+    pub fn set_debrid_key(&self, key: Option<(DebridService, DebridKey)>) -> Result<(), SettingsError> {
+        let set = SetKey::new(&*self.debrid_keys, &*self.transfers);
+        let done = match key {
+            Some((service, key)) => set.store(service, &key),
+            None => set.remove(),
+        };
         self.links.forget();
         done
     }
@@ -2017,8 +2022,14 @@ pub fn dispatch<W: Wiring>(incoming: Command, daemon: &Arc<DaemonService<W>>, cl
             send(Event::Remote { state: daemon.remote_state() });
         }
         Command::CheckDebrid { service, key } => daemon.check_debrid(service, key, reply.clone()),
-        Command::SetDebridKey { key } => {
-            if let Err(e) = daemon.set_debrid_key(key) {
+        Command::SetDebridKey { service, key } => {
+            if let Err(e) = daemon.set_debrid_key(Some((service, key))) {
+                warn!(error = %e, "could not store the debrid key");
+                send(Event::Error { error: e.into() });
+            }
+        }
+        Command::RemoveDebridKey => {
+            if let Err(e) = daemon.set_debrid_key(None) {
                 warn!(error = %e, "could not store the debrid key");
                 send(Event::Error { error: e.into() });
             }

@@ -1120,6 +1120,7 @@ impl Actor {
                 tracing::info!(window = %label, "window subscribed");
                 // Options shows the tools, remote control and the browsers.
                 if label == Label::Options {
+                    apply(&mut self.state, UiMessage::OptionsOpened);
                     self.send(Command::ListTools);
                     self.send(Command::RemoteStatus);
                     self.read_browsers();
@@ -1332,7 +1333,7 @@ impl Actor {
                         // settings, and only when it changes.
                         let key = crate::options::debrid_key(&draft);
                         let sent = self.send(Command::SetSettings { settings })
-                            && key.is_none_or(|key| self.send(Command::SetDebridKey { key }));
+                            && key.is_none_or(|command| self.send(command));
                         match sent {
                             true => Ok(()),
                             false => Err(crate::errors::offline(lang)),

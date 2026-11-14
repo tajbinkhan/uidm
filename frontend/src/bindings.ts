@@ -497,8 +497,11 @@ export type DebridView = DebridView_Serialize | DebridView_Deserialize;
 /**  Options' Debrid page beyond the settings. */
 export type DebridView_Deserialize = {
 	services: DebridServiceRow[],
-	/**  A key is stored; the key itself is never sent. */
-	keyStored: boolean,
+	/**
+	 *  The service a key is stored for; the key itself is never sent. A key
+	 *  is stored for one service and goes to no other.
+	 */
+	keyService?: DebridChoice | null,
 	/**  Check account is waiting for the service. */
 	checking: boolean,
 	/**  What the last check said. */
@@ -508,8 +511,11 @@ export type DebridView_Deserialize = {
 /**  Options' Debrid page beyond the settings. */
 export type DebridView_Serialize = {
 	services: DebridServiceRow[],
-	/**  A key is stored; the key itself is never sent. */
-	keyStored: boolean,
+	/**
+	 *  The service a key is stored for; the key itself is never sent. A key
+	 *  is stored for one service and goes to no other.
+	 */
+	keyService: DebridChoice | null,
 	/**  Check account is waiting for the service. */
 	checking: boolean,
 	/**  What the last check said. */

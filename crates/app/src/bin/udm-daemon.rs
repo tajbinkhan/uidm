@@ -80,7 +80,6 @@ use udm_infrastructure::conversions::Conversions;
 use udm_infrastructure::crawler::Crawler;
 use udm_infrastructure::daemon_args::{self, Invocation};
 use udm_infrastructure::debrid::{DebridApi, KeyFile};
-use udm_infrastructure::engine::Resolved;
 use udm_infrastructure::files::DiskFiles;
 use udm_infrastructure::front::{self, AnswerWait, Front, Hook, Notices, Notifier, Windows};
 use udm_infrastructure::grab::{self, FoundFiles, ProjectFiles, ScheduledGrabs};
@@ -314,16 +313,7 @@ fn new_daemon(paths: Paths, seat: Seat) -> Built {
     let links = Arc::new(ResolveLink::new(Arc::clone(&debrid), Arc::clone(&debrid_keys), Arc::new(LocalClock)));
     {
         let (links, settings) = (Arc::clone(&links), Arc::clone(&settings));
-        transfers.resolve_with(Arc::new(move |url: &str| {
-            let Ok(address) = Address::parse(url) else {
-                return Ok(None);
-            };
-            let account = settings.get().debrid;
-            match links.run(&account, &address) {
-                Ok(found) => Ok(found.map(|u| Resolved { url: u.address.into_string(), filename: u.filename })),
-                Err(refused) => Err(refused.to_string()),
-            }
-        }));
+        transfers.resolve_with(Arc::new(move |link: &Address| links.run(&settings.get().debrid, link)));
     }
     let pairing = Arc::new(PairingDesk::open(
         Arc::new(DeviceFile::in_dir(paths.remote.as_deref())),

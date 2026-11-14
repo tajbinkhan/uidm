@@ -31,6 +31,9 @@ fn probe_error(e: impl ToString) -> ProbeError {
 
 impl Probes for ServerProbes {
     fn link(&self, download: &Download) -> Result<LinkFacts, ProbeError> {
+        // Not through the debrid account: the link picker probes every link
+        // on a page, and unlocking each would send them all to the service
+        // (and fill the account's history) before the user picked any.
         let req = self.transfers.request_for(download.clone());
         let found = engine::inspect(&req.url, None, &req.headers, &req.net).map_err(probe_error)?;
         Ok(LinkFacts { total: found.total, content_type: found.content_type })

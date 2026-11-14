@@ -401,7 +401,7 @@ mod tests {
             debrid: udm_domain::debrid::DebridSettings {
                 enabled: true,
                 service: Some(udm_domain::debrid::DebridService::Premiumize),
-                key_stored: true,
+                key_service: Some(udm_domain::debrid::DebridService::Premiumize),
             },
         };
         save(&s, &path).unwrap();

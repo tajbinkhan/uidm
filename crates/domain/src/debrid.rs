@@ -64,8 +64,8 @@ impl fmt::Display for DebridService {
 }
 
 /// The debrid account the settings name. Experimental: off unless the user
-/// turns it on. The key itself is not here; `key_stored` says whether one is
-/// stored, and only the daemon sets it.
+/// turns it on. The key itself is not here; `key_service` names the service
+/// the stored key is for, and only the daemon sets it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebridSettings {
@@ -74,15 +74,22 @@ pub struct DebridSettings {
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<DebridService>,
-    /// An API key for the account is stored.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub key_stored: bool,
+    /// The service an API key is stored for. A key is stored for one service
+    /// only, so it never goes to another.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_service: Option<DebridService>,
 }
 
 impl DebridSettings {
-    /// The service links go through: on, with a service and a stored key.
+    /// The service links go through: on, with a service and a key stored
+    /// for that service.
     pub fn active(&self) -> Option<DebridService> {
-        self.service.filter(|_| self.enabled && self.key_stored)
+        self.service.filter(|s| self.enabled && self.key_service == Some(*s))
+    }
+
+    /// Whether a key is stored for the chosen service.
+    pub fn key_stored(&self) -> bool {
+        self.service.is_some() && self.key_service == self.service
     }
 }
 
@@ -219,6 +226,17 @@ pub enum DebridError {
     /// once, or requests.
     #[error("a limit of the account or the host was reached")]
     Limit,
+    /// The service will not serve this computer's IP address, as happens
+    /// behind a VPN or a proxy.
+    #[error("the service does not allow this IP address; a VPN or proxy may be the reason")]
+    IpNotAllowed,
+    /// The file host is in maintenance or out of order for now.
+    #[error("the file host is unavailable for now")]
+    HostUnavailable,
+    /// The stored key is for another service; a key for this one has to be
+    /// typed.
+    #[error("the stored API key is for {0}")]
+    KeyForOther(DebridService),
     /// The service's own words.
     #[error("{0}")]
     Service(String),
@@ -233,6 +251,15 @@ pub fn failure_text(service: DebridService, error: &DebridError) -> String {
     format!("{service} could not unlock this link: {error}.")
 }
 
+/// Why a download could not go through the debrid account: the service and
+/// what it said.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{}", failure_text(*service, error))]
+pub struct Refused {
+    pub service: DebridService,
+    pub error: DebridError,
+}
+
 /// The answer to checking an account: the account, or why not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DebridCheck {
@@ -245,7 +272,7 @@ mod tests {
     use super::*;
 
     fn on(service: DebridService) -> DebridSettings {
-        DebridSettings { enabled: true, service: Some(service), key_stored: true }
+        DebridSettings { enabled: true, service: Some(service), key_service: Some(service) }
     }
 
     fn addr(text: &str) -> Address {
@@ -276,8 +303,12 @@ mod tests {
         assert!(!wants_unrestrict(&on(DebridService::RealDebrid), &hosts, &addr("ftp://rapidgator.net/f")));
         let off = DebridSettings { enabled: false, ..on(DebridService::RealDebrid) };
         assert!(!wants_unrestrict(&off, &hosts, &rg));
-        let no_key = DebridSettings { key_stored: false, ..on(DebridService::RealDebrid) };
+        let no_key = DebridSettings { key_service: None, ..on(DebridService::RealDebrid) };
         assert!(!wants_unrestrict(&no_key, &hosts, &rg));
+        // A key stored for another service is not this one's.
+        let other = DebridSettings { key_service: Some(DebridService::Premiumize), ..on(DebridService::RealDebrid) };
+        assert!(!wants_unrestrict(&other, &hosts, &rg));
+        assert!(!other.key_stored() && on(DebridService::RealDebrid).key_stored());
         let no_service = DebridSettings { service: None, ..on(DebridService::RealDebrid) };
         assert!(!wants_unrestrict(&no_service, &hosts, &rg));
     }
@@ -300,7 +331,7 @@ mod tests {
         assert_eq!(format!("{key:?}"), "DebridKey(..)");
         assert!(DebridKey::new("   ").is_none());
         let json = serde_json::to_value(on(DebridService::AllDebrid)).unwrap();
-        assert_eq!(json, serde_json::json!({"enabled": true, "service": "all_debrid", "key_stored": true}));
+        assert_eq!(json, serde_json::json!({"enabled": true, "service": "all_debrid", "key_service": "all_debrid"}));
         assert_eq!(serde_json::to_value(DebridSettings::default()).unwrap(), serde_json::json!({}));
         let read: DebridSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(read, DebridSettings::default());

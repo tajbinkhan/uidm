@@ -1535,23 +1535,36 @@ impl udm_domain::ports::Debrid for DebridDesk {
     }
 }
 
-/// The debrid key kept in memory.
+/// The debrid key kept in memory, with the service it is for.
 #[derive(Default)]
-pub struct Keyring(pub Mutex<Option<udm_domain::debrid::DebridKey>>);
+pub struct Keyring(pub Mutex<Option<(udm_domain::debrid::DebridService, udm_domain::debrid::DebridKey)>>);
 
 impl Keyring {
-    pub fn holding(key: &str) -> Self {
-        Keyring(Mutex::new(udm_domain::debrid::DebridKey::new(key)))
+    pub fn holding(service: udm_domain::debrid::DebridService, key: &str) -> Self {
+        Keyring(Mutex::new(udm_domain::debrid::DebridKey::new(key).map(|k| (service, k))))
     }
 }
 
 impl udm_domain::ports::DebridKeys for Keyring {
-    fn key(&self) -> Option<udm_domain::debrid::DebridKey> {
-        self.0.lock().unwrap().clone()
+    fn stored(&self) -> Option<udm_domain::debrid::DebridService> {
+        self.0.lock().unwrap().as_ref().map(|(s, _)| *s)
     }
 
-    fn set_key(&self, key: Option<&udm_domain::debrid::DebridKey>) -> Result<(), SettingsError> {
-        *self.0.lock().unwrap() = key.cloned();
+    fn key(&self, service: udm_domain::debrid::DebridService) -> Option<udm_domain::debrid::DebridKey> {
+        self.0.lock().unwrap().as_ref().filter(|(s, _)| *s == service).map(|(_, k)| k.clone())
+    }
+
+    fn set_key(
+        &self,
+        service: udm_domain::debrid::DebridService,
+        key: &udm_domain::debrid::DebridKey,
+    ) -> Result<(), SettingsError> {
+        *self.0.lock().unwrap() = Some((service, key.clone()));
+        Ok(())
+    }
+
+    fn remove_key(&self) -> Result<(), SettingsError> {
+        *self.0.lock().unwrap() = None;
         Ok(())
     }
 }
