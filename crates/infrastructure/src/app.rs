@@ -59,6 +59,7 @@ pub fn to_request(d: Download, settings: &Settings) -> DownloadRequest {
         reuse_partial: None,
         host_limit,
         elevate: d.elevate,
+        resolve: None,
     }
 }
 

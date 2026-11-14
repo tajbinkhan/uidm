@@ -2322,6 +2322,31 @@
           16
         ],
         "creationTime": true,
+        "debrid": {
+          "check": {
+            "error": false,
+            "text": "The key works: ann, premium until 2023-12-14 22:13."
+          },
+          "checking": false,
+          "keyStored": true,
+          "services": [
+            {
+              "keyPage": "https://real-debrid.com/apitoken",
+              "name": "Real-Debrid",
+              "service": "realDebrid"
+            },
+            {
+              "keyPage": "https://alldebrid.com/apikeys/",
+              "name": "AllDebrid",
+              "service": "allDebrid"
+            },
+            {
+              "keyPage": "https://www.premiumize.me/account",
+              "name": "Premiumize",
+              "service": "premiumize"
+            }
+          ]
+        },
         "defaultCaptureTypes": "ZIP RAR 7Z TAR GZ BZ2 XZ PDF DOC DOCX XLS XLSX PPT PPTX TXT RTF ODT MP3 FLAC WAV M4A AAC OGG EXE MSI APK MSIX MP4 MKV AVI MOV WEBM WMV ISO IMG DMG DEB RPM BIN",
         "defaultExcludedSites": "",
         "draft": {
@@ -2408,6 +2433,10 @@
             "browserProxyAfterErrors": false,
             "captureMinSizeKb": 0,
             "confirmRemove": true,
+            "debridForget": false,
+            "debridKey": "",
+            "debridOn": true,
+            "debridService": "realDebrid",
             "ffmpegPath": "",
             "fileExists": "rename",
             "idleMinutes": 5,

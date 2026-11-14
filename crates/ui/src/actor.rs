@@ -1327,10 +1327,17 @@ impl Actor {
                 let result = match self.state.settings.as_ref().map(|s| crate::options::settings(&draft, s)) {
                     None => Err(crate::errors::offline(lang)),
                     Some(Err(e)) => Err(crate::errors::options(lang, &e)),
-                    Some(Ok(settings)) => match self.send(Command::SetSettings { settings }) {
-                        true => Ok(()),
-                        false => Err(crate::errors::offline(lang)),
-                    },
+                    Some(Ok(settings)) => {
+                        // The debrid key goes on its own, after the
+                        // settings, and only when it changes.
+                        let key = crate::options::debrid_key(&draft);
+                        let sent = self.send(Command::SetSettings { settings })
+                            && key.is_none_or(|key| self.send(Command::SetDebridKey { key }));
+                        match sent {
+                            true => Ok(()),
+                            false => Err(crate::errors::offline(lang)),
+                        }
+                    }
                 };
                 let _ = reply.send(result);
             }

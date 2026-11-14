@@ -398,6 +398,11 @@ mod tests {
             remote_enabled: true,
             remote_port: 20443,
             remote_addresses: vec!["192.168.1.20".into()],
+            debrid: udm_domain::debrid::DebridSettings {
+                enabled: true,
+                service: Some(udm_domain::debrid::DebridService::Premiumize),
+                key_stored: true,
+            },
         };
         save(&s, &path).unwrap();
         assert_eq!(load(&path).unwrap(), s);

@@ -827,6 +827,7 @@ mod tests {
                 reuse_partial: None,
                 host_limit: None,
                 elevate: false,
+                resolve: None,
             }
         }
 

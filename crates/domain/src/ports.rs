@@ -791,3 +791,39 @@ pub trait RemoteListener: Send + Sync {
     /// listens.
     fn link(&self, code: &crate::pairing::PairingCode) -> Option<String>;
 }
+
+/// A debrid service's API, reached with an account's key: which file hosts
+/// it supports, a host's link unlocked into a direct one, and the account.
+pub trait Debrid: Send + Sync {
+    /// The file hosts `service` supports for `key`'s account.
+    fn hosts(
+        &self,
+        service: crate::debrid::DebridService,
+        key: &crate::debrid::DebridKey,
+    ) -> Result<crate::debrid::SupportedHosts, crate::debrid::DebridError>;
+
+    /// `link` unlocked by `service` into a direct link.
+    fn unrestrict(
+        &self,
+        service: crate::debrid::DebridService,
+        key: &crate::debrid::DebridKey,
+        link: &Address,
+    ) -> Result<crate::debrid::Unrestricted, crate::debrid::DebridError>;
+
+    /// What `service` says of `key`'s account.
+    fn account(
+        &self,
+        service: crate::debrid::DebridService,
+        key: &crate::debrid::DebridKey,
+    ) -> Result<crate::debrid::DebridAccount, crate::debrid::DebridError>;
+}
+
+/// Where the debrid account's API key is kept: sealed, beside the settings.
+pub trait DebridKeys: Send + Sync {
+    /// The stored key, if there is one.
+    fn key(&self) -> Option<crate::debrid::DebridKey>;
+
+    /// Store `key`, or remove the stored one with `None`. A key that cannot
+    /// be stored fails as `SettingsError::Refused`, with why.
+    fn set_key(&self, key: Option<&crate::debrid::DebridKey>) -> Result<(), SettingsError>;
+}

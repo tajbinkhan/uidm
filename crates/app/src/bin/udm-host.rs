@@ -325,6 +325,7 @@ fn run_cli(args: &[String]) -> i32 {
             reuse_partial: None,
             host_limit: None,
             elevate: false,
+            resolve: None,
         },
         Arc::new(move |p: Progress| print_progress(p, &ok_cb)),
     );

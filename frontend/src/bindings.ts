@@ -77,6 +77,11 @@ export const commands = {
 	/**  Install or update a tool: yt-dlp, ffmpeg or gallery-dl. */
 	installTool: (tool: ToolKey) => __TAURI_INVOKE<null>("install_tool", { tool }),
 	/**
+	 *  Check account: ask the debrid service about the account, with the key
+	 *  typed in the field, or else the stored one. The answer shows on the page.
+	 */
+	checkDebrid: (service: DebridChoice, key: string) => __TAURI_INVOKE<null>("check_debrid", { service, key }),
+	/**
 	 *  Ask how remote control stands, as Options' Remote page does while it
 	 *  is open.
 	 */
@@ -474,6 +479,43 @@ export type CssVar = {
 	value: string,
 };
 
+/**  A debrid service Options offers. */
+export type DebridChoice = "realDebrid" | "allDebrid" | "premiumize";
+
+/**  A debrid service as Options lists it. */
+export type DebridServiceRow = {
+	service: DebridChoice,
+	/**  Its own name, untranslated. */
+	name: string,
+	/**  Where its users find their API key. */
+	keyPage: string,
+};
+
+/**  Options' Debrid page beyond the settings. */
+export type DebridView = DebridView_Serialize | DebridView_Deserialize;
+
+/**  Options' Debrid page beyond the settings. */
+export type DebridView_Deserialize = {
+	services: DebridServiceRow[],
+	/**  A key is stored; the key itself is never sent. */
+	keyStored: boolean,
+	/**  Check account is waiting for the service. */
+	checking: boolean,
+	/**  What the last check said. */
+	check?: Banner | null,
+};
+
+/**  Options' Debrid page beyond the settings. */
+export type DebridView_Serialize = {
+	services: DebridServiceRow[],
+	/**  A key is stored; the key itself is never sent. */
+	keyStored: boolean,
+	/**  Check account is waiting for the service. */
+	checking: boolean,
+	/**  What the last check said. */
+	check: Banner | null,
+};
+
 /**  A paired phone. */
 export type DeviceRow = {
 	id: Id,
@@ -569,7 +611,13 @@ export type ExportScope = "queue" | "selected" | "all";
  *  The settings UDM has beyond IDM's pages: speed limits, how downloads
  *  behave, the browser's buttons, archives, tools and remote control.
  */
-export type ExtrasDraft = {
+export type ExtrasDraft = ExtrasDraft_Serialize | ExtrasDraft_Deserialize;
+
+/**
+ *  The settings UDM has beyond IDM's pages: speed limits, how downloads
+ *  behave, the browser's buttons, archives, tools and remote control.
+ */
+export type ExtrasDraft_Deserialize = {
 	maxConcurrent: number,
 	limitOn: boolean,
 	limitKb: number,
@@ -613,6 +661,74 @@ export type ExtrasDraft = {
 	remoteAll: boolean,
 	/**  The addresses to listen on otherwise, separated by spaces or commas. */
 	remoteAddresses: string,
+	debridOn: boolean,
+	debridService?: DebridChoice | null,
+	/**
+	 *  A new API key to store; empty keeps the stored one. It comes empty:
+	 *  the stored key never crosses to the webview.
+	 */
+	debridKey: string,
+	/**  Remove the stored key. */
+	debridForget: boolean,
+};
+
+/**
+ *  The settings UDM has beyond IDM's pages: speed limits, how downloads
+ *  behave, the browser's buttons, archives, tools and remote control.
+ */
+export type ExtrasDraft_Serialize = {
+	maxConcurrent: number,
+	limitOn: boolean,
+	limitKb: number,
+	limitOnStartup: boolean,
+	perFileOn: boolean,
+	perFileKb: number,
+	limitWhileActive: boolean,
+	idleMinutes: number,
+	notify: NotifyChoice,
+	fileExists: FileExistsChoice,
+	/**  File types started without asking, separated by spaces or commas. */
+	autoStartTypes: string,
+	resumeAtStartup: boolean,
+	serverFileDateCreated: boolean,
+	progressStartTab: StartTabChoice,
+	confirmRemove: boolean,
+	removeDeletesFiles: boolean,
+	/**  The interface size, in percent. */
+	textSize: number,
+	captureMinSizeKb: number,
+	selectionButton: SelectionChoice,
+	selectionSites: string,
+	videoExcludedSites: string,
+	videoMinSizeKb: number,
+	videoAutoTypes: string,
+	socksHttps: boolean,
+	socksFtp: boolean,
+	remoteDns: boolean,
+	proxyBypass: string,
+	browserProxyAfterErrors: boolean,
+	unpackAuto: boolean,
+	unpackTo: UnpackChoice,
+	unpackFolder: string,
+	unpackRecycle: boolean,
+	sevenZipPath: string,
+	ffmpegPath: string,
+	ytdlpAutoUpdate: boolean,
+	remoteEnabled: boolean,
+	remotePort: number,
+	/**  Listen on every network interface. */
+	remoteAll: boolean,
+	/**  The addresses to listen on otherwise, separated by spaces or commas. */
+	remoteAddresses: string,
+	debridOn: boolean,
+	debridService: DebridChoice | null,
+	/**
+	 *  A new API key to store; empty keeps the stored one. It comes empty:
+	 *  the stored key never crosses to the webview.
+	 */
+	debridKey: string,
+	/**  Remove the stored key. */
+	debridForget: boolean,
 };
 
 export type FileExistsChoice = "rename" | "overwrite" | "ask";
@@ -1296,7 +1412,7 @@ export type OptionsDraft_Deserialize = {
 	logins: LoginDraft[],
 	sounds: SoundDraft[],
 	/**  What UDM adds to IDM's pages, on pages of its own. */
-	extras: ExtrasDraft,
+	extras: ExtrasDraft_Deserialize,
 };
 
 /**  The settings the Options window edits. */
@@ -1367,7 +1483,7 @@ export type OptionsDraft_Serialize = {
 	logins: LoginDraft[],
 	sounds: SoundDraft[],
 	/**  What UDM adds to IDM's pages, on pages of its own. */
-	extras: ExtrasDraft,
+	extras: ExtrasDraft_Serialize,
 };
 
 /**  The Options window. */
@@ -1402,6 +1518,7 @@ export type OptionsView_Deserialize = {
 	creationTime: boolean,
 	/**  A portable copy, which does not start when the user signs in. */
 	portable: boolean,
+	debrid: DebridView_Deserialize,
 };
 
 /**  The Options window. */
@@ -1433,6 +1550,7 @@ export type OptionsView_Serialize = {
 	creationTime: boolean,
 	/**  A portable copy, which does not start when the user signs in. */
 	portable: boolean,
+	debrid: DebridView_Serialize,
 };
 
 /**  A package's menu in the categories tree. */

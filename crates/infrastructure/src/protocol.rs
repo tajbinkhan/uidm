@@ -324,6 +324,19 @@ pub enum Incoming {
     RemoveDevice {
         id: DeviceId,
     },
+    /// Ask a debrid service about the account, with `key` or else the
+    /// stored key; answered with `debrid`. The window's.
+    CheckDebrid {
+        service: udm_domain::debrid::DebridService,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Secret>,
+    },
+    /// Store the debrid account's API key, or remove it without one;
+    /// answered with `settings` to every client, or `error`. The window's.
+    SetDebridKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Secret>,
+    },
 }
 
 /// A message from the daemon to a client.
@@ -687,6 +700,11 @@ pub enum Outgoing {
     /// secrets), and the pairing code shown.
     Remote {
         state: RemoteState,
+    },
+    /// Reply to `check_debrid`, to the client that asked only: the account
+    /// the service sees, or why not.
+    Debrid {
+        check: udm_domain::debrid::DebridCheck,
     },
 }
 

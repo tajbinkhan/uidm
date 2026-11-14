@@ -638,6 +638,35 @@ pub fn post(
     Ok((probe, Box::new(resp.into_reader())))
 }
 
+/// Send one request to a web service's API and read its answer, an error
+/// status's too (APIs explain an error in its body): the status and at most
+/// `limit` bytes of the body. Redirects are not followed and no site login
+/// answers a 401; `headers` carry the service's own credentials.
+pub fn call(
+    client: &Client,
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+    limit: u64,
+) -> Result<(u16, Vec<u8>), EngineError> {
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| EngineError::Http(format!("bad method {method}")))?;
+    let mut req = client.http.request(method, url).headers(header_map(headers));
+    if let Some(b) = body {
+        req = req.body(b.to_vec());
+    }
+    let resp = match execute(req) {
+        Ok(resp) => resp,
+        Err(Failed::Status(_, resp)) => *resp,
+        Err(Failed::Transport(e)) => return Err(e),
+    };
+    let status = resp.status();
+    let mut answer = Vec::new();
+    resp.into_reader().take(limit).read_to_end(&mut answer)?;
+    Ok((status, answer))
+}
+
 /// A GET's URL after redirects, content type, and a reader over the body.
 pub type Got = (String, Option<String>, Box<dyn Read + Send>);
 

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "options",
-  "description": "Options: the settings, saved whole, and its Browse buttons.",
+  "description": "Options: the settings, saved whole, its Browse buttons, and checking the debrid account.",
   "windows": ["options"],
-  "permissions": ["allow-subscribe", "allow-report-frontend-error", "allow-heartbeat", "allow-close-window", "allow-save-options", "allow-pick-path", "allow-install-tool", "allow-remote-status", "allow-pair-phone", "allow-remove-device", "allow-set-browser", "allow-add-browser", "allow-remove-browser", "allow-restart-browser", "allow-open-themes-folder", "allow-play-sound", "allow-system-proxy"]
+  "permissions": ["allow-subscribe", "allow-report-frontend-error", "allow-heartbeat", "allow-close-window", "allow-save-options", "allow-pick-path", "allow-install-tool", "allow-check-debrid", "allow-remote-status", "allow-pair-phone", "allow-remove-device", "allow-set-browser", "allow-add-browser", "allow-remove-browser", "allow-restart-browser", "allow-open-themes-folder", "allow-play-sound", "allow-system-proxy"]
 }

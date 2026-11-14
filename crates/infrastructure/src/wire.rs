@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use udm_application::daemon::service::ServiceError;
 use udm_application::daemon::{Command, Event, Failure};
 use udm_application::downloads::{ConfirmError, StartOrWaitError};
+use udm_domain::debrid::DebridKey;
 use udm_domain::download::{DownloadError, Mismatch};
 use udm_domain::grab::InvalidGrab;
 use udm_domain::pairing::PairingError;
@@ -84,6 +85,10 @@ pub fn incoming(command: Command) -> Incoming {
         Command::StartPairing => Incoming::StartPairing,
         Command::CancelPairing => Incoming::CancelPairing,
         Command::RemoveDevice { id } => Incoming::RemoveDevice { id },
+        Command::CheckDebrid { service, key } => {
+            Incoming::CheckDebrid { service, key: key.map(|k| Secret(k.expose().to_string())) }
+        }
+        Command::SetDebridKey { key } => Incoming::SetDebridKey { key: key.map(|k| Secret(k.expose().to_string())) },
     }
 }
 
@@ -153,6 +158,10 @@ pub fn command(msg: Incoming) -> Command {
         Incoming::StartPairing => Command::StartPairing,
         Incoming::CancelPairing => Command::CancelPairing,
         Incoming::RemoveDevice { id } => Command::RemoveDevice { id },
+        Incoming::CheckDebrid { service, key } => {
+            Command::CheckDebrid { service, key: key.and_then(|Secret(k)| DebridKey::new(&k)) }
+        }
+        Incoming::SetDebridKey { key } => Command::SetDebridKey { key: key.and_then(|Secret(k)| DebridKey::new(&k)) },
     }
 }
 
@@ -224,6 +233,7 @@ pub fn event(msg: Outgoing) -> Event {
         Outgoing::Error { message, error_kind } => Event::Error { error: failure(message, error_kind) },
         Outgoing::Rejected { url, message, error_kind } => Event::Rejected { url, error: failure(message, error_kind) },
         Outgoing::Remote { state } => Event::Remote { state },
+        Outgoing::Debrid { check } => Event::Debrid { check },
     }
 }
 
@@ -312,6 +322,7 @@ pub fn outgoing(event: Event) -> Option<Outgoing> {
             Outgoing::Rejected { url, message, error_kind }
         }
         Event::Remote { state } => Outgoing::Remote { state },
+        Event::Debrid { check } => Outgoing::Debrid { check },
     })
 }
 
@@ -566,6 +577,34 @@ mod tests {
         let value = json(&outgoing(event).unwrap());
         let back: Outgoing = serde_json::from_value(value.clone()).unwrap();
         (value, super::event(back))
+    }
+
+    #[test]
+    fn debrid_messages_carry_the_key_only_to_the_daemon() {
+        use udm_domain::debrid::{DebridAccount, DebridCheck, DebridError, DebridService};
+        let key = DebridKey::new("KEY123");
+        let check = incoming(Command::CheckDebrid { service: DebridService::RealDebrid, key: key.clone() });
+        assert_eq!(json(&check), serde_json::json!({"op": "check_debrid", "service": "real_debrid", "key": "KEY123"}));
+        assert!(!format!("{check:?}").contains("KEY123"), "{check:?}");
+        assert!(matches!(command(check), Command::CheckDebrid { key: Some(k), .. } if k.expose() == "KEY123"));
+        let stored = incoming(Command::CheckDebrid { service: DebridService::Premiumize, key: None });
+        assert_eq!(json(&stored), serde_json::json!({"op": "check_debrid", "service": "premiumize"}));
+        let set = incoming(Command::SetDebridKey { key });
+        assert_eq!(json(&set), serde_json::json!({"op": "set_debrid_key", "key": "KEY123"}));
+        let clear: Incoming = serde_json::from_str(r#"{"op":"set_debrid_key"}"#).unwrap();
+        assert!(matches!(command(clear), Command::SetDebridKey { key: None }));
+        let blank: Incoming = serde_json::from_str(r#"{"op":"set_debrid_key","key":"  "}"#).unwrap();
+        assert!(matches!(command(blank), Command::SetDebridKey { key: None }), "a blank key is none");
+
+        for outcome in [
+            Ok(DebridAccount { username: Some("ann".into()), premium: true, premium_until: Some(9) }),
+            Err(DebridError::Service("Hoster in maintenance".into())),
+        ] {
+            let check = DebridCheck { service: DebridService::AllDebrid, outcome };
+            let (value, back) = round_trip(Event::Debrid { check: check.clone() });
+            assert_eq!(value["op"], "debrid");
+            assert_eq!(back, Event::Debrid { check });
+        }
     }
 
     #[test]

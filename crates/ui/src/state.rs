@@ -287,6 +287,8 @@ pub enum UiMessage {
     Installing,
     /// Installing a tool began.
     ToolInstalling(udm_domain::tools::Tool),
+    /// Check account asked the debrid service about the account.
+    DebridChecking,
     /// The browsers a worker read; `None` while they are read again.
     BrowsersRead(Option<Box<crate::services::BrowsersRead>>),
     /// What a browser change said.
@@ -487,6 +489,10 @@ pub fn apply(state: &mut AppState, msg: UiMessage) {
                 state.services.tool_busy.push(tool);
             }
             state.services.tool_done = None;
+        }
+        UiMessage::DebridChecking => {
+            state.services.debrid_checking = true;
+            state.services.debrid = None;
         }
         UiMessage::BrowsersRead(read) => state.services.browsers = read.map(|r| *r),
         UiMessage::BrowserNote(note) => state.services.browser_note = note,

@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use udm_domain::address::Link;
 use udm_domain::bytes::ByteCount;
+use udm_domain::debrid::{DebridCheck, DebridKey, DebridService};
 use udm_domain::download::{
     Answer, CommandLine, Download, DownloadEntry, OnDone, PageLink, Properties, SegmentInfo, Validator, ZipEntry,
 };
@@ -287,6 +288,18 @@ pub enum Command {
     RemoveDevice {
         id: DeviceId,
     },
+    /// Ask a debrid service about the account, with `key` or else the
+    /// stored key; answered with `Debrid`.
+    CheckDebrid {
+        service: DebridService,
+        key: Option<DebridKey>,
+    },
+    /// Store the debrid account's API key, or remove it with `None`; the
+    /// settings then say whether one is stored. Answered with `Settings`
+    /// to every client, or `Error`.
+    SetDebridKey {
+        key: Option<DebridKey>,
+    },
 }
 
 /// Why the connection to the daemon went.
@@ -549,6 +562,11 @@ pub enum Event {
     /// asked.
     Remote {
         state: RemoteState,
+    },
+    /// What a debrid service said of the account, to the client that asked
+    /// with `CheckDebrid`.
+    Debrid {
+        check: DebridCheck,
     },
 }
 

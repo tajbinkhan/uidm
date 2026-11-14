@@ -49,6 +49,7 @@ pub struct OptionsView {
     pub creation_time: bool,
     /// A portable copy, which does not start when the user signs in.
     pub portable: bool,
+    pub debrid: DebridView,
 }
 
 /// Keys held while clicking a link.
@@ -318,6 +319,47 @@ pub struct ExtrasDraft {
     pub remote_all: bool,
     /// The addresses to listen on otherwise, separated by spaces or commas.
     pub remote_addresses: String,
+    // Debrid account (experimental).
+    pub debrid_on: bool,
+    pub debrid_service: Option<DebridChoice>,
+    /// A new API key to store; empty keeps the stored one. It comes empty:
+    /// the stored key never crosses to the webview.
+    pub debrid_key: String,
+    /// Remove the stored key.
+    pub debrid_forget: bool,
+}
+
+/// A debrid service Options offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DebridChoice {
+    RealDebrid,
+    AllDebrid,
+    Premiumize,
+}
+
+/// A debrid service as Options lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebridServiceRow {
+    pub service: DebridChoice,
+    /// Its own name, untranslated.
+    pub name: String,
+    /// Where its users find their API key.
+    pub key_page: String,
+}
+
+/// Options' Debrid page beyond the settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebridView {
+    pub services: Vec<DebridServiceRow>,
+    /// A key is stored; the key itself is never sent.
+    pub key_stored: bool,
+    /// Check account is waiting for the service.
+    pub checking: bool,
+    /// What the last check said.
+    pub check: Option<super::Banner>,
 }
 
 /// A tool UDM can install.

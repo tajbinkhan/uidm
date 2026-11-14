@@ -44,6 +44,7 @@ pub fn options(lang: &'static Language, e: &crate::options::OptionsError) -> Inv
         E::CategoryTwice(name) => fill(lang.tr("There are two categories named \"{name}\"."), &[("name", name)]),
         E::Theme(name) => fill(lang.tr("\"{name}\" is not a theme."), &[("name", name)]),
         E::Port => lang.tr("Type a port from 1 to 65535.").to_string(),
+        E::DebridService => lang.tr("Choose the debrid service the account is with.").to_string(),
     };
     error(ErrorKind::Invalid, message)
 }
@@ -557,6 +558,20 @@ pub mod text {
             E::Save { path, reason } => trf!(lang, "Could not save {path}: {reason}", path = path, reason = reason),
             E::UpToDate(tool) => trf!(lang, "{tool} is up to date.", tool = tool),
             E::Busy(tool) => trf!(lang, "{tool} is being installed already.", tool = tool),
+        }
+    }
+
+    /// Why a debrid service would not unlock a link or show the account.
+    pub fn debrid(lang: &'static Language, e: &udm_domain::debrid::DebridError) -> String {
+        use udm_domain::debrid::DebridError as E;
+        match e {
+            E::BadKey => lang.tr("The service refused the API key, or no key is stored.").to_string(),
+            E::NotPremium => lang.tr("The account is not premium.").to_string(),
+            E::HostNotSupported => lang.tr("The service does not support this host.").to_string(),
+            E::LinkDead => lang.tr("The file is not available on the host.").to_string(),
+            E::Limit => lang.tr("A limit of the account or the host was reached. Try again later.").to_string(),
+            E::Service(said) => trf!(lang, "The service said: {message}", message = said),
+            E::Network(why) => trf!(lang, "Could not reach the service: {why}", why = why),
         }
     }
 

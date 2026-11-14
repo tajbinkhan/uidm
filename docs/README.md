@@ -57,6 +57,9 @@ Short guides for the first things people do, most with a screenshot:
   starting and stopping them by the clock, and what happens when a queue is done.
 - **[Proxies and logins](proxies-and-logins.md)**: the system proxy, manual and SOCKS proxies, PAC
   scripts, and site logins.
+- **[Debrid accounts](debrid.md)** (experimental): fast downloads from file hosts such as
+  Rapidgator and 1fichier through a Real-Debrid, AllDebrid or Premiumize account, and which links
+  go to the service.
 - **[Notifications and virus scans](notifications-and-virus-scans.md)**: what UDM tells you
   when a download ends, and scanning finished files.
 

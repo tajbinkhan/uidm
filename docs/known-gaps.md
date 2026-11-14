@@ -15,6 +15,13 @@
   choose a scanner program such as `clamscan`. These builds were tested on
   Linux; the macOS build is checked by the compiler and CI only.
 
+- Debrid accounts (#259, [Debrid accounts](debrid.md)) are experimental:
+  they were tested against stand-ins for Real-Debrid's, AllDebrid's and
+  Premiumize's APIs, not the services themselves. A link AllDebrid has to
+  prepare first ("delayed") fails with the service's note instead of
+  waiting; retry it a few minutes later. Premiumize says why it refused a
+  link in words only, so UDM reads the words.
+
 - Safari (#268, [install](install.md#safari)): the extension was built for
   Safari but never run in it here; the Swift handler, the entitlements and
   the Xcode build are checked by CI's macOS runner only (and do not fail a

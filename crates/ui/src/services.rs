@@ -6,6 +6,7 @@
 use udm_application::daemon::{Event, Failure};
 use udm_application::themes::ThemesRead;
 use udm_application::window::BrowserSlot;
+use udm_domain::debrid::DebridCheck;
 use udm_domain::pairing::RemoteState;
 use udm_domain::settings::{AddedBrowser, Theme};
 use udm_domain::tools::{Tool, ToolState};
@@ -54,6 +55,10 @@ pub struct Services {
     pub browser_note: Option<Banner>,
     /// The theme files, and the system's contrast colors.
     pub themes: ThemesRead,
+    /// Check account is waiting for the debrid service.
+    pub debrid_checking: bool,
+    /// What the last check of the debrid account said.
+    pub debrid: Option<DebridCheck>,
 }
 
 /// Take what the daemon said of the tools and of remote control.
@@ -68,6 +73,10 @@ pub fn take(state: &mut AppState, event: &Event) {
             }
         }
         Event::Remote { state } => s.remote = Some(state.clone()),
+        Event::Debrid { check } => {
+            s.debrid_checking = false;
+            s.debrid = Some(check.clone());
+        }
         _ => {}
     }
 }
@@ -121,6 +130,28 @@ fn tool_rows(lang: &'static Language, s: &Services) -> Vec<ToolRow> {
             }
         })
         .collect()
+}
+
+/// What the last check of the debrid account said.
+fn debrid_note(ctx: &Ctx, s: &Services) -> Option<Banner> {
+    let lang = ctx.lang;
+    let check = s.debrid.as_ref()?;
+    let service = check.service.name();
+    Some(match &check.outcome {
+        Ok(account) => {
+            let user = account.username.as_deref().unwrap_or(service);
+            let text = match (account.premium, account.premium_until) {
+                (true, Some(until)) => fill(
+                    lang.tr("The key works: {user}, premium until {date}."),
+                    &[("user", user), ("date", &format::date(lang, until, ctx.offset))],
+                ),
+                (true, None) => fill(lang.tr("The key works: {user}, premium."), &[("user", user)]),
+                (false, _) => fill(lang.tr("The key works, but {user} is not a premium account."), &[("user", user)]),
+            };
+            Banner { text, error: !account.premium }
+        }
+        Err(e) => Banner { text: format!("{service}: {}", crate::errors::text::debrid(lang, e)), error: true },
+    })
 }
 
 fn tool_note(lang: &'static Language, s: &Services) -> Option<Banner> {
@@ -242,6 +273,8 @@ pub fn fill_view(ctx: &Ctx, state: &AppState, view: &mut OptionsView) {
     let s = &state.services;
     view.tools = tool_rows(lang, s);
     view.tool_note = tool_note(lang, s);
+    view.debrid.checking = s.debrid_checking;
+    view.debrid.check = debrid_note(ctx, s);
     view.remote = remote_view(ctx, state);
     view.browsers = s.browsers.as_ref().map(|b| browser_rows(lang, b));
     view.chrome_note = s

@@ -63,11 +63,13 @@ use udm_application::daemon::service::{
     confirm_answer, when_done, DaemonService, Note, Parts, RunProject, Served, Wiring,
 };
 use udm_application::daemon::Requests;
+use udm_application::debrid::ResolveLink;
 use udm_application::downloads::{RemoveDownload, RetryDownload, StartOrWait};
 use udm_application::pairing::{PairingDesk, Phone};
+use udm_domain::address::Address;
 use udm_domain::download::Answer;
 use udm_domain::id::DownloadId;
-use udm_domain::ports::{Browser, Probes, SiteCrawler};
+use udm_domain::ports::{Browser, Debrid, DebridKeys, Probes, SiteCrawler};
 use udm_domain::seat::Seat;
 use udm_domain::settings::Settings;
 use udm_infrastructure::background;
@@ -77,6 +79,8 @@ use udm_infrastructure::connect::ProxyRetries;
 use udm_infrastructure::conversions::Conversions;
 use udm_infrastructure::crawler::Crawler;
 use udm_infrastructure::daemon_args::{self, Invocation};
+use udm_infrastructure::debrid::{DebridApi, KeyFile};
+use udm_infrastructure::engine::Resolved;
 use udm_infrastructure::files::DiskFiles;
 use udm_infrastructure::front::{self, AnswerWait, Front, Hook, Notices, Notifier, Windows};
 use udm_infrastructure::grab::{self, FoundFiles, ProjectFiles, ScheduledGrabs};
@@ -303,6 +307,24 @@ fn new_daemon(paths: Paths, seat: Seat) -> Built {
         Arc::new(udm_infrastructure::video_tools::ForgeTools::new(Arc::clone(&settings), Arc::clone(&retries)));
     let tool_folder = Arc::new(udm_infrastructure::video_tools::ToolDir::new(Arc::clone(&settings)));
     let remote = Arc::new(WebRemote::new(paths.remote.clone()));
+    // The debrid account (experimental): each download asks `links` for
+    // the address to start from, on its own thread.
+    let debrid: Arc<dyn Debrid> = Arc::new(DebridApi::new(Arc::clone(&settings), Arc::clone(&retries)));
+    let debrid_keys: Arc<dyn DebridKeys> = Arc::new(KeyFile::new());
+    let links = Arc::new(ResolveLink::new(Arc::clone(&debrid), Arc::clone(&debrid_keys), Arc::new(LocalClock)));
+    {
+        let (links, settings) = (Arc::clone(&links), Arc::clone(&settings));
+        transfers.resolve_with(Arc::new(move |url: &str| {
+            let Ok(address) = Address::parse(url) else {
+                return Ok(None);
+            };
+            let account = settings.get().debrid;
+            match links.run(&account, &address) {
+                Ok(found) => Ok(found.map(|u| Resolved { url: u.address.into_string(), filename: u.filename })),
+                Err(refused) => Err(refused.to_string()),
+            }
+        }));
+    }
     let pairing = Arc::new(PairingDesk::open(
         Arc::new(DeviceFile::in_dir(paths.remote.as_deref())),
         Arc::new(OsKeys),
@@ -352,6 +374,9 @@ fn new_daemon(paths: Paths, seat: Seat) -> Built {
         pairing,
         listener: Arc::clone(&remote) as _,
         seat,
+        debrid,
+        debrid_keys,
+        links,
     });
     Built { daemon, clients, dirty: dirty_rx, notes: notes_rx, wake: wake_rx, remote }
 }

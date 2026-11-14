@@ -80,6 +80,8 @@ Client to daemon (the host relays the browser's unchanged):
 { "op": "start_pairing" }
 { "op": "cancel_pairing" }
 { "op": "remove_device", "id": 2 }
+{ "op": "check_debrid", "service": "real_debrid", "key": "..." }
+{ "op": "set_debrid_key", "key": "..." }
 ```
 
 Daemon to clients:
@@ -132,6 +134,8 @@ Daemon to clients:
   "fingerprint": "53:79:5D:...", "devices": [ { "id": 1, "name": "iPhone", "paired_at": 1762790000,
   "last_seen": 1762790400 } ], "pairing": { "link": "https://192.168.1.20:18443/#pair=...",
   "code": "...", "expires_at": 1762790300 } } }
+{ "op": "debrid", "check": { "service": "real_debrid", "outcome": { "Ok": { "username": "ann",
+  "premium": true, "premium_until": 1765000000 } } } }
 { "op": "error", "message": "..." }
 ```
 
@@ -153,7 +157,17 @@ paired devices (never their secrets), and the pairing code shown, if any.
 `start_pairing` is refused with `error` while the page is not served. The
 phone page itself speaks HTTPS, not these messages.
 
-`ack`, `downloads`, `remote` and `error` go only to the client that asked, as does
+`check_debrid` and `set_debrid_key` are Options' Debrid page (see [Debrid
+accounts](debrid.md)). `check_debrid` asks the service about the account with
+the key given, or the stored key without one, and is answered with `debrid`:
+the account, or `{"Err": {"kind": "bad_key"}}` and the other kinds
+(`not_premium`, `host_not_supported`, `link_dead`, `limit`, `service` and
+`network` with the `message`). `set_debrid_key` stores the key, or removes it
+without one, and the daemon sends every client `settings`, whose `debrid`
+says whether a key is stored. The key goes no further than the daemon: no
+message from it carries the key.
+
+`ack`, `downloads`, `remote`, `debrid` and `error` go only to the client that asked, as does
 `settings` when it answers `get_settings`; everything else goes to every
 client, including `settings` after a change. A status is one of `queued`,
 `downloading`, `done`, `failed`, `canceled`, `interrupted`, `confirming`

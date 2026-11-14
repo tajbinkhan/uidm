@@ -120,6 +120,52 @@ pub struct DownloadRequest {
     /// written in a staging folder and the finished file moved into place by
     /// the elevated helper (see `crate::elevate`).
     pub elevate: bool,
+    /// Asked for the address to download from when the download starts,
+    /// such as a file host's link unlocked by a debrid account.
+    pub resolve: Option<Resolver>,
+}
+
+/// What a `Resolver` made of a download's address: the address to download
+/// from instead, and the file's name when it is known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub url: String,
+    pub filename: Option<String>,
+}
+
+/// Turns a download's address into the one to download from, just before
+/// the engine connects: `Ok(None)` keeps it, and an error fails the
+/// download with its text. It may ask a web service, so it runs on the
+/// download's own thread.
+pub type Resolver = Arc<dyn Fn(&str) -> Result<Option<Resolved>, String> + Send + Sync>;
+
+impl DownloadRequest {
+    /// Ask the request's resolver, once, for the address to download from.
+    /// A new address replaces `url`, and the headers meant for the old
+    /// address's site (its cookies, the referrer, what the browser sent)
+    /// are dropped, so they never reach the other server; the User-Agent
+    /// stays. Streams, video pages and form posts are left alone. Returns
+    /// whether the address changed.
+    pub fn resolve(&mut self) -> Result<bool, EngineError> {
+        let Some(resolve) = self.resolve.take() else {
+            return Ok(false);
+        };
+        if self.media.is_some() || self.post_body.is_some() {
+            return Ok(false);
+        }
+        match resolve(&self.url) {
+            Ok(None) => Ok(false),
+            Ok(Some(found)) => {
+                self.url = found.url;
+                if self.filename.is_none() {
+                    self.filename = found.filename;
+                }
+                self.headers.retain(|(name, _)| name.eq_ignore_ascii_case("user-agent"));
+                Ok(true)
+            }
+            Err(text) => Err(EngineError::Refused(text)),
+        }
+    }
 }
 
 /// Progress events over the course of a download. `id` matches the `Ack`.
@@ -171,6 +217,21 @@ pub enum Progress {
         path: PathBuf,
         total: Option<ByteCount>,
     },
+}
+
+impl Progress {
+    /// The same event, naming the download by `url`.
+    fn naming(mut self, url: &str) -> Self {
+        match &mut self {
+            Progress::Started { url: u, .. }
+            | Progress::Advanced { url: u, .. }
+            | Progress::Finished { url: u, .. }
+            | Progress::Failed { url: u, .. }
+            | Progress::Canceled { url: u, .. }
+            | Progress::NameTaken { url: u, .. } => *u = url.to_string(),
+        }
+        self
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -577,6 +638,19 @@ fn run(id: DownloadId, token: CancelToken, req: DownloadRequest, reporter: Repor
         return;
     }
     let mut req = req;
+    // A download unlocked into another address is still named by its own
+    // in the events, as the list and the browser know it.
+    let reporter = match req.resolve() {
+        Ok(false) => reporter,
+        Ok(true) => {
+            let (inner, named) = (reporter, url.clone());
+            Reporter(Arc::new(move |p: Progress| inner.send(p.naming(&named))))
+        }
+        Err(e) => {
+            reporter.send(Progress::Failed { id, url, error: e.to_string() });
+            return;
+        }
+    };
     let own_rate = req.speed_limit;
     let own = {
         // Read the limit per file under the same lock that a change to it
@@ -985,6 +1059,21 @@ pub fn fetch_to_file(
         let _ = std::fs::remove_file(path);
     }
     written
+}
+
+/// Send one request to a web service's API at `url` through `net`'s proxy
+/// and read the status and at most `limit` bytes of the answer, an error's
+/// too. See `http::call`.
+pub fn call_api(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+    net: &NetConfig,
+    limit: ByteCount,
+) -> Result<(u16, Vec<u8>), EngineError> {
+    let agent = http::Client::new(net, url)?;
+    http::call(&agent, method, url, headers, body, limit.get())
 }
 
 /// The bytes `start` through `end` (inclusive) of `url`, for a preview.
@@ -1962,6 +2051,7 @@ mod tests {
                 reuse_partial: None,
                 host_limit: None,
                 elevate: false,
+                resolve: None,
             }
         }
 
@@ -2683,6 +2773,55 @@ mod tests {
                     _ => {}
                 }
             }
+        }
+
+        #[test]
+        fn a_resolved_address_is_downloaded_without_the_old_sites_headers() {
+            let server = TestServer::start(body(LEN));
+            let dir = temp_dir("resolved");
+            let direct = format!("{}/direct/a.zip", server.url);
+            let mut req = request("https://files.example/abc.html", &dir, FileExists::Rename);
+            req.filename = None;
+            req.headers = vec![
+                ("Cookie".into(), "host_session=1".into()),
+                ("Referer".into(), "https://files.example/".into()),
+                ("User-Agent".into(), "UDM test".into()),
+            ];
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let (seen, to) = (Arc::clone(&asked), direct.clone());
+            req.resolve = Some(Arc::new(move |url: &str| {
+                seen.lock().unwrap().push(url.to_string());
+                Ok(Some(Resolved { url: to.clone(), filename: Some("unlocked.zip".into()) }))
+            }));
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let engine = Engine::new(Arc::new(move |p: Progress| drop(tx.lock().unwrap().send(p))), 1);
+            engine.enqueue(req);
+            let path = loop {
+                match rx.recv_timeout(Duration::from_secs(30)).expect("download timed out") {
+                    Progress::Started { url, .. } => assert_eq!(url, "https://files.example/abc.html"),
+                    Progress::Finished { path, url, .. } => {
+                        assert_eq!(url, "https://files.example/abc.html", "named by its own address");
+                        break path;
+                    }
+                    Progress::Failed { error, .. } => panic!("download failed: {error}"),
+                    _ => {}
+                }
+            };
+            assert_eq!(path, dir.join("unlocked.zip"));
+            assert_eq!(fs::read(&path).unwrap(), body(LEN));
+            assert_eq!(*asked.lock().unwrap(), ["https://files.example/abc.html"]);
+            assert!(server.cookies_seen.lock().unwrap().is_empty(), "the host's cookies stay with the host");
+            fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn a_resolver_that_refuses_fails_the_download_with_its_words() {
+            let dir = temp_dir("refused");
+            let mut req = request("https://files.example/abc.html", &dir, FileExists::Rename);
+            req.resolve = Some(Arc::new(|_: &str| Err("Real-Debrid could not unlock this link: no.".to_string())));
+            assert_eq!(download_err(req), "Real-Debrid could not unlock this link: no.");
+            fs::remove_dir_all(&dir).ok();
         }
 
         #[test]

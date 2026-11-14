@@ -33,6 +33,16 @@ in a font wider than Segoe UI, which pushed the address out of view on Linux, an
 and UDM's own messages about ffmpeg, yt-dlp and gallery-dl send you to **Options > Tools**, where
 the window has kept those programs' buttons since 0.5.0.
 
+Links to file hosts such as Rapidgator and 1fichier can download through a Real-Debrid, AllDebrid
+or Premiumize account (#259), an experimental option on the new **Options > Debrid** page. A link
+to a host the service supports is unlocked into a fast direct link through the service's official
+API each time the download starts, so a resumed download or a **New link** gets a fresh one when
+the old one expires. If the service refuses a link, the download fails and says why instead of
+falling back to the slow host. **Check account** shows whether the key works and until when the
+account is premium. The API key is stored sealed like the proxies' passwords, never in
+`settings.json`, the window or the logs; [Debrid accounts](docs/debrid.md) says which links go to
+the service.
+
 ## [0.5.0](release-notes/v0.5.0.md) - 2026-11-14
 
 Minor. Pullbay is now called UDM, with a new icon and a new window drawn with Tauri and styled

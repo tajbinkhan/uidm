@@ -39,6 +39,7 @@ const COMMANDS: &[&str] = &[
     "save_options",
     "pick_path",
     "install_tool",
+    "check_debrid",
     "remote_status",
     "pair_phone",
     "remove_device",

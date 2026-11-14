@@ -2,6 +2,7 @@
 //! settings when the window is saved. Settings the window does not show
 //! keep their values. Plain functions, tested without Tauri.
 
+use udm_domain::debrid::{DebridKey, DebridService};
 use udm_domain::id::QueueId;
 use udm_domain::settings::{
     default_capture_types, parse_extensions, CaptureKey, Category, Duplicate, InvalidSettings, Notify, PanelView,
@@ -12,9 +13,9 @@ use udm_domain::theme::ThemeName;
 
 use crate::contract::SystemProxyView;
 use crate::contract::{
-    CategoryDraft, Choice, DuplicateChoice, ExtrasDraft, FileExistsChoice, KeysDraft, LoginDraft, NotifyChoice,
-    OptionsDraft, OptionsView, ProxyChoice, ProxyDraft, SelectionChoice, ServerLimitDraft, SoundDraft, StartTabChoice,
-    UnpackChoice, VideoTypeDraft,
+    CategoryDraft, Choice, DebridChoice, DebridServiceRow, DebridView, DuplicateChoice, ExtrasDraft, FileExistsChoice,
+    KeysDraft, LoginDraft, NotifyChoice, OptionsDraft, OptionsView, ProxyChoice, ProxyDraft, SelectionChoice,
+    ServerLimitDraft, SoundDraft, StartTabChoice, UnpackChoice, VideoTypeDraft,
 };
 use crate::i18n::{Language, LANGUAGES};
 use udm_domain::settings::{FileExists, ProgressTab, SelectionButton, UnpackTo};
@@ -32,6 +33,52 @@ pub enum OptionsError {
     Theme(String),
     #[error("Type a port from 1 to 65535.")]
     Port,
+    #[error("Choose the debrid service the account is with.")]
+    DebridService,
+}
+
+/// The debrid service a choice names.
+pub fn debrid_service(c: DebridChoice) -> DebridService {
+    match c {
+        DebridChoice::RealDebrid => DebridService::RealDebrid,
+        DebridChoice::AllDebrid => DebridService::AllDebrid,
+        DebridChoice::Premiumize => DebridService::Premiumize,
+    }
+}
+
+fn debrid_choice(s: DebridService) -> DebridChoice {
+    match s {
+        DebridService::RealDebrid => DebridChoice::RealDebrid,
+        DebridService::AllDebrid => DebridChoice::AllDebrid,
+        DebridService::Premiumize => DebridChoice::Premiumize,
+    }
+}
+
+/// What OK does with the debrid key: `Some(Some(key))` stores a new one,
+/// `Some(None)` removes the stored one, `None` leaves it.
+pub fn debrid_key(d: &OptionsDraft) -> Option<Option<DebridKey>> {
+    match DebridKey::new(&d.extras.debrid_key) {
+        Some(key) => Some(Some(key)),
+        None if d.extras.debrid_forget => Some(None),
+        None => None,
+    }
+}
+
+/// The debrid services Options lists.
+fn debrid_view(s: &Settings) -> DebridView {
+    DebridView {
+        services: DebridService::ALL
+            .into_iter()
+            .map(|service| DebridServiceRow {
+                service: debrid_choice(service),
+                name: service.name().to_string(),
+                key_page: service.key_page().to_string(),
+            })
+            .collect(),
+        key_stored: s.debrid.key_stored,
+        checking: false,
+        check: None,
+    }
 }
 
 fn keys(k: CaptureKey) -> KeysDraft {
@@ -328,6 +375,10 @@ fn extras(s: &Settings) -> ExtrasDraft {
         remote_port: u32::from(s.remote_port),
         remote_all: s.remote_addresses.is_empty(),
         remote_addresses: s.remote_addresses.join(", "),
+        debrid_on: s.debrid.enabled,
+        debrid_service: s.debrid.service.map(debrid_choice),
+        debrid_key: String::new(),
+        debrid_forget: false,
     }
 }
 
@@ -410,6 +461,12 @@ fn apply_extras(e: &ExtrasDraft, done_dialog: bool, current: &Settings, s: &mut 
             .map(str::to_string)
             .collect()
     };
+    // Whether a key is stored stays the daemon's to say.
+    s.debrid.enabled = e.debrid_on;
+    s.debrid.service = e.debrid_service.map(debrid_service);
+    if s.debrid.enabled && s.debrid.service.is_none() {
+        return Err(OptionsError::DebridService);
+    }
     Ok(())
 }
 
@@ -448,6 +505,7 @@ pub fn view(lang: &'static Language, s: &Settings) -> OptionsView {
         theme_notes: Vec::new(),
         creation_time: false,
         portable: false,
+        debrid: debrid_view(s),
     }
 }
 
@@ -682,6 +740,32 @@ mod tests {
         assert_eq!(out.remote_addresses, ["192.168.1.5", "10.0.0.2"]);
         d.extras.remote_port = 70_000;
         assert_eq!(settings(&d, &s), Err(OptionsError::Port));
+    }
+
+    #[test]
+    fn the_debrid_account_reaches_the_settings_but_its_key_goes_apart() {
+        let s = Settings::default();
+        let mut d = draft(&s);
+        assert_eq!(debrid_key(&d), None, "an empty key keeps the stored one");
+        d.extras.debrid_on = true;
+        assert_eq!(settings(&d, &s), Err(OptionsError::DebridService));
+        d.extras.debrid_service = Some(DebridChoice::AllDebrid);
+        d.extras.debrid_key = "  KEY  ".into();
+        let out = settings(&d, &s).unwrap();
+        assert!(out.debrid.enabled && !out.debrid.key_stored);
+        assert_eq!(out.debrid.service, Some(DebridService::AllDebrid));
+        assert_eq!(debrid_key(&d), Some(DebridKey::new("KEY")));
+        assert!(!serde_json::to_string(&out).unwrap().contains("KEY"));
+        d.extras.debrid_key.clear();
+        d.extras.debrid_forget = true;
+        assert_eq!(debrid_key(&d), Some(None));
+        // A stored key shows as stored, never as its text.
+        let mut stored = Settings::default();
+        stored.debrid.key_stored = true;
+        let v = view(resolve("en", &[]), &stored);
+        assert!(v.debrid.key_stored && v.draft.extras.debrid_key.is_empty());
+        assert_eq!(v.debrid.services.len(), 3);
+        assert_eq!(settings(&draft(&stored), &stored).unwrap(), stored);
     }
 
     #[test]

@@ -86,4 +86,41 @@ describe("Options' own pages", () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     expect(sent(calls, 'pair_phone').at(-1)?.args).toEqual({ on: false });
   });
+
+  it('the debrid page shows the account without its key, checks it and saves a new key', async () => {
+    editing.draft = null;
+    const calls = shell('options', 'options');
+    render(Options);
+    await fireEvent.click(screen.getByRole('tab', { name: 'Debrid' }));
+    expect((screen.getByLabelText("Download file hosts' links through a debrid account") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('Real-Debrid') as HTMLInputElement).checked).toBe(true);
+    const key = screen.getByLabelText('API key') as HTMLInputElement;
+    expect(key.value).toBe('');
+    expect(key.type).toBe('password');
+    expect(screen.getByText('A key is stored.')).toBeTruthy();
+    expect(screen.getByText(/^The key works: ann, premium until /)).toBeTruthy();
+    expect(screen.getByText('Find the key at https://real-debrid.com/apitoken')).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Check account' }));
+    expect(sent(calls, 'check_debrid').at(-1)?.args).toEqual({ service: 'realDebrid', key: '' });
+    await fireEvent.click(screen.getByLabelText('AllDebrid'));
+    await fireEvent.input(key, { target: { value: 'NEWKEY' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Check account' }));
+    expect(sent(calls, 'check_debrid').at(-1)?.args).toEqual({ service: 'allDebrid', key: 'NEWKEY' });
+    await fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+    const draft = sent(calls, 'save_options').at(-1)?.args.draft as { extras: Record<string, unknown> };
+    expect(draft.extras).toMatchObject({ debridOn: true, debridService: 'allDebrid', debridKey: 'NEWKEY', debridForget: false });
+  });
+
+  it('a stored debrid key can be removed, and checking needs a key', async () => {
+    editing.draft = null;
+    const calls = shell('options', 'options');
+    render(Options);
+    await fireEvent.click(screen.getByRole('tab', { name: 'Debrid' }));
+    await fireEvent.click(screen.getByLabelText('Remove the stored key when saving'));
+    expect(screen.getByText('No key is stored.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Check account' }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+    const draft = sent(calls, 'save_options').at(-1)?.args.draft as { extras: Record<string, unknown> };
+    expect(draft.extras).toMatchObject({ debridKey: '', debridForget: true });
+  });
 });

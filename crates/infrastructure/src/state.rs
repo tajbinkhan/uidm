@@ -105,7 +105,8 @@ fn change_of(msg: &Outgoing) -> Option<Change<'_>> {
         | Outgoing::UpdateFailed { .. }
         | Outgoing::GrabProgress { .. }
         | Outgoing::GrabDone { .. }
-        | Outgoing::Remote { .. } => return None,
+        | Outgoing::Remote { .. }
+        | Outgoing::Debrid { .. } => return None,
     })
 }
 

@@ -13,6 +13,8 @@ export type {
   ZipView,
   ToolKey,
   ToolRow,
+  DebridChoice,
+  DebridServiceRow,
   DeviceRow,
   PairingView,
   BrowserRowView,

@@ -250,6 +250,10 @@
   own login, or with **Save this password** become the site's login in
   Options (always, when the file is on another site than its link). Other
   downloads from the same site waiting for a login go with the same answer.
+- **Debrid account** (experimental; **Options > Debrid**): links to file
+  hosts such as Rapidgator and 1fichier go through a Real-Debrid, AllDebrid
+  or Premiumize account and download from the fast direct link it gives.
+  See [Debrid accounts](debrid.md).
 - **FTP and FTPS**: `ftp://` and `ftps://` addresses download like web ones,
   over several connections and resuming where they stopped. `ftps://` is
   FTP over TLS from the first byte (port 990 unless the address names

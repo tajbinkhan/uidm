@@ -59,6 +59,7 @@ pub mod crash;
 pub mod crawler;
 pub mod daemon_args;
 pub mod daemon_client;
+pub mod debrid;
 pub mod dpapi;
 pub mod elevate;
 pub mod engine;

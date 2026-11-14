@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 use udm_domain::address::Link;
+use udm_domain::debrid::{DebridKey, DebridService};
 use udm_domain::id::{DownloadId, PackageId, QueueId};
 use udm_domain::package::{Packaging, Password, Unpack};
 use udm_domain::seat::Seat;
@@ -27,11 +28,11 @@ use udm_domain::download::{
 };
 use udm_domain::grab::{self, GrabRequest, RenderedPage};
 use udm_domain::ports::{
-    Answers, Attention, Browser, Clock, Converter, DownloadControl, DownloadFiles, DownloadIntake, DownloadList,
-    EarlyStarts, FileHashes, FileOpener, GrabDownloads, GrabProjects, GrabRuns, LimitLift, Notifications, PackageStore,
-    PausedDownloads, PowerControl, Probes, ProxyFallback, QueueFinish, QueueRuns, QueueSounds, QueueStore, QuotaState,
-    ReleaseSource, RemoteListener, SaveFolders, SettingsStore, SiteCrawler, SyncChecks, Timestamps, ToolFolder,
-    ToolReleases, TransferEngine, Unpacker, UpdateChecks, UserIdle, VirusScanner,
+    Answers, Attention, Browser, Clock, Converter, Debrid, DebridKeys, DownloadControl, DownloadFiles, DownloadIntake,
+    DownloadList, EarlyStarts, FileHashes, FileOpener, GrabDownloads, GrabProjects, GrabRuns, LimitLift, Notifications,
+    PackageStore, PausedDownloads, PowerControl, Probes, ProxyFallback, QueueFinish, QueueRuns, QueueSounds,
+    QueueStore, QuotaState, ReleaseSource, RemoteListener, SaveFolders, SettingsError, SettingsStore, SiteCrawler,
+    SyncChecks, Timestamps, ToolFolder, ToolReleases, TransferEngine, Unpacker, UpdateChecks, UserIdle, VirusScanner,
 };
 use udm_domain::queue::{
     self, PowerRequest, PowerStep, Queue, ScheduleStep, StopReason, WhenDone, COUNTDOWN_SECS, MAIN_QUEUE,
@@ -40,6 +41,7 @@ use udm_domain::quota::QuotaLimit;
 use udm_domain::settings::{Duplicate, Settings};
 
 use super::{ClientId, ClientList, Command, Countdowns, DownloadFeed, Event, Failure, Reply, Requests};
+use crate::debrid::{CheckAccount, ResolveLink, SetKey};
 use crate::downloads::{
     AddLater, AddMany, AfterDownload, CancelDownload, CheckDownload, CheckOutcome, ConfirmAnswer, ConfirmWarning,
     Confirmed, ConvertDownload, Existing, Held, HoldForAnswer, KeepPackages, LiftLimitWhileAway, PauseAll, Probed,
@@ -252,6 +254,11 @@ pub struct Parts<W: Wiring> {
     pub listener: Arc<dyn RemoteListener>,
     /// Where the daemon runs, which decides whether it exits when idle.
     pub seat: Seat,
+    /// The debrid account's service API, its stored key, and the links
+    /// going through it (experimental).
+    pub debrid: Arc<dyn Debrid>,
+    pub debrid_keys: Arc<dyn DebridKeys>,
+    pub links: Arc<ResolveLink>,
 }
 
 /// The daemon's work. Its fields are the adapters it was wired with, and
@@ -303,6 +310,9 @@ pub struct DaemonService<W: Wiring> {
     pub listener: Arc<dyn RemoteListener>,
     /// Where the daemon runs.
     seat: Seat,
+    pub debrid: Arc<dyn Debrid>,
+    pub debrid_keys: Arc<dyn DebridKeys>,
+    pub links: Arc<ResolveLink>,
     /// Keeps two scheduler passes from running at once.
     tick_lock: Mutex<()>,
     /// Each client's running site crawl, by its stop flag.
@@ -371,6 +381,9 @@ impl<W: Wiring> DaemonService<W> {
             pairing: p.pairing,
             listener: p.listener,
             seat: p.seat,
+            debrid: p.debrid,
+            debrid_keys: p.debrid_keys,
+            links: p.links,
             tick_lock: Mutex::new(()),
             grabs: Mutex::default(),
             link_probes: Mutex::default(),
@@ -1134,6 +1147,24 @@ impl<W: Wiring> DaemonService<W> {
             });
             reply.send(Event::Tools { tools: daemon.tools(), done: Some(tool), error });
         });
+    }
+
+    /// Check the debrid account (see `CheckAccount`) on another thread and
+    /// answer `reply` with `Debrid`.
+    pub fn check_debrid(self: &Arc<Self>, service: DebridService, key: Option<DebridKey>, reply: Reply) {
+        let daemon = Arc::clone(self);
+        thread::spawn(move || {
+            let check = CheckAccount::new(&*daemon.debrid, &*daemon.debrid_keys).run(service, key);
+            reply.send(Event::Debrid { check });
+        });
+    }
+
+    /// Store or remove the debrid account's key (see `SetKey`); the links
+    /// and hosts kept for the old key are forgotten.
+    pub fn set_debrid_key(&self, key: Option<DebridKey>) -> Result<(), SettingsError> {
+        let done = SetKey::new(&*self.debrid_keys, &*self.transfers).run(key);
+        self.links.forget();
+        done
     }
 
     /// List `page`'s pictures with gallery-dl on another thread (see
@@ -1984,6 +2015,13 @@ pub fn dispatch<W: Wiring>(incoming: Command, daemon: &Arc<DaemonService<W>>, cl
                 send(Event::Error { error: ServiceError::from(message).into() });
             }
             send(Event::Remote { state: daemon.remote_state() });
+        }
+        Command::CheckDebrid { service, key } => daemon.check_debrid(service, key, reply.clone()),
+        Command::SetDebridKey { key } => {
+            if let Err(e) = daemon.set_debrid_key(key) {
+                warn!(error = %e, "could not store the debrid key");
+                send(Event::Error { error: e.into() });
+            }
         }
         Command::SetSettings { settings } => {
             let settings =

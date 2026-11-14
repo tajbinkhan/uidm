@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use udm_domain::address::Link;
@@ -166,6 +166,9 @@ pub struct Transfers {
     refresh_waiting: Mutex<Option<DownloadId>>,
     /// The speed limit is lifted while nobody uses the computer.
     limit_lifted: AtomicBool,
+    /// Asked for the address to download from as each download starts (the
+    /// debrid account's direct links); set once at wiring.
+    resolver: OnceLock<engine::Resolver>,
 }
 
 impl Transfers {
@@ -201,7 +204,23 @@ impl Transfers {
             early,
             refresh_waiting: Mutex::new(None),
             limit_lifted: AtomicBool::new(false),
+            resolver: OnceLock::new(),
         }
+    }
+
+    /// Ask `resolver` for the address each download starts from. Only the
+    /// first call counts.
+    pub fn resolve_with(&self, resolver: engine::Resolver) {
+        let _ = self.resolver.set(resolver);
+    }
+
+    /// The engine request for `download`, with the address it downloads
+    /// from now: what the resolver makes of its own, for looking at the
+    /// file before it downloads.
+    pub fn resolved_request(&self, download: Download) -> Result<DownloadRequest, engine::EngineError> {
+        let mut req = self.request_for(download);
+        req.resolve()?;
+        Ok(req)
     }
 
     pub fn engine(&self) -> &Arc<Engine> {
@@ -558,6 +577,7 @@ impl Transfers {
         let folder = download.folder.as_deref().map(PathBuf::from).filter(|f| f.is_absolute());
         let mut req = to_request(download, &settings);
         req.net = Arc::new(net);
+        req.resolve = self.resolver.get().cloned();
         if let Some(folder) = folder {
             req.folders = Folders::fixed(folder);
         }
@@ -586,6 +606,8 @@ impl Transfers {
                     .map_err(|source| SaveError::LoginPassword { site: l.site.clone(), source })?;
             }
         }
+        // Only the daemon knows whether a debrid key is stored.
+        new.debrid.key_stored = crate::debrid::key_stored();
         let old = self.settings.lock().site_logins.clone();
         for gone in old.iter().filter(|o| !new.site_logins.iter().any(|n| n.site.eq_ignore_ascii_case(&o.site))) {
             if let Err(e) = net::delete_login_password(&gone.site) {
@@ -717,9 +739,8 @@ impl DownloadControl for Transfers {
         download: &Download,
         partial: &str,
     ) -> Result<Option<udm_domain::download::Mismatch>, ControlError> {
-        let req = self.request_for(download.clone());
-        let found = engine::inspect(download.url.as_str(), None, &req.headers, &req.net)
-            .map_err(|e| ControlError(e.to_string()))?;
+        let req = self.resolved_request(download.clone()).map_err(|e| ControlError(e.to_string()))?;
+        let found = engine::inspect(&req.url, None, &req.headers, &req.net).map_err(|e| ControlError(e.to_string()))?;
         let ignore_date = self.settings.lock().resume_ignores_date;
         Ok(engine::partial_matches(Path::new(partial), &found, ignore_date).err())
     }

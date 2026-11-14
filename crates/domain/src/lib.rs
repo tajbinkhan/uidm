@@ -10,6 +10,7 @@ pub mod batch;
 pub mod bytes;
 pub mod checksum;
 pub mod command;
+pub mod debrid;
 pub mod download;
 pub mod filename;
 pub mod gallery;

@@ -33,6 +33,7 @@ import type {
   PickInput,
   LinkFilter,
   ToolKey,
+  DebridChoice,
   ReportAction,
   ConvertTarget,
   ExceptionChoice,
@@ -184,6 +185,7 @@ export const checkUpdate = () => commands.checkUpdate();
 export const installUpdate = () => commands.installUpdate();
 export const dismissRelease = () => commands.dismissRelease();
 export const installTool = (tool: ToolKey) => commands.installTool(tool);
+export const checkDebrid = (service: DebridChoice, key: string) => commands.checkDebrid(service, key);
 export const remoteStatus = () => commands.remoteStatus();
 export const pairPhone = (on: boolean) => commands.pairPhone(on);
 export const removeDevice = (id: Id) => commands.removeDevice(id);

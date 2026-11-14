@@ -37,7 +37,8 @@ impl Probes for ServerProbes {
     }
 
     fn file(&self, download: &Download) -> Result<FileFacts, ProbeError> {
-        let req = self.transfers.request_for(download.clone());
+        // The file a debrid account unlocks the link into, when it does.
+        let req = self.transfers.resolved_request(download.clone()).map_err(probe_error)?;
         // Probing a POST download would send a GET (or repeat the POST),
         // so its dialog proposes a name from the request alone. What the
         // browser's response said is all there is to show then. A video
@@ -49,8 +50,7 @@ impl Probes for ServerProbes {
             found.content_type = download.content_type.clone();
             found
         } else {
-            engine::inspect(download.url.as_str(), download.filename.as_deref(), &req.headers, &req.net)
-                .map_err(probe_error)?
+            engine::inspect(&req.url, req.filename.as_deref(), &req.headers, &req.net).map_err(probe_error)?
         };
         let path = req.folders.for_name(found.filename.as_str()).join(&found.filename);
         Ok(FileFacts { filename: found.filename, path, total: found.total, resumable: found.resumable })
@@ -63,7 +63,7 @@ impl Probes for ServerProbes {
     }
 
     fn zip(&self, download: &Download, total: Option<ByteCount>) -> Result<Vec<ZipEntry>, ProbeError> {
-        let req = self.transfers.request_for(download.clone());
+        let req = self.transfers.resolved_request(download.clone()).map_err(probe_error)?;
         let total = match total {
             Some(t) => t,
             None => engine::inspect(&req.url, None, &req.headers, &req.net)

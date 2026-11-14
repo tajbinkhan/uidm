@@ -165,9 +165,14 @@ fn fixtures() -> serde_json::Value {
     // The main window then shows one download picked, as it was.
     apply(&mut s, UiMessage::Select(vec![DownloadId::new(2)]));
     // What Options shows beyond the settings: the tools, a paired phone
-    // and a pairing code, and the browsers.
+    // and a pairing code, the browsers, and a debrid account just checked.
     if let Some(settings) = s.settings.as_mut() {
         settings.remote_enabled = true;
+        settings.debrid = udm_domain::debrid::DebridSettings {
+            enabled: true,
+            service: Some(udm_domain::debrid::DebridService::RealDebrid),
+            key_stored: true,
+        };
     }
     let tool = |tool, path: Option<&str>, installed: Option<&str>| udm_domain::tools::ToolState {
         tool,
@@ -205,6 +210,15 @@ fn fixtures() -> serde_json::Value {
         }),
     };
     apply(&mut s, UiMessage::Daemon { event: Box::new(Event::Remote { state: remote }), at, unix: 0 });
+    let check = udm_domain::debrid::DebridCheck {
+        service: udm_domain::debrid::DebridService::RealDebrid,
+        outcome: Ok(udm_domain::debrid::DebridAccount {
+            username: Some("ann".into()),
+            premium: true,
+            premium_until: Some(1_702_592_000),
+        }),
+    };
+    apply(&mut s, UiMessage::Daemon { event: Box::new(Event::Debrid { check }), at, unix: 0 });
     let slot =
         |name: &str, place: &str| udm_application::window::BrowserSlot { name: name.into(), place: place.into() };
     let row = |name: &str, registered: bool, added: Option<&str>| crate::services::BrowserRow {

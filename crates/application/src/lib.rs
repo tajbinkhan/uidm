@@ -6,6 +6,7 @@
 #![cfg_attr(test, allow(clippy::todo, clippy::unimplemented, clippy::unreachable))]
 
 pub mod daemon;
+pub mod debrid;
 pub mod downloads;
 pub mod gallery;
 pub mod grab;

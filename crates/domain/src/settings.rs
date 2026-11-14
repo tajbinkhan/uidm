@@ -879,6 +879,10 @@ pub struct Settings {
     /// every network interface.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_addresses: Vec<String>,
+    /// The debrid account links to file hosts go through (experimental).
+    /// Its API key is stored sealed beside the settings, never here.
+    #[serde(default)]
+    pub debrid: crate::debrid::DebridSettings,
 }
 
 fn default_remote_port() -> u16 {
@@ -1020,6 +1024,7 @@ impl Default for Settings {
             remote_enabled: false,
             remote_port: DEFAULT_REMOTE_PORT,
             remote_addresses: Vec::new(),
+            debrid: crate::debrid::DebridSettings::default(),
         }
     }
 }
